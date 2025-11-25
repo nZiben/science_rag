@@ -366,6 +366,79 @@ st.markdown("""
         color: white;
         font-weight: bold;
     }
+    .chat-item {
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0.5rem;
+        border: 2px solid #e0e0e0;
+        background-color: #f8f9fa;
+        transition: all 0.2s ease;
+        cursor: pointer;
+    }
+    .chat-item:hover {
+        background-color: #e9ecef;
+        border-color: #1f77b4;
+        transform: translateX(2px);
+    }
+    .chat-item-active {
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0.5rem;
+        border: 2px solid #1f77b4;
+        background: linear-gradient(135deg, #1f77b4 0%, #2c5aa0 100%);
+        color: white;
+        font-weight: 600;
+        box-shadow: 0 2px 8px rgba(31, 119, 180, 0.3);
+    }
+    .chat-item-active:hover {
+        box-shadow: 0 4px 12px rgba(31, 119, 180, 0.4);
+    }
+    .chat-title {
+        font-size: 0.95rem;
+        margin: 0;
+        word-wrap: break-word;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+    }
+    .chat-icon {
+        margin-right: 0.5rem;
+        font-size: 1.1rem;
+    }
+    /* Стилизация кнопок чатов */
+    .stButton button[kind="secondary"] {
+        background-color: #f8f9fa !important;
+        color: #333 !important;
+        border: 2px solid #e0e0e0 !important;
+        border-radius: 0.5rem !important;
+        padding: 0.75rem 1rem !important;
+        font-weight: normal !important;
+        text-align: left !important;
+        transition: all 0.2s ease !important;
+        box-shadow: none !important;
+        width: 100% !important;
+    }
+    .stButton button[kind="secondary"]:hover {
+        background-color: #e9ecef !important;
+        border-color: #1f77b4 !important;
+        transform: translateX(2px) !important;
+    }
+    /* Альтернативный селектор для кнопок чатов */
+    button[data-testid*="chat_btn"] {
+        background-color: #f8f9fa !important;
+        color: #333 !important;
+        border: 2px solid #e0e0e0 !important;
+        border-radius: 0.5rem !important;
+        padding: 0.75rem 1rem !important;
+        font-weight: normal !important;
+        text-align: left !important;
+    }
+    button[data-testid*="chat_btn"]:hover {
+        background-color: #e9ecef !important;
+        border-color: #1f77b4 !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -439,11 +512,20 @@ with st.sidebar:
                         chat["title"] = chat_title
                         st.session_state.chats[chat_id] = chat
             
-            # Отмечаем текущий чат
+            # Отмечаем текущий чат с красивым оформлением
             if chat_id == st.session_state.current_chat_id:
-                st.markdown(f"**📌 {chat_title}**")
+                # Активный чат - выделенный блок
+                st.markdown(
+                    f'<div class="chat-item-active">'
+                    f'<span class="chat-icon">📌</span>'
+                    f'<span class="chat-title">{chat_title}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
             else:
-                if st.button(f"💬 {chat_title}", key=f"chat_btn_{chat_id}", use_container_width=True):
+                # Неактивные чаты - карточки с кнопками
+                chat_button_key = f"chat_btn_{chat_id}"
+                if st.button(f"💬 {chat_title}", key=chat_button_key, use_container_width=True, type="secondary"):
                     st.session_state.current_chat_id = chat_id
                     st.rerun()
     else:
