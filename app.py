@@ -443,9 +443,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Инициализация сессии
+# Инициализация выбранной модели
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = "mistral-large-latest"
+
 if "rag_system" not in st.session_state:
     try:
-        st.session_state.rag_system = RAGSystem()
+        st.session_state.rag_system = RAGSystem(model=st.session_state.selected_model)
         st.session_state.initialized = True
     except Exception as e:
         st.session_state.initialized = False
@@ -482,6 +486,38 @@ st.markdown("---")
 
     # Боковая панель
 with st.sidebar:
+    st.header("⚙️ Настройки")
+    
+    # Выбор модели Mistral
+    mistral_models = {
+        "mistral-large-latest": "Large",
+        "mistral-medium-latest": "Medium",
+        "mistral-small-latest": "Small",
+        "mistral-tiny": "Tiny"
+    }
+    
+    selected_model = st.selectbox(
+        "🤖 Модель Mistral",
+        options=list(mistral_models.keys()),
+        format_func=lambda x: mistral_models[x],
+        index=list(mistral_models.keys()).index(st.session_state.selected_model) if st.session_state.selected_model in mistral_models else 0,
+        help="Выберите версию модели Mistral для генерации ответов"
+    )
+    
+    # Если модель изменилась, переинициализируем RAG систему
+    if selected_model != st.session_state.selected_model:
+        st.session_state.selected_model = selected_model
+        try:
+            st.session_state.rag_system = RAGSystem(model=selected_model)
+            st.session_state.initialized = True
+            if "error" in st.session_state:
+                del st.session_state.error
+        except Exception as e:
+            st.session_state.initialized = False
+            st.session_state.error = str(e)
+    
+    st.markdown("---")
+    
     st.header("💬 Чаты")
     
     # Кнопка создания нового чата

@@ -13,8 +13,13 @@ load_dotenv()
 class RAGSystem:
     """RAG система для ответов на вопросы с использованием информации из интернета"""
     
-    def __init__(self):
-        """Инициализация RAG системы с API ключами"""
+    def __init__(self, model: str = "mistral-large-latest"):
+        """
+        Инициализация RAG системы с API ключами
+        
+        Args:
+            model: Версия модели Mistral для использования (по умолчанию: "mistral-large-latest")
+        """
         # Получаем API ключи из переменных окружения
         mistral_api_key = os.getenv("MISTRAL_API_KEY")
         tavily_api_key = os.getenv("TAVILY_API_KEY")
@@ -29,7 +34,7 @@ class RAGSystem:
         self.tavily_client = TavilyClient(api_key=tavily_api_key)
         
         # Модель Mistral для генерации ответов
-        self.model = "mistral-large-latest"
+        self.model = model
     
     def search_internet(self, query: str, max_results: int = 5) -> list:
         """
