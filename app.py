@@ -4,6 +4,18 @@ Streamlit интерфейс для RAG системы с Mistral API и Tavily
 import streamlit as st
 from rag_system import RAGSystem
 from urllib.parse import urlparse
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepTogether
+from reportlab.lib.colors import HexColor
+from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from io import BytesIO
+from datetime import datetime
+import re
+import os
 
 def get_domain(url):
     """Извлекает домен из URL"""
@@ -16,6 +28,304 @@ def get_domain(url):
         return domain
     except:
         return url
+
+def parse_markdown_to_elements(text, h1_style, h2_style, h3_style, normal_style, list_item_style):
+    """Преобразует markdown в список элементов для PDF"""
+    if not text:
+        return []
+    
+    elements = []
+    lines = text.split('\n')
+    in_list = False
+    list_type = None
+    list_items = []
+    
+    def format_text(content):
+        """Обрабатывает форматирование в тексте"""
+        # Экранируем HTML
+        content = content.replace('&', '&amp;')
+        content = content.replace('<', '&lt;')
+        content = content.replace('>', '&gt;')
+        # Жирный текст
+        content = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', content)
+        content = re.sub(r'__(.+?)__', r'<b>\1</b>', content)
+        # Курсив
+        content = re.sub(r'(?<!\*)\*(?!\*)([^*]+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', content)
+        # Ссылки
+        content = re.sub(r'\[([^\]]+)\]\(([^\)]+)\)', r'<a href="\2" color="blue"><u>\1</u></a>', content)
+        # Код
+        content = re.sub(r'`([^`]+)`', r'<font face="Courier">\1</font>', content)
+        return content
+    
+    def flush_list():
+        """Выводит накопленные элементы списка"""
+        nonlocal list_items, in_list, list_type
+        if list_items:
+            for idx, item in enumerate(list_items, 1):
+                formatted = format_text(item)
+                if list_type == 'ol':
+                    style = ParagraphStyle(
+                        'ListNumbered',
+                        parent=list_item_style,
+                        bulletText=f'{idx}.'
+                    )
+                else:
+                    style = ParagraphStyle(
+                        'ListBullet',
+                        parent=list_item_style,
+                        bulletText='•'
+                    )
+                elements.append(Paragraph(formatted, style))
+            list_items = []
+            in_list = False
+    
+    for line in lines:
+        line = line.rstrip()
+        
+        # Заголовки
+        if line.startswith('###'):
+            flush_list()
+            content = format_text(line[3:].strip())
+            elements.append(Paragraph(content, h3_style))
+        elif line.startswith('##'):
+            flush_list()
+            content = format_text(line[2:].strip())
+            elements.append(Paragraph(content, h2_style))
+        elif line.startswith('#'):
+            flush_list()
+            content = format_text(line[1:].strip())
+            elements.append(Paragraph(content, h1_style))
+        # Нумерованные списки
+        elif re.match(r'^\d+\.\s+', line):
+            if not in_list or list_type != 'ol':
+                flush_list()
+                in_list = True
+                list_type = 'ol'
+            content = re.sub(r'^\d+\.\s+', '', line)
+            list_items.append(content)
+        # Маркированные списки
+        elif re.match(r'^[-*]\s+', line):
+            if not in_list or list_type != 'ul':
+                flush_list()
+                in_list = True
+                list_type = 'ul'
+            content = re.sub(r'^[-*]\s+', '', line)
+            list_items.append(content)
+        # Пустая строка
+        elif not line.strip():
+            flush_list()
+            elements.append(Spacer(1, 0.1*inch))
+        # Обычный текст
+        else:
+            flush_list()
+            content = format_text(line)
+            if content.strip():
+                elements.append(Paragraph(content, normal_style))
+    
+    flush_list()
+    return elements
+
+def export_chat_to_pdf(chat_data):
+    """Экспортирует чат в PDF формат"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, 
+                           rightMargin=72, leftMargin=72,
+                           topMargin=72, bottomMargin=72)
+    
+    # Регистрируем шрифт с поддержкой кириллицы
+    # Используем стандартный шрифт для кириллицы
+    try:
+        # Пробуем использовать стандартные шрифты Windows с поддержкой кириллицы
+        font_paths = [
+            r'C:\Windows\Fonts\arial.ttf',
+            r'C:\Windows\Fonts\calibri.ttf',
+            r'C:\Windows\Fonts\tahoma.ttf',
+        ]
+        
+        font_registered = False
+        font_name = 'CyrillicFont'
+        font_bold_name = 'CyrillicFontBold'
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    pdfmetrics.registerFont(TTFont(font_name, font_path))
+                    pdfmetrics.registerFont(TTFont(font_bold_name, font_path))
+                    font_registered = True
+                    break
+                except:
+                    continue
+        
+        # Если не удалось зарегистрировать шрифт из системы, используем встроенные шрифты
+        if not font_registered:
+            # Используем встроенные шрифты reportlab с поддержкой Unicode
+            font_name = 'Helvetica'
+            font_bold_name = 'Helvetica-Bold'
+    except:
+        # Fallback на стандартные шрифты
+        font_name = 'Helvetica'
+        font_bold_name = 'Helvetica-Bold'
+    
+    # Стили
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor='#1f77b4',
+        spaceAfter=30,
+        alignment=TA_LEFT,
+        fontName=font_name
+    )
+    
+    question_style = ParagraphStyle(
+        'QuestionStyle',
+        parent=styles['Normal'],
+        fontSize=12,
+        textColor='#333333',
+        spaceAfter=12,
+        leftIndent=20,
+        fontName=font_bold_name
+    )
+    
+    answer_style = ParagraphStyle(
+        'AnswerStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        textColor='#000000',
+        spaceAfter=20,
+        leftIndent=20,
+        alignment=TA_JUSTIFY,
+        fontName=font_name
+    )
+    
+    source_style = ParagraphStyle(
+        'SourceStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor='#666666',
+        spaceAfter=10,
+        leftIndent=40,
+        fontName=font_name
+    )
+    
+    # Создаем нормальный стиль с кириллическим шрифтом
+    normal_style = ParagraphStyle(
+        'NormalCyrillic',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName=font_name
+    )
+    
+    # Стили для заголовков
+    h1_style = ParagraphStyle(
+        'H1Style',
+        parent=styles['Heading1'],
+        fontSize=14,
+        fontName=font_bold_name,
+        textColor='#1f77b4',
+        spaceAfter=12,
+        spaceBefore=12
+    )
+    
+    h2_style = ParagraphStyle(
+        'H2Style',
+        parent=styles['Heading2'],
+        fontSize=13,
+        fontName=font_bold_name,
+        textColor='#2c3e50',
+        spaceAfter=10,
+        spaceBefore=10
+    )
+    
+    h3_style = ParagraphStyle(
+        'H3Style',
+        parent=styles['Heading3'],
+        fontSize=12,
+        fontName=font_bold_name,
+        textColor='#34495e',
+        spaceAfter=8,
+        spaceBefore=8
+    )
+    
+    # Стиль для списков
+    list_item_style = ParagraphStyle(
+        'ListItemStyle',
+        parent=styles['Normal'],
+        fontSize=11,
+        fontName=font_name,
+        leftIndent=30,
+        bulletIndent=15,
+        spaceAfter=6
+    )
+    
+    # Содержимое PDF
+    story = []
+    
+    # Заголовок
+    chat_title = chat_data.get("title", "Экспорт чата")
+    story.append(Paragraph(f"Чат: {chat_title}", title_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    # Дата экспорта
+    export_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+    story.append(Paragraph(f"Дата экспорта: {export_date}", normal_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Сообщения чата
+    messages = chat_data.get("messages", [])
+    if not messages:
+        story.append(Paragraph("В этом чате пока нет сообщений.", normal_style))
+    else:
+        for idx, msg in enumerate(messages, 1):
+            # Вопрос пользователя
+            question = msg.get("question", "")
+            story.append(Paragraph(f"<b>Вопрос {idx}:</b>", question_style))
+            question_elements = parse_markdown_to_elements(
+                question, h1_style, h2_style, h3_style, answer_style, list_item_style
+            )
+            if question_elements:
+                story.extend(question_elements)
+            else:
+                story.append(Paragraph(question, answer_style))
+            story.append(Spacer(1, 0.15*inch))
+            
+            # Ответ ассистента
+            answer = msg.get("answer", "")
+            story.append(Paragraph("<b>Ответ:</b>", question_style))
+            # Парсим markdown и добавляем элементы
+            answer_elements = parse_markdown_to_elements(
+                answer, h1_style, h2_style, h3_style, answer_style, list_item_style
+            )
+            story.extend(answer_elements)
+            story.append(Spacer(1, 0.15*inch))
+            
+            # Источники
+            sources = msg.get("sources", [])
+            if sources:
+                story.append(Paragraph("<b>Источники:</b>", question_style))
+                story.append(Spacer(1, 0.05*inch))
+                for source_idx, source in enumerate(sources, 1):
+                    source_title = source.get('title', 'Без названия')
+                    source_url = source.get('url', '')
+                    if source_url:
+                        source_text = f"{source_idx}. <a href=\"{source_url}\" color=\"blue\"><u>{source_title}</u></a> - {source_url}"
+                    else:
+                        source_text = f"{source_idx}. {source_title}"
+                    story.append(Paragraph(source_text, source_style))
+                story.append(Spacer(1, 0.1*inch))
+            
+            # Разделитель между сообщениями
+            if idx < len(messages):
+                story.append(Spacer(1, 0.25*inch))
+                # Простая линия-разделитель
+                story.append(Paragraph("─" * 80, normal_style))
+                story.append(Spacer(1, 0.25*inch))
+    
+    # Генерация PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 # Настройка страницы
 st.set_page_config(
@@ -97,7 +407,7 @@ if st.session_state.current_chat_id is None or st.session_state.current_chat_id 
 st.markdown('<h1 class="main-header">🔍 RAG Система с Mistral и Tavily</h1>', unsafe_allow_html=True)
 st.markdown("---")
 
-# Боковая панель
+    # Боковая панель
 with st.sidebar:
     st.header("💬 Чаты")
     
@@ -150,6 +460,29 @@ if not st.session_state.initialized:
 else:
     # Получаем текущий чат (он уже создан автоматически при запуске)
     current_chat = st.session_state.chats[st.session_state.current_chat_id]
+    
+    # Кнопка экспорта в PDF (в окне чата)
+    if current_chat.get("messages"):
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            try:
+                pdf_buffer = export_chat_to_pdf(current_chat)
+                chat_title = current_chat.get("title", "chat").replace(" ", "_")
+                # Очищаем название от недопустимых символов для имени файла
+                chat_title = re.sub(r'[<>:"/\\|?*]', '_', chat_title)
+                filename = f"{chat_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                st.download_button(
+                    label="📄 Экспорт в PDF",
+                    data=pdf_buffer,
+                    file_name=filename,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="download_pdf_button"
+                )
+            except Exception as e:
+                st.error(f"Ошибка при создании PDF: {e}")
+        with col2:
+            st.write("")  # Пустое пространство для выравнивания
     
     # Показываем историю диалога
     if current_chat["messages"]:
