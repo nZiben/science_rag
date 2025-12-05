@@ -1,8 +1,7 @@
 # 🔬 Science RAG: Retrieval-Augmented QA for Scientific Articles
 
 **Science RAG** — это учебно-прикладной проект Retrieval-Augmented Generation
-для ответов на узкоспециализированные научные вопросы (ML, CS, математика,
-физика, биология) на основе:
+для ответов на узкоспециализированные научные вопросы на основе:
 
 - локального корпуса статей arXiv;
 - Web-RAG поверх интернета;
@@ -10,10 +9,7 @@
 
 Проект ориентирован на:
 
-- демонстрацию end-to-end архитектуры RAG;
-- сравнение dense / sparse / hybrid retrieval;
-- эксперимент с Dynamic Alpha Tuning (DAT) как meta-retriever над локальным
-  научным корпусом.
+- демонстрацию end-to-end архитектуры RAG
 
 ---
 
