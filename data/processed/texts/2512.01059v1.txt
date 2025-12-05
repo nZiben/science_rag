@@ -1,0 +1,316 @@
+PARAMETERREDUCTIONIMPROVESVISIONTRANS-
+FORMERS: A COMPARATIVESTUDY OFSHARING AND
+WIDTHREDUCTION
+Anantha Padmanaban Krishna Kumar
+Department of Computer Science, Boston University
+anantha@bu.edu
+ABSTRACT
+Although scaling laws and many empirical results suggest that increasing the size
+of Vision Transformers often improves performance, model accuracy and training
+behavior are not always monotonically increasing with scale. Focusing on ViT-
+B/16 trained on ImageNet-1K, we study two simple parameter-reduction strate-
+gies applied to the MLP blocks, each removing 32.7% of the baseline param-
+eters. OurGroupedMLPvariant shares MLP weights between adjacent trans-
+former blocks and achieves 81.47% top-1 accuracy while maintaining the baseline
+computational cost. OurShallowMLPvariant halves the MLP hidden dimension
+and reaches 81.25% top-1 accuracy with a 38% increase in inference throughput.
+Both models outperform the 86.6M-parameter baseline (81.05%) and exhibit sub-
+stantially improved training stability, reducing peak-to-final accuracy degradation
+from 0.47% to the range 0.03% to 0.06%. These results suggest that, for ViT-B/16
+on ImageNet-1K with a standard training recipe, the model operates in an over-
+parameterized regime in which MLP capacity can be reduced without harming
+performance and can even slightly improve it. More broadly, our findings sug-
+gest that architectural constraints such as parameter sharing and reduced width
+may act as useful inductive biases, and highlight the importance of how param-
+eters are allocated when designing Vision Transformers. All code is available
+at:https://github.com/AnanthaPadmanaban-KrishnaKumar/
+parameter-efficient-vit-mlps.
+1 INTRODUCTION
+Vision Transformers (ViTs) have benefited from scaling: from the 86M parameters of ViT-Base to
+the billions in contemporary foundation models, larger models often yield better performance on
+standard benchmarks (Dosovitskiy, 2020; Dehghani et al., 2023). Scaling laws such as the Chin-
+chilla optimality curves further formalize this trend, relating parameter count, data, and compute to
+downstream accuracy (Hoffmann et al., 2022). These observations have encouraged the view that
+increasing model capacity is a primary route to improved performance.
+Yet recent work challenges this view. Deep double descent shows non-monotonic test error with
+model size (Nakkiran et al., 2021), sparse subnetworks can match dense parents (Frankle & Carbin,
+2018), and ALBERT achieved state-of-the-art NLP results with 70% fewer parameters through pa-
+rameter sharing (Lan et al., 2019). These results suggest that raw parameter count is an imperfect
+proxy for effective capacity.
+In this paper, we present empirical evidence that a related phenomenon arises in ViT-B/16 trained
+on ImageNet-1K. We study two simple parameter-reduction strategies applied to the MLP blocks.
+OurGroupedMLPvariant shares MLP parameters between adjacent transformer blocks, while our
+ShallowMLPvariant halves the MLP hidden dimension and preserves the initialization statistics of
+a wider MLP. Both models remove 32.7% of the baseline parameters (using 67.3% of the origi-
+nal count), yet slightly outperform the 86.6M-parameter ViT-B/16 baseline: GroupedMLP reaches
+81.47% top-1 accuracy and ShallowMLP 81.25%, versus 81.05% for the baseline. Moreover, both
+1
+arXiv:2512.01059v1  [cs.CV]  30 Nov 2025
+reduced-parameter models exhibit substantially improved training stability, with final accuracies
+within 0.06% of their peak values, compared to a 0.47% peak-to-final degradation for the baseline.
+The two architectures offer complementary practical trade-offs. GroupedMLP maintains the base-
+line computational cost (16.9 GFLOPs) while reducing memory footprint by sharing MLP weights
+across layers, making it attractive in memory-constrained settings. ShallowMLP reduces both pa-
+rameters and compute (11.3 GFLOPs), yielding a 38% increase in inference throughput and making
+it preferable when latency or cost is critical. That these two mechanistically distinct strategies both
+improve accuracy and stability at matched parameter counts suggests that, under this training setup,
+ViT-B/16 operates in an overparameterized regime in which additional MLP capacity may hinder
+optimization rather than help it.
+Our contributions are: (1) demonstrating that, for ViT-B/16 on ImageNet-1K, two parameter-
+reduction schemes in the MLPs improve accuracy and training stability despite removing 32.7% of
+parameters, (2) comparing parameter sharing versus width reduction at matched parameter counts
+to clarify their trade-offs, and (3) connecting these findings to overparameterization in transformers
+and outlining open questions about architectural constraints in ViTs.
+2 RELATEDWORK
+Parameter Sharing and Pruning.ALBERT (Lan et al., 2019) demonstrated that cross-layer pa-
+rameter sharing can achieve state-of-the-art NLP results with 70% fewer parameters than BERT.
+Universal Transformers (Dehghani et al., 2018) share a single block recurrently, with recent analysis
+showing benefits primarily from gradient aggregation rather than depth (Lin et al., 2023). Unlike
+these global schemes, our GroupedMLP shares only MLP submodules between adjacent blocks,
+preserving attention independence. The lottery ticket hypothesis (Frankle & Carbin, 2018) showed
+that sparse subnetworks can match dense counterparts, and has been extended to ViTs in subse-
+quent work (Chen et al., 2021; Yu et al., 2022). Structured pruning methods like S-ViTE (Chen
+et al., 2021) and VTP (Zhu et al., 2021) remove entire heads or channels using importance scores.
+Our ShallowMLP represents a simpler approach (uniform width reduction with initialization from a
+wider MLP) that requires no iterative pruning yet improves both accuracy and stability.
+ViT Efficiency and Redundancy.Architectural innovations include Swin’s hierarchical design (Liu
+et al., 2021), DeiT’s distillation (Rangwani et al., 2024), and dynamic token pruning (Rao et al.,
+2021). Studies have documented substantial redundancy in ViTs: Bhojanapalli et al. (2021) found
+high attention correlation between layers, while Liang et al. (2022) observed similar patch represen-
+tations in deeper layers. We provide complementary evidence that, for ViT-B/16 on ImageNet-1K,
+removing 32.7% of MLP parameters can improve performance, consistent with the view that this
+standard configuration is overparameterized in its MLPs.
+Overparameterization Dynamics.Deep double descent (Belkin et al., 2019; Nakkiran et al., 2021)
+revealed non-monotonic test error with capacity, with pruned networks sometimes outperforming
+dense parents. Chinchilla scaling laws (Hoffmann et al., 2022) suggest many models are compute-
+suboptimal. The fact that our 58.2M-parameter variants outperform the 86.6M-parameter baseline
+for ViT-B/16 on ImageNet-1K aligns with this picture. The improved stability we observe connects
+to sharpness-aware minimization (Foret et al., 2020) and edge-of-stability dynamics (Cohen et al.,
+2021), and is consistent with the hypothesis that capacity constraints can help guide optimization
+toward flatter, more stable minima.
+Our contribution is a controlled comparison of localized MLP sharing versus uniform width re-
+duction at matched parameter counts, demonstrating that reducing MLP capacity in ViT-B/16 can
+improve both accuracy and stability on ImageNet-1K.
+3 METHOD
+We introduce two parameter-efficient variants of ViT-B/16 that, in our experiments, reduce param-
+eters while improving accuracy and training stability. Both achieve a 32.7% reduction in parameter
+count.
+2
+3.1 PARAMETERREDUCTIONSTRATEGIES
+Starting from ViT-B/16 (Dosovitskiy, 2020) with 86.6M parameters, we construct two architec-
+turally distinct variants, each with 58.2M parameters, to test complementary hypotheses about pa-
+rameter efficiency in transformers.
+GroupedMLPshares MLP weights between adjacent transformer blocks: blocks(2i,2i+ 1)for
+i∈ {0, ...,5}reference identical parameters, reducing 12 unique MLPs to 6. To maintain proper
+gradient flow through shared weights, we scale parameters at initialization:
+θshared ← 1√
+2 ·θ init forW fc1, Wfc2, bfc1 (1)
+This preserves forward pass variance and helps avoid gradient explosion in practice. The architecture
+maintains the baseline’s computational cost (16.9 GFLOPs) and 4×expansion ratio but reduces
+memory footprint through weight sharing.
+ShallowMLPreduces the MLP hidden dimension from 3072 to 1536 across all blocks while pre-
+serving independent parameters. Critically, we initialize from the full ViT-B/16 before slicing:
+Wfc1 ←W full
+fc1 [: d
+2 ,:], W fc2 ←W full
+fc2 [:,: d
+2 ](2)
+This preserves the initialization statistics of the larger model, a detail that is sometimes overlooked
+in pruning studies. ShallowMLP reduces both parameters and computation to 11.3 GFLOPs (2×
+expansion ratio).
+Table 1: Architecture comparison. GroupedMLP maintains baseline compute with shared weights;
+ShallowMLP reduces both parameters and FLOPs.
+Model Params MLP Unique GFLOPs Expansion
+Baseline 86.6M 56.7M 12 16.9 4×
+GroupedMLP 58.2M 28.3M 6 16.9 4×
+ShallowMLP 58.2M 28.3M 12 11.3 2×
+Both modifications are applied post-initialization to the official timm (Wightman, 2019) implemen-
+tation, ensuring that all models share identical initial weights before architectural changes. This
+design helps isolate the effect of parameter reduction from other training dynamics.
+3.2 TRAINING ANDEVALUATION
+We train on ImageNet-1K (Russakovsky et al., 2015) for 300 epochs using standard ViT protocols:
+AdamW (β1=0.9,β 2=0.999, weight decay=0.05), a cosine learning rate schedule starting from10−3
+with 5-epoch warmup, batch size 1024, and standard augmentations (MixUp 0.8, CutMix 1.0, Ran-
+dAugment, DropPath 0.1). We use an exponential moving average (EMA) of model weights with
+decay 0.9998 to stabilize evaluation. We report validation accuracy at the best checkpoint and ana-
+lyze: (i) the peak-to-final accuracy gap as a stability metric, (ii) inference throughput and memory
+usage, and (iii) parameter efficiency (accuracy per parameter/FLOP). We run experiments with seeds
+{42,123}and perform significance testing using paired t-tests.
+4 RESULTS
+We evaluate both parameter reduction strategies on ImageNet-1K and find that they outperform the
+full-capacity baseline while exhibiting improved training stability.
+4.1 MAINRESULTS
+Both parameter-reduced models significantly outperform the baseline: GroupedMLP by 0.42%
+(p=0.018) and ShallowMLP by 0.20% (p=0.031). There is also a substantial improvement in train-
+ing stability: the peak-to-final accuracy gap drops from 0.47% (baseline) to 0.03–0.06% (reduced
+3
+Table 2: ImageNet-1K validation results. Both parameter-reduced models outperform the 86.6M
+baseline using only 67.3% of parameters. Peak-to-final gap measures training stability. Mean±std
+over two seeds.
+Model Params Top-1 Top-5 Peak∆(P→F) Throughput
+Acc (%) Acc (%) Epoch (%) (img/s)
+Baseline 86.6M 81.05±0.11 95.36±0.08 219±13 0.47±0.04 1,020
+GroupedMLP 58.2M81.47±0.11 ∗ 95.66±0.08272±10.06±0.061,017
+ShallowMLP 58.2M 81.25±0.02 ∗ 95.52±0.02 273±0 0.03±0.011,411
+models). This stability manifests consistently across seeds: while the baseline degrades by 0.43–
+0.50%, GroupedMLP maintains accuracy within 0.12% and ShallowMLP within 0.04% of peak
+performance.
+The models offer complementary trade-offs. GroupedMLP preserves computational cost (16.9
+GFLOPs) while reducing memory by 4.3%, which is useful in memory-constrained settings. Shal-
+lowMLP reduces FLOPs to 11.3, achieving 38% higher throughput and 29% lower memory usage,
+making it attractive when inference speed is critical.
+4.2 ANALYSIS
+Training Dynamics.The parameter-reduced models exhibit noticeably different optimization be-
+havior (Figure 1). While the baseline rapidly reaches 80% accuracy by epoch 185 and peaks at epoch
+219, it then degrades continuously—validation accuracy drops while loss rises. GroupedMLP and
+ShallowMLP progress more steadily, reaching peak performance about 50 epochs later (272–273)
+and maintaining both stable accuracy and loss through training completion. This pattern suggests
+that training proceeds in a different optimization regime, potentially associated with flatter minima
+that may better resist overfitting despite aggressive augmentation.
+Figure 1: Validation accuracy and loss from epoch 150 to 300. Solid lines show the mean across
+two seeds; shaded regions indicate the range. The baseline exhibits declining accuracy and rising
+loss after epoch∼220, while both parameter-reduced models maintain stable performance through
+training completion.
+Parameter Efficiency.Both strategies achieve approximately 49% higher accuracy per parameter
+than the baseline (1.40 and 1.39 vs 0.94 accuracy per million parameters), indicating substantial
+overparameterization in standard ViT-B/16. ShallowMLP additionally excels in computational effi-
+ciency at 7.20 accuracy/GFLOP versus 4.80 for the baseline, a 50% improvement. GroupedMLP’s
+weight sharing between adjacent blocks (reducing 12 unique MLPs to 6) maintains the baseline’s
+computational intensity while showing that, in this setting, half the MLP diversity is sufficient to
+match or slightly improve performance.
+4
+The consistent improvements achieved by two mechanistically distinct approaches (weight sharing
+versus width reduction) suggest that, for ViT-B/16 on ImageNet-1K under our training setup, the
+model operates in an overparameterized regime. Both methods inherit initialization from the full
+86.6M-parameter model before architectural modification, which suggests that large-model initial-
+ization statistics may be important, potentially more so than the eventual parameter count. Our
+results are consistent with this view, and we leave more detailed ablation studies to future work.
+5 DISCUSSION
+5.1 SUMMARY ANDPOTENTIALMECHANISMS
+Our experiments reveal that two simple parameter-reduction strategies in the MLP blocks of ViT-
+B/16, namely parameter sharing (GroupedMLP) and width reduction (ShallowMLP), can slightly
+improve ImageNet-1K accuracy while substantially increasing training stability, despite using fewer
+parameters than the baseline. The two architectures offer complementary practical trade-offs:
+GroupedMLP preserves the baseline compute cost but reduces memory footprint, making it attrac-
+tive for memory-constrained settings, whereas ShallowMLP reduces both parameters and FLOPs,
+yielding higher inference throughput when latency and cost are critical. Taken together, these re-
+sults suggest that, for ViT-B/16 on ImageNet-1K under our training setup, the model operates in an
+overparameterized regime in which removing some MLP capacity can act as a useful inductive bias
+rather than purely a handicap.
+Several mechanisms may underlie these effects. Parameter sharing in GroupedMLP enforces that
+the same MLP must serve multiple depths, which may act as an implicit regularizer by discourag-
+ing layer-specific overfitting and encouraging more generally useful features. In both GroupedMLP
+and ShallowMLP, the reduced-capacity networks inherit initialization statistics from a larger model:
+GroupedMLP through shared parameters derived from the full-capacity ViT-B/16 and ShallowMLP
+by slicing a wider MLP initialized at the larger width. This suggests that the initialization scale and
+structure of the underlying large model may be important for optimization, potentially more so than
+the eventual parameter count in our setting. In addition, shared MLP parameters in GroupedMLP
+receive gradients from multiple layers, potentially providing richer learning signals, and the empiri-
+cal effectiveness of the1/
+√
+2scaling factor indicates that balancing these contributions is important.
+The pronounced reduction in peak-to-final accuracy degradation observed in both architectures hints
+at different loss landscapes, potentially corresponding to flatter minima, but confirming such inter-
+pretations will require more direct theoretical and empirical analysis.
+5.2 LIMITATIONS ANDFUTUREDIRECTIONS
+Our study is intentionally narrow in scope. All experiments are conducted on ViT-B/16 for
+ImageNet-1K classification under a single training recipe, and we evaluate only two specific
+parameter-reduction designs. Whether similar gains appear across other model sizes (e.g., ViT-Tiny
+to ViT-Huge), alternative transformer architectures (such as DeiT or Swin), or other domains (lan-
+guage, multimodal models) remains an open question. We also report results over a limited number
+of random seeds; although the observed improvements are consistent and statistically significant un-
+der our protocol, broader validation across seeds, codebases, and hardware would further strengthen
+the conclusions. Moreover, we do not analyze downstream transfer, detection, or segmentation tasks,
+where the inductive biases introduced by parameter sharing or width reduction could help or hinder
+performance in different ways.
+These limitations point naturally to several directions for future work. A first step is to perform sys-
+tematic scaling studies that vary both model size and the degree of parameter reduction to understand
+how redundancy and optimal reduction ratios depend on capacity. Exploring richer sharing patterns
+(beyond adjacent pairs), different group sizes, and alternative scaling rules for shared weights could
+yield more effective or more flexible designs. Extending the study to other architectures and tasks,
+including convolutional networks, hybrid models, and language transformers, as well as fine-tuning
+and transfer-learning setups, would clarify whether the phenomena we observe are specific to vision
+transformers or reflect broader principles of neural network optimization. Finally, theoretical and
+empirical analyses of the resulting loss landscapes, gradient dynamics, and information flow could
+5
+help turn these empirical observations into principled guidelines for designing more efficient and
+stable transformer architectures.
+6 CONCLUSION
+We have shown that carefully structured parameter reductions in the MLP blocks of a standard ViT-
+B/16 can yield modest but consistent accuracy improvements on ImageNet-1K while substantially
+enhancing training stability. Both of our variants, GroupedMLP, which shares MLP parameters
+across neighboring blocks, and ShallowMLP, which reduces MLP width, use only 67.3% of the
+original parameters yet slightly outperform the full-capacity baseline and exhibit approximately an
+order-of-magnitude reduction in peak-to-final accuracy degradation. Moreover, the two designs
+offer complementary practical trade-offs: GroupedMLP preserves the baseline compute cost while
+reducing memory footprint, and ShallowMLP achieves a 38% increase in inference throughput by
+reducing both parameters and FLOPs.
+These findings suggest that, for ViT-B/16 on ImageNet-1K under our training setup, there is substan-
+tial redundancy in the MLPs and that constraining MLP capacity can serve as a useful inductive bias
+rather than merely a compression technique. By demonstrating that smaller, more structured MLPs
+can be both more efficient and better behaved than their overparameterized counterparts, our results
+add to a growing body of evidence that the organization of capacity in deep networks can matter as
+much as the total parameter count. We hope this work will motivate further studies that treat param-
+eter reduction and sharing not only as tools for shrinking models, but also as principled mechanisms
+for improving optimization, robustness, and generalization in transformer architectures.
+REFERENCES
+Mikhail Belkin, Daniel Hsu, Siyuan Ma, and Soumik Mandal. Reconciling modern machine-
+learning practice and the classical bias–variance trade-off.Proceedings of the National Academy
+of Sciences, 116(32):15849–15854, 2019.
+Srinadh Bhojanapalli, Ayan Chakrabarti, Daniel Glasner, Daliang Li, Thomas Unterthiner, and An-
+dreas Veit. Understanding robustness of transformers for image classification. InProceedings of
+the IEEE/CVF international conference on computer vision, pp. 10231–10241, 2021.
+Tianlong Chen, Yu Cheng, Zhe Gan, Lu Yuan, Lei Zhang, and Zhangyang Wang. Chasing sparsity
+in vision transformers: An end-to-end exploration.Advances in Neural Information Processing
+Systems, 34:19974–19988, 2021.
+Jeremy M Cohen, Simran Kaur, Yuanzhi Li, J Zico Kolter, and Ameet Talwalkar. Gradient descent
+on neural networks typically occurs at the edge of stability.arXiv preprint arXiv:2103.00065,
+2021.
+Mostafa Dehghani, Stephan Gouws, Oriol Vinyals, Jakob Uszkoreit, and Łukasz Kaiser. Universal
+transformers.arXiv preprint arXiv:1807.03819, 2018.
+Mostafa Dehghani, Josip Djolonga, Basil Mustafa, Piotr Padlewski, Jonathan Heek, Justin Gilmer,
+Andreas Peter Steiner, Mathilde Caron, Robert Geirhos, Ibrahim Alabdulmohsin, et al. Scaling
+vision transformers to 22 billion parameters. InInternational conference on machine learning,
+pp. 7480–7512. PMLR, 2023.
+Alexey Dosovitskiy. An image is worth 16x16 words: Transformers for image recognition at scale.
+arXiv preprint arXiv:2010.11929, 2020.
+Pierre Foret, Ariel Kleiner, Hossein Mobahi, and Behnam Neyshabur. Sharpness-aware minimiza-
+tion for efficiently improving generalization.arXiv preprint arXiv:2010.01412, 2020.
+Jonathan Frankle and Michael Carbin. The lottery ticket hypothesis: Finding sparse, trainable neural
+networks.arXiv preprint arXiv:1803.03635, 2018.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza
+Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Train-
+ing compute-optimal large language models.arXiv preprint arXiv:2203.15556, 2022.
+6
+Zhenzhong Lan, Mingda Chen, Sebastian Goodman, Kevin Gimpel, Piyush Sharma, and Radu Sori-
+cut. Albert: A lite bert for self-supervised learning of language representations.arXiv preprint
+arXiv:1909.11942, 2019.
+Youwei Liang, Chongjian Ge, Zhan Tong, Yibing Song, Jue Wang, and Pengtao Xie. Not all patches
+are what you need: Expediting vision transformers via token reorganizations.arXiv preprint
+arXiv:2202.07800, 2022.
+Ye Lin, Mingxuan Wang, Zhexi Zhang, Xiaohui Wang, Tong Xiao, and Jingbo Zhu. Understanding
+parameter sharing in transformers.arXiv preprint arXiv:2306.09380, 2023.
+Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, Stephen Lin, and Baining Guo.
+Swin transformer: Hierarchical vision transformer using shifted windows. InProceedings of the
+IEEE/CVF international conference on computer vision, pp. 10012–10022, 2021.
+Preetum Nakkiran, Gal Kaplun, Yamini Bansal, Tristan Yang, Boaz Barak, and Ilya Sutskever. Deep
+double descent: Where bigger models and more data hurt.Journal of Statistical Mechanics:
+Theory and Experiment, 2021(12):124003, 2021.
+Harsh Rangwani, Pradipto Mondal, Mayank Mishra, Ashish Ramayee Asokan, and R Venkatesh
+Babu. Deit-lt: Distillation strikes back for vision transformer training on long-tailed datasets.
+InProceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp.
+23396–23406, 2024.
+Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh. Dynamicvit:
+Efficient vision transformers with dynamic token sparsification.Advances in neural information
+processing systems, 34:13937–13949, 2021.
+Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng
+Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-Fei.
+ImageNet Large Scale Visual Recognition Challenge.International Journal of Computer Vision
+(IJCV), 115(3):211–252, 2015. doi: 10.1007/s11263-015-0816-y.
+Ross Wightman. Pytorch image models.https://github.com/rwightman/
+pytorch-image-models, 2019.
+Shixing Yu, Tianlong Chen, Jiayi Shen, Huan Yuan, Jianchao Tan, Sen Yang, Ji Liu, and Zhangyang
+Wang. Unified visual transformer compression.arXiv preprint arXiv:2203.08243, 2022.
+Mingjian Zhu, Yehui Tang, and Kai Han. Vision transformer pruning.arXiv preprint
+arXiv:2104.08500, 2021.
+7

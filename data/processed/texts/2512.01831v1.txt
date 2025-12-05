@@ -1,0 +1,883 @@
+Deconstructing Generative Diversity: An Information Bottleneck Analysis of
+Discrete Latent Generative Models
+Yudi Wu
+Zhejiang University
+wuyudi@zju.edu.cn
+Wenhao Zhao
+National University of Singapore
+wenhaozhao@u.nus.edu
+Dianbo Liu
+National University of Singapore
+dianbo@nus.edu.sg
+Abstract
+Generative diversity varies significantly across discrete la-
+tent generative models such as AR, MIM, and Diffusion.
+We propose a diagnostic framework, grounded in Informa-
+tion Bottleneck (IB) theory, to analyze the underlying strate-
+gies resolving this behavior. The framework models gener-
+ation as a conflict between a ’Compression Pressure’—a
+drive to minimize overall codebook entropy—and a ’Di-
+versity Pressure’—a drive to maximize conditional entropy
+given an input. We further decompose this diversity into two
+primary sources: ’Path Diversity’, representing the choice
+of high-level generative strategies, and ’Execution Diver-
+sity’, the randomness in executing a chosen strategy. To
+make this decomposition operational, we introduce three
+zero-shot, inference-time interventions that directly perturb
+the latent generative process and reveal how models allo-
+cate and express diversity. Application of this probe-based
+framework to representative AR, MIM, and Diffusion sys-
+tems reveals three distinct strategies: “Diversity-Prioritized”
+(MIM), “Compression-Prioritized” (AR), and “Decoupled”
+(Diffusion). Our analysis provides a principled explana-
+tion for their behavioral differences and informs a novel
+inference-time diversity enhancement technique.
+1. Introduction
+Discrete latent generative models have recently emerged as
+a central paradigm in image synthesis. Approaches based
+on vector quantization (VQ)[ 1], such as autoregressive
+transformers[2], masked image models[ 3], and diffusion
+models operating in discrete latent spaces[4], have demon-
+strated remarkable progress in controllable and high-fidelity
+generation. The discrete formulation offers compact and
+structured representations that align well with token-based
+learning and scalable training pipelines. As these models be-
+come increasingly prevalent, understanding their underlying
+generative behavior—particularly the nature and source of
+theirdiversity—has become a critical research question.
+Generative models have been widely studied from the per-
+spective of evaluating or quantifying their output variation.
+Recent works have proposed a range of metrics to assess
+novelty, variability, or originality in generated samples [5–7].
+These studies have improved our ability to measure how
+diverse model outputs appear but provide limited insight into
+the mechanisms that produce such variation. In particular,
+they seldom address how different model architectures inter-
+nalize and control stochasticity within their latent representa-
+tions. As a result, we still lack a systematic understanding of
+why discrete latent models such as autoregressive, masked,
+and diffusion-based frameworks exhibit distinct patterns of
+generative behavior.
+We address this gap through an information-theoretic
+framework grounded in the Information Bottleneck (IB) prin-
+ciple. From this perspective, generative diversity arises from
+the balance between two opposing pressures: acompression
+pressure, which encourages compact latent representations
+and low entropy, and adiversity pressure, which promotes
+stochastic and expressive mappings that retain uncertainty.
+We further decompose this diversity into interpretable com-
+ponents that correspond to variability in generative strategy
+(path diversity) and randomness during execution (execution
+diversity), providing a unified view of information flow in
+generation.
+To operationalize this analysis, we develop a set of zero-
+shot, inference-time probes that directly perturb a model’s
+latent generative process. Each probe targets a different com-
+ponent of the IB decomposition—codebook usage, sampling
+stochasticity, and prompt conditioning—and measures how
+the model’s outputs change under these controlled interven-
+tions. By examining a model’s sensitivity to these perturba-
+1
+arXiv:2512.01831v1  [cs.LG]  1 Dec 2025
+tions, we expose how its internal mechanism navigates the
+trade-off between compression and diversity.
+The resulting probe responses reveal several recurring
+patterns across architectures. Some models behave as
+compression-prioritizedsystems, showing minimal changes
+under perturbations and consistently producing stable, low-
+variance outputs. Others arediversity-prioritized, maintain-
+ing high conditional entropy and expressing substantial vari-
+ation even when constraints are imposed. A third group
+exhibitsdecoupledbehavior, where path-level randomness
+and execution-level randomness contribute independently,
+yielding models that remain stable at the structural level
+while preserving controlled variation during sampling. These
+patterns provide a coherent view of how different discrete
+generative models manage information flow and where their
+diversity ultimately originates.
+Our contributions are summarized as follows:
+1. We propose a unified information-theoretic framework for
+analyzing generative diversity in discrete latent models.
+2. We conduct a systematic study of representative model
+architectures to reveal how they resolve the trade-off be-
+tween compression and diversity.
+3. We demonstrate a simple inference-time method for en-
+hancing diversity in pretrained models without retraining,
+offering a practical tool for controlling generative behav-
+ior.
+2. Related Work
+2.1. Discrete Latent Generative Models
+Discrete latent variable models, such as VQ-V AE[1], form
+the foundation of modern image generation by introduc-
+ing a codebook that discretizes continuous representations
+into symbolic latent tokens. Subsequent developments, in-
+cluding VQ-GAN[8] and VQ-V AE 2[9], have shown that
+discretization stabilizes training and improves sample fi-
+delity. Despite sharing the same underlying discrete latent
+space formulation, different model families employ dis-
+tinctgeneration strategieswithin this space. Autoregressive
+(AR) models[2, 10, 11] produce tokens sequentially in a
+fixed left-to-right order, Masked Image Models (MIMs)[12–
+14] iteratively predict and reveal masked regions follow-
+ing a stochastic unmasking schedule, while diffusion-based
+models[4, 15] reconstruct the latent code through a noise-to-
+data denoising trajectory. In other words, their differences
+lie not in the representational domain itself, but inhow
+they traverse and utilize the discrete latent space during
+generation. These distinct traversal mechanisms naturally
+lead to different diversity behaviors: AR models tend to be
+compression-prioritized and produce deterministic outputs;
+MIMs introduce strong stochasticity through masking and
+exhibit diversity-prioritized behavior; and diffusion models
+decouple semantic consistency from sampling stochasticity,
+achieving path-driven diversity. Prior works have largely
+treated these differences as architectural, without a princi-
+pled theoretical explanation. Our work instead provides an
+information-theoretic framework that unifies these genera-
+tion paradigms by interpreting their behavioral differences as
+distinct resolutions of the Information Bottleneck trade-off
+between compression and diversity.
+2.2. Information Bottleneck in Representation and
+Generation
+The Information Bottleneck (IB) principle [ 16] provides
+a theoretical framework for understanding how learning
+systems balance compression and informativeness. Varia-
+tional extensions [ 17] and adaptations for discrete latent
+models [18] show that the mutual information among inputs,
+latent variables, and outputs determines how representations
+retain relevant content while discarding redundancy. In gen-
+erative modeling, this trade-off can be viewed as a balance
+between reducing latent complexity and preserving sufficient
+information to produce diverse and faithful samples. The IB
+perspective thus offers a unified view of how generative mod-
+els regulate information flow between input prompts, latent
+codes, and outputs.
+2.3. Quantization Schemes as Information Con-
+straints
+Quantization plays a central role in defining the information
+flow of discrete latent models. Traditional VQ approaches
+rely on learned codebooks that often suffer from codebook
+collapse[1]. Recent advances propose alternative quantiza-
+tion schemes that impose structural constraints rather than
+learned ones. Finite Scalar Quantization (FSQ)[19] employs
+a fixed Cartesian grid, ensuring full utilization of the code-
+book by design; Lookup-Free Quantization (LFQ)[20] sim-
+plifies this to binary levels, embodying a structural compres-
+sion strategy; and Binary Spherical Quantization (BSQ) [21]
+further introduces geometric normalization to bound quanti-
+zation error. While these schemes were proposed indepen-
+dently, they can be interpreted as distinct instantiations of
+the IB optimization under different quantization constraints.
+Our framework unifies these perspectives, showing that each
+scheme implicitly prioritizes a specific resolution of the com-
+pression–diversity trade-off.
+3. Method
+We present a diagnostic framework, grounded in the Infor-
+mation Bottleneck (IB) perspective, to analyze generative
+diversity in VQ-based models. The framework aims to disen-
+tangle and quantify distinct sources of diversity in pre-trained
+models via zero-shot, inference-time interventions. We sum-
+marize the theoretical view in Sec. 3.2 and detail the probes
+in Sec. 3.4.
+2
+Discrete Latent 
+Generative Model Generated image(Y)Input Prompt (X)
+Compression 
+Pressure
+Minimize Codebook Entropy  
+H(Z) 
+Diversity Pressure
+Maximize Conditional Entropy 
+H(Z|X) 
+Codebook Subset 
+Intervention
+Restrict Codebook C' ⊂ C
+Argmax 
+Intervention
+Replace Sampling with 
+'argmax'
+Paraphrase 
+Intervention
+Use Semantically 
+Equivalent Prompts
+a red car
+a car 
+painted red
+Total 
+Potential 
+Diversity
+Path diversity 𝑯𝒑𝒂𝒕𝒉
+H(P|X)
+"Choosing 'what' high-
+level strategy to use"
+Execution diversity 𝑯𝒆𝒙𝒆𝒄
+H(Z|P,X)
+"Randomness during 
+the execution of a 
+strategy"
+Part 1: Theoretical Foundation - The IB Trade-off
+Part 2: Core Decomposition - Two Sources of Diversity
+Part 3: Experimental Probes - The 'How-To'
+Figure 1. Conceptual overview of our diagnostic framework.Part 1: Theoretical Foundation.Our framework is grounded in the Information
+Bottleneck (IB) principle, which imposes two conflicting pressures on any VQ-based model: aCompression Pressureto minimize codebook
+entropy H(Z) and aDiversity Pressureto maximize conditional entropy H(Z|X) .Part 2: Core Decomposition.We refine the concept
+of diversity by decomposing H(Z|X) into two distinct sources:Path Diversity ( Hpath), which represents the choice of high-level
+generative strategies, andExecution Diversity ( Hexec), which represents the lower-level randomness in executing a chosen strategy.Part 3:
+Experimental Probes.We introduce three zero-shot interventions to diagnose how a model resolves the IB conflict. The ‘Codebook Subset‘
+intervention probes the model’s response to the Compression Pressure and measures H(Z) . The ‘Argmax‘ and ‘Paraphrase‘ interventions
+serve as complementary probes to measure Execution DiversityH(Z|P, X)and the overall magnitude ofH(Z|X), respectively.
+3.1. Defining Generative Diversity
+In this study, we regard generative diversity as the ability
+of a model to produce a wide range of distinct yet high-
+quality outputs under the same semantic conditions. A model
+with high diversity should be capable of exploring multiple
+valid realizations of a concept while maintaining fidelity and
+coherence in each instance.
+3.2. Theoretical framework
+Let X be the input prompt, Z the discrete latent code pro-
+duced by a VQ encoder, and Y the generated image. From
+the Information Bottleneck (IB) perspective [16, 18], a gen-
+erative model learns a latent representation Z that balances
+two competing objectives: it should compress the input X
+as much as possible while still preserving the information
+relevant for generating Y . This trade-off can be formalized
+by the IB Lagrangian:
+LIB =I(X;Z)−βI(Z;Y)(1)
+where I(·;·) denotes mutual information and β controls the
+relative strength of the two terms. The first term encour-
+ages compression by minimizing the dependency between
+X and Z, while the second term promotes expressiveness by
+maximizing the information thatZretains aboutY.
+For our diagnostic purposes, it is sufficient to work with
+Shannon entropy H(·) and conditional entropy H(·|·), since
+mutual information decomposes as
+I(X;Z) =H(Z)−H(Z|X)(2)
+This expression itself exposes the core tension that shapes
+the behavior of generative models. The termH(Z) measures
+the overall uncertainty of the latent space, and minimizing
+3
+it encourages compact, low-entropy representations. In con-
+trast, H(Z|X) quantifies the stochasticity of the latent code
+given an input and grows when multiple valid latent out-
+comes exist for the same prompt. Reducing I(X;Z) thus
+requires decreasing H(Z) while increasing H(Z|X) , en-
+forcing a balance between representation compactness and
+conditional variability. The way a model resolves this inter-
+nal conflict determines its characteristic pattern of generative
+diversity.
+To analyze how this variability manifests during the gen-
+eration process, we introduce P to denote the generative
+path—the high-level sequence of operations that produces
+Z. The exact form of P depends on the model’s generation
+strategy, and the total conditional uncertainty ofZgivenX
+can be further decomposed via the law of total entropy:
+H(Z|X) =H(P|X) +H(Z|P, X)−H(P|Z, X)(3)
+The two forward-looking terms admit a meaningful upper
+bound on H(Z|X) ; we therefore focus on their contribu-
+tions:
+• Path diversity: Hpath ≜H(P|X) , the entropy of the
+chosen high-level generative strategies.
+• Execution diversity: Hexec ≜H(Z|P, X) , the entropy
+remaining when a path is fixed.
+These quantities provide a compact decomposition of po-
+tential generative variability without introducing additional
+notation. In practice, the residual term H(P|Z, X)is typi-
+cally small when P is recoverable from Z; we discuss its
+role when relevant.
+Below we characterize the three generation strategies
+considered in this work in terms ofP:
+• Autoregressive (AR): P is the deterministic sequential
+order of generation,
+P= (1,2, . . . , N), p(P|X) = 1(4)
+implying Hpath = 0. All diversity arises from stochastic
+token sampling conditioned onP, reflected inH exec >0.
+• Masked image models (MIM):P is the ordered sequence
+of masking states overTsteps,
+P= (M1, M2, . . . , MT ), M t ⊆ {1, . . . , N}(5)
+where Mt denotes the set of masked token indices at stept,
+with M1 ={1, . . . , N}and Mt+1 obtained by removing
+a stochastic subset of indices from Mt according to a
+deterministic masking schedule γ(t/T) . The distribution
+p(P|X) is therefore induced by random unmasking and
+has positive entropy:
+Hpath =H(P|X) =−E p(P|X) [logp(P|X)]>0(6)
+Execution diversity arises from token sampling within
+each step, contributing toH exec.
+•Diffusion models:Pis the latent trajectory of lengthT,
+P= (zT , zT−1 , . . . , z1),
+p(P|X) =p(z T )
+T−1Y
+t=1
+pθ(zt|zt+1, X)
+(7)
+where zT ∼ N(0, I)is the initial noise and each transition
+pθ(zt|zt+1, X)is typically Gaussian with learned mean
+and variance. The path entropy is thus
+Hpath =H(P|X) =H(z T ) +
+T−1X
+t=1
+H(zt|zt+1, X)(8)
+which is large due to randomness accumulated from initial-
+ization and stochastic denoising. The conditional entropy
+Hexec is typically smaller since generation becomes nearly
+deterministic once the initial noise is fixed.
+3.3. Quantization schemes as IB constraints
+The quantization scheme that defines Z constrains the IB
+trade-off by shaping the latent domain and its entropy. We
+summarize three representative schemes using consistent
+notation.
+Finite Scalar Quantization (FSQ).[19]Project encoder
+output to Rd and quantize each dimension into Li levels.
+The implicit codebook C has size|C|= Q
+i Li, and H(Z)
+measures utilization of this fixed grid.
+Lookup-Free / Binary FSQ (LFQ).[ 20]A binary in-
+stance of FSQ with Li = 2. The codebook is structurally
+bounded and H(Z) limited by design; diversity must be
+realized via conditional entropyH(Z|X).
+Binary Spherical Quantization (BSQ).[21]Apply ℓ2-
+normalization prior to binary quantization, effectively parti-
+tioning a unit hypersphere. The geometric constraint alters
+quantization error and the form ofH(Z).
+Treating these schemes uniformly under the IB view clar-
+ifies how quantization geometry biases models toward dif-
+ferent balances between compression and diversity.
+3.4. Experimental probes
+We design three zero-shot, inference-time interventions that
+require no retraining. Each probe isolates a distinct term in
+our decomposition and provides an interpretable signal of
+the model’s generative behavior.
+3.4.1. Codebook subset
+This probe examines how strongly a model depends on its
+codebook entropy H(Z) . We limit the available entries to a
+smaller subset C′ ⊂ C, chosen according to usage frequency
+on a validation set, and generate outputs under this reduced
+vocabulary. By comparing the diversity of results before
+and after restriction, we can infer the model’s reliance on
+codebook capacity. A notable reduction in diversity indicates
+sensitivity to compression, whereas similar diversity levels
+suggest effective operation within a compact latent space.
+4
+(a) aMUSEd Diversity Comparsion
+ (b) VQ-Diffusion Diversity Comparsion
+ (c) LlamaGen Diversity Comparsion
+Figure 2. Diversity analysis of three representative generative models under the proposed diagnostic framework. Each subfigure reports
+quantitative diversity metrics before and after the three inference-time interventions introduced in Sec. 3.4: theCodebook Subsetprobe
+(measuring sensitivity to codebook entropy H(Z) ), theArgmaxprobe (isolating execution randomness Hexec), and theParaphraseprobe
+(estimating conditional entropy H(Z|X) ). (a) Masked Image Model (aMUSEd), (b) Diffusion-based model (VQ-Diffusion), and (c)
+Autoregressive model (LlamaGen). Each bar corresponds to a distinct diversity metric, The comparison illustrates how different generative
+paradigms respond to compression and diversity pressures under controlled interventions.
+3.4.2. Argmax (deterministic sampling)
+To assess execution-level randomnessHexec, stochastic sam-
+pling during inference is replaced with deterministic argmax
+decoding, while other random factors such as initialization or
+masking remain unchanged. Observing the change in diver-
+sity after this substitution reveals the role of sampling noise
+in generation. When diversity declines sharply, the model
+relies heavily on token-level randomness; when diversity
+remains steady, most variation originates from higher-level
+path choices.
+3.4.3. Paraphrase set
+Finally, we probe the conditional entropy H(Z|X) by eval-
+uating the model’s response to semantic variations in the
+input. Several paraphrased prompts with equivalent meaning
+but different phrasing are used to produce outputs, which
+are then aggregated for analysis. If the resulting images dif-
+fer widely, the model distributes semantically similar inputs
+across a broad region of the latent space, indicating flexible
+and expressive mapping. If the outputs remain consistent, the
+model encodes semantics in a narrow, low-entropy region,
+reflecting conservative generation behavior.
+Each probe therefore provides complementary evidence
+about how a model resolves the trade-off between compres-
+sion and diversity, distinguishing whether its diversity is
+primarily path-driven, execution-driven, or limited by code-
+book capacity.
+4. Experiments
+This section compares three distinct model architec-
+tures—Autoregressive (AR), Masked Image Modeling
+(MIM), and Diffusion—to demonstrate the effectiveness of
+our diagnostic framework. We show that their well-known
+but poorly understood behavioral differences can be ex-
+plained as three unique, archetypal strategies for resolving
+the IB conflict. Further experiments could be found in our
+Appendix.
+4.1. Experimental Setup
+• Models: We select representative open-source models
+for each of the three VQ-based sequential architec-
+tures:LlamaGen (AR)[ 2],aMUSEd (MIM)[ 3], andVQ-
+Diffusion(Diffusion)[4]. All models are evaluated on their
+publicly available pre-trained checkpoints without any
+fine-tuning.
+• Dataset & Metrics: We use a high-quality synthetic
+dataset of captions generated by DALL-E 3[22] together
+with MSCOCO2014 dataset to calculate FID. Generative
+diversity is quantified using LPIPS[23], pixel cosine dis-
+tance, and SSIM[24]. Following established protocols, for
+each input prompt, we generate a set of output images.
+The diversity for that prompt is calculated by averaging
+the metric score over all unique pairs of the generated
+images. The final reported diversity value is the mean of
+these per-prompt scores across the entire test set.
+• Interventions: For each model, we apply the three exper-
+imental probes described in Sec. 3.4 The paraphrase test
+utilizes a set of 5 paraphrased versions for each of base
+prompts, generated by GPT-5.
+4.2. Comparative Analysis of Model Strategies
+Our framework reveals three distinct strategies for resolving
+the IB conflict, perfectly aligning with the experimental
+evidence from the three model classes.
+4.2.1. MIM (aMUSEd): The Diversity-Prioritized Strat-
+egy
+As shown in Fig. 2a, the aMUSEd model exhibits a signif-
+icant drop in diversity after both the Argmax and Subset
+interventions. This demonstrates a strategy that heavily pri-
+oritizes diversity. The significant drop from the Argmax
+intervention shows high Execution Diversity (Hexec), and
+the Paraphrase Intervention confirms this: the significant in-
+crease in diversity provides cross-validating evidence of a
+high overall H(Z|X) . To support this high level of stochas-
+ticity, the model must resist compression, which is confirmed
+5
+Figure 3. Impact of the three experimental probes on generation quality across all models. Quality is measured by CLIP Score (prompt-image
+alignment), CLIP IQA Score (image aesthetics) and FID (image fidelity). (Left) For aMUSEd, interventions that reduce diversity also
+degrade quality. (Center) For LlamaGen, interventions have minimal impact on quality, consistent with its collapsed state. (Right) For
+VQ-Diffusion, only the Subset intervention significantly impacts quality, revealing a decoupling of its diversity and quality mechanisms.
+(a) LPIPS Diversity vs. Subset Ratio
+ (b) CLIP-IQA vs. Subset Ratio
+Figure 4. Ablation study on the codebook subset ratio for aMUSEd
+(MIM), VQ-Diffusion, and LlamaGen (AR). The curves reveal the
+different sensitivities of each model to codebook capacity, illus-
+trating the fundamental trade-off between generative diversity and
+image quality. The Subset intervention in our main experiments
+was conducted at a ratio where diversity is highly sensitive but
+quality is not yet significantly compromised.
+by its significant Subset drop (highH(Z)).
+4.2.2. AR (LlamaGen): The Compress-Prioritized Strat-
+egy
+The LlamaGen model, as shown in Fig. 2c, presents a unique
+generative profile. The Argmax intervention reduces all di-
+versity metrics to zero (not plotted), confirming that its gener-
+ative diversity stems entirely from stochastic token sampling
+(Hexec), meaning its Path Diversity ( Hpath) is effectively
+zero. Furthermore, the Subset codebook intervention results
+in only a minor drop in diversity. According to our frame-
+work, this pair of findings points to a strategy that heavily
+prioritizes compression, leading the model to rely on a small,
+low-entropy subset of its codebook—a state of effective
+codebook collapse. Intriguingly, and in stark contrast to this
+compressed state, the model is highly sensitive to input varia-
+tions. The Paraphrase intervention leads to an increase across
+all diversity metrics. This reveals that while the model has a
+collapsed vocabulary (low H(Z) ), its mapping from prompt
+to latent space is not semantically robust; it maps syntactic
+variations of the same concept to distinct regions within its
+limited latent space.
+4.2.3. VQ-Diffusion(Diffusion): The Decoupled Strategy
+The VQ-Diffusion model presents a more sophisticated case,
+as shown in Fig. 2b. It shows a non-significant difference in
+diversity after the Argmax intervention, yet a significant drop
+after the Subset intervention. Our framework resolves this
+apparent contradiction. The results indicate a strategy that
+relies on high Path Diversity (Hpath) rather than Execution
+Diversity (Hexec) for its final diversity. Its stability under
+paraphrase is not a sign of collapse, but of robustness; its
+structured generative path effectively filters syntactic noise,
+making it a near-perfect IB that successfully decouples se-
+mantic understanding from creative execution.
+4.3. Impact of Interventions on Generation Quality
+Beyond diversity, we also examine how the three experi-
+mental probes influence generation quality. As shown in
+Fig. 3, the effects differ across models. For aMUSEd, both
+the Argmax and Subset interventions lead to visible declines
+in CLIP and IQA scores, mirroring their strong reduction in
+diversity and indicating that its generation quality depends
+heavily on stochastic sampling and rich codebook usage.
+LlamaGen, by contrast, maintains stable performance un-
+der all interventions, with minimal variation in CLIP, IQA,
+or FID, reflecting a deterministic and tightly constrained
+generation process. VQ-Diffusion shows little sensitivity to
+the Argmax or Paraphrase probes, consistent with its path-
+driven diversity, but experiences a clear drop in IQA when
+codebook access is restricted. This suggests that while its
+creative variability is primarily structural, high-quality syn-
+thesis still requires the full representational capacity of the
+latent vocabulary.
+4.4. Ablation Studies
+We conduct ablations to examine model sensitivity to code-
+book capacity and to validate probe settings.
+4.4.1. Impact of Codebook Subset Ratio
+To analyze dependence on codebook capacity, we vary the
+subset ratio and record LPIPS diversity and CLIP-IQA scores
+(Fig. 4). The diversity trends (Fig. 4a) show that aMUSEd’s
+6
+(a) Argmax Timing Ablation
+ (b) Paraphrase Length Ablation
+ (c) Codebook Subsetting Ablation
+Figure 5. Further ablation studies. (a) Impact on diversity when applying Argmax intervention during early, middle, or late stages of
+generation. (b) Impact on diversity using paraphrases of different lengths (short, middle, long) or a mixed set. (c) Impact on diversity when
+constructing the codebook subset by removing least frequent (original method), most frequent, or random codebook vectors.
+(a) Janus: LPIPS Diversity vs. Sub-
+set Ratio
+(b) Janus: CLIP-IQA Score vs. Sub-
+set Ratio
+(c) Show-O: LPIPS Diversity vs.
+Subset Ratio
+(d) Show-O: CLIP-IQA Score vs.
+Subset Ratio
+Figure 6. Preliminary validation of the proposed diversity enhance-
+ment strategy on DeepSeek Janus Pro 1B (top row) and VLM
+Show-O (bottom row). The strategy combines mixed paraphrases
+with disabling the most frequent codebook tokens. (a, c) LPIPS
+diversity consistently increases for both models compared to their
+respective baselines. (b, d) CLIP-IQA score shows a trade-off, but
+remains competitive, peaking at certain subset ratios.
+diversity rises sharply with larger codebooks, LlamaGen sat-
+urates quickly, and VQ-Diffusion exhibits gradual, resilient
+behavior. The quality trends (Fig. 4b) show consistent degra-
+dation under severe compression for all models. The subset
+ratio used in the main experiments (Sec. 4.2) corresponds to
+the inflection point where diversity is most sensitive but qual-
+ity remains stable, ensuring that the Subset probe operates
+in the regime most informative for cross-model comparison.
+4.4.2. Temporal Sensitivity to Execution Stochasticity
+To understandwhenexecution diversity ( Hexec) is most crit-
+ical during aMUSEd’s iterative generation process, we se-
+lectively applied the Argmax intervention to early, middle,
+or late stages. As shown in Fig. 5a, the results indicate that
+stochasticity during the initial phases of generation is sub-
+stantially more critical for establishing the final output di-
+Baseline Subset Paraphrase Proposed
+Figure 7. Qualitative comparison of generative samples under dif-
+ferent inference strategies. Eachcolumnrepresents a fixed strategy,
+while eachrowshows a different generative sample (e.g., from a
+different base prompt). This grid illustrates the consistent visual
+effect of each intervention across multiple examples generated by
+Janus Pro. The ’Proposed’ column represents using mixed para-
+phrased prompts and drop most frequent 20% tokens
+versity than randomness applied in later refinement stages.
+Applying Argmax early nearly replicates the diversity reduc-
+tion seen under the fully deterministic condition.
+4.4.3. Influence of Prompt Length on Paraphrase Sensi-
+tivity
+To examine whether generative model’s sensitivity to input
+variations (H(Z|X) ) is modulated by prompt complexity,
+proxied by length, we evaluated the effect of paraphrases
+of varying lengths. We generated outputs using sets of para-
+phrases categorized as short, medium, long, or a mix of all
+lengths. As detailed in Fig. 5b, while all paraphrase condi-
+tions increased diversity compared to the baseline, utilizing
+a mixture of prompts with varying lengths yielded the most
+substantial diversity enhancement. This suggests the model
+benefits most from exposure to diverse syntactic structures
+representing the same semantic concept.
+7
+4.4.4. Codebook Reliance Structure via Alternative Sub-
+setting
+The structure of codebook reliance ( H(Z) ) was further
+probed by comparing alternative methods for subset con-
+struction, beyond simply removing the least frequent vectors.
+Keeping the subset size fraction constant, we evaluated the
+impact of removing themostfrequent vectors and remov-
+ing arandomselection of vectors. The results, shown in
+Fig. 5c, reveal a surprising effect. While removing the least
+frequent vectors significantly reduces diversity, removing
+themostfrequent vectors leads to a substantialincreasein di-
+versity compared to the baseline. Removing random vectors
+results in a moderate increase. This counter-intuitive find-
+ing suggests that forcing the model away from its preferred
+high-frequency codes compels it to explore less common but
+potentially more diverse combinations within its vocabulary,
+enhancing overall output variation without compromising
+quality.
+4.5. Proposed Inference Strategy for Diversity En-
+hancement
+Motivated by the findings in our ablation studies (Sec. 4.4.3
+and Sec. 4.4.4), particularly the observed diversity benefits
+from mixed-length paraphrases and the counter-intuitive di-
+versity increase upon disabling high-frequency codebook
+tokens, we propose a novel inference-time strategy aimed
+at enhancing generative diversity without requiring model
+retraining.
+This method combines two techniques applied during
+generation:
+1. Utilizing a set of mixed-length paraphrases as input
+prompts to leverage diverse syntactic structures repre-
+senting the same concept.
+2. Disabling a pre-defined fraction of the most frequently
+used codebook tokens (identified via validation set statis-
+tics), forcing the model to explore less common represen-
+tational pathways.
+To provide preliminary validation for this approach, we
+applied this combined intervention strategy during inference
+with pre-trained Vision-Language Models (VLM), DeepSeek
+Janus Pro 1B[25, 26] and Show-o[14, 27], adapted for token-
+based visual generation. Fig. 6 shows the LPIPS diversity
+and CLIP-IQA score as a function of the codebook subset
+ratio when applying this strategy, compared to the baseline
+generation. The results demonstrate a clear increase in LPIPS
+diversity (Fig. 6a Fig. 6c) compared to the baseline, while the
+CLIP-IQA score (Fig. 6b Fig. 6d) remains competitive. We
+provide some samples at Fig. 7 for reference. This suggests
+potential for developing zero-shot, inference-time techniques
+to modulate the diversity-fidelity trade-off in pre-trained
+generative models, guided by diagnostic insights into their
+underlying mechanisms.
+5. Conclusion
+We presented an information-theoretic framework for an-
+alyzing generative diversity in discrete latent models. By
+formulating the generation process as an Information Bottle-
+neck trade-off between compression and diversity, and de-
+composing the latter into path- and execution-level sources,
+our approach connects empirical diversity patterns to in-
+terpretable quantities. Through controlled inference-time
+interventions, we show that AR, MIM, and diffusion models
+embody distinct resolutions of this trade-off, each reflecting
+a characteristic balance between entropy and fidelity.
+Beyond offering theoretical insight, our framework en-
+ables practical diagnostics for pretrained generative systems
+and guides diversity modulation without retraining. The
+broader implication is that generative diversity can be mea-
+sured, reasoned about, and systematically controlled through
+the lens of information theory—paving the way for more
+predictable and tunable creative behavior in large-scale gen-
+erative models.
+References
+[1] A¨aron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu.
+Neural discrete representation learning. InAdvances in Neu-
+ral Information Processing Systems 30: Annual Conference
+on Neural Information Processing Systems 2017, December
+4-9, 2017, Long Beach, CA, USA, pages 6306–6315, 2017. 1,
+2
+[2] Peize Sun, Yi Jiang, Shoufa Chen, Shilong Zhang, Bingyue
+Peng, Ping Luo, and Zehuan Yuan. Autoregressive model
+beats diffusion: Llama for scalable image generation.arXiv
+preprint arXiv:2406.06525, 2024. 1, 2, 5
+[3] Suraj Patil, William Berman, Robin Rombach, and Patrick
+von Platen. amused: An open muse reproduction.arXiv
+preprint arXiv:2401.01808, 2024. 1, 5
+[4] Shuyang Gu, Dong Chen, Jianmin Bao, Fang Wen, Bo
+Zhang, Dongdong Chen, Lu Yuan, and Baining Guo. Vec-
+tor quantized diffusion model for text-to-image synthesis.
+InIEEE/CVF Conference on Computer Vision and Pattern
+Recognition, CVPR 2022, New Orleans, LA, USA, June 18-24,
+2022, pages 10686–10696. IEEE, 2022. 1, 2, 5
+[5] Celia Cintas, Payel Das, Brian Quanz, Girmaw Abebe
+Tadesse, Skyler Speakman, and Pin-Yu Chen. Towards cre-
+ativity characterization of generative models via group-based
+subset scanning. InProceedings of the Thirty-First Interna-
+tional Joint Conference on Artificial Intelligence, IJCAI 2022,
+Vienna, Austria, 23-29 July 2022, pages 4929–4935. ijcai.org,
+2022. 1
+[6] Mohammad Jalali, Cheuk Ting Li, and Farzan Farnia. An
+information-theoretic evaluation of generative models in
+learning multi-modal distributions. InAdvances in Neural
+Information Processing Systems 36: Annual Conference on
+Neural Information Processing Systems 2023, NeurIPS 2023,
+New Orleans, LA, USA, December 10 - 16, 2023, 2023.
+[7] Mischa Dombrowski, Weitong Zhang, Sarah Cechnicka,
+Hadrien Reynaud, and Bernhard Kainz. Image generation
+8
+diversity issues and how to tame them. InIEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition, CVPR
+2025, Nashville, TN, USA, June 11-15, 2025, pages 3029–
+3039. Computer Vision Foundation / IEEE, 2025. 1
+[8] Patrick Esser, Robin Rombach, and Bj¨orn Ommer. Taming
+transformers for high-resolution image synthesis. InIEEE
+Conference on Computer Vision and Pattern Recognition,
+CVPR 2021, virtual, June 19-25, 2021, pages 12873–12883.
+Computer Vision Foundation / IEEE, 2021. 2
+[9] Ali Razavi, A¨aron van den Oord, and Oriol Vinyals. Gener-
+ating diverse high-fidelity images with VQ-V AE-2. InAd-
+vances in Neural Information Processing Systems 32: An-
+nual Conference on Neural Information Processing Systems
+2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC,
+Canada, pages 14837–14847, 2019. 2
+[10] A¨aron van den Oord, Nal Kalchbrenner, and Koray
+Kavukcuoglu. Pixel recurrent neural networks. InProceed-
+ings of the 33nd International Conference on Machine Learn-
+ing, ICML 2016, New York City, NY, USA, June 19-24, 2016,
+pages 1747–1756. JMLR.org, 2016. 2
+[11] Keyu Tian, Yi Jiang, Zehuan Yuan, Bingyue Peng, and Li-
+wei Wang. Visual autoregressive modeling: Scalable image
+generation via next-scale prediction. InAdvances in Neural
+Information Processing Systems 38: Annual Conference on
+Neural Information Processing Systems 2024, NeurIPS 2024,
+Vancouver, BC, Canada, December 10 - 15, 2024, 2024. 2
+[12] Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T.
+Freeman. Maskgit: Masked generative image transformer.
+InIEEE/CVF Conference on Computer Vision and Pattern
+Recognition, CVPR 2022, New Orleans, LA, USA, June 18-24,
+2022, pages 11305–11315. IEEE, 2022. 2
+[13] Huiwen Chang, Han Zhang, Jarred Barber, Aaron Maschinot,
+Jos´e Lezama, Lu Jiang, Ming-Hsuan Yang, Kevin Patrick
+Murphy, William T. Freeman, Michael Rubinstein, Yuanzhen
+Li, and Dilip Krishnan. Muse: Text-to-image generation via
+masked generative transformers. InInternational Confer-
+ence on Machine Learning, ICML 2023, 23-29 July 2023,
+Honolulu, Hawaii, USA, pages 4055–4075. PMLR, 2023.
+[14] Jinheng Xie, Weijia Mao, Zechen Bai, David Junhao Zhang,
+Weihao Wang, Kevin Qinghong Lin, Yuchao Gu, Zhijie Chen,
+Zhenheng Yang, and Mike Zheng Shou. Show-o: One single
+transformer to unify multimodal understanding and genera-
+tion. InThe Thirteenth International Conference on Learning
+Representations, ICLR 2025, Singapore, April 24-28, 2025.
+OpenReview.net, 2025. 2, 8
+[15] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Bj ¨orn Ommer. High-resolution image
+synthesis with latent diffusion models. InIEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition, CVPR
+2022, New Orleans, LA, USA, June 18-24, 2022, pages 10674–
+10685. IEEE, 2022. 2
+[16] Naftali Tishby, Fernando C. Pereira, and William Bialek.
+The information bottleneck method.arXiv preprint
+arXiv:physics/0004057, 2000. 2, 3
+[17] Alexander A. Alemi, Ian Fischer, Joshua V . Dillon, and Kevin
+Murphy. Deep variational information bottleneck. In5th
+International Conference on Learning Representations, ICLR
+2017, Toulon, France, April 24-26, 2017, Conference Track
+Proceedings. OpenReview.net, 2017. 2
+[18] Hanwei Wu and Markus Flierl. Variational information bot-
+tleneck on vector quantized autoencoders.arXiv preprint
+arXiv:1808.01048, 2018. 2, 3
+[19] Fabian Mentzer, David Minnen, Eirikur Agustsson, and
+Michael Tschannen. Finite scalar quantization: VQ-V AE
+made simple. InThe Twelfth International Conference on
+Learning Representations, ICLR 2024, Vienna, Austria, May
+7-11, 2024. OpenReview.net, 2024. 2, 4
+[20] Lijun Yu, Jos´e Lezama, Nitesh Bharadwaj Gundavarapu, Luca
+Versari, Kihyuk Sohn, David Minnen, Yong Cheng, Agrim
+Gupta, Xiuye Gu, Alexander G. Hauptmann, Boqing Gong,
+Ming-Hsuan Yang, Irfan Essa, David A. Ross, and Lu Jiang.
+Language model beats diffusion - tokenizer is key to visual
+generation. InThe Twelfth International Conference on Learn-
+ing Representations, ICLR 2024, Vienna, Austria, May 7-11,
+2024. OpenReview.net, 2024. 2, 4
+[21] Yue Zhao, Yuanjun Xiong, and Philipp Kr¨ahenb¨uhl. Image
+and video tokenization with binary spherical quantization. In
+The Thirteenth International Conference on Learning Repre-
+sentations, ICLR 2025, Singapore, April 24-28, 2025. Open-
+Review.net, 2025. 2, 4
+[22] Ben Egan, Alex Redden, XWA VE, and SilentAntagonist.
+Dalle3 1 Million+ High Quality Captions, 2024. 5
+[23] Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman,
+and Oliver Wang. The unreasonable effectiveness of deep
+features as a perceptual metric. In2018 IEEE Conference
+on Computer Vision and Pattern Recognition, CVPR 2018,
+Salt Lake City, UT, USA, June 18-22, 2018, pages 586–595.
+Computer Vision Foundation / IEEE Computer Society, 2018.
+5
+[24] Zhou Wang, Alan C. Bovik, Hamid R. Sheikh, and Eero P.
+Simoncelli. Image quality assessment: from error visibility
+to structural similarity.IEEE Trans. Image Process., 13(4):
+600–612, 2004. 5
+[25] Chengyue Wu, Xiaokang Chen, Zhiyu Wu, Yiyang Ma,
+Xingchao Liu, Zizheng Pan, Wen Liu, Zhenda Xie, Xingkai
+Yu, Chong Ruan, and Ping Luo. Janus: Decoupling visual en-
+coding for unified multimodal understanding and generation.
+InIEEE/CVF Conference on Computer Vision and Pattern
+Recognition, CVPR 2025, Nashville, TN, USA, June 11-15,
+2025, pages 12966–12977. Computer Vision Foundation /
+IEEE, 2025. 8
+[26] Xiaokang Chen, Zhiyu Wu, Xingchao Liu, Zizheng Pan, Wen
+Liu, Zhenda Xie, Xingkai Yu, and Chong Ruan. Janus-pro:
+Unified multimodal understanding and generation with data
+and model scaling.arXiv preprint arXiv:2501.17811, 2025. 8
+[27] Jinheng Xie, Zhenheng Yang, and Mike Zheng Shou. Show-
+o2: Improved native unified multimodal models.arXiv
+preprint arXiv:2506.15564, 2025. 8
+9
+Figure 8. Waterfall analysis for aMUSEd. Starting from the base-
+line condition (Deterministic, Original, Subset), we cumulatively
+add the main effect of each generative factor. The final ”Additive
+Prediction” (0.633) is the theoretical sum of these independent
+effects. This is compared to the ”Actual Final” diversity (0.634)
+measured under the optimal condition (Stochastic, Paraphrased,
+Full). The ”Synergy Gap” (+0.001) represents the net three-way
+interaction effect, which in this macro view appears negligible.
+Figure 9. Waterfall analysis for VQ-Diffusion. Starting from the
+baseline condition (Deterministic, Original, Subset) with a diver-
+sity of 0.755, we cumulatively add the main effect of stochastic
+sampling (+0.005), paraphrased prompts (-0.003), and the full code-
+book (+0.080). The ”Additive Prediction” (0.837) exactly matches
+the ”Actual Final” diversity measured under the optimal condition
+(Stochastic, Paraphrased, Full), resulting in a zero ”Synergy Gap”.
+A. Appendix Section
+A.1. Analysis of Generative Factor Interactions
+To further delineate the models’ strategies, we analyzed the
+factorial interactions between Sampling Strategy ( Hexec),
+Codebook State (H(Z) ), and Prompt Type (H(Z|X) ). This
+reveals deeper, non-additive relationships masked by the
+analysis of main effects alone.
+ForaMUSEd, the waterfall analysis (Fig. 8) shows a neg-
+ligible net three-way interaction (”Synergy Gap” of +0.001).
+However, the interaction profiles (Fig. 11) reveal this near-
+additivity is a macro-level artifact resulting from strong, op-
+posing interactions. Specifically, a significantcrossover in-
+teractionexists between sampling strategy and prompt type:
+deterministic sampling reduces diversity for original prompts
+but increases it for paraphrased prompts. This demonstrates
+a potentcompensatory mechanismwhere the model ampli-
+fies sensitivity to H(Z|X) when Hexec is constrained. This
+Figure 10. Two-factor waterfall analysis for LlamaGen (stochastic
+sampling implied). Starting from the baseline condition (Original
+prompt, Subset codebook) with a diversity of 0.577, we cumula-
+tively add the main effect of paraphrased prompts (+0.080) and the
+full codebook (+0.025). The ”Additive Prediction” (0.681) exactly
+matches the ”Actual Final” diversity (Paraphrased, Full codebook),
+resulting in a zero ”Synergy Gap”. Note: Sampling effect is ex-
+cluded as Argmax yields zero diversity.
+effect is further magnified whenH(Z) is also limited (subset
+codebook), indicating a dynamic strategy that actively shifts
+reliance between mechanisms to maintain diversity under
+varying constraints.
+In stark contrast,VQ-Diffusionexhibits genuine addi-
+tivity. Its waterfall analysis (Fig. 9) shows a synergy gap
+of precisely zero. The interaction profiles (Fig. 12) confirm
+this, displaying nearly parallel lines across all facets. The
+minimal impact of the Argmax intervention ( Hexec) and
+the negligible effect of paraphrasing (H(Z|X) ) remain con-
+sistent regardless of other factors. This lack of significant
+interaction supports the ”Decoupled Strategy,” where path
+diversity (Hpath) is the primary driver, operating largely in-
+dependently from execution stochasticity, input sensitivity,
+and codebook utilization.
+LlamaGen, whose diversity relies entirely on Hexec, re-
+quires a two-factor analysis (Prompt Type × Codebook
+State). Its waterfall analysis (Fig. 10) yields a zero synergy
+gap, suggesting additivity. This is strongly supported by the
+interaction profile in Fig. 13. The lines representing the Full
+and Subset codebook states arenearly parallel, indicating a
+negligible interactionbetween prompt type and codebook
+state. While paraphrasing consistently increases diversity
+(confirming sensitivity to H(Z|X) ), the magnitude of this
+increase is largely independent of whether the full or sub-
+set codebook is used. This near-additivity aligns with the
+”Compress-Prioritized” strategy, where the model operates
+within a constrained space, and the effects of input variation
+and limited codebook access do not significantly interfere
+with each other.
+10
+(a) Faceted by Sampling Strategy
+ (b) Faceted by Prompt Type
+ (c) Faceted by Codebook State
+Figure 11. Three-way interaction profiles for aMUSEd, plotting LPIPS diversity across all 8 experimental conditions. (a) Faceting by
+Sampling Strategy shows that the diversity gain from paraphrasing (slope) is steeper under the Deterministic condition. (b, c) Faceting by
+Prompt Type and Codebook State reveals a strong crossover interaction: deterministic samplingdecreasesdiversity for Original prompts but
+increasesit for Paraphrased prompts, demonstrating a clear compensatory mechanism.
+(a) Faceted by Sampling Strategy
+ (b) Faceted by Prompt Type
+ (c) Faceted by Codebook State
+Figure 12. Three-way interaction profiles for VQ-Diffusion, plotting LPIPS diversity across all 8 experimental conditions. Across all
+facets, the lines are nearly parallel, indicating a lack of significant interaction effects. (a) Lines are almost flat, showing negligible effect of
+paraphrasing regardless of sampling or codebook state. (b, c) Lines show a minimal, consistent decrease from stochastic to deterministic
+sampling, confirming low Hexec and absence of crossover interaction. The large gap between blue/purple lines (Full Codebook) and teal/pink
+lines (Subset Codebook) confirms the main effect ofH(Z).
+Figure 13. Two-way interaction profile for LlamaGen (stochastic
+sampling implied). LPIPS diversity is plotted against Prompt Type
+for both Full and Subset codebook states. Both lines show a positive
+slope, confirming the main effect of paraphrasing (H(Z|X) ). The
+lines arenearly parallel, indicatingnegligible interaction: the
+benefit of paraphrasing is largely consistent across both full and
+subset codebook (H(Z)) conditions.
+11

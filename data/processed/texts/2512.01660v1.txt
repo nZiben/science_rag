@@ -1,0 +1,1828 @@
+Bayesian Ambiguity Contraction-based Adaptive Robust
+Markov Decision Processes for Adversarial Surveillance
+Missions∗
+Jimin Choi† and Max Z. Li‡
+University of Michigan, Ann Arbor , MI 48109, USA
+Collaborative Combat Aircraft (CCAs) are envisioned to enable autonomous Intelligence,
+Surveillance, and Reconnaissance (ISR) missions in contested environments, where adversaries
+may act strategically to deceive or evade detection. These missions pose challenges due to model
+uncertainty and the need for safe, real-time decision-making. Robust Markov Decision Pro-
+cesses (RMDPs) provide worst-case guarantees but are limited by static ambiguity sets that
+capture initial uncertainty without adapting to new observations. This paper presents anadap-
+tive RMDP framework tailored to ISR missions with CCAs. W e introduce a mission-specific
+formulation in which aircraft alternate between movement and sensing states. Adversarial tac-
+tics are modeled as a finite set of transition kernels, each capturing assumptions about how
+adversarial sensing or environmental conditions affect rewards. Our approach incrementally
+refines policies by eliminating inconsistent threat models, allowing agents to shift from conser-
+vative to aggressive behaviors while maintaining robustness. W e provide theoretical guarantees
+showing that the adaptive planner converges as credible sets contract to the true threat and
+maintains safety under uncertainty. Experiments under Gaussian and non-Gaussian threat
+models across diverse network topologies show higher mission rewards and fewer exposure
+events compared to nominal and static robust planners.
+Nomenclature
+S = Node set in the ISR graph
+N(𝑣) = Neighbor set of node v
+S′ = T wo phase state space (𝑣,S),(𝑣,M)
+Θ = Threat type set
+∗ A preliminary version of this paper titled ” Adaptive Robust Markov Decision Process for Wide-Area Surveillance with Collaborative Combat
+Aircraft” (Control ID: 4355104) will be presented at the 2026 AIAA SciT ech Forum, Orlando, FL, January 12-16, 2026 [1].
+† Ph.D. Student, Department of Aerospace Engineering, AIAA Student Member
+‡ Assistant Professor, Department of Aerospace Engineering, Department of Civil and Environmental Engineering, Department of Industrial
+and Operations Engineering, AIAA Member
+arXiv:2512.01660v1  [math.OC]  1 Dec 2025
+𝑈𝑡
+𝑣 = Credible threat set at node v
+𝑈𝑡
+𝑠,𝑎 = Local ambiguity set for (𝑠,𝑎)
+𝑏𝑡,𝑣 = Posterior belief at node v
+𝑜𝑣,𝑡 ,𝑧𝑣,𝑡 ,𝜂𝑣,𝑡 = Observation, exposure score, exposure flag
+𝑒𝑡 ,𝑑𝑡 = Persistent and cumulative exposure states
+𝑛𝑡 (𝑣) = Novelty measure at node v
+𝛾 = Discount factor
+𝛼,𝛽 = Exposure decay and novelty decay
+𝑐sense,𝑐move = Sensing and movement costs
+𝜆imm,𝜆pers,𝜆cum,𝜆nov = Reward weights
+𝑝(𝑜 |𝑎,𝜃) = Observation distribution
+𝑞(𝑧 |𝑎,𝜃) = Exposure score distribution
+𝑝exp(𝑎,𝜃) = Exposure probability
+𝜙𝑠,𝑎 = Map from threat type to transition kernel
+𝑟sense,𝑟move = Sensing and movement rewards
+𝑉 = V alue function
+𝜋𝑡 = Policy at time 𝑡
+Tr,Tn = Robust and nominal Bellman operators
+I. Introduction
+Collaborative Combat Aircraft (CCA) has been widely proposed as a key enabler in future air combat and surveil-
+lance operations, especially in contested or communication-denied environments [2, 3]. These platforms are expected to
+function autonomously or semi-autonomously, collaborating with other assets to perform complex tasks such as elec-
+tronic warfare, precision targeting, and wide-area Intelligence, Surveillance, and Reconnaissance (ISR). This vision
+has been realized in the U.S. Air Force’s Next-Generation Air Dominance (NGAD) program, which positions CCAs as
+uncrewed force multipliers capable of performing distributed, high-risk missions in dynamic adversarial settings [4].
+ISR has received growing attention among these roles due to its potential for distributed sensing and persistent
+situational awareness under limited centralized coordination. However, this optimistic outlook on autonomous ISR
+often underestimates the adversarial and deceptive nature of, and within real-world environments. Adversarial threat
+actors may employ mobile surface-to-air missile systems, intermittently activate radar sensors, or emit false signals
+to obscure their true positions and capabilities [ 5]. These behaviors challenge common and critical assumptions in
+autonomous planning: the availability of accurate models and stable dynamics. In such settings, ISR platforms operate
+2
+under partial observability and epistemic uncertainty about adversary behavior and environmental transitions.
+At its core, this challenge represents a sequential decision-making problem under model uncertainty . Reinforce-
+ment learning (RL) has been widely explored as a solution, offering adaptability and the ability to generalize through
+data-driven policies. There has been increasing interest in using RL in aerospace applications such as autonomous
+navigation, flight control, and multi-agent mission planning [6–8]. However, RL methods typically require extensive
+exploration and lack safety guarantees, making them impractical for safety-critical missions [ 9]. As an alternative,
+Robust Markov Decision Processes (RMDPs) offer worst-case performance guarantees by optimizing over predefined
+ambiguity sets of transition models [ 10–12]. Nonetheless, conventional RMDP approaches rely on static ambiguity
+sets and do not incorporate new information gathered during mission execution, limiting their efficiency in dynamic or
+adversarial environments. In practice, when conducting ISR missions, as agents observe how threats sense, react, or
+reveal themselves, their understanding of the underlying adversarial model evolves. Reducing this uncertainty requires
+exploratory actions that may increase exposure, whereas acting conservatively limits the ability to refine the threat
+model.
+This dynamic tension naturally gives rise to the exploration–exploitation dilemma specific to ISR missions, where
+agents must balance improving their understanding of adversarial behavior with maintaining safety and mission effec-
+tiveness. Recent studies on autonomous vehicle coordination in hazardous or uncertain domains have demonstrated
+the benefits of explicitly addressing this trade-off through uncertainty-aware and adaptive decision-making frameworks
+[13–15]. Although prior works offer practical strategies for handling exploration and risk, they do not explicitly for-
+malize this trade-off within a robust sequential decision-making framework appropriate for ISR missions. Motivated
+by this gap, we propose an ISR mission–tailored adaptive RMDP framework that builds on the online robust planning
+formulation in [16] and naturally balances exploration and exploitation through uncertainty-aware policy adaptation. In
+doing so, agents reason over structured adversarial behaviors and dynamically adjust their strategies to maintain safety
+and coverage in contested environments.
+The remainder of the manuscript is organized as follows. Section II provides the literature review and Section III
+presents the relevant background. Section V provides a detailed description of the mission setting and adaptive ISR
+mission strategy . SectionVI introduces the adaptive robust planning framework, including the graph RMDP , Bayesian
+belief updates, and ambiguity contraction. Theoretical guarantees on convergence, safety, and asymptotic optimal-
+ity are presented in Section VI.C. Simulation results across varying threat models and graph structures are shown in
+Section VII. Section VIII summarizes findings and outlines directions for future work.
+3
+II. Literature Review
+A. Evolving ISR Missions under Uncertainty
+ISR missions play a crucial role in maintaining tactical superiority in modern operations [ 17, 18]. In distributed
+missions with limited communications or in contested environments where electronic warfare is active, ISR platforms
+are expected to operate with a high level of autonomy and coordination [19]. Recent studies have increasingly focused on
+enhancing ISR effectiveness through adaptive and data-driven sensing with uncrewed aerial vehicles (UA V s). Learning-
+based approaches enable autonomous ISR systems to prioritize sensing tasks, allocate resources dynamically, and adapt
+mission objectives in response to evolving operational conditions [ 20]. In parallel, adaptive control frameworks are
+designed to sustain persistent surveillance under changing mission and environmental conditions, allowing multi-swarm
+UA V systems to reconfigure their coverage and maintain situational awareness over time [21]. These advances highlight
+the growing need for ISR systems that can make decisions and adapt autonomously amid uncertain threats and rapidly
+changing battle conditions.
+Among these capabilities, persistent surveillance forms the core function of ISR operations, ensuring continuous
+situational awareness across time and space [ 22]. Achieving this persistence requires sustained coordination among
+diverse heterogeneous sensing assets. UA V s provide wide-area awareness but often lose visibility behind buildings or
+terrain, while uncrewed ground vehicles (UGV s) provide local ground-level sensing in those areas [23]. Recent stud-
+ies have introduced cooperative UA V–UGV frameworks and energy-aware path planning methods to enhance mission
+endurance and maintain continuous surveillance in uncertain environments [24, 25]. Despite advances in multi-agent
+routing and coverage optimization, surveillance missions remain fundamentally constrained by environmental uncer-
+tainty and adversarial disruptions that threaten the continuity of observation [26]. Addressing this challenge requires
+robust decision-making frameworks that sustain persistent, reliable surveillance despite uncertainty .
+B. Applications of MDPs in A viation
+Decision-making in aviation involves sequential reasoning under uncertainty, and the MDP has become a fundamen-
+tal framework for modeling such problems. MDP-based approaches have been applied across various aviation domains.
+For instance, MDP and partially observable MDP (POMDP) formulations have been employed to design automated
+collision avoidance systems that optimize between safety and flight efficiency [ 27–29]. In distributed ATM, multi-
+agent MDPs are used to coordinate advisories and resolve drone conflicts efficiently in real time [30–32]. Moreover,
+MDP-based frameworks support flight safety management systems that detect and mitigate loss-of-control scenarios
+during critical phases, such as takeoff [33], as well as aircraft routing strategy that optimizes trajectories under dynamic
+constraints [34].
+Despite their wide range of applications, conventional MDP-based models typically rely on known, stationary
+transition probabilities, an assumption that rarely holds in real-world aviation settings [ 35]. When the true system
+4
+behavior diverges from these nominal models, policy performance can degrade or even become unstable [ 36]. T o
+address this issue, RMDP formulations explicitly capture uncertainty in the transition dynamics and optimize decision
+policies that remain effective under worst-case realizations [11]. Such robustness represents a promising direction for
+safety-critical aviation missions, where reliable decisions in dynamic environments are essential for mission success
+and operational safety .
+C. Developments in RMDPs
+In practice, the transition kernel of a Markov decision process is rarely known exactly, and policies optimized under
+estimated dynamics often exhibit substantial performance degradation when deployed out of sample [12]. T o mitigate
+this sensitivity, the RMDP framework has emerged as a principled approach to improve generalization performance
+across uncertain environments [10, 11, 37]. Most existing studies on RMDPs focus on the offline setting, where the
+decision maker seeks to infer an optimal policy from a fixed dataset of trajectories generated by an unknown behavior
+policy, without further interaction with the environment [38]. In this regime, pessimistic value estimation has proven
+to yield statistically efficient algorithms for offline reinforcement learning [39]. One study introduces an online robust
+planning approach that achieves sublinear regret by incorporating optimism into the policy update under rectangular
+uncertainty, marking an early effort toward adaptive robust decision-making [16].
+However, when data are collected online, the distribution generating the data typically differs from the distribu-
+tion that determines policy performance—a discrepancy known as the sim-to-real gap in reinforcement learning [40].
+Addressing this gap requires algorithms that explicitly trade off exploration and robustness to uncertainty in the transi-
+tion kernel. While recent studies have begun to extend the RMDP framework to online learning, these methods either
+rely on an alternative notion of robust regret [ 41] or require a technical loop-free assumption on the structure of the
+MDP [16]. T o summarize, the loop-free assumption excludes cyclic dynamics that arise naturally in most practical
+Markov decision processes. A key open challenge lies in designing algorithms that adaptively learn policies under
+evolving uncertainty while ensuring sublinear regret with respect to the true data-generating process.
+III. Preliminaries
+W e consider an infinite-horizon Markov Decision Process (MDP) given by a six-tuple(S,A,𝑃,𝑟,𝛾,𝑠 0)comprising
+of a finite state space S= {1,...,𝑆 }, a finite action space A= {1,...,𝐴 }, a transition kernel 𝑃 : S×A→ Δ(S),
+a reward-per-stage function 𝑟 : S×A → R, a discount factor 𝛾 ∈ (0,1), and an initial state 𝑠0 ∈ S. Note that
+(S,A,𝑃,𝑟,𝛾,𝑠 0)describes a controlled discrete-time stochastic system, where the state at time𝑡and the action applied
+at time 𝑡are denoted as random variables 𝑆𝑡 and 𝐴𝑡 , respectively . If the system is in state𝑠𝑡 ∈S at time 𝑡and action
+𝑎𝑡 ∈A is applied, then an immediate reward𝑟(𝑠𝑡 ,𝑎𝑡 )is incurred, and the system moves to state𝑠𝑡+1 at time 𝑡+1 with
+probability 𝑃(𝑠𝑡+1 |𝑠𝑡 ,𝑎𝑡 ). W e denote the underlying probability distribution over all of the possible state and action
+5
+sequences as P𝑃
+𝜋 .
+W e denote the expectation operator with respect toP𝑃
+𝜋 by E𝑃
+𝜋 [·]. Note that the stochastic process {𝑆𝑡 }∞
+𝑡=0 is a time-
+homogeneous Markov chain under P𝑃
+𝜋 with transition probabilities P𝑃
+𝜋 (𝑆𝑡+1 = 𝑠′|𝑆𝑡 = 𝑠)= Í
+𝑎∈A 𝑃(𝑠′|𝑠,𝑎)𝜋(𝑎|𝑠).
+Throughout this paper, we assess the desirability of a policy by its expected net present value, which is captured directly
+in the definition of the value function. The value function 𝑉𝑃
+𝜋 ∈R𝑆 corresponding to a transition kernel 𝑃 and a
+stationary policy 𝜋is defined through
+𝑉𝑃
+𝜋 (𝑠)= lim
+𝑇→∞
+E𝑃
+𝜋
+" 𝑇Õ
+𝑡=0
+𝛾𝑡𝑟(𝑆𝑡 ,𝐴𝑡 )| 𝑆0 = 𝑠
+#
+.
+The policy evaluation problem consists in evaluating the value function 𝑉𝑃
+𝜋 (𝑠)for a fixed policy 𝜋and initial state 𝑠,
+whereas the policy improvement problem seeks a policy that maximizes𝑉𝑃
+𝜋 (𝑠).
+In practice, the transition kernel 𝑃 is not known precisely a priori [12]. Moreover, transition models estimated
+from limited data are highly sensitive to misspecification, and small estimation errors can significantly degrade policy
+performance [11]. Thus, it is natural to use the RMDP framework to find a policy that maintains performance across a
+set of plausible transition kernels. Under the RMDP framework, we suppose that the transition kernel𝑃is only known
+to belong to an ambiguity set P⊆ Δ(S)𝑆×𝐴, where Δ(S)denotes the probability distributions over states. W e assess
+the desirability of a policy by itsworst-case expected value. The worst-case value function𝑉★
+𝜋 ∈R𝑆 associated with a
+given policy 𝜋and an ambiguity set Pis then defined through
+𝑉★
+𝜋 (𝑠)= min
+𝑃∈P
+𝑉𝑃
+𝜋 (𝑠). (1)
+The robust policy evaluation problemthen consists in evaluating the worst-case value function𝑉★
+𝜋 (𝑠)for a fixed policy𝜋
+and initial state 𝑠, and the robust policy improvement problemaims to solve
+max
+𝜋∈Π
+min
+𝑃∈P
+𝑉𝑃
+𝜋 (𝑠). (2)
+The structure of the ambiguity set Plargely determines the difficulty of solving the robust policy evaluation and opti-
+mal policy computation. These problems become relatively easy if the ambiguity set is rectangular (see Definition 1)
+because dynamic programming principle holds for these types of RMDP problems. Under the rectangularity assump-
+tion of the ambiguity set, we construct the robust Bellman operator by replacing the expectation over a fixed transition
+model with the worst-case expectation over the set of plausible transition kernels. This modification still preserves
+contraction and fixed-point properties that are standard in the literature [ 12]. Intuitively, contraction ensures that re-
+peated Bellman updates progressively bring value estimates closer together rather than diverging, while the fixed-point
+6
+property guarantees that this process converges to a unique stable solution representing the long-run value of each state.
+W e introduce the formal definition of rectangular ambiguity sets below .
+Definition 1 (Rectangular ambiguity sets). A set P⊆ Δ(S)𝑆×𝐴 of transition matrices is called
+(i) (𝑠,𝑎)-rectangular if P= Î
+(𝑠,𝑎 )∈S×A P𝑠,𝑎 for some P𝑠,𝑎 ⊆Δ(S), (𝑠,𝑎)∈S×A [10, 11];
+(ii) 𝑠-rectangular if P= Î
+𝑠∈SP𝑠 for some P𝑠 ⊆Δ(S)𝐴,𝑠 ∈S [37].
+Here, Δ(S)denotes the probability distributions over next states, andΔ(S)𝐴 is the Cartesian product of 𝐴copies
+of Δ(S), assigning one transition distribution to every action at state 𝑠. Under (𝑠,𝑎)–rectangularity, uncertainty is
+modeled independently at each state–action pair, whereas under 𝑠–rectangularity it is specified at the state level and
+shared across actions taken at that state.
+Such independence structures arise naturally in many real systems. In persistent surveillance, detection at each loca-
+tion is primarily determined by local environmental conditions, line-of-sight, and sensor posture, yielding probabilistic
+coverage models driven by local geometry and visibility [42]. In multi-robot coverage, sensing performance within an
+operating region is modeled with respect to the robot’s configuration and the environment in that region, consistent
+with decentralized, region-based coverage formulations [43].
+In our ensuing discussions, we will consider RMDPs with(𝑠,𝑎)-rectangular sets. Recall that (𝑠,𝑎)-rectangularity
+requires that the adversary selects the next-state distribution independently for each state–action pair. By contrast, under
+𝑠-rectangularity, the adversary’s choice of the next-state distribution may depend on the decision maker’s entire policy .
+Thus, (𝑠,𝑎)-rectangularity grants the adversary greater flexibility, leading to a more conservative optimal robust policy
+for the decision maker as compared to the𝑠-rectangularity case.
+IV .Contributions of W ork
+The main contributions of our work are as follows:
+• Mission-specific RMDP formulation: W e develop a two-phase, graph-based RMDP that captures the operational
+structure of CCA conducting ISR missions. Our model captures key operational factors such as spatial constraints,
+exposure risks, and sensing limitations, allowing ISR missions to be viewed as sequential decision-making prob-
+lems that balance information gathering and survivability .
+• Adaptive online robust planning: W e tailor and extend the adaptive RMDP framework [16] for ISR missions by
+integrating Bayesian inference–based ambiguity contraction and relaxing the loop-free assumption. This mecha-
+nism refines local uncertainty using online sensing data, allowing policies to transition naturally from conservative
+to aggressive behavior and revealing an inherent trade-off between robustness and efficiency .
+• Theoretical foundation for adaptive robustness: W e provide formal guarantees for the proposed adaptive robust
+planner, including almost-sure convergence of time-varying robust Bellman operators, finite-time safety bounds
+7
+under rectangular uncertainty, and asymptotic optimality as credible sets with threat hypotheses consistent with
+local observations contract to the true threat type. These results establish that the proposed method remains
+conservative under uncertainty while recovering optimal performance as information accumulates.
+• Simulation-based evaluation: W e validate the proposed framework through multi-stage simulations that examine
+three key aspects: baseline convergence and stability, scalability with increasing graph size and threat diversity,
+and generalization to non-Gaussian threat distributions. In Experiment 1, the adaptive planner achieved similar
+ISR observation rewards to the nominal baseline while reducing exposure events by 84%, with the static robust
+planner serving as a conservative lower bound for our planner. The results consistently demonstrate improved
+ISR efficiency and reduced exposure compared with nominal and static robust baselines.
+V .Problem Statement
+A. Mission Scenario
+!
+! !
+Fig. 1 Mission-level concept for decentralized ISR missions with CCAs. Each aircraft conducts surveillance
+within an assigned region under local threat uncertainty. Colored polygons indicate example regional areas, red
+dashed zones mark uncertain threat locations, and aircraft icons with sensing arcs illustrate sensing coverage.
+Autonomous ISR missions in contested environments require aircraft to monitor large geographic regions that may
+contain uncertain adversarial threats. These threats can exhibit a wide range of adversarial behaviors, often acting
+strategically to expose or deceive ISR aircraft operating in the area. While the exact threat behavior is unknown, each
+ISR aircraft maintains a set of known prototype models representing plausible adversary strategies. This is feasible
+because adversary tactics often follow a few recurring patterns, such as aggressive radar use or passive sensing. W e
+assume that, based on prior intelligence, these patterns are encoded as prototype models and installed in each aircraft’s
+reasoning system.
+Definition 2 (Prototype). A prototype is a predefined transition model that represents one plausible adversary strategy
+8
+inferred from prior knowledge. Each prototype captures a distinct pattern in how the adversary senses, reacts, or
+engages with ISR aircraft (e.g., continuous radar emission, intermittent activation, passive monitoring). The true
+adversary behavior is assumed to coincide with one element in this finite set, each corresponding to a full transition
+kernel. At each node in the environment, the agent maintains a credible set containing the prototype models that remain
+consistent with the observed threat responses at that location.
+In this setting, we introduce a team of CCAs operated in a coordinated manner to monitor the environment while
+managing uncertainty and avoiding adversarial threats. Each aircraft operates under model uncertainty and decides
+its trajectory, sensing strategy, and threat-avoidance policy in real time, without access to the ground truth adversary
+model. The key challenge is operating CCAs safely in an environment with potential threats while maximizing the
+information gain achievable through distributed sensing. The mission objective is to maximize the reliable collection
+of ISR information across the operational area while maintaining safety under uncertain, structured threat dynamics.
+Figure 1 illustrates the mission-level concept: a surveillance task is carried out by a fleet of CCAs, each assigned to
+a portion of the operational space. Threats, represented by uncertain adversarial behavior, may exist anywhere within
+the region and follow one of several known behavioral prototypes. Each aircraft autonomously selects actions and
+sensing directions while sharing threat information.
+Scope of This Study. While the mission concept in Figure 1 involves a team of CCAs, this work does not directly
+model multi-agent coordination or inter-regional task allocation. Instead, we focus on the decision-making problem
+of a single autonomous flight operating within its assigned region, assuming that the overall area has been pre-divided
+among aircraft before mission execution. Each flight independently performs its ISR task under local threat uncertainty,
+applying the proposed adaptive robust framework to its region. This formulation serves as a foundational step toward
+future research (see SectionVIII.B) on multi-agent coordination, dynamic region reassignment, and human pilot–CCA
+teaming under uncertainty .
+B. Proposed Adaptive RMDP Framework
+T o address this problem, we propose an online adaptive RMDP framework in which uncertainty over adversary
+behavior is represented through node-wise credible sets𝑈𝑡
+𝑣. Each credible set is initialized as𝑈0
+𝑣 = Θ, which contains
+all prototype threat models based on prior knowledge. These credible sets induce the corresponding transition ambiguity
+sets 𝑈𝑡
+𝑠,𝑎 through a fixed mapping𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣), so that at the beginning of the mission the ambiguity sets cover the
+entire range of transition models consistent with the prototype set. Each aircraft therefore begins with a conservative
+strategy that assumes the worst-case threat among known prototypes. Over time, local observations enable each aircraft
+to eliminate incompatible prototype models, gradually refining its belief and adapting its behavior. As the credible sets
+shrink, the induced ambiguity sets contract accordingly, enabling a transition from a cautious policy to more confident
+9
+and efficient ISR operations.
+Observation
+𝑜𝑡
+Credible Set
+𝑈𝑡
+𝑣
+Ambiguity Set
+𝑈𝑡
+𝑠,𝑎
+Robust Bellman
+Operator
+𝑜𝑡 𝑈𝑡
+𝑣 𝑈𝑡
+𝑠,𝑎
+Fig. 2 Information flow in the adaptive RMDP framework. Observations refine credible sets, which induce
+transition ambiguity sets used by the robust Bellman operator .
+Table 2 Credible sets and ambiguity sets in the adaptive RMDP .
+Credible Set 𝑈𝑡
+𝑣 Ambiguity Set 𝑈𝑡
+𝑠,𝑎
+Definition Plausible threat types at node 𝑣 Transition models induced by𝑈𝑡
+𝑣 via 𝜙𝑠,𝑎
+Uncertainty Model uncertainty from limited observations Transition uncertainty captured in the RMDP
+Update Shrinks from posterior updates and pruning Contracts through 𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣)
+Usage Determines remaining prototype hypotheses Used in the robust Bellman operator
+In the early phase of the mission, all aircraft operate conservatively, using robust policies induced by the initial
+credible sets, which contain all prototype threat models. As the mission progresses, the system adapts dynamically to
+eliminate unlikely prototype models, gradually refining both its beliefs and the associated ambiguity sets. This results
+in progressively more targeted and efficient ISR mission trajectories. This gradual shift from cautious to efficient
+behavior reflects a continuous exploration–exploitation trade-off achieved through policy refinement: Initially, aircraft
+act conservatively under large model uncertainty . As they gain confidence through ongoing observations, their policies
+become increasingly refined, enabling more efficient ISR mission without compromising robustness.
+VI. Methodology
+This section formalizes the adaptive robust planner used in our ISR mission scenario. W e first specify the graph
+implementation to the RMDP notation from Section III, then specify observation and exposure models, the reward
+decomposition, and the robust and nominal value-iteration operators. W e next introduce the adaptive update rule in
+which Bayesian posteriors shrink the node-wise credible sets and, through the mapping 𝜙𝑠,𝑎 , the induced transition
+ambiguity sets. Finally, we present the theory establishing the convergence and safety guarantees of the proposed
+adaptive robust planner.
+A. Graph-based Robust RMDP for ISR
+ISR missions involve sequential decision-making under uncertainty, where the agent balances information gathering
+with exposure risk. T o model this setting formally, we represent the operational environment as a graph-structured
+RMDP . As illustrated in Figure3, each node corresponds to a spatial location with an unknown latent threat type, and
+transitions occur through movement along the graph edges. The aircraft takes sensing actions when located at a node
+and movement actions along the graph edges to navigate between adjacent surveillance locations.
+10
+𝑣𝑣1
+𝑣𝑣2
+𝑣𝑣3
+𝑣𝑣4
+𝑣𝑣5
+Fig. 3 A zoomed-in view of a single ISR operation region from Figure 1. The polygon shows one aircraft’s
+assigned area, where each node represents a surveillance point with its own threat type, and edges define feasible
+movements. The aircraft performs sensing-based actions at nodes and movement actions along edges.
+1. Graph RMDP with T wo-Phase States
+In our model, each node 𝑣in the graph represents a state 𝑠∈S. The node-wise ambiguity sets 𝑈𝑡
+𝑠,𝑎 correspond to
+local subsets of the global transition ambiguity set P𝑡 . W e consider an undirected graph𝐺 = (S,E), where the node
+set is S= {0,...,𝑆 −1}and each node 𝑣has neighbors N(𝑣)= {𝑢 ∈S : (𝑣,𝑢)∈E} . Each node 𝑣is assigned an
+unknown threat type 𝜃𝑣 ∈Θ = {1,...,𝑛 𝜃 }, and the system evolves in alternating sense and move phases. W e lift the
+original state space Sto a two-phase version
+S′={(𝑣,S′),(𝑣,M′): 𝑣 ∈S}. (3)
+At sense states(𝑣,S′)the action set isA𝑆 = {𝐴,𝐵,𝐶,.... }, and at move states(𝑣,M′)the action set isAM′(𝑣)= N(𝑣)
+if N(𝑣)≠ ∅and AM′(𝑣)= {𝑣}otherwise. This two-phase design reflects real ISR missions, in which remaining in
+one place for extended periods increases the risk of exposure, defined as the event that the aircraft becomes observable
+to adversarial sensors. Alternating between sensing and movement prevents this buildup of risk and reduces prolonged
+exposure within a single region.
+2. Observation and Exposure Models
+When taking a sense action 𝑎 ∈ AS′ at node 𝑣, the agent conducts local reconnaissance and receives a scalar
+observation 𝑜𝑣 that quantifies the information gained from that area.
+𝑜𝑣,𝑡 ∼𝑝(𝑜|𝑎𝑡 ,𝜃𝑣), (4)
+where 𝑝(𝑜|𝑎,𝜃𝑣)denotes the observation distribution conditioned on the sensing action and the local threat type. In
+this context, exposure refers to the ISR aircraft being detected or otherwise compromised by the local threat. The agent
+independently samples an exposure score
+𝑧𝑣,𝑡 ∼𝑞(𝑧|𝑎𝑡 ,𝜃𝑣), (5)
+11
+where 𝑞(𝑧|𝑎,𝜃𝑣)represents the exposure score distribution. This score induces a binary exposure event
+𝜂𝑣,𝑡 = 1[𝑧𝑣,𝑡 >𝜏𝜂], (6)
+for a fixed threshold 𝜏𝜂 >0. The corresponding exposure probability is given by
+𝑝exp(𝑎,𝜃)=
+¹ ∞
+𝜏𝜂
+𝑞(𝑧|𝑎,𝜃)𝑑𝑧, (7)
+which represents the probability that the exposure score exceeds the threshold𝜏𝜂. Both distributions 𝑝and 𝑞depend on
+the prior knowledge of the environment available before the mission begins, and the observation and exposure processes
+are assumed to be independent given 𝑎and 𝜃𝑣.
+3. Reward Model
+W e design the reward to capture four operational factors. Sensing utility measures how informative an observation
+is at a location, reflecting the surveillance value gained from the action. Exploration novelty encourages visiting less-
+explored nodes to expand situational awareness rather than repeatedly sampling familiar areas. Exposure risk penalizes
+actions that increase the chance of detection or compromise, accounting for both immediate and persistent effects of
+past exposure. Finally, operational cost reflects resource burdens such as fuel usage or reduced endurance. W e express
+the sensing reward as
+𝑟sense (𝑣𝑡 ,𝑎𝑡 ,𝜃𝑣)= 𝑟obs (𝑣𝑡 ,𝑎𝑡 ,𝜃𝑣)+𝑟nov(𝑣𝑡 )+𝑟haz (𝜂𝑣,𝑡 )−𝑐sense (𝑎𝑡 ). (8)
+The individual components are defined as follows:
+𝑟obs (𝑣𝑡 ,𝑎𝑡 ,𝜃𝑣𝑡 )= E[𝑢(𝑜𝑣𝑡 ,𝑡 )| 𝑎𝑡 ,𝜃𝑣𝑡 ],
+𝑟nov(𝑣𝑡 )= 𝜆nov 𝑛𝑡 (𝑣𝑡 ),
+𝑟haz (𝜂𝑣,𝑡 )= 𝜆imm (−𝜂𝑣,𝑡 )+𝜆pers (−𝑒𝑡 )+𝜆cum (−log(1 +𝑑𝑡 )),
+𝑐sense (𝑎𝑡 )≥ 0.
+(9)
+The observation reward𝑟obs (𝑣𝑡 ,𝑎𝑡 ,𝜃𝑣)quantifies the expected sensing gain under latent threat type𝜃𝑣. The variable
+𝑒𝑡 ∈[0,1]represents a penalty carried over from a previous exposure event. It decays over time at a rate 𝛼 ∈(0,1),
+which modulates the persistence of exposure risk through the term −𝜆pers𝑒𝑡 in the reward, but resets to 1 whenever a
+new exposure occurs. The cumulative count 𝑑𝑡 records the number of exposures, updated as 𝑑𝑡+1 = 𝑑𝑡 +𝜂𝑣,𝑡 . The
+novelty map 𝑛𝑡 (𝑣)≥ 0 increases when a node has not been visited recently . W e implement it as an exponential moving
+12
+average of the time since the last visit,
+𝑛𝑡+1 (𝑣)= 𝛽𝑛𝑡 (𝑣)+( 1 −𝛽)(𝑡−𝑡last (𝑣)), (10)
+where 𝑡last (𝑣)denotes the most recent visit time and𝛽∈(0,1)controls the decay rate. An exponential moving average
+avoids abrupt jumps that occur when a node is visited once after a long absence. This smooth update provides a simple,
+stable measure of how long since the node was visited.
+In the move states, the reward is defined as
+𝑟move(𝑣𝑡 →𝑣𝑡+1)= −𝑐move +𝜆nov 𝑛𝑡 (𝑣𝑡+1)+𝜆pers (−𝑒𝑡 )+𝜆cum (−log(1 +𝑑𝑡 )). (11)
+Each term plays a distinct functional role. The novelty bonus 𝑟nov(𝑣𝑡 ) = 𝜆nov𝑛𝑡 (𝑣𝑡+1)encourages exploration of
+less-visited regions. The hazard term aggregates exposure penalties across three timescales: an immediate penalty
+−𝜆imm𝜂𝑣,𝑡 for direct exposure, a persistent penalty−𝜆pers𝑒𝑡 for sustained exposure, and a cumulative penalty−𝜆cum log(1+
+𝑑𝑡 )for repeated exposures. Finally, the sensing and movement costs 𝑐sense (𝑎)and 𝑐move introduce operational penal-
+ties that discourage inefficient sensing or movement, respectively . The weighting parameters 𝜆 control the trade-off
+between exploration and risk in the adaptive planner.
+4. Threat Models and Ambiguity Sets
+P𝑡 denotes the global transition ambiguity set at time step 𝑡. Recall that in our formulation, uncertainty is repre-
+sented node-wise through posterior credible sets𝑈𝑡
+𝑣 ⊆Θ. Each element 𝜃 ∈Θ corresponds to a distinct threat prototype
+that governs sensing outcomes and exposure statistics. The credible set 𝑈𝑡
+𝑣 therefore captures the set of threat types
+that remain plausible for node 𝑣 under the current posterior. For any state–action pair (𝑠,𝑎)associated with node 𝑣,
+these credible sets are mapped to local transition ambiguity sets through the continuous map𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣),and the
+overall transition ambiguity takes the rectangular formP𝑡 = Î
+(𝑠,𝑎 )𝑈𝑡
+𝑠,𝑎 .Following the standard RMDP literature [10],
+these local sets are assumed independent across nodes, consistent with an(𝑠,𝑎)-rectangular uncertainty structure.
+The credible sets define a stage-wise robust sensing reward. For any sense action𝑎 ∈A𝑆 at node 𝑣, we set
+˜𝑟rob (𝑣,𝑎,𝑈 𝑡
+𝑣)= min
+𝜃 ∈𝑈𝑡𝑣
+h
+E𝑝(𝑜 |𝑎,𝜃 )[𝑜]+𝜆imm
+  −𝑝exp(𝑎,𝜃) i
+−𝑐sense (𝑎), (12)
+where the minimization provides a conservative estimate of the expected sensing reward consistent with the worst-case
+threat realization within the credible set 𝑈𝑡
+𝑣. When 𝑈𝑡
+𝑣 = {ˆ𝜃𝑣}, the credible set collapses to a singleton, meaning that
+only one threat hypothesis remains consistent with past observations at node𝑣, and the robust surrogate reduces to the
+13
+nominal reward
+˜𝑟nom (𝑣,𝑎)= E𝑝(𝑜 |𝑎, ˆ𝜃𝑣 )[𝑜]+𝜆imm
+  −𝑝exp(𝑎, ˆ𝜃𝑣) −𝑐sense (𝑎). (13)
+This nominal surrogate corresponds to planning under a single estimated threat type, without accounting for uncertainty
+in 𝜃𝑣. This surrogate serves as the local reward model used in the robust Bellman updates.
+B. Adaptive RMDP for ISR
+This section describes the adaptive planning mechanism that integrates robust value iteration with Bayesian infer-
+ence and posterior-driven ambiguity contraction. The resulting loop adaptively refines node-wise credible sets𝑈𝑡
+𝑣 and
+the induced transition ambiguity sets 𝑈𝑡
+𝑠,𝑎 , while replanning under updated novelty maps𝑛𝑡 (𝑣).
+1. Bellman Operators and Value Iteration
+Let 𝑉 : S′→R denote the value function over the two-phase state space. During each Bellman update, auxiliary
+quantities that depend on visit history or past exposure, such as the novelty map𝑛𝑡 (𝑣), the persistent exposure level𝑒𝑡 ,
+and the cumulative exposures 𝑑𝑡 , are considered fixed at the current time step.
+(Tr𝑉)(𝑣,S′)= max
+𝑎∈AS′
+n
+˜𝑟r′(𝑣,𝑎,𝑈 𝑡
+𝑣)+𝜆nov𝑛𝑡 (𝑣)+𝛾𝑉(𝑣,M′)
+o
+, (14)
+(Tr′𝑉)(𝑣,M′)= max
+𝑢∈AM′(𝑣)
+n
+−𝑐move +𝜆nov𝑛𝑡 (𝑢)+𝛾𝑉(𝑢,S′)
+o
+. (15)
+The nominal operator Tn′ is defined analogously toTr′, with the robust surrogate˜𝑟r′ replaced by its nominal counterpart
+˜𝑟n′. Intuitively, Tr′ performs a worst-case backup over all plausible threat realizations, whileTn′ corresponds to standard
+Bellman updates under a single estimated type. Both operators are𝛾-contractions under the supremum norm, ensuring
+that repeated application of the Bellman update,
+𝑉𝑘+1 = T𝜉𝑉𝑘, 𝜉 ∈{r′,n′}, (16)
+converges to a unique fixed point 𝑉★
+𝜉 . The resulting value function defines a greedy policy 𝜋★
+𝜉 that is stationary and
+optimal with respect to the chosen operator. The contraction property further guarantees stable convergence even when
+ambiguity sets evolve adaptively over time.
+The robust Bellman operator implicitly guards against observation and exposure uncertainty by optimizing for the
+worst-case threat realization within each local ambiguity set. This guarantees a conservative value estimate that bounds
+mission risk even under distributional shifts in sensing or exposure statistics. This property is particularly desirable
+in ISR mission contexts, where estimated threat distribution may differ from the true underlying distribution due to
+deception or or sparse and imperfect observations.
+14
+2. Bayesian Belief Update and Shrinkage of Credible Sets and Ambiguity Sets
+At each sensing step at node 𝑣, the agent maintains a belief distribution 𝑏𝑡,𝑣 over possible threat types, which is
+updated according to the observation likelihood as
+𝑏𝑡+1,𝑣 (𝜃)= 𝑏𝑡,𝑣 (𝜃)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃)Í
+𝜃′∈Θ 𝑏𝑡,𝑣 (𝜃′)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃′), (17)
+where 𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃)denotes the observation likelihood function associated with action𝑎𝑡 and threat type𝜃. The credible
+set is then refined according to the posterior confidence rule
+𝑈𝑡+1
+𝑣 =
+8>>>> <
+>>>>:
+arg max𝜃 𝑏𝑡+1,𝑣 (𝜃) if max𝜃 𝑏𝑡+1,𝑣 (𝜃)≥ 𝜌lock,
+{𝜃 ∈𝑈𝑡
+𝑣 : 𝑏𝑡+1,𝑣 (𝜃)≥ 𝜀prune }, otherwise.
+(18)
+The rule commits to the most probable threat type once the posterior confidence exceeds the locking threshold, while
+pruning low-probability hypotheses from the credible set otherwise. Specifically, posterior log-gaps between the 𝑖-th
+and 𝑗-th most probable types at node 𝑣are evaluated as
+𝑔𝑖, 𝑗 (𝑣)= log
+ 𝑏𝑡+1,𝑣 (𝜃(𝑖))
+𝑏𝑡+1,𝑣 (𝜃(𝑗))
+
+, (19)
+where 𝜃(𝑖)and 𝜃(𝑗)denote posterior hypotheses ranked by their probabilities in descending order. When𝑔𝑖, 𝑗 (𝑣)exceeds
+pre-defined thresholds, the lower-probability hypotheses are removed from𝑈𝑡
+𝑣. Models with persistently low posterior
+mass reflect threat behaviors that are consistently ruled out by the observed sensing outcomes. Because each credible
+set 𝑈𝑡
+𝑣 induces the transition ambiguity sets 𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣), any reduction of 𝑈𝑡
+𝑣 necessarily produces a contraction
+of the corresponding ambiguity sets. Crucially, no additional exploratory actions are needed: routine surveillance
+naturally produces observations that distinguish plausible hypotheses from implausible ones. As a result, ambiguity
+reduction occurs through ongoing surveillance, enabling the aircraft to become less conservative over time without
+compromising safety . The SHRINK operator in Algorithm1 implements exactly this posterior-based pruning rule.
+3. Adaptive Robust Planning Loop
+The adaptive robust planner replans every𝐾steps based on the current visit statistics and ambiguity sets, as outlined
+in Algorithm 1. This loop implements a closed-form interaction between inference and planning: Bayesian updates re-
+fine node-wise beliefs, posterior-driven shrinkage tightens local ambiguity sets, and periodic robust replanning ensures
+consistent adaptation to evolving situational awareness. The robust value iteration guarantees that, even during early
+uncertain phases, the policy remains safe against the worst-case realizations within each local ambiguity set.
+As uncertainty diminishes and local ambiguity sets collapse to singletons, the adaptive robust planner smoothly
+15
+Algorithm 1 Adaptive Robust Planning for ISR
+1: Initialize uniform beliefs 𝑏0,𝑣 (𝜃)= 1/|Θ|and credible sets 𝑈0
+𝑣 = Θ for all 𝑣 ∈S ⊲|Θ|is the cardinality of Θ
+2: Initialize exposure variables 𝑒0 = 0, 𝑑0 = 0, and novelty map 𝑛0 (𝑣)= 0 for all 𝑣
+3: for 𝑡 = 0,1,...,𝑇 −1 do
+4: if 𝑡 ≡0 (mod 𝐾)then
+5: Solve robust value iteration with𝑈𝑡
+𝑣 and current novelty map 𝑛𝑡 (𝑣)to obtain policy 𝜋𝑡
+6: end if
+7: Observe current state (𝑣𝑡 ,S′)and take sense action 𝑎𝑡 = 𝜋𝑡 (𝑣𝑡 ,S′)
+8: Sample observation 𝑜𝑡 ∼𝑝(𝑜|𝑎𝑡 ,𝜃𝑣𝑡 )and exposure score 𝑧𝑡 ∼𝑞(𝑧|𝑎𝑡 ,𝜃𝑣𝑡 )
+9: Set exposure indicator 𝜂𝑣,𝑡 = 1[𝑧𝑡 >𝜏𝜂]
+10: Update belief: 𝑏𝑡+1,𝑣𝑡 (𝜃)= 𝑏𝑡,𝑣𝑡 (𝜃)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃 )Í
+𝜃′∈Θ 𝑏𝑡,𝑣𝑡 (𝜃′)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃 ′)
+11: Update exposure variables: 𝑒𝑡+1 = max{𝛼𝑒𝑡 , 𝜂𝑣,𝑡 }, 𝑑 𝑡+1 = 𝑑𝑡 +𝜂𝑣,𝑡
+12: Update novelty map 𝑛𝑡+1 (𝑣)based on visit recency according to (10)
+13: Update credible set: 𝑈𝑡+1
+𝑣𝑡 ←SHRINK(𝑈𝑡
+𝑣𝑡 ,𝑏𝑡+1,𝑣𝑡 ), 𝑈 𝑡+1
+𝑣 ←𝑈𝑡
+𝑣 for 𝑣≠ 𝑣𝑡
+14: Update induced ambiguity sets: 𝑈𝑡+1
+𝑠,𝑎 ←𝜙𝑠,𝑎 (𝑈𝑡+1
+𝑣 )for all state-action pairs (𝑠,𝑎)associated with 𝑣
+15: Move according to 𝑢𝑡 = 𝜋𝑡 (𝑣𝑡 ,M′)and set next state (𝑢𝑡 ,S′)
+16: end for
+transitions toward nominal behavior, recovering standard value iteration in the limit. In particular, as ambiguity sets
+shrink and converge to singletons, the planner asymptotically recovers the nominal value function𝑉★
+nom, ensuring pol-
+icy consistency with standard MDP solutions. This gradual transition preserves robustness during uncertainty while
+avoiding overly conservative behavior in well-understood regions.
+This structure aligns naturally with ISR mission requirements, where agents need to balance information gather-
+ing and exposure risk under uncertain environmental conditions. By coupling belief refinement with robust decision-
+making, the planner maintains operational safety while efficiently allocating limited sensing opportunities, resulting
+in adaptive behaviors consistent with practical ISR mission dynamics. T ogether, these components enable the plan-
+ner to gradually shift from conservative exploration to confident exploitation as uncertainty diminishes, maintaining
+robustness throughout the mission.
+C. Theoretical Properties
+W e establish guarantees for the adaptive robust planner. Throughout, we work with finite state and action sets. The
+lifted state space S′created in the two-phase formulation is also finite.
+1. Assumptions and Regularity Conditions
+Assumption 1 (Discounting and bounded rewards). The discount factor satisfies𝛾 ∈(0,1). P er-step rewards and costs
+are uniformly bounded and measurable. Any cumulative exposure penalty is bounded so thatsup𝑠,𝑎 |𝑟(𝑠,𝑎)|<∞.
+Assumption 2 ((𝑠,𝑎)-rectangular uncertainty and contraction) . F or any(𝑠,𝑎)-rectangular family of ambiguity sets
+{𝑈𝑠,𝑎 ⊆Δ(S′)}, where Δ(S′)denotes the probability simplex over the state spaceS′at the next time step, the robust
+16
+Bellman operator
+(Trob𝑉)(𝑠) := max
+𝑎∈A(𝑠)
+min
+𝑃(·|𝑠,𝑎 )∈𝑈𝑠,𝑎
+n
+𝑟(𝑠,𝑎)+𝛾E𝑃 [𝑉(𝑆′)]
+o
+(20)
+is a 𝛾-contraction on (R|S′|,∥·∥ ∞)with modulus 𝛾, where
+E𝑃 [𝑉(𝑆′)]=
+Õ
+𝑠′∈S′
+𝑃(𝑠′|𝑠,𝑎)𝑉(𝑠′). (21)
+Assumption 3 (Posterior and credible sets). The Bayesian posterior 𝑝(𝜃𝑣 |D𝑡 )is well defined on a compact param-
+eter space Θ, where D𝑡 denotes all data observed up to time 𝑡. F or each node 𝑣, the credible set 𝑈𝑡
+𝑣 ⊆Θ is Borel
+measurable.1
+Assumption 4 (Posterior tightness and eventual nesting). F or each𝑣, there exists a target threat type𝜃★
+𝑣 ∈Θ such that
+P(𝜃★
+𝑣 ∈𝑈𝑡
+𝑣)→ 1 and sup𝜃, 𝜃 ′∈𝑈𝑡𝑣 ∥𝜃−𝜃′∥∞→0 in probability as 𝑡 →∞, where ∥·∥ ∞denotes the sup-norm on the
+threat parameter space Θ. There exists a random finite time after which𝑈𝑡+1
+𝑣 ⊆𝑈𝑡
+𝑣 holds for all 𝑡.
+Assumption 5 (Stepwise continuity and dominated convergence). F or any(𝑣,𝑎), the maps 𝜃 ↦→E𝑝(𝑜|𝑎,𝜃 )[𝑜]and
+𝜃 ↦→𝑝exp(𝑎,𝜃)are continuous onΘ. If the observation space is infinite, there exists an integrable dominating function
+𝑔(𝑜)such that sup𝜃 ∈Θ |𝜑(𝑜)|≤ 𝑔(𝑜)and
+¯
+O𝑔(𝑜)𝜇(d𝑜)< ∞, so that dominated convergence applies. Hence, for
+compact 𝑈 ⊆Θ, the map 𝑈 ↦→min𝜃 ∈𝑈 𝑓𝑣,𝑎 (𝜃)is continuous under set convergence in P ainlevé–Kuratowski (PK)
+sense.2
+Assumption 6 (Greedy selection and tie-breaking). Action sets A(𝑠)are finite for all 𝑠. A measurable tie-breaking
+rule (i.e., a tie-breaker that defines a Borel-measurable action mapping) is fixed. If the optimal action is unique for
+each state under the true parameter𝜃★, then the greedy selector will pick a single, well-defined action in the limit.
+These assumptions jointly ensure that the robust Bellman operator is well-defined, contractive, and stable under
+learning. Discounting turns the infinite-horizon objective into a convergent power series and bounds the influence of
+remote outcomes, while uniform boundedness ensures that the Bellman update remains within a compact set. Bounded
+one-stage rewards imply that any fixed point satisfies ∥𝑉∥∞ ≤𝑅max/(1 −𝛾), where 𝑅max := sup𝑠,𝑎 |𝑟(𝑠,𝑎)|. This
+uniform ensures 𝑉𝑡 remains in the closed ball of (R|S′|,∥·∥ ∞)and allows Banach’s fixed-point theorem3 to apply
+without additional growth conditions. If these assumptions are violated, for example, when 𝛾 ≥1 or the rewards are
+unbounded, value iteration may diverge or fail to admit a finite fixed point. Even if a policy is mathematically well
+defined, small modeling errors can accumulate and undermine safety guarantees. In most engineered systems, physical
+1A set is Borel measurable if it lies in the Borel 𝜎-algebra B(Θ), the smallest 𝜎-algebra containing all open subsets of Θ. This ensures that
+probabilities and expectations with respect to measures onΘ are well defined.
+2 Formally, PK convergence is defined through the convergence of inner and outer limits of sets [44]. In this framework,𝑈𝑡
+𝑣 →{𝜃★
+𝑣 }means that
+every sequence 𝜃𝑡 ∈𝑈𝑡
+𝑣 has limit points contained in {𝜃★
+𝑣 }and that the true parameter 𝜃★
+𝑣 can be approximated by points from𝑈𝑡
+𝑣 for all large 𝑡.
+3 Let (𝑋, 𝑑 )be a complete metric space and let𝑇 : 𝑋 →𝑋 be a contraction. There exists 𝛾 ∈(0, 1)such that 𝑑(𝑇 𝑥, 𝑇𝑦 )≤ 𝛾 𝑑 (𝑥, 𝑦 )for all
+𝑥, 𝑦 ∈𝑋. Then 𝑇 admits a unique fixed point 𝑥★ ∈𝑋, and the iterates 𝑇𝑡 𝑥0 converge to 𝑥★ for any initial point 𝑥0 ∈𝑋 [45].
+17
+limits or budget caps impose natural bounds. W e ensure that any additional penalty terms remain bounded so that the
+uniform bound on the value function remains valid.
+Rectangularity decouples ambiguity across state–action pairs, which removes adversarial coupling effects across
+time. This decoupling is exactly what makes the inner minimization separable and ensures the Bellman recursion holds
+in the presence of uncertainty over the transition probabilities. Contraction with modulus𝛾ensures uniqueness of the
+robust value and geometric error decay for value iteration and policy evaluation. Without contraction, limit points
+may not exist, and set-valued Bellman maps can exhibit cycling, highlighting the role of boundedness and discounting.
+Rectangularity is a simplifying but conservative assumption: it ignores correlations between transitions of different
+(𝑠,𝑎)pairs, making the problem more tractable but potentially less tight.
+Compact credible sets and measurability ensure that Bayesian learning can be embedded in the planning process.
+Compactness ensures that the posterior remains confined to a bounded region of the parameter space, which is essential
+for establishing uniform continuity . Measurability ensures that the data-driven sets can be embedded into the filtration,
+a family of time-indexed 𝜎-algebras encoding the information revealed up to time 𝑡, so that the operators are random
+but well-defined. Compactness of the parameter space Θ and the credible set 𝑈𝑡
+𝑣 being Borel measurable guarantee
+existence of minimizers when takingmin𝜃 ∈𝑈𝑡𝑣 and enable measurable selection for greedy policies and inner minimizers,
+meaning that the resulting selectors are Borel-measurable functions of the state. These properties are used implicitly
+to justify interchanging max, min, and expectations.
+Posterior tightness captures the idea that uncertainty shrinks as learning progresses. When each credible set only
+shrinks over time, the corresponding Bellman operators stop oscillating and approach a stable limit. T ogether, they
+imply that the algorithm eventually uses the Bellman operator corresponding to the true parameter. Tightness means
+that each credible set converges to the true parameter in PK sense. This is what underpins operator convergence in
+Corollary 1. Eventual nesting allows monotonicity arguments that simplify the proof of almost sure convergence of the
+fixed points. If credible sets expand intermittently due to model misspecification, the derived safety bounds no longer
+provided useful protection. If sets shrink to the wrong point with positive probability, the limit policy can be biased.
+Continuity ensures that small changes in posterior beliefs produce only small adjustments in the chosen action
+or value, preventing discontinuous control switches as uncertainty decreases. Dominated convergence is the techni-
+cal bridge that lets limits pass through expectations, which is essential because the Bellman operator computes an
+expectation with respect to transition probabilities that depend on the parameter. With domination, 4 we have that
+lim𝑡→∞E𝑝 [𝜑𝑡 (𝑜)] = E𝑝 [lim𝑡→∞𝜑𝑡 (𝑜)], which is used to show continuity of the inner minima with respect to set
+limits. This is what yields uniform convergence of operators on bounded sets. In our setting, the parameter space Θ
+is discrete, so both conditions hold automatically . Every map 𝜃 ↦→ 𝑓𝑣,𝑎 (𝜃)is continuous, and expectations reduce
+4 By dominated convergence, pointwise convergence of{𝜑𝑡 }together with an integrable dominating envelope𝑔 allows the limit to pass through
+the expectation with respect to the parameterized probability measures under the standard conditions of dominated convergence [46].
+18
+to finite sums, making dominated convergence trivially valid. W e retain this assumption for generality, so that the
+same theoretical statements extend without modification to continuous parameter spaces or models with continuous
+observations.
+Finite action sets and a fixed tie-breaking rule prevent policy instability . The algorithm repeatedly selects greedy
+actions from a possibly set-valued argmax. A fixed rule avoids random policy fluctuations that would confound con-
+vergence and policy limit arguments. Finiteness makes the argmax operator upper hemicontinuous 5 with nonempty,
+compact values. A measurable selector then exists, i.e., a Borel-measurable state-to-action function chosen from each
+argmax set. Uniqueness in the limit upgrades set convergence of 𝑄-values to pointwise convergence of deterministic
+policies.
+2. Operator Convergence under Shrinking Ambiguity Sets
+As the ambiguity sets evolve with data, the robust Bellman operator itself changes over time. A key question is
+whether value iteration driven by these data-dependent operators remains convergent and stable. The assumptions
+above ensure boundedness and a common 𝛾-contraction modulus; thus, the operators approach a limiting operator
+uniformly on bounded subsets. The next theorem formalizes this convergence and shows that the iterates follow the
+limiting operator almost surely .
+Theorem 1 (Almost sure convergence of the adaptive robust value iteration). Let (Ω,F,P)be a probability space and
+{F𝑡 }𝑡≥0 an increasing filtration.6 Let {T𝑡
+rob}𝑡≥0 be a sequence of random robust Bellman operators, eachF𝑡 -measurable,
+induced by random ambiguity sets{𝑈𝑡
+𝑠,𝑎 }(𝑠,𝑎 )that are F𝑡 -measurable. Suppose Assumptions 1–6 hold and that, almost
+surely, for every bounded set𝐵⊂B with B:= {𝑉 : S′→R bounded},
+sup
+𝑉 ∈𝐵
+∥T𝑡
+rob (𝜔)𝑉−T∞(𝜔)𝑉∥∞−→0, for P-almost every 𝜔∈Ω, (22)
+where T∞(𝜔)denotes the operator obtained as 𝑡 →∞. Since each T𝑡
+rob (𝜔)is a 𝛾-contraction with common modulus,
+T∞(𝜔)is also a 𝛾-contraction on (B,∥·∥ ∞). Then there exists Ω0 ⊆Ω with P(Ω0)= 1 such that, for every 𝜔 ∈Ω0,
+the value iteration
+𝑉𝑡+1 (𝜔)= T𝑡
+rob (𝜔)𝑉𝑡 (𝜔) (23)
+converges to the unique fixed point𝑉★(𝜔)of T∞(𝜔), i.e., 𝑉𝑡 (𝜔)→ 𝑉★(𝜔)with T∞(𝜔)𝑉★(𝜔)= 𝑉★(𝜔).
+Proof. See Appendix A.
+5A set-valued map 𝐹 : 𝑋 ⇒ 𝑌 assigns to each 𝑥 ∈𝑋 a subset 𝐹 (𝑥)⊆ 𝑌. It is upper hemicontinuous at 𝑥 if for every open set 𝑂 containing
+𝐹 (𝑥), there exists a neighborhood 𝑁 of 𝑥 such that 𝐹 (𝑥′)⊆ 𝑂 for all 𝑥′ ∈𝑁. Intuitively, it means that the graph of 𝐹 does not jump upward in
+the limit, so the possible argmax sets vary continuously under small perturbations [44].
+6A filtration {F𝑡 }is an increasing sequence of 𝜎-algebras representing the information available up to time𝑡. A random variable or operator
+is F𝑡 -measurable if it depends only on data observed up to time𝑡.
+19
+Remark 1 (Interpretation and application of Theorem 1). Theorem 1 refines pointwise, data-driven operator conver-
+gence to convergence of the computed values along the actual iteration run by the algorithm. The result guarantees that
+the algorithm converges almost surely for the observed data sequence. Uniform convergence on bounded sets ensures
+that the operator behaves consistently, regardless of the current iterate. A common modulus of contraction ensures
+that the limiting operator still satisfies the same𝛾-contraction property. Losing contraction leads to instability and the
+potential absence of a fixed point, so maintaining a uniform modulus is essential.
+Since value iteration converges to the fixed point of the limiting operator, the algorithm behaves as if the transition
+model were fixed once the credible sets stabilize. When they collapse to the true parameters, the limiting operator
+becomes the nominal Bellman operator. The following corollary formalizes this.
+Corollary 1 (Asymptotic optimality). Under Assumptions1–6, suppose that𝑈𝑡
+𝑣 →{𝜃★
+𝑣 }almost surely for all𝑣. Define
+𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣(𝑠,𝑎 ))and 𝑈∞
+𝑠,𝑎 := {𝜙𝑠,𝑎 (𝜃★
+𝑣(𝑠,𝑎 ))}. Then, T𝑡
+rob →T 𝜃★
+nom almost surely, uniformly on bounded subsets of
+B, where
+(T𝜃★
+nom𝑉)(𝑠) = max
+𝑎∈A(𝑠)
+n
+𝑟(𝑠,𝑎)+𝛾E𝑃★ (·|𝑠,𝑎 )[𝑉(𝑆′)]
+o
+. (24)
+By Theorem 1, 𝑉𝑡 →𝑉★
+nom almost surely. If, in addition, the optimal action is unique at every state for the limit
+operator , then the greedy policies𝜋𝑡 converge almost surely to the nominal optimal policy𝜋★
+nom. Without uniqueness,
+any sequence of greedy policies admits convergent subsequences whose limits are optimal.
+Remark 2 (Operational meaning of asymptotic optimality) . As the credible sets contract to the true parameter , the
+uncertainty in the transition kernel disappears, and the robust formulation converges to the planning problem defined
+by the true model. The algorithm therefore transitions from conservative exploration to exploitation and ends up
+computing exactly the nominal optimal policy. Uniformity on bounded sets is needed to interchange limits with the outer
+maximization and to avoid dependence on the particular trajectory of𝑉𝑡 . This is what converts operator convergence
+into value convergence along the value sequence generated by the algorithm. Uniqueness gives pointwise convergence
+of policies. When multiple actions are optimal, the result still guarantees that any limit point is optimal.
+3. Safety and Computational Properties
+While asymptotic optimality characterizes the long-run behavior of the adaptive planner, safety concerns arise
+during learning: the model is uncertain, and policies are selected based on ambiguity sets rather than the true transition
+kernel. A natural question is whether the robust value used for planning provides conservative guarantees on realized
+performance under the true dynamics. The next proposition shows that Assumption 2 yields such probabilistic safety
+guarantees.
+Proposition 1 (Probabilistic safety guarantee under (𝑠,𝑎)-rectangular uncertainty) . Let (Ω,F,P)be a probability
+space and {F𝑡 }a filtration, i.e., an increasing family of 𝜎-algebras representing the information available up to time
+20
+𝑡. F or each node𝑣, let 𝑈𝑡
+𝑣 ⊆Θ be an F𝑡 -measurable Borel set. Assume the following structural conditions. There is
+a partition of state–action pairs induced by a mapping 𝑣 : S×A→V , where 𝑣(𝑠,𝑎)denotes the node to which the
+pair (𝑠,𝑎)belongs, and Borel measurable maps
+𝑃(·| 𝑠,𝑎; 𝜃) := 𝜙𝑠,𝑎
+ 𝜃𝑣(𝑠,𝑎 )
+, 𝜙 𝑠,𝑎 : Θ𝑣(𝑠,𝑎 ) →Δ(S′). (25)
+Define the (𝑠,𝑎)-marginal ambiguity sets by
+𝑈𝑡
+𝑠,𝑎 := 𝜙𝑠,𝑎
+ 𝑈𝑡
+𝑣(𝑠,𝑎 )
+ ⊆ Δ(S′), (26)
+and the rectangular ambiguity set
+𝑈𝑡 :=
+Ö
+(𝑠,𝑎 )
+𝑈𝑡
+𝑠,𝑎 ⊆
+Ö
+(𝑠,𝑎 )
+Δ(S′). (27)
+where Î denotes the Cartesian product over sets. Each 𝑈𝑡
+𝑣 is nonempty and compact by Assumption 3. Each 𝜙𝑠,𝑎 is
+continuous by Assumption 5. Hence 𝑈𝑡
+𝑠,𝑎 is nonempty and compact, and𝑈𝑡 is nonempty and compact. Let the credible
+event be
+E𝑡 := {𝜃★
+𝑣 ∈𝑈𝑡
+𝑣 for all 𝑣}, (28)
+and let 𝑃★ be the true transition model generated by the true local parameters, that is,𝑃★(·| 𝑠,𝑎)= 𝜙𝑠,𝑎
+
+𝜃★
+𝑣(𝑠,𝑎 )
+
+. Let
+𝜋𝑡 be any stationary policy greedy with respect to the robust value under rectangular ambiguity set𝑈𝑡 = Î
+(𝑠,𝑎 )𝑈𝑡
+𝑠,𝑎 .
+Then
+P
+
+∀𝑠∈S′: 𝑉𝜋𝑡
+𝑃★ (𝑠) ≥min
+𝑃∈𝑈𝑡
+𝑉𝜋𝑡
+𝑃 (𝑠)
+
+≥ 1 −𝛿𝑡 , 𝛿 𝑡 := P(E𝑐
+𝑡 ). (29)
+Here, 𝛿𝑡 is the probability that the true parameter lies outside the credible sets, so with probability1 −𝛿𝑡 the ambiguity
+sets contain the true model and the robust value lower bound holds for all states inS′.
+Proof. See Appendix A.
+Remark 3 (Safety guaranteed by the robust value). Conditioned on the event that the true parameters lie in the credible
+sets, the realized value under the true kernel dominates the worst-case value used for planning. In other words, the
+planner’s predicted robust value is a conservative lower bound on its actual performance. The shortfall term 𝛿𝑡 is
+the probability that the credible set does not include the true parameter at time 𝑡. Improving statistical coverage is
+the primary lever to tighten the guarantee. Under (𝑠,𝑎)-rectangularity, the inner minimization is exact on each local
+transition model, so the robust planner already evaluates the worst-case model without approximation. The result
+holds uniformly with respect to the state and for any greedy policy with respect to the robust value, so it applies to both
+evaluation and improvement steps.
+21
+Beyond safety, it is important to understand the computational cost of implementing the adaptive robust planner.
+Each replan operates with a fixed family of credible sets and performs robust value iteration until convergence. The
+following proposition provides a per-replan complexity bound and clarifies how the uncertainty size affects the compu-
+tational cost.
+Proposition 2 (Per-replan complexity). During each replan, the family of credible sets{𝑈𝑡
+𝑣}are fixed, and robust value
+iteration is performed until the value updates are within a tolerance𝜀. Since the Bellman operator is a 𝛾-contraction,
+the value iteration requires𝑁𝜀 = 𝑂(log(1/𝜀)/(1 −𝛾))iterations to ensure that the value updates are within tolerance
+𝜀. Each robust reward ˜𝑟rob (𝑣,𝑎,𝑈 𝑡
+𝑣)can be evaluated in 𝑂(|𝑈𝑡 |)time using precomputed expectations, where |𝑈𝑡 |is
+the average ambiguity set size across nodes. Then, the per-replan computational cost is
+O
+
+𝑁𝜀
+ |S′||A| + |S||A𝑆 ||𝑈𝑡 |
+, (30)
+where |A|is the average number of actions per state.
+Proof. See Appendix A.
+Remark 4 (Interpretation of complexity) . The two terms reflect distinct computations within each replan: the first
+term accounts for Bellman updates over state space S′, and the second term for robust evaluations within ambiguity
+sets. T ogether , the two terms represent the total per-replan workload. As learning progresses and uncertainty about
+the parameters decreases, the algorithm needs to evaluate fewer models within each ambiguity set. Consequently, the
+expected computational cost per replan gradually approaches the standard value iteration under the true model.
+VII. Results
+W e conduct three numerical experiments under different environmental and structural conditions to validate the
+proposed adaptive robust planner. Experiment 1 tests whether the planner operates as intended and converges in a
+controlled environment with Gaussian threat models. Experiment 2 tests robustness and generalization to non-Gaussian
+threat models, including Gaussian mixtures and log-normal distributions. Experiment 3 evaluates the scalability and
+consistency of the planner as the network topology and size vary .
+A. Baseline Implementations
+T o evaluate the performance of the proposed adaptive robust planner, we compare it against two baselines:static
+robust and nominal planning. These baselines are two complementary extremes in terms of uncertainty handling and
+adaptability . Both baselines share the same sensing–movement structure and update routines as Algorithm1, but differ
+in how they treat and propagate uncertainty during planning.
+22
+In the static robust baseline, the ambiguity sets of possible threat types remain fixed throughout the entire mission.
+The logic of the static robust planner is summarized in Algorithm 2. It optimizes actions through a minmax value-
+iteration process that selects the best decision under the worst-case threat configuration within each static set. As a
+result, it provides strong safety guarantees but is often overly conservative. Since the uncertainty representation is
+never refined, the planner tends to overestimate risk and produce cautious but suboptimal behavior.
+Algorithm 2 Static Robust Planning
+1: Initialize fixed parameter sets 𝑈𝑣 ⊆Θ for all 𝑣and the ambiguity set is induced as𝑈𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑣).
+2: for 𝑡 = 0,1,...,𝑇 −1 do
+3: for each sense action 𝑎 ∈AS′ do
+4: Compute static robust surrogate: ˜𝑟r′(𝑣,𝑎)= min𝑃∈𝑈𝑠,𝑎
+h
+E𝑃(𝑜 |𝑎)[𝑜]+𝜆imm
+  −𝑝exp(𝑎,𝑃)i
+−𝑐sense (𝑎)
+5: end for
+6: Choose action: 𝑎𝑡 = arg max𝑎∈AS′
+
+˜𝑟r′(𝑣𝑡 ,𝑎)+𝜆nov𝑛𝑡 (𝑣)+𝛾𝑉(𝑣𝑡 ,M′)
+	
+7: end for
+The nominal baseline uses the maximum aposteriori (MAP) principle to address uncertainty . The overall procedure
+of the nominal planner is outlined in Algorithm 3. After each observation, the planner infers the most probable threat
+type at each node based on the current posterior belief. The planner then selects the next actions, assuming those
+estimates are correct. This approach reflects an optimistic decision-making strategy that commits to the maximum-
+probability threat hypothesis under the current posterior. It enables efficient and confident decisions when the belief
+model is accurate. However, it can become overconfident and fragile in highly uncertain or noisy environments.
+Algorithm 3 Nominal Planning
+1: Initialize belief 𝑏0,𝑣 (𝜃)= 1/|Θ|for all 𝑣 ∈S
+2: for 𝑡 = 0,1,...,𝑇 −1 do
+3: Observe signal 𝑜𝑡 at current node 𝑣𝑡
+4: Update belief via Bayes rule: 𝑏𝑡+1,𝑣𝑡 (𝜃)= 𝑏𝑡,𝑣𝑡 (𝜃)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃 )Í
+𝜃′∈Θ 𝑏𝑡,𝑣𝑡 (𝜃′)𝑝(𝑜𝑡 |𝑎𝑡 ,𝜃 ′)
+5: Compute MAP estimate: ˆ𝜃𝑣𝑡 = arg max𝜃 𝑏𝑡+1,𝑣𝑡 (𝜃)
+6: for each sense action 𝑎 ∈AS′ do
+7: Compute nominal surrogate: ˜𝑟n′(𝑣𝑡 ,𝑎)= E𝑝(𝑜 |𝑎, ˆ𝜃𝑣𝑡 )[𝑜]+𝜆imm
+  −𝑝exp(𝑎, ˆ𝜃𝑣𝑡 ) −𝑐sense (𝑎)
+8: end for
+9: Choose action: 𝑎𝑡 = arg max𝑎∈AS′
+
+˜𝑟n′(𝑣𝑡 ,𝑎)+𝜆nov𝑛𝑡 (𝑣)+𝛾𝑉(𝑣𝑡 ,M′)
+	
+10: end for
+B. Experiment 1: Basic V alidation in a Controlled Environment
+This experiment verifies that the proposed adaptive robust planner operates as intended in a simplified and well-
+controlled setting. W e consider a small grid network in which each threat type induces Gaussian observation and
+exposure models, allowing us to confirm that the planner converges to stable policies, correctly updates its ambiguity
+sets, and reproduces the expected behavior under idealized conditions. This setting conceptually reflects controlled
+ISR mission test ranges where conditions are intentionally idealized [47], providing a clean environment for baseline
+23
+validation before moving to larger and more uncertain scenarios.
+The environment is configured as a 3 ×4 grid graph consisting of 12 nodes. Each node is assigned one of three
+latent threat types, denoted as 𝜃 ∈ {1,2,3}. The agent can choose among four sensing actions 𝑎 ∈ {𝐴,𝐵,𝐶,𝐷 },
+each producing an observation 𝑜 ∼N( 𝜇𝑎,𝜃 ,𝜎𝑎,𝜃 )and an associated exposure score that determines exposure risk.
+Exposure follows a Gaussian model with mean 𝜇haz
+𝑎,𝜃 and standard deviation 𝜎haz
+𝑎,𝜃 ; an exposure event occurs when the
+score exceeds a threshold of 0.5, chosen as a neutral cutoff for the experiment. The immediate sensing reward combines
+the observation value, sensing cost, and exposure penalty, while movements between neighboring nodes incur a fixed
+cost. A discount factor 𝛾= 0.98 and additional penalty components model persistent and cumulative exposure effects.
+The key simulation parameters are summarized in T able3.
+Table 3 Key simulation parameters for Experiments 1
+Parameter Description V alue / Setting
+Threat types 𝜃 ∈{1,2,3} 3 categories
+Sensing actions 𝑎 ∈{A, B, C, D} 4 actions
+Observation model 𝑜∼N( 𝜇𝑎,𝜃 ,𝜎𝑎,𝜃 ) Gaussian
+Exposure model 𝜂𝑣,𝑡 ∼N
+
+𝜇haz
+𝑎,𝜃 ,𝜎haz
+𝑎,𝜃
+
+Gaussian
+Exposure threshold 𝜏𝜂 0.5
+Discount factor 𝛾 0.98
+Movement cost 𝑐move 1.0
+Sensing cost 𝑐sense (𝑎) {1.0, 1.0, 1.0, 0.1}
+Immediate exposure weight 𝜆imm 50.0
+Persistent decay rate 𝛼 0.95
+Persistent exposure weight 𝜆pers 0.1
+Cumulative exposure weight 𝜆cum 0.0005
+Novelty weight 𝜆𝑛𝑜𝑣 1
+Novelty decay rate 𝛽 0.8
+Replan frequency 𝑘(steps per replan) 1
+W e compare the adaptive robust planner against the static robust and nominal baselines under identical settings.
+Each planner operates for up to 2000 time steps, replanning at every step (𝑘 = 1). Performance is evaluated based on
+three key metrics: (i) the average observation reward and cumulative reward over time, (ii) the convergence behavior
+of the average credible set size |𝑈𝑡
+𝑣 |(for the adaptive robust planner only), and (iii) exposure statistics that capture
+both persistent and cumulative penalty effects. These metrics collectively illustrate how the planner balances reward
+maximization and risk mitigation as it progressively refines its uncertainty representation.
+All experiments use fixed random seeds for graph generation and threat initialization to ensure reproducibility
+while maintaining stochastic observation and exposure outcomes. Before presenting quantitative results, we visualize
+the underlying reward and hazard structures to clarify how the planner perceives the trade-off between sensing benefit
+and exposure risk in Figures4 and 5. The sensing actions A through D correspond to the four available sensing modes
+defined in the threat–observation model. As shown, each threat type favors a distinct action that simultaneously enables
+24
+more advantageous decisions. Action D, in contrast, serves as a safer default option when little information about the
+true threat type is available. Movement actions allow the aircraft to transition to adjacent nodes in the graph, but they
+are not depicted here since the figures focus solely on sensing-related reward and hazard patterns.
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4Density
+Action A
+Action B
+Action C
+Action D
+(a) Threat 1
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4Density
+Action A
+Action B
+Action C
+Action D (b) Threat 2
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4Density
+Action A
+Action B
+Action C
+Action D (c) Threat 3
+Fig. 4 Comparison of reward distributions across different threat prototypes for Experiment 1. Each subplot
+shows the probability density of expected observation rewards for all available actions under a specific threat.
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Proabability
+0
+1
+2
+3
+4Density
+Action A
+Action B
+Action C
+Action D
+(a) Threat 1
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Proabability
+0
+1
+2
+3
+4Density
+Action A
+Action B
+Action C
+Action D (b) Threat 2
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Proabability
+0
+1
+2
+3
+4Density
+Action A
+Action B
+Action C
+Action D (c) Threat 3
+Fig. 5 Exposure probability distributions corresponding to the threat prototypes in Experiment 1. The dashed
+vertical line indicates the decision threshold. Samples with exposure probability greater than 0.5 are considered
+exposed under the corresponding threat condition.
+Table 4 Summary of Experiment 1 Results. Higher values are better for observation and total reward, while
+lower values are better for cumulative exposures.
+Planner Observation Reward ↑ Cumulative Exposures ↓ T otal Reward↑
+Adaptive Robust 5882.44 ±168.12 39.13 ±11.19 9861.38 ±1345.84
+Nominal 6780.49 ±108.32 240.92 ±65.92 −7782.01 ±4887.74
+Static Robust 1487.82 ±233.79 89.64 ±9.16 190.63 ±858.26
+T able4 presents the results of Experiment 1, where each value is listed as mean±standard deviation across 100 runs.
+The three planners display clearly different behaviors. The adaptive robust planner performs best overall, achieving
+high total rewards while keeping the number of exposures low . This means it learns to gather useful information
+without taking excessive risks. As its belief about threats becomes more confident, the policy naturally shifts from
+25
+cautious exploration to more efficient sensing and movement. The nominal planner, which assumes a single estimated
+threat model, gains higher observation rewards early on but suffers from heavy exposure penalties and unstable total
+returns. Its aggressive sensing leads to frequent exposures, showing that overconfidence under uncertainty can reduce
+mission survivability . The static robust planner takes the opposite approach: it keeps the ambiguity sets fixed, acts
+conservatively to avoid risk, but gathers little information and achieves low overall rewards. T ogether, these results
+demonstrate that the adaptive robust planner provides the best balance between safety and efficiency . It remains robust
+when uncertainty is high and approaches nominal-level performance as threat ambiguity at each node decreases.
+Additionally, we also evaluated the computational efficiency of each planner to assess online feasibility . All experi-
+ments were conducted on a standard CPU node of the University of Michigan Great Lakes computing cluster, equipped
+with dual Intel Xeon Gold 6154 processors (36 cores, 3.0 GHz) and 187 GB RAM. Each run used 4 CPU cores and 8
+GB of memory without GPU acceleration. For the 2000-step simulations in Experiment 1, the nominal planner required
+an average of 43.46 ±0.07 s (approximately 21.7 ms per step), the adaptive robust planner 63.82 ±0.47 s (31.9 ms
+per step), and the static robust planner 94.14±0.34 s (47.1 ms per step). All planners operated fast enough for online
+execution, with each decision step completed within tens of milliseconds. Notably, the adaptive robust planner ran
+faster than the static robust planner because it gradually narrowed the ambiguity set during execution. As the planner
+refined its uncertainty over time, the computations became simpler while still supporting real-time operation.
+0 250 500 750 1000 1250 1500 1750 2000
+Step
+0
+1
+2
+3
+4
+5
+6Observation Reward
+Static Robust
+Adaptive Robust
+Nominal
+(a) Observation rewards over steps.
+0 250 500 750 1000 1250 1500 1750 2000
+Step
+−20
+−10
+0
+10
+20
+T otal Reward
+Static Robust
+Adaptive Robust
+Nominal (b) T otal rewards over steps.
+Fig. 6 Results of Experiment 1 comparing the reward evolution across three planning strategies. Both plots
+show 20-step moving-averaged results across random seeds. (a) Step-wise observation rewards. (b) Step-wise
+total rewards, including exposure penalties. Solid lines indicate the averaged performance across random seeds,
+and the shaded regions represent ±1 standard deviation.
+Figure 6 presents how each planner’s rewards evolve over time. The observation rewards are shown in Figure 6a.
+Initially, the nominal planner earns higher rewards because of its optimistic decision-making approach. In contrast,
+both the adaptive robust and static robust planners begin with lower values due to their conservative strategies under
+ambiguity sets. Over time, the static robust planner maintains nearly constant rewards because its fixed ambiguity set
+26
+leads to repetitive behavior under similar conditions. Conversely, the adaptive robust planner gradually shrinks its
+ambiguity set, increasing observation rewards that approach those achieved by the nominal planner. The observation
+rewards increase smoothly as each node in the graph maintains its own ambiguity set. Some nodes quickly identify
+one threat prototype as most likely, whereas others remain ambiguous and continue to consider several possible threat
+types.
+Figure 6b illustrates the evolution of total rewards, which incorporate exposure penalties. The adaptive robust
+planner consistently achieves the best performance among the three approaches. Although the nominal planner secures
+higher observation rewards, its exposure risk reduces its total gains. Despite gradual improvement through ongoing
+belief updates and MAP estimation, the nominal planner exhibits a wider standard deviation band, reflecting unstable
+performance. In contrast, the adaptive robust planner initially performs similarly to the static robust planner but soon
+improves as its ambiguity set contracts, achieving high, stable total rewards. Since the static robust planner maintains
+a larger ambiguity set than the adaptive robust planner at all times, it serves as a lower bound on performance under
+uncertainty .
+0 250 500 750 1000 1250 1500 1750 2000
+Step
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+3.00|Ut
+v|
+Adaptive Robust
+(a) A verage credible set size over steps.
+0 250 500 750 1000 1250 1500 1750 2000
+Step
+0
+50
+100
+150
+200
+250
+300Cumulative Exposures
+Static Robust
+Adaptive Robust
+Nominal (b) Cumulative exposures over steps.
+Fig. 7 Results of Experiment 1. (a) Step-wise changes in the credible set size|𝑈𝑡
+𝑣 |for the adaptive robust planner,
+illustrating how uncertainty is reduced over time. (b) Cumulative number of exposures over steps, compared
+across the three planning strategies. Both plots present 20-step moving-averaged results across random seeds.
+The solid lines denote the mean, and the shaded regions represent one standard deviation.
+Figure 7 illustrates how each planner behaves within the simulation environment beyond the reward metrics. Fig-
+ure 7a shows the evolution of the average credible set size of the adaptive robust planner across all graph nodes over time.
+From step 0 to approximately 500, the credible set size decreases sharply, indicating a rapid reduction in uncertainty .
+Beyond this point, the curve flattens as the planner revisits a few nodes that remain difficult to classify . Eventually,
+the credible set size converges to 1 for all nodes, indicating that the threats associated with each node are correctly
+identified.
+Figure 7b presents the cumulative exposures over time. The nominal planner exhibits a notably higher exposure
+27
+rate than the others due to the optimistic policy . The adaptive robust and static robust planners perform similarly up
+to around step 500. After that, the adaptive robust planner shows lower exposure rates. This trend occurs because
+our experimental setup rewards planners which accurately identify each node’s threat, giving them an advantage as
+uncertainty decreases. Notably, the stepwise total reward can exceed the observation reward, as it includes a novelty
+term that provides a positive exploration bonus for visiting less-explored nodes. T ogether, these results demonstrate
+that the adaptive robust planner maintains robustness in uncertain environments while naturally improving efficiency,
+thereby achieving the intended balance between the two.
+A B C D
+Action
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Relative Frequency
+Static Robust
+Adaptive Robust
+Nominal
+Fig. 8 Distribution of sensing action selections across different policies in Experiment 1. Action labels (A–D)
+correspond to the mapped sense-action categories. Frequencies are normalized to show relative selection ratios.
+Figure 8 illustrates how each planner selected sensing actions in Experiment 1, clearly revealing their distinct
+decision-making strategies. The static robust planner consistently chooses only action D, the safest option when the
+threat type is uncertain. This conservative behavior results in relatively low observation and total rewards. In contrast,
+the nominal planner, which relies on the MAP estimate, avoids action D and selects actions A, B, and C depending
+on its belief about each node’s threat type. The adaptive robust planner combined the strengths of both approaches,
+showing a balanced distribution across all four actions (A-D). It initially behaved conservatively, like the static robust
+planner, but gradually shifted toward higher-reward actions as the threat type became more certain.
+C. Experiment 2: Generalization to Non-Gaussian Threat Models
+W e assess the planner’s robustness and adaptability under general threat models, including Gaussian mixtures
+and log-normal distributions. These distributions capture multimodal and heavy-tailed sensing patterns commonly ob-
+served in electronic warfare environments [48], allowing us to test whether the planner generalizes beyond the idealized
+Gaussian assumptions of Experiment 1. The modified experimental parameters are summarized in T able5. With the
+same 3×4 grid graph and the same action set as in Experiment 1, we modify the observation and exposure models to
+28
+capture more diverse threat prototypes. The reward and exposure models used in Experiment 2 for all three threats are
+shown in Figures 9 and 10. Specifically, Threats 1 and 2 use Gaussian mixture observation models, where a single
+Gaussian is treated as a special (degenerate) case, while Threat 3 adopts a log-normal observation model. Each run con-
+sists of 3000 planning steps and is simulated under 100 independent random seeds. W e evaluate whether the adaptive
+robust planner remains effective under non-Gaussian uncertainty, exhibiting similar patterns in ambiguity refinement
+and exposure management to those observed in Experiment 1.
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4Density
+Action A
+Action B
+Action C
+Action D
+(a) Threat 1
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4Density
+Action A
+Action B
+Action C
+Action D (b) Threat 2
+−5 0 5 10 15 20
+Observation Reward
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6Density
+Action A
+Action B
+Action C
+Action D (c) Threat 3
+Fig. 9 Comparison of reward distributions across different threat prototypes for Experiment 2. Each subplot
+shows the probability density of expected observation rewards for all available actions under a specific threat.
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Probability
+0
+1
+2
+3
+4
+5Density
+Action A
+Action B
+Action C
+Action D
+(a) Threat 1
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Probability
+0
+1
+2
+3
+4
+5
+6
+7Density
+Action A
+Action B
+Action C
+Action D (b) Threat 2
+0.00 0.25 0.50 0.75 1.00 1.25 1.50
+Exposure Probability
+0.0
+0.5
+1.0
+1.5
+2.0Density
+Action A
+Action B
+Action C
+Action D (c) Threat 3
+Fig. 10 Exposure probability distributions corresponding to the same threat prototypes in Experiment 2. The
+dashed vertical line indicates the decision threshold. Samples with exposure probability greater than 0.5 are
+considered exposed under the corresponding threat condition.
+T able6 summarizes the quantitative results obtained under modified threat models. Despite the changes in both
+the observation and exposure distributions, the overall performance trend remains consistent with that observed in
+Experiment 1. The adaptive robust planner continues to achieve substantially higher total rewards compared to the
+nominal and static robust baselines, while continuing to keep cumulative exposures low . This consistency indicates
+that the proposed adaptive robust approach remains effective beyond Gaussian threat assumptions, generalizing across
+broader classes of uncertainty and confirming the robustness of the planning method.
+Figure 11 illustrates the temporal evolution of both observation and total rewards across the three planning strategies.
+29
+Table 5 Modified parameters in Experiments 2
+Parameter Description New V alue / Setting
+Observation model 𝑜∼Gaussian or log-normal mixture Mixed Gaussian / log-normal
+Exposure model xp ∼Gaussian mixture Mixed Gaussian
+Sensing cost 𝑐sense (𝑎) {0.1,0.1,0.1,0.1,0.1}
+Immediate exposure penalty 𝜆imm −10.0
+Persistent decay rate 𝛼 0.99
+Persistent exposure weight 𝜆pers 0.5
+Cumulative exposure weight 𝜆cum 0.01
+Table 6 Summary of Experiment 2 Results. Higher values are better for observation and total reward, while
+lower values are better for cumulative exposures.
+Planner Observation Reward ↑ Cumulative Exposures ↓ T otal Reward↑
+Adaptive Robust 7334.50 ±936.78 77.29 ±26.41 4416.98 ±3101.26
+Nominal 8414.99 ±1069.28 109.11 ±39.93 −153.79 ±5352.14
+Static Robust 3210.33 ±297.09 87.62 ±11.74 −1998.17 ±1505.94
+0 500 1000 1500 2000 2500 3000
+Step
+0
+1
+2
+3
+4
+5
+6Observation Reward
+Static Robust
+Adaptive Robust
+Nominal
+(a) Observation rewards over steps.
+0 500 1000 1500 2000 2500 3000
+Step
+−10.0
+−7.5
+−5.0
+−2.5
+0.0
+2.5
+5.0
+7.5
+10.0
+T otal Reward
+Static Robust
+Adaptive Robust
+Nominal (b) T otal rewards over steps.
+Fig. 11 Results of Experiment 2 comparing the reward evolution across three planning strategies. Both plots
+show 20-step moving-averaged results across random seeds. (a) Step-wise observation rewards. (b) Step-wise
+total rewards, including exposure penalties. Solid lines indicate the averaged performance across random seeds,
+and the shaded regions represent ±1 standard deviation.
+30
+Similar to the Gaussian case in Experiment 1, the adaptive robust planner consistently maintains higher observation
+rewards while stabilizing total returns through balanced exploration and exposure control. In contrast, the nominal
+planner achieves higher observation rewards but yields lower overall performance under uncertain threat conditions.
+Figure 11b shows a gradual decrease in total rewards across all methods compared to Experiment 1. This trend results
+from the increased cumulative exposure weight𝜆cum, which amplifies long-term penalty accumulation. Regardless of
+the parameter changes, the adaptive robust planner still outperforms the others and gradually recovers its total rewards
+as the ambiguity set refines over time.
+0 500 1000 1500 2000 2500 3000
+Step
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+3.00|Ut
+v|
+Experiment 1
+Experiment 2
+(a) A verage credible set size over steps.
+0 500 1000 1500 2000 2500 3000
+Step
+0
+20
+40
+60
+80
+100
+120
+140Cumulative Exposures
+Static Robust
+Adaptive Robust
+Nominal (b) Cumulative exposures over steps.
+Fig. 12 Results of Experiment 2. (a) Step-wise changes in the credible set size |𝑈𝑡
+𝑣 |for the adaptive robust
+planner between Experiment 1 and Experiment 2. The results show how the adaptive-robust planner progres-
+sively reduces uncertainty under different experimental conditions. (b) Cumulative number of exposures over
+steps, compared across the three planning strategies. Both plots present 20-step moving-averaged results across
+random seeds. The solid lines denote the mean, and the shaded regions represent one standard deviation.
+The underlying adaptive behavior is further analyzed in Figure 12. Figure 12a shows that the credible set size
+|𝑈𝑡
+𝑣 |steadily decreases as the adaptive planner gathers more informative observations, confirming effective uncertainty
+reduction under non-Gaussian distributions. Despite having the same graph size as in Experiment 1, the reduction
+progresses more slowly due to the broader coverage of the Gaussian mixture models, which makes distinguishing
+among threats more challenging. Correspondingly, Figure12b demonstrates that this reduction in uncertainty translates
+to lower cumulative exposure compared to the nominal and static robust baselines. The overall variance in both rewards
+and exposures is higher than in Experiment 1, reflecting the wider spread of the observation and threat models used in
+Experiment 2.
+Finally, Figure 13 compares the action selection distributions across the three planners, showing patterns similar
+to those in Experiment 1. The static robust policy consistently favors the safer Action D under uncertainty, while the
+adaptive robust planner initially exhibits similar conservative behavior but gradually shifts toward a more balanced
+selection as uncertainty decreases. These results demonstrate that the adaptive robust planner effectively adjusts its
+31
+A B C D
+Action
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Relative Frequency
+Static Robust
+Adaptive Robust
+Nominal
+Fig. 13 Distribution of sensing action selections across different policies in Experiment 2. Action labels (A–D)
+correspond to the mapped sense-action categories. Frequencies are normalized to show relative selection ratios.
+sensing strategy while maintaining robustness across different threat conditions, even when the underlying threat models
+are non-Gaussian.
+D. Experiment 3: Scalability across Network T opologies
+T o examine scalability, we test how the planner’s performance and computation time change with increasing net-
+work size and structural complexity . W e test a variety of graph topologies that reflect practical ISR mission environ-
+ments, ranging from regular grid-like layouts to irregular, hub-dominated, and modular regions. Assessing performance
+across these heterogeneous topologies allows us to measure robustness under diverse operational environments. The
+six representative topologies considered are illustrated in Figure14.
+Regular grid networks (3 ×4, 5 ×5, and 6 ×6) have a simple and regular structure, which allows direct compari-
+son with the controlled setting of Experiment 1. Grids with random edge deletions (5 ×5 and 6 ×6) introduce local
+connectivity disruptions, reflecting, e.g., terrain occlusions or restricted flight corridors [49, 50]. Star networks, com-
+posed of a central hub and 8 or 14 leaf nodes, are included to examine how the planner behaves in highly centralized
+hub-and-spoke structures. Erdos–Renyi random graphs with 15 and 30 nodes (𝑝 = 0.10,0.15) offer uniform random
+connectivity, serving as a baseline for comparison in networks without specific structural patterns. Barabasi–Albert
+scale-free graphs of comparable size (𝑚= 2,3) represent networks where a few hubs have many connections. Finally,
+stochastic block models (community) with 20 and 35 nodes, containing 3 and 4 clusters (𝑝intra = 0.7, 𝑝inter = 0.05 or
+0.03), are used to test how well the planner adapts to modular networks with clear community structures.
+Each experiment is repeated across 10 random seeds for each graph configuration and planner type (adaptive robust,
+static robust, and nominal) to ensure statistical consistency . All planners were tested in the same simulation environment
+as in Experiment 1. The exposure and reward settings were identical, but the simulation horizon was extended to 8000
+32
+(a) Grid
+ (b) Grid with edge deletions
+ (c) Erdos-Renyi
+(d) Barabasi–Albert
+ (e) Stochastic block model
+ (f) Star
+Fig. 14 Illustrations of the network topologies used in Experiment 3. Each structure differs in size and connec-
+tivity, representing diverse conditions for evaluating scalability.
+33
+time steps. Random seeds are fixed for graph generation and threat setup to ensure reproducibility while allowing for
+randomness in observations and exposures.
+T able7 summarizes the simulation results of Experiment 3, where all values are reported as mean ±standard
+deviation across 10 random seeds. As shown in the table, the adaptive robust planner consistently achieved higher
+total rewards than both the nominal and static robust planners across all network topologies. For the observation
+rewards, values were generally similar within the same planner, regardless of the underlying graph type or size. This
+consistency arises because all simulations were run for 8000 steps, providing comparable opportunities for each planner
+to accumulate observable rewards. The nominal planner showed substantially higher cumulative exposure, indicating
+more aggressive and dangerous behavior than the other planners. As a result, its higher observation rewards are offset
+in the total reward value. This pattern is consistent with the findings from Figure6, where the adaptive robust planner
+demonstrated superior long-term performance by maintaining a balanced trade-off between safety and efficiency . The
+result shows that the total reward also tended to increase with graph size. This trend occurs because, in larger networks,
+the novelty term remains high for longer as more nodes become available to explore. Furthermore, the adaptive robust
+planner exhibited smaller variance in both total rewards and cumulative exposures, confirming its stable and reliable
+performance across networks with different structures and scales.
+Across all tested graph topologies and node sizes, the adaptive robust planner demonstrated stable and consistent
+convergence, which occurs when all credible sets become singletons (e.g.,|𝑈𝑡
+𝑣 |= 1 for the reachable nodes). In a few
+runs, certain nodes failed to converge due to structural limitations in the network rather than a learning issue with the
+planner. These cases occurred when the graphs contained disconnected components, making some nodes unreachable
+from the main connected component. Because the graphs were randomly generated, such disconnected components
+appeared occasionally . After excluding structurally invalid cases, our adaptive robust planner successfully converged
+for all reachable nodes. The mean and standard deviation of the convergence steps increased gradually with graph size,
+indicating that the planner remains reliable across networks of different structures and scales.
+Figure 15 illustrates how graph size and topology influence the performance of the adaptive robust planner. Distinct
+marker shapes represent different graph topologies, while the horizontal axis denotes the number of nodes in each
+graph. Each point corresponds to the number of steps required for the size of all credible sets to reach one (|𝑈𝑡
+𝑣 |= 1)
+among the reachable nodes. The results indicate that, regardless of the network topology, the number of nodes is a key
+parameter that determines the adaptive planner’s efficiency . A clear linear relationship is observed between graph size
+and convergence steps, demonstrating that the proposed adaptive planner operates consistently across diverse graph
+structures. Each episode was limited to 8000 steps, yet even the slowest-converging case required only around 5200
+steps to fully resolve all ambiguity sets.
+34
+Table 7 Summary of Experiment 3 Results. Comparisons are valid only within each graph type and not across
+different topologies.
+Graph T ype Nodes Planner Obs. Reward ↑ Cum. Exposure ↓ T otal Reward↑
+Barabasi-Albert
+15
+Adaptive Robust 26604.09 ± 228.80 109.60 ± 7.17 641121.85 ± 1991.10
+Nominal 27633.34 ± 215.70 474.80 ± 103.36 9686.63 ± 14999.06
+Static Robust 6376.57 ± 676.51 365.00 ± 13.33 10969.77 ± 2855.34
+30
+Adaptive Robust 25267.94 ± 237.34 121.60 ± 4.25 155323.85 ± 1247.38
+Nominal 27355.98 ± 151.74 744.70 ± 123.64 70484.12 ± 13970.15
+Static Robust 6234.28 ± 744.20 365.70 ± 14.01 105826.26 ± 2308.49
+Stochastic
+Block Model
+30
+Adaptive Robust 25350.52 ± 361.47 121.10 ± 5.90 146729.40 ± 1296.92
+Nominal 27347.23 ± 187.65 744.50 ± 158.72 59647.03 ± 19560.29
+Static Robust 6182.58 ± 773.15 365.70 ± 14.01 96770.31 ± 4566.13
+40
+Adaptive Robust 24294.14 ± 320.70 136.60 ± 6.96 218087.10 ± 1372.49
+Nominal 27181.90 ± 150.27 930.70 ± 119.53 113903.51 ± 13890.50
+Static Robust 6187.70 ± 568.42 365.90 ± 12.64 172227.88 ± 2468.59
+Erdos-Renyi
+15
+Adaptive Robust 26944.90 ± 567.93 116.80 ± 35.00 44870.10 ± 21794.13
+Nominal 27699.09 ± 273.14 435.60 ± 169.30 -3554.78 ± 15704.17
+Static Robust 6245.47 ± 691.76 365.00 ± 13.33 -7520.53 ± 22919.71
+30
+Adaptive Robust 25589.12 ± 869.56 119.00 ± 9.63 148749.01 ± 51479.06
+Nominal 27385.43 ± 255.58 720.50 ± 220.94 67701.03 ± 36151.77
+Static Robust 6134.88 ± 819.49 365.70 ± 14.01 98663.02 ± 52665.88
+Grid
+12
+Adaptive Robust 26999.01 ± 196.12 102.90 ± 7.71 44345.51 ± 2482.13
+Nominal 27689.68 ± 163.95 441.90 ± 160.51 -10734.79 ± 22350.71
+Static Robust 6127.44 ± 815.71 364.80 ± 13.06 -13145.22 ± 1443.97
+25
+Adaptive Robust 25687.31 ± 322.45 128.60 ± 22.19 121098.12 ± 5810.31
+Nominal 27441.00 ± 159.42 702.50 ± 172.20 34449.63 ± 20104.99
+Static Robust 6184.44 ± 790.95 364.50 ± 14.00 64835.45 ± 2247.67
+36
+Adaptive Robust 24709.20 ± 333.65 151.50 ± 34.08 185971.11 ± 4331.75
+Nominal 27251.40 ± 180.25 861.80 ± 133.23 85872.47 ± 15090.80
+Static Robust 6093.93 ± 724.04 366.10 ± 12.60 134456.16 ± 2058.68
+Grid with
+Edge Deletions
+25
+Adaptive Robust 25741.21 ± 145.88 117.70 ± 9.24 132262.88 ± 7148.92
+Nominal 27466.33 ± 225.79 694.70 ± 209.91 50786.09 ± 25616.49
+Static Robust 6044.33 ± 730.08 368.10 ± 13.55 80153.59 ± 8032.60
+36
+Adaptive Robust 25134.64 ± 1020.19 126.20 ± 13.41 194330.90 ± 68213.77
+Nominal 27359.72 ± 283.59 683.50 ± 217.12 118948.59 ± 52728.24
+Static Robust 5794.11 ± 1462.13 367.60 ± 14.75 144842.62 ± 72473.51
+Star
+9
+Adaptive Robust 27198.16 ± 207.06 103.20 ± 8.48 32855.09 ± 1494.85
+Nominal 27711.70 ± 239.62 416.30 ± 144.04 -16254.38 ± 20902.36
+Static Robust 5593.48 ± 1759.26 364.60 ± 13.28 -22579.18 ± 1664.92
+15
+Adaptive Robust 26628.59 ± 263.27 109.80 ± 9.41 67126.14 ± 1709.23
+Nominal 27689.59 ± 232.86 401.50 ± 135.57 22525.42 ± 17940.09
+Static Robust 6251.57 ± 1343.95 365.00 ± 13.33 14061.61 ± 1853.36
+35
+10 15 20 25 30 35 40
+Number of nodes in graph
+1000
+2000
+3000
+4000
+5000Ambiguity set convergence steps
+Barabasi Albert
+Erdos-Renyi
+Grid
+Grid with Edge Deletions
+Star
+Stochastic Block Model
+Fig. 15 Each point represents the mean number of steps required for the ambiguity set 𝑈𝑡 to converge
+(mean ±std) across networks of different sizes and types. Error bars indicate one standard deviation over
+random seeds, and the dashed black line denotes the overall linear trend across all network types.
+VIII. Conclusion
+A. Summary
+W e present an adaptive RMDP framework for decision-making in an uncertain threat environment, where a single
+CCA performs repetitive surveillance missions within a partitioned ISR operation area. In addition, the framework
+is supported by theoretical guarantees on operator convergence, asymptotic optimality, and probabilistic safety, pro-
+viding a rigorous foundation for its reliability under uncertainty . The proposed approach addresses the limitations of
+conventional RMDPs that rely on static ambiguity sets by incorporating a Bayesian inference-based mechanism to re-
+duce ambiguity set sizes. This enables the agent to progressively update its threat model and refine its policy using
+observations collected during mission execution. Consequently, as the agent repeatedly monitors its assigned region,
+it naturally transitions from conservative to aggressive behaviors as the uncertainties are reduced
+The effectiveness of the proposed algorithm was demonstrated through three sets of experiments. The first ex-
+periment confirmed that the proposed adaptive robust planner exhibited the intended transition from conservative to
+efficient behavior as it accumulated environmental knowledge in a simple environment, while the second demonstrated
+generalization capability under non-Gaussian threat distributions. The third experiment evaluated adaptability and
+scalability across various graph sizes and topologies. The results showed that our adaptive robust planner achieved
+higher cumulative rewards and lower exposure risk than static robust and nominal planners, highlighting its advantage
+in leveraging accumulated observations to continuously improve policy during repetitive surveillance missions. Over-
+all, the proposed method provides a decision-making structure that autonomously balances robustness and adaptivity
+in contested environments, offering a promising direction for reliable long-term surveillance under uncertainty .
+36
+B. Limitations and Future W ork
+W e plan to extend the current work in two primary directions, each motivated by limitations of the present work.
+First, the current adaptive RMDP framework is restricted to a single agent operating within a fixed region and does not
+account for interactions among multiple CCAs. T o address this limitation, we will expand to a distributed, multi-agent
+environments. While the present work focuses on a single agent repeatedly conducting surveillance within its assigned
+region, actual ISR operations involve multiple agents operating in adjacent areas and interacting with one another.
+Future work will therefore consider information exchange, mutual trust modeling, and distributed decision-making
+structures to enable cooperative behavior among agents. In particular, under dynamically changing threat conditions
+or information asymmetry, mechanisms for region reassignment and policy synchronization will be investigated to en-
+hance overall surveillance efficiency and system resilience. W e aim to scale robustness of the adaptive RMDP approach
+to a distributed system level, improving its applicability in realistic CCA operating scenarios.
+Second, the present study assumes fully autonomous operation and does not incorporate human intervention, which
+is a core aspect of practical CCA employment. Therefore, we will explore the integration of human involvement and
+intervention in the decision-making process. This direction reflects the fundamental concept of CCAs as autonomous
+teammates that operate in coordination with human pilots. Future studies will model various forms of human involve-
+ment in the decision-making process, ranging from soft interventions (e.g., the human provides guidance or modifies
+the autonomous policy), to hard overrides (e.g., the human operator directly takes control and alters the agent’s actions).
+The effects of these interventions on policy adaptability, safety, and mission performance will be analyzed to assess the
+stability and learning characteristics of adaptive RMDP structures under human intervention. Furthermore, research
+will investigate decision-making architectures that can effectively integrate human high-level judgments from a human
+operator with autonomous computational reasoning, establishing the foundation for safe and reliable human–machine
+collaboration in future ISR missions.
+A. Appendix: Proofs of Section VI.C
+Proof of Theorem 1. By Assumption 1, the one-step reward is bounded, so each T𝑡
+rob (𝜔)maps Bonto itself. By As-
+sumption 2, the operators are 𝛾-contractions with a common 𝛾 ∈(0,1). Let 𝑉,𝑊 ∈B, that is, bounded real-valued
+functions on S′. Since ∥T𝑡
+rob𝑉 −T𝑡
+rob𝑊∥∞ ≤𝛾∥𝑉 −𝑊∥∞for all 𝑡 and T𝑡
+rob →T∞uniformly on bounded sets, taking
+𝑡 →∞ gives ∥T∞𝑉−T∞𝑊∥∞≤𝛾∥𝑉−𝑊∥∞.
+Let Ω0 be the event of probability one on which the above uniform convergence condition holds. Fix𝜔∈Ω0. For
+this fixed 𝜔, all quantities are deterministic. Let 𝑉★(𝜔)be the unique fixed point of T∞(𝜔)on Bby Banach’s fixed-
+point theorem. Uniform boundedness of rewards implies∥𝑉★(𝜔)∥∞≤𝑅max/(1−𝛾)and, inductively,sup𝑡 ∥𝑉𝑡 (𝜔)∥∞≤
+37
+𝑅max/(1 −𝛾). Let 𝑀 := 𝑅max/(1 −𝛾)and 𝐵𝑀 := {𝑉 ∈B : ∥𝑉∥∞≤𝑀}. Then, for all 𝑡,
+∥𝑉𝑡+1 (𝜔)−𝑉★(𝜔)∥∞= ∥T𝑡
+rob (𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉★(𝜔)∥∞
+= ∥T𝑡
+rob (𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉𝑡 (𝜔)+T∞(𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉★(𝜔)∥∞
+≤∥T 𝑡
+rob (𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉𝑡 (𝜔)∥∞+∥T∞(𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉★(𝜔)∥∞,
+(31)
+where the last inequality is by the triangle inequality . Using the contraction property ofT∞(𝜔), we have
+∥T∞(𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉★(𝜔)∥∞≤𝛾∥𝑉𝑡 (𝜔)−𝑉★(𝜔)∥∞. (32)
+For the first term, define the uniform deviation as
+𝜀𝑡 (𝜔):= sup
+𝑉 ∈𝐵𝑀
+T𝑡
+rob (𝜔)𝑉−T∞(𝜔)𝑉
+
+∞. (33)
+Since 𝑉𝑡 (𝜔)∈ 𝐵𝑀, we have
+∥T𝑡
+rob (𝜔)𝑉𝑡 (𝜔)−T∞(𝜔)𝑉𝑡 (𝜔)∥∞≤𝜀𝑡 (𝜔). (34)
+Combining (31) and (32) yields
+∥𝑉𝑡+1 (𝜔)−𝑉★(𝜔)∥∞≤𝛾∥𝑉𝑡 (𝜔)−𝑉★(𝜔)∥∞+𝜀𝑡 (𝜔). (35)
+Denoting 𝑥𝑡 (𝜔):= ∥𝑉𝑡 (𝜔)−𝑉★(𝜔)∥∞, we obtain
+𝑥𝑡+1 (𝜔)≤ 𝛾𝑥𝑡 (𝜔)+𝜀𝑡 (𝜔). (36)
+By uniform convergence on 𝐵𝑀, 𝜀𝑡 (𝜔)→ 0. The recursion 𝑥𝑡+1 ≤𝛾𝑥𝑡 +𝜀𝑡 then yields
+𝑥𝑡 (𝜔) ≤𝛾𝑡 𝑥0 (𝜔) +
+𝑡−1Õ
+𝑘=0
+𝛾𝑡−1−𝑘𝜀𝑘 (𝜔) −→0, (37)
+since 𝛾𝑡 →0 and the weighted sum vanishes as𝜀𝑡 (𝜔)→ 0. Hence 𝑉𝑡 (𝜔)→ 𝑉★(𝜔)for all 𝜔∈Ω0.
+Proof of Corollary 1. By Assumption 5, each 𝑓𝑣,𝑎 is continuous on compact setΘ, hence uniformly continuous. Since
+𝑈𝑡
+𝑣 →{𝜃★
+𝑣 }in the PK sense by Assumption4, and 𝑓𝑣,𝑎 is continuous, the minimum over𝑈𝑡
+𝑣 varies continuously as the
+38
+set shrinks to {𝜃★
+𝑣 }. Thus, for every (𝑣,𝑎),
+min
+𝜃 ∈𝑈𝑡𝑣
+𝑓𝑣,𝑎 (𝜃) −→𝑓𝑣,𝑎 (𝜃★
+𝑣 ) almost surely . (38)
+For the transition term, fix 𝑠,𝑎 with 𝑣= 𝑣(𝑠,𝑎). The maps
+𝜃 ↦→E𝑃(·|𝑠,𝑎 ;𝜃)[𝑉(𝑆′)] and 𝑃↦→E𝑃 [𝑉(𝑆′)] (39)
+are continuous for bounded𝑉and finite S′. Since 𝑈𝑡
+𝑠,𝑎 = 𝜙𝑠,𝑎 (𝑈𝑡
+𝑣)and 𝜙𝑠,𝑎 is continuous, the induced ambiguity sets
+𝑈𝑡
+𝑠,𝑎 converge in the PK sense to𝑈∞
+𝑠,𝑎 := {𝜙𝑠,𝑎 (𝜃★
+𝑣 )}. Therefore,
+min
+𝑃∈𝑈𝑡𝑠,𝑎
+E𝑃 [𝑉(𝑆′)] −→E𝑃★ (·|𝑠,𝑎 )[𝑉(𝑆′)] a.s. (40)
+Combining the stage and transition limits, we obtain for any bounded𝐵⊂B, we have that
+sup
+𝑉 ∈𝐵
+∥T𝑡
+rob𝑉−T𝜃★
+nom𝑉∥∞ −−−−→
+𝑡→∞
+0 a.s. (41)
+Assumptions 1 and 2 imply each T𝑡
+rob is a 𝛾-contraction with common modulus 𝛾 ∈ (0,1). Theorem 1 applies and
+yields 𝑉𝑡 →𝑉★
+nom almost surely . Since 𝑉𝑡 →𝑉★
+nom and the transition models converge, the corresponding one-step
+lookahead values 𝑄𝑡 also converge pointwise to 𝑄★
+nom. If the maximizer is unique at every state for 𝑄★
+nom, the greedy
+selector is single valued for all large𝑡, hence 𝜋𝑡 →𝜋★
+nom.
+Proof of Proposition 1. On the eventE𝑡 we have𝜃★
+𝑣 ∈𝑈𝑡
+𝑣 for all 𝑣. By definition of the ambiguity set𝑈𝑡
+𝑠,𝑎 and because
+each transition model depends on its local parameter, for every(𝑠,𝑎)with 𝑣= 𝑣(𝑠,𝑎),
+𝑃★(·| 𝑠,𝑎) = 𝜙𝑠,𝑎 (𝜃★
+𝑣 ) ∈𝜙𝑠,𝑎 (𝑈𝑡
+𝑣) = 𝑈𝑡
+𝑠,𝑎 . (42)
+Hence, on E𝑡 , we have 𝑃★ ∈𝑈𝑡 := Î
+(𝑠,𝑎 )𝑈𝑡
+𝑠,𝑎 . Therefore, still on E𝑡 and for every 𝑠,
+𝑉𝜋𝑡
+𝑃★ (𝑠) ≥min
+𝑃∈𝑈𝑡
+𝑉𝜋𝑡
+𝑃 (𝑠). (43)
+T aking probabilities and using that the inequality holds for all𝑠simultaneously on E𝑡 gives
+P
+
+∀𝑠∈S′: 𝑉𝜋𝑡
+𝑃★ (𝑠) ≥min
+𝑃∈𝑈𝑡
+𝑉𝜋𝑡
+𝑃 (𝑠)
+
+≥ P(E𝑡 ) = 1 −𝛿𝑡 . (44)
+39
+Acknowledgements
+This project was supported by NSF IUCRC Phase I: Center for Autonomous Air Mobility and Sensing (CAAMS)
+A ward No. 2137195. The authors also thank Mengmeng Li from École Polytechnique Fédérale de Lausanne (EPFL)
+for valuable discussions and feedback that helped improve the theoretical components of this work.
+References
+[1] Choi, J., and Li, M. Z., “ Adaptive Robust Markov Decision Process for Wide-Area Surveillance with Collaborative Combat
+Aircraft,” , 2026. T o be presented at the 2026 AIAA SciT ech Forum, Orlando, FL, USA.
+[2] Gunzinger, C. M. A., Stutzriem, M. G. L. A., and Sweetman, B., “The Need for Collaborative Combat Aircraft for Disruptive
+Air W arfare,” T ech. rep., Mitchell Institute for Aerospace Studies, Arlington, V A, February 2024.
+[3] Penney, H. R., “Five Imperatives for Developing Collaborative Combat Aircraft for T eaming Operations,” T ech. rep., The
+Mitchell Institute for Aerospace Studies, Air & Space Forces Association, Arlington, V A, 10 2022.
+[4] DiMascio, J., “U.S. Air Force Collaborative Combat Aircraft (CCA),” T ech. Rep. IF12740, Congressional Research Service,
+2024. URL https://crsreports.congress.gov/product/pdf/IF/IF12740, accessed on May 21, 2025.
+[5] Adamy, D. L.,Introduction to Electronic Warfare Modeling and Simulation, Scitech Publishing, Raleigh, NC, 2006.
+[6] Ma, C., Guleria, Y ., Alam, S., and Li, M. Z., “Deep Reinforcement Learning-Based Air Traffic Flow Coordination in Flow-
+Centric Airspace,” Advanced Engineering Informatics, V ol. 65, 2025, p. 103342.https://doi.org/https://doi.org/10.1016/j.aei.
+2025.103342.
+[7] Choi, J., and Ahn, J., “Uncertainty-A ware Autonomous Mars Landing Guidance With Curriculum Reinforcement Learning,”
+AIAA SCITECH 2025 F orum, 2025. https://doi.org/10.2514/6.2025-1933.
+[8] Koch, W ., Mancuso, R., W est, R., and Bestavros, A., “Reinforcement Learning for UA V Attitude Control,”ACM T rans. Cyber-
+Phys. Syst., V ol. 3, No. 2, 2019.https://doi.org/10.1145/3301273.
+[9] Kirschner, J., Bogunovic, I., Jegelka, S., and Krause, A., “Distributionally robust Bayesian optimization,”International Con-
+ference on Artificial Intelligence and Statistics, 2020, pp. 2174–2184. https://doi.org/10.48550/ARXIV.2002.09038.
+[10] Iyengar, G., “Robust dynamic programming,” Mathematics of Operations Research , V ol. 30, No. 2, 2005, pp. 257–280.
+https://doi.org/10.1287/moor.1040.0129.
+[11] Nilim, A., and El Ghaoui, L., “Robust Control of Markov Decision Processes with Uncertain Transition Matrices,”Operations
+Research, V ol. 53, No. 5, 2005, pp. 780–798.https://doi.org/10.1287/opre.1050.0216.
+40
+[12] Wiesemann, W ., Kuhn, D., and Rustem, B., “Robust Markov decision processes,”Mathematics of Operations Research, V ol. 38,
+No. 1, 2013, pp. 153–183. https://doi.org/10.1287/moor.1120.0566.
+[13] Choi, J., Stagg, G., Peterson, C. K., and Li, M. Z., “Bi-Level Route Optimization and Path Planning with Hazard Exploration,”
+arXiv preprint arXiv:2503.24044, 2025. URL https://arxiv.org/abs/2503.24044.
+[14] Choi, J., and Li, M. Z., “Bandit-Enabled Dynamic V ehicle Dispatch and Routing in Hazardous Environments,” AIAA A VIA-
+TION FORUM AND ASCEND 2025, 2025. https://doi.org/10.2514/6.2025-3411.
+[15] Choi, J., and Li, M. Z., “ Autonomous Air-Ground V ehicle Operations Optimization in Hazardous Environments: A Multi-
+Armed Bandit Approach,” arXiv preprint arXiv:2508.08217, 2025. URL https://arxiv.org/abs/2508.08217.
+[16] Sun, S., Qi, M., and Shen, Z.-J. M., “Online MDP with Prototypes Information: A Robust Adaptive Approach,”Proceedings
+of the AAAI Conference on Artificial Intelligence, V ol. 39, 2025, pp. 20717–20724.https://doi.org/10.1609/aaai.v39i19.34283.
+[17] Chizek, J. G., “Military Transformation: Intelligence, Surveillance and Reconnaissance,” T ech. Rep. ADA469293, Con-
+gressional Research Service, Library of Congress, W ashington, D.C., January 2003. URL https://apps.dtic.mil/sti/pdfs/
+ADA469293.pdf.
+[18] Smagh, N. S., “Intelligence, Surveillance, and Reconnaissance Design for Great Power Competition,” T ech. Rep. AD1114211,
+Congressional Research Service, W ashington, D.C., June 2020. URLhttps://apps.dtic.mil/sti/pdfs/AD1114211.pdf.
+[19] Department of the Air Force, “ Air Force Doctrine Note 25-1: Artificial Intelligence,” T ech. rep., Apr. 2025. URL https:
+//www.doctrine.af.mil/Operational-Level-Doctrine/AFDN-25-1-Artificial-Intelligence/ .
+[20] Cheng, H., Conway, E., Heggedahl, T ., Morgan, J., and Schlessman, B., “Explore AI and machine learning for future ISR
+collection planning and management,”Artificial Intelligence and Machine Learning for Multi-Domain Operations Applications
+IV, V ol. 12113, edited by T . Pham and L. Solomon, International Society for Optics and Photonics, SPIE, 2022, p. 1211313.
+https://doi.org/10.1117/12.2619117.
+[21] Jing, T ., W ang, W ., W ang, T ., Li, X., and Zhou, X., “Dynamic Control Scheme of Multiswarm Persistent Surveillance in a
+Changing Environment,” Computational Intelligence and Neuroscience, V ol. 2019, No. 1, 2019, p. 6025657.https://doi.org/
+https://doi.org/10.1155/2019/6025657.
+[22] Nigam, N., and Kroo, I., “Persistent Surveillance Using Multiple Unmanned Air V ehicles,”2008 IEEE Aerospace Conference,
+2008, pp. 1–14. https://doi.org/10.1109/AERO.2008.4526242.
+[23] Lappas, V ., Shin, H.-S., T sourdos, A., Lindgren, D., Bertrand, S., Marzat, J., Piet-Lahanier, H., Daramouskas, Y ., and
+Kostopoulos, V ., “ Autonomous Unmanned Heterogeneous V ehicles for Persistent Monitoring,”Drones, V ol. 6, No. 4, 2022.
+https://doi.org/10.3390/drones6040094.
+[24] Wu, Y ., Wu, S., and Hu, X., “Cooperative Path Planning of UA V s & UGV s for a Persistent Surveillance T ask in Urban Environ-
+ments,” IEEE Internet of Things Journal, V ol. 8, No. 6, 2021, pp. 4906–4919.https://doi.org/10.1109/JIOT.2020.3030240.
+41
+[25] Lin, X., Y azıcıoğlu, Y ., and Aksaray, D., “Robust Planning for Persistent Surveillance With Energy-Constrained UA V s and
+Mobile Charging Stations,” IEEE Robotics and Automation Letters, V ol. 7, No. 2, 2022, pp. 4157–4164. https://doi.org/10.
+1109/LRA.2022.3146938.
+[26] Egorov , M., Kochenderfer, M., and Uudmae, J., “T arget Surveillance in Adversarial Environments Using POMDPs,”Proceed-
+ings of the AAAI Conference on Artificial Intelligence, V ol. 30, No. 1, 2016.
+[27] T emizer, S., Kochenderfer, M., Kaelbling, L., Lozano-Perez, T ., and Kuchar, J., “Collision A voidance for Unmanned Aircraft
+using Markov Decision Processes*,”AIAA Guidance, Navigation, and Control Conference, 2010.
+[28] Durrant-Whyte, H., Roy, N., and Abbeel, P .,Unmanned Aircraft Collision Avoidance Using Continuous-State POMDPs, 2012,
+pp. 1–8.
+[29] Y u, X., Zhou, X., and Zhang, Y ., “Collision-free trajectory generation for UA V s using Markov decision process,”2017 Interna-
+tional Conference on Unmanned Aircraft Systems (ICUAS), 2017, pp. 56–61. https://doi.org/10.1109/ICUAS.2017.7991332.
+[30] Ong, H. Y ., and Kochenderfer, M. J., “Markov Decision Process-Based Distributed Conflict Resolution for Drone Air Traffic
+Management,” Journal of Guidance, Control, and Dynamics , V ol. 40, No. 1, 2017, pp. 69–80. https://doi.org/10.2514/1.
+G001822.
+[31] T ang, Y ., and Xu, Y ., “Multi-Agent Deep Reinforcement Learning for Solving Large-scale Air Traffic Flow Management
+Problem: A Time-Step Sequential Decision Approach,” 2021 IEEE/AIAA 40th Digital Avionics Systems Conference (DASC),
+2021, pp. 1–10. https://doi.org/10.1109/DASC52595.2021.9594329.
+[32] Spatharis, C., Blekas, K., Bastas, A., Kravaris, T ., and V ouros, G. A., “Collaborative multiagent reinforcement learning
+schemes for air traffic management,” 2019 10th International Conference on Information, Intelligence, Systems and Appli-
+cations (IISA), 2019, pp. 1–8. https://doi.org/10.1109/IISA.2019.8900719.
+[33] Balachandran, S., and Atkins, E., “Markov Decision Process Framework for Flight Safety Assessment and Management,”
+Journal of Guidance, Control, and Dynamics, V ol. 40, No. 4, 2017, pp. 817–830.https://doi.org/10.2514/1.G001743.
+[34] Nilim, A., Ghaoui, L., Hansen, M., and Duong, V ., “Trajectory-based air traffic management (TB-ATM) under weather uncer-
+tainty,” 4th USA/EUROPE ATM R&D Seminar, 2001.
+[35] Suilen, M., Badings, T ., Bovy, E. M., Parker, D., and Jansen, N., Robust Markov Decision Processes: A Place Where AI
+and F ormal Methods Meet, Springer Nature Switzerland, Cham, 2025, pp. 126–154. https://doi.org/10.1007/978-3-031-
+75778-5_7.
+[36] W ang, Y ., and Zou, S., “Policy Gradient Method For Robust Reinforcement Learning,”Proceedings of the 39th International
+Conference on Machine Learning, Proceedings of Machine Learning Research, V ol. 162, edited by K. Chaudhuri, S. Jegelka,
+L. Song, C. Szepesvari, G. Niu, and S. Sabato, PMLR, 2022, pp. 23484–23526. URL https://proceedings.mlr.press/v162/
+wang22at.html.
+42
+[37] Le T allec, Y ., “Robust, Risk-Sensitive, and Data-Driven Control of Markov Decision Processes,” Ph.D. thesis, Massachusetts
+Institute of T echnology, 2007. URLhttp://hdl.handle.net/1721.1/38598.
+[38] Li, M., Kuhn, D., and Sutter, T ., “T owards Optimal Offline Reinforcement Learning,”arXiv preprint arXiv:2503.12283, 2025.
+URL https://arxiv.org/abs/2503.12283.
+[39] Blanchet, J., Lu, M., Zhang, T ., and Zhong, H., “Double Pessimism is Provably Efficient for Distributionally Robust Offline
+Reinforcement Learning: Generic Algorithm and Robust Partial Coverage,” Advances in Neural Information Processing Sys-
+tems, V ol. 36, edited by A. Oh, T . Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, Curran Associates, Inc., 2023,
+pp. 66845–66859.
+[40] Zhao, W ., Queralta, J. P ., and W esterlund, T ., “Sim-to-Real Transfer in Deep Reinforcement Learning for Robotics: a Survey,”
+2020 IEEE Symposium Series on Computational Intelligence (SSCI), 2020, pp. 737–744. https://doi.org/10.1109/SSCI47803.
+2020.9308468.
+[41] Dong, J., Li, J., W ang, B., and Zhang, J., “Online Policy Optimization for Robust Markov Decision Process,”Proceedings of
+the F ortieth Conference on Uncertainty in Artificial Intelligence, JMLR.org, 2024.
+[42] Akbarzadeh, V ., Gagne, C., Parizeau, M., Argany, M., and Mostafavi, M. A., “Probabilistic Sensing Model for Sensor Place-
+ment Optimization Based on Line-of-Sight Coverage,” IEEE T ransactions on Instrumentation and Measurement, V ol. 62,
+No. 2, 2013, pp. 293–303. https://doi.org/10.1109/TIM.2012.2214952.
+[43] Pierson, A., Figueiredo, L. C., Pimenta, L. C., and Schwager, M., “ Adapting to sensing and actuation variations in multi-robot
+coverage,” Int. J. Rob. Res., V ol. 36, No. 3, 2017, p. 337–354.https://doi.org/10.1177/0278364916688103.
+[44] Aubin, J.-P ., and Frankowska, H.,Set-Valued Analysis, 1st ed., Modern Birkhäuser Classics, Birkhäuser Boston, Boston, MA,
+2009. https://doi.org/10.1007/978-0-8176-4848-0 .
+[45] Puterman, M. L., Markov Decision Processes: Discrete Stochastic Dynamic Programming, 1st ed., John Wiley & Sons, Inc.,
+USA, 1994.
+[46] Billingsley, P .,Convergence of Probability Measures, 2nd ed., Wiley Series in Probability and Statistics, John Wiley & Sons,
+1999. https://doi.org/10.1002/9780470316962.
+[47] Billingsley, J. B., Low-Angle Radar Land Clutter: Measurements and Empirical Models, Institution of Engineering and T ech-
+nology, London, UK, 2002.
+[48] W ard, K., T ough, R., and W atts, S.,Sea Clutter: Scattering, the K Distribution and Radar P erformance, 2nd ed., Radar, Sonar
+and Navigation, The Institution of Engineering and T echnology, 2013.
+[49] Krzywdziński, K., and Rybarczyk, K., “Geometric Graphs with Randomly Deleted Edges - Connectivity and Routing Proto-
+cols,” Mathematical F oundations of Computer Science 2011, edited by F. Murlak and P . Sankowski, Springer Berlin Heidel-
+berg, Berlin, Heidelberg, 2011, pp. 544–555.
+43
+[50] Seymour, P ., and W elsh, D., “Percolation Probabilities on the Square Lattice,” Advances in Graph Theory , Annals of Dis-
+crete Mathematics, V ol. 3, edited by B. Bollobás, Elsevier, 1978, pp. 227–245.https://doi.org/https://doi.org/10.1016/S0167-
+5060(08)70509-0.
+44

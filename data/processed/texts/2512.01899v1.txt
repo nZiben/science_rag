@@ -1,0 +1,1879 @@
+Provably Safe Model Updates
+Leo Elmecker-Plakolm⋆
+Department of Computing
+Imperial College London
+London, United Kingdom
+le24@ic.ac.uk
+Pierre Fasterling⋆
+School of Computer and Comm. Sciences (IC)
+´Ecole Polytechnique F ´ed´erale de Lausanne
+Lausanne, Switzerland
+pierre.fasterling@epfl.ch
+Philip Sosnin⋆
+Department of Computing
+Imperial College London
+London, United Kingdom
+p.sosnin23@imperial.ac.uk
+Calvin Tsay
+Department of Computing
+Imperial College London
+London, United Kingdom
+c.tsay@imperial.ac.uk
+Matthew Wicker
+Department of Computing
+Imperial College London
+London, United Kingdom
+m.wicker@imperial.ac.uk
+Abstract—Safety-critical environments are inherently dynamic.
+Distribution shifts, emerging vulnerabilities, and evolving re-
+quirements demand continuous updates to machine learning
+models. Yet even benign parameter updates can have unintended
+consequences, such as catastrophic forgetting in classical models
+or alignment drift in foundation models. Existing heuristic
+approaches (e.g., regularization, parameter isolation) can mitigate
+these effects but cannot certify that updated models continue
+to satisfy required performance specifications. We address this
+problem by introducing a framework for provably safe model
+updates. Our approach first formalizes the problem as computing
+the largest locally invariant domain (LID): a connected region
+in parameter space where all points are certified to satisfy a
+given specification. While exact maximal LID computation is
+intractable, we show that relaxing the problem to parameter-
+ized abstract domains (orthotopes, zonotopes) yields a tractable
+primal-dual formulation. This enables efficient certification of
+updates—independent of the data or algorithm used—by pro-
+jecting them onto the safe domain. Our formulation further
+allows computation of multiple approximately optimal LIDs,
+incorporation of regularization-inspired biases, and use of look-
+ahead data buffers. Across continual learning and foundation
+model fine-tuning benchmarks, our method matches or exceeds
+heuristic baselines for avoiding forgetting while providing formal
+safety guarantees.
+Index Terms—verification, continual learning, fine-tuning,
+safety
+I. INTRODUCTION
+Machine learning capabilities are evolving at unprecedented
+speed, driving deployment in high-stakes domains where
+safety and security are critical requirements [1], [2]. Mod-
+els used in such critical domains (e.g., autonomous driving,
+medical applications, and financial services) must continually
+contend with input distribution shifts, newly discovered vul-
+nerabilities, and evolving regulatory requirements. As a result,
+regular updates are a prerequisite to safe deployment. How-
+ever, even benign updates can trigger severe unintended effects
+on model behavior—most notably catastrophic forgetting and
+loss of alignment—which are extensively documented in both
+foundation models [3]–[6] and in continual learning [7], [8].
+In absence ofa prioriguarantees, model updates cannot be
+Task 1
+ Task 2
+Sequential Learning w/o Safety Constraints (SGD)
+Task 3
+Task 1
+ Task 2
+Sequential Learning with Constraints (PGD + LID)
+Task 3
+Fig. 1. Illustration of our method on a simple ‘blobs’ dataset, where the
+model sequentially learns pairs of classes. The true class label for each data
+point corresponds to the color of the point and the background region to the
+output of the model. Top: Standard training forgets previously learned classes.
+Bottom: Training within our locally invariant domain successfully preserves
+performance on earlier tasks.
+deployed into safety critical contexts without complete re-
+evaluation to satisfy regulators [9] or internal auditors [10],
+[11]. Yet comprehensive re-validation is often impractical
+due to prohibitive computational cost, latency constraints, or
+inaccessible training data. This tension between the need for
+adaptation and the demand for assurance is a central obstacle
+to deploying learning systems safely in the real world.
+Prior works usually seek to combat catastrophic forget-
+ting or preserve model alignment during updates through
+approaches such as regularization [12], [13], replay buffers
+[14], [15], or parameter isolation [16], [17]. While these
+methods display promising results, they do not come with
+arXiv:2512.01899v1  [cs.LG]  1 Dec 2025
+formal guarantees of avoiding forgetting and therefore cannot
+avoid the need for revalidation. To address this, we investigate
+the problem of providing an update framework that hasa priori
+guarantees that the updated model satisfies a given perfor-
+mance specification e.g., prior task performance or predictive
+stability. Beyond eliminating the revalidation bottleneck, we
+discuss how such a framework may offer certifiable safety
+evidence for regulators [9], reliable model version control,
+enforceable terms-of-use for downstream users [18], [19], and
+safe mechanisms for adapting to emerging vulnerabilities.
+To provide safe update guarantees, we introduce the prob-
+lem of computing a local invariant domain (LID): a connected
+region of parameter space within which all parameters are
+provably certified to satisfy a specified performance require-
+ment measured on the prior task. Once a LID has been
+computed, the safety of an arbitrary update can be efficiently
+enforced by projecting any proposed parameter change onto
+the certified LID, and where multiple tasks are observed in
+sequence one can project onto the intersection of each task’s
+LID to certify safety (discussed in detail in Section III).
+The primary technical contribution of this paper is the
+development of effective and practical LID computation tech-
+niques as not all LIDs are practically useful. For example,
+the LID containing only the initial model parameter vector
+is trivially valid, but effectively prohibits model updates.
+Thus, we formulate the general LID problem as finding the
+maximalsuch domain (by volume) over all connected subsets
+of the parameter space. Because optimizing over arbitrary
+connected domains is intractable, we propose a tractable
+yet conservative relaxation: an optimization problem over
+parameterized abstract domains, which allows us to leverage
+advances in bounding neural networks [20], [21] and abstract
+interpretation [22], [23]. Of course, the optimization problem
+over parameterized abstract domains must be constrained to
+only domains for which we can certify that every parameter
+respects the safety property. Thus, we instantiate a primal-
+dual formulation of the constrained maximal LID problem
+enabling the computation of approximately maximal LIDs via
+alternating gradient-descent-ascent.
+Practical implementation of this framework requires careful
+solutions to several important problems to avoid unsound or
+trivial LIDs. Firstly, where safety constraints are formulated as
+properties of an input distribution, one must use a finite-sample
+approximation of the constraint thus introducing a probability
+of failure. To address this, we provide concentration bounds
+that allow us to give worst-case probabilistic guarantees of
+constraint satisfaction. Secondly, our primal-dual formulation
+only finds locally optimal solutions to the LID problem. To
+address this, we propose to use prior work from continual
+learning to bias our optimization towards better solutions
+and propose to compute multiple LIDs (LID multiplicity) to
+avoid problematic local optima. Finally, many model updating
+scenarios either maintain access to previous task data or have
+prior information about what future updates might be relevant,
+e.g., planned support for additional disease distributions in
+medical applications or planned multi-lingual support for lan-
+guage models. Taking inspiration from the continual learning
+community, we support such scenarios by introducing a finite-
+buffer extension to the LID problem.
+In Section V, we experimentally demonstrate the effective-
+ness of our approach across standard continual learning and
+foundation model fine-tuning tasks. We benchmark the per-
+formance of our algorithm against established regularization-
+based approaches and benchmark the guarantees of our algo-
+rithm against the continual learning approachInterContiNet
+(ICN) [24]. An embedded step of the ICN algorithm can be
+viewed as the computation of a LID, though the authors do
+not pose the problem as such. Thus, ICN does not consider
+finite sample error, use of replay buffers, LID multiplicity,
+or principled constraint encoding which leads to potentially
+trivial or unsound bounds and numerical instability. Across a
+wide variety of synthetic and real-world benchmarks including
+MNIST [25], CIFAR-10 [26], hate speech classification, and
+multi-lingual adaptation, we find that our approach is able
+to match or best benchmark performance while providing
+state-of-the-art guarantees. In summary, this paper makes the
+following contributions:
+•We introduce themaximum local invariant domain (LID)
+problem, and develop a general framework for computing
+provable guarantees that model updates preserve behav-
+ioral specifications such as alignment or task perfor-
+mance.
+•We demonstrate how LIDs can be used to certify consec-
+utive tasks and can leverage replay buffers thus leading to
+a more general approach for certified continual learning.
+•We propose a relaxation of the maximum LID via abstract
+interpretation techniques, enabling an efficient first-order
+primal-dual algorithm to approximate maximal LIDs.
+•We extend our LID computation algorithm using bias-
+ing methods inspired by continual learning literature to
+identifying empirically favorable LID solutions.
+•We evaluate our approach across synthetic and real-
+world benchmarks, including MNIST, CIFAR, and con-
+tent moderation, demonstrating its ability to provide non-
+trivial and practically useful safety guarantees for model
+updates.
+II. RELATEDWORKS
+a) Model Updates Eroding Alignment 1:Ensuring align-
+ment of foundation models is a growing area of research [27]–
+[29]. Despite extensive training-time safeguards, it has been
+shown that fine-tuning rapidly erodes many safeguards [4],
+even when users are not malicious [3]. Some heuristics have
+been developed to defend against this erosion [30]–[32], but
+have been found unsuccessful in the face of more sophisticated
+attackers [19], [33]. These studies indicate the start of an
+arms race between attackers and defenders often observed in
+adversarial settings, and they point to the importance of formal
+verification in safety-critical contexts.
+1We provide an extended discussion of related works in Appendix A.
+b) Catastrophic Forgetting in Continual Learning:En-
+suring that training updates do not degrade prior model ca-
+pabilities (as seen in Figure 1), an issue termed catastrophic
+forgetting [7], [12], [34], has been widely studied within the
+continual learning community [8]. Avoiding forgetting is often
+studied under the assumption that data from prior tasks are
+unavailable [34]. In this case, heuristic forgetting defenses can
+largely be split into approaches that use parameter isolation
+(i.e., only updating a subset of parameters [16], [17], [35])
+or regularization [7], [12], [13] (i.e., soft constraints limiting
+changes to important parameters). With access to prior task
+data for revalidation, replay methods have been developed
+[14], [15]. Each of these methods has demonstrated some
+considerable success in reducing forgetting; however, they do
+not come with concrete, formal guarantees.
+c) Formal Methods in Machine Learning:The field of
+formal methods for machine learning algorithms has pro-
+duced proofs of a wide range of notions including adversarial
+robustness [20], [23], explainability [36], privacy [37], and
+uncertainty [38]. Most related to this paper is the growing
+literature on formal security guarantees for machine learning
+models [23], [39] which, however, focus on specific dataset
+threat models. The most closely related work isInterContiNet
+(ICN) [24], which introduces a continual learning algorithm
+that uses heuristic optimization to identify safe parameter
+intervals. The algorithm begins with a large, potentially unsafe
+parameter interval and iteratively contracts it via SGD to
+meet an accuracy threshold. In contrast to our approach, ICN
+seeks only to findsomevalid LID rather than amaximal
+LID, reducing the model’s flexibility to learn new tasks while
+preserving safety. Moreover, its shrinkage-based optimization
+procedure is susceptible to interval collapse and numerical
+instability, which hinders scalability to larger models. Finally,
+the method does not incorporate multiplicity, biasing, replay
+buffers, or finite-sample safety guarantees – key contributions
+of this work.
+III. CERTIFICATION FORPROVABLYSAFEUPDATES
+Throughout the paper we will consider tasks to be su-
+pervised learning problem with a fixed sample sizeN, i.e.,
+D:={(x (i), y(i)}N
+i=1, where we describex∈R n as our
+feature vectors andy∈ Yto be our labels; we will assume
+labels inhabit ac-dimensional space (i.e.,cclasses orc-
+dimensional regression). We denote machine learning models
+as parameterized functionsf θ :R n → Ywith parameters
+θ∈R p. A proposed update to the parameters comprises
+a vectoru∈R p, with the result of applying the update
+being:θ ′ =θ+u. We denote a function that proposes
+model updates (SGD, SFT, DPO, etc.) as an update mech-
+anismM. Finally, we model behavioral properties of interest
+such as alignment or performance criteria using a function
+ϕ:R p×n×c →R. Without loss of generality, we use the
+convention that lower scores ofϕare better and indicate better
+performance/alignment, and in our experiments we takeϕto
+be one minus the accuracy on a particular task, but this is
+left purposefully generic with further discussion of concrete
+choices in Appendix C. We now provide the general problem
+statement for a provably safe update mechanism:
+Definition 1.(δ-Safe Update Mechanism) Given a machine
+learning modelf θ trained on a task with data distribution
+P(X, Y)and a propertyϕwe say that a mechanismMtaking
+in an arbitrary datasetD ′ and parameterθis a provablyδ-
+safe update mechanism if:
+∀D′,E P(X,Y)
+h
+ϕ
+ 
+θ+M(θ,D ′), x, y
+i
+≤δ.(1)
+Before proceeding to discuss how one might formulate a
+non-trivial mechanism satisfying this definition, we highlight
+several key implications of the definition. First, the definition
+is independent of the updated model’s performance on the new
+task (presumably represented byD ′), as this would be unreal-
+istic given thatD ′ is unspecified and thus may be adversarially
+chosen. Second, the fact that it is possible to chooseD ′ =∅
+implies that the existence of anyδ-safe update mechanism
+depends upon the initial parameter being satisfactory, i.e.,
+EP(X,Y)
+
+ϕ
+ 
+θ, x, y
+
+≤δ. Finally, given that this inequality
+holds, we highlight that the trivially safe update mechanism
+is the do-nothing mechanism, i.e.,∀D ′,M(θ,D ′) =0which
+satisfies the definition.
+A. Local Invariant Domains (LIDs)
+As a foundation for constructing provably sound update
+mechanisms, we now introduce the notion of Local Invariant
+Domains (LIDs).
+Definition 2.(Locally Invariant Domain) Given a machine
+learning modelf θ trained on a task with data distribution
+P(X, Y), and a propertyϕ, we say that a connected domain
+T⊆R p containingθis a provablyδ-invariant domain if:
+∀θ′ ∈T,E P(X,Y)
+h
+ϕ
+ 
+θ′, x, y
+i
+≤δ.
+Any update mechanism restricted to outputs in a domain sat-
+isfying Definition 2 is one that satisfies Definition 1; however,
+it may be thatT={θ}which yields the trivial mechanism.
+To learn non-trivial safe update mechanisms, where possible,
+we propose a stronger, modified definition:
+Definition 3.(Maximal Locally Invariant Domain) Given a
+machine learning modelf θ trained on a task with data dis-
+tributionP(X, Y)and a propertyϕ, we say that a connected
+domainT⊆R p containingθis a maximally provablyδ-
+invariant domain with respect to a specified size metric| · |S
+(e.g., Hausdorff measure), if it is a solution to the following
+optimization problem:
+max
+T
+|T|S s.t.∀θ ′ ∈T,E P(X,Y)
+h
+ϕ
+ 
+θ′, x, y
+i
+≤δ.(2)
+B. Provably Safe Updates via LIDs
+In this section, we connect the notions of safe update
+mechanisms and LIDs, highlighting specific cases of how LIDs
+can be used to augment popular model updating mechanisms.
+1) One-Step Updates (Fine-Tuning):Given access to a
+known LID, one can make any arbitrary update mecha-
+nismMa provably safe mechanism by transforming it into
+MT := Π T (M(θ,D ′))whereΠis the standard projection
+operatorΠ T (θ) := arg min θ⋆∈ ¯T ||θ−θ ⋆||and ¯Tis the
+closure ofTto ensure this is well-defined. We emphasize
+that while the projection itself can be a nontrivial operation,
+any approximate projector that results in a parameter that
+belongs toTis satisfactory. While projection satisfies the
+definition, we can go further by carefully choosing the best
+T. To guide selection, we observe that for any loss function
+Lthat one wishes to minimize for the new taskD ′, observe
+thatmin θ∈T ⋆ L(θ,D ′)≤min θ∈T L(θ,D ′)ifT⊂T ⋆. Thus,
+intuitively, computing the largest domainTyields the best
+performance on subsequent downstream tasks. We highlight
+that purely finding thelargestdomain may not be effective
+on its own, as the set may only be large in directions that are
+not helpful for improving downstream performance. Research
+in sparse updates in parameter isolation [16] or efficient fine-
+tuning [31] may represent powerful heuristics for identifying
+important directions. Additionally with access to some small
+portion of data from the desired downstream task, one can
+estimate the important directions. We discuss both of these
+approaches for improving LID computation in Section III-B4.
+2) Multi-Step Updates (Continual Learning):In continual
+learning, the model is updated multiple times [34], and each
+update must ensure that all previous tasks respect a given
+constraint. Definition 1 can be generalized tok-many, ordered
+updates by defining thek th update safety as:∀D ′
+k,∀i∈[k−1],
+EP(Xi,Yi)
+h
+ϕ
+ 
+θ+
+k−1X
+j=1
+M(θ(j−1),D ′
+j), x, y
+i
+≤δ,(3)
+whereθ (j) is the result of the firstjupdates and the initial
+θ′ =θ (0). Though the definition of safety has changed,
+the fundamental solution with LIDs needs only a minor
+modification to generalize to this case. For thei th (previous)
+task, we compute a LIDT i, and we can then compute a
+new LID that holds for all tasks asT ⋆ =∩ i
+j=1Tj, the
+intersection of all independently computed LIDs. We highlight
+that this intersection does not need to be explicitly/analytically
+computed as we only require projection onto the intersection
+which can be done approximately.
+3) Use of Replay Buffer:An important assumption we
+make in the formulation of our optimization problem (Def-
+inition 3) is that the LID is optimized over only one joint
+distributionP(X, Y). This encodes the assumption that after
+the model is trained on a task, the corresponding test data can
+no longer be accessed. Many popular approaches to combating
+forgetting relax this assumption by allowing a small amount
+of replay data. Allowing access to data from prior tasks, we
+can jointly optimize our LID as follows:
+max
+T
+|T|S s.t.,
+∀θ′ ∈T, i∈[k−1],E P(Xi,Yi),
+h
+ϕ
+ 
+θ′, x, y
+i
+≤δ i
+whereδ i is the performance requirement for thei th task.
+Importantly, this avoids the intersection step described in the
+previous section. Typically, replay methods try to make use of
+as little data as possible, meaning that expectations must be
+estimated with only a few samples, which can be done using
+the tools outlined in Subsection III-B5.
+4) LID Biasing:Despite formalizing themaximallocally
+invariant domain problem in Definition 3, the maximization
+is posed with respect to current task. Even if one computes
+the exact maximal LID, the domain may not span directions
+that are important for improving performance on subsequent
+tasks. Identifying such important directions has been the focus
+of many prior continual learning approaches. In particular, we
+draw from weight pruning literature, which uses weight im-
+portance measures to determine parameters that significantly
+contribute to the performance of a given model [40], [41].
+Below, we discuss how these importance methods, broken
+down into weight pruning or regularization, can be used to
+bias LID computation.
+Weight pruning approaches define a discrete set of weights
+that are determined to be important. Formally, letI(·)be
+a function associated with a weight pruning method that
+maps parameter indices to either 0 (if non-important) or 1 (if
+important) as determined by the pruning method. We can then
+restrict our prior optimization formulation to only be over only
+the unimportant parameter subspace i.e.., leaving all important
+weights fixed. Where we denote members of this subspace
+withR p
+I ⊆R p we can reformulate the optimization problem
+as:
+max
+T∈Rp
+I
+|T|S s.t.max
+θ′∈T
+"
+1
+N
+NX
+i=1
+ϕ(θ′, xi, yi)
+#
+≤δ
+Intuitively, this modification only allows for updates to those
+weights that are unimportant for the current task, making it
+less likely that one violates the stated constraint (afters.t.
+above). A critical parameter in weight pruning methods is the
+proportion,α∈(0,1)of weights to be pruned – we explore
+this hyper-parameter in detail in Section V.
+Additionally, one might consider a softer approach to con-
+straining the LID optimization where modification of impor-
+tant weights is not explicitly restricted but discouraged. For
+this one might use the regularization approaches discussed
+in the continual learning literature. Formally, we can define
+R(·)to be a function that assigns a cost (a negative value)
+to domains that allow large updates to important parameters.
+For example, where per-parameter importance is captured in
+a vectorβ∈R p
++ and magnitude is measured the largest
+change allowed byTper parameter,d T ∈R p
++, one could
+defineR(T) =−β ⊤d. Such regularization approaches can be
+directly used to regularize our optimization formulation:
+max
+T∈Rp
+|T|S +R(T)s.t.max
+θ′∈T
+"
+1
+N
+NX
+i=1
+ϕ(θ′, xi, yi)
+#
+≤δ
+Lookahead buffers.As stated, the above methods rely
+solely on current task data to bias the LID computation
+towards good solutions. While this may be effective, it still
+encodes assumptions that may not hold, e.g., that the important
+weights for this task should not be important for the next task.
+We can more directly bias the LID computation for good
+solutions if given a small amount of data (approximately)
+drawn from future task distributions. We refer to this method
+aslookaheadbuffer.
+The lookahead approach enables us to estimate the subspace
+of parameters that is important to thenexttask. Given the data
+in the buffer are representative of the future task, each of the
+biasing approaches above (weight pruning and isolation) can
+be leveraged, but rather than computing weight importance
+on the current task and discouraging modification, one can
+compute weight importance for the future task and reward
+domains that enable large magnitude modifications to these
+weights.
+5) Finite-Sample Guarantees forδ-Safe Updates:Defini-
+tion 1 involves a constraint with an intractable integral over the
+distributionP(X, Y), which is typically taken to be unknown.
+In practice, we approximate the expectation using a finite
+evaluation set that is held out during training (or held out
+within a data buffer):{(x (i), y(i))}N
+i=1 ∼P(X, Y), with the
+empirical estimate denoted as,
+ˆϕN := 1
+N
+NX
+i=1
+ϕ
+ 
+θ+M(θ,D ′), x(i), y(i)
+.
+Assuming finite variance of this estimator, Chebyshev’s in-
+equality can be applied, giving:Pr
+ˆϕN −E[ϕ]
+ ≥ϵ
+
+≤
+σ2
+Nϵ2 .For anyβ∈(0,1), solving forϵsuch that the right-
+hand side equalsβ, gives that with probability at least1−β:
+EP(X,Y) [ϕ(θ+M(θ,D ′), x, y)]≤ˆϕN +
+s
+σ2
+Nβ .
+Therefore, to certifyδ-safety with confidence(1−β), it
+suffices that: ˆϕN ≤δ−
+q
+σ2
+Nβ .If the risk metric is bounded
+ϕ(·)∈[a, b], we can tighten this bound using Hoeffding’s
+inequality to: ˆϕN ≤δ−
+p
+(b−a) 2 log(1/β)/(2N).
+However, ifϕis an unbounded function (e.g., cross-entropy)
+and the variance is unknown, strict certification becomes
+challenging. In such cases, we can rely on the Central Limit
+Theorem (CLT) to provide a probabilistic argument for safety,
+approximating the error of an empirical estimate asz 1−β ˆσ√
+N
+wherez 1−β is thez-score at(1−β)andˆσis the sample
+standard deviation. We note, however, while this is effective
+in practice for large sample sizesN, it remains an asymptotic
+approximation.
+To ensure strict, provable finite-sample safety, we restrict
+our formal guarantees to bounded specification functions
+whereϕ(·)∈[a, b]. For nominally unbounded objectives,
+we employ a clipped versionϕ clipped = max(L,min(ϕ, U))
+whereUforms the upper bound andLthe lower bound. This
+ensures the variance is strictly bounded, validating the use of
+Chebyshev’s inequality and further tightening arguments using
+Hoeffding’s inequality. In our experiments, we utilize accuracy
+(bounded in[0,1]), ensuring these finite-sample guarantees
+hold. While a theoretically valuable discussion, in practice
+most specification functions are naturally bounded or can be
+reasonably artificially bounded.
+We emphasize that without such guarantees being formally
+stated, LID computation may be unsound. For example, with-
+out a finite-sample correction, a LID computed with safety
+constraints from a single held out test point could encompass
+a much larger parameter domain, but will ultimately merely
+yield a trivial safety guarantee. Moreover, the requirement
+for our concentration argument that sample points are i.i.d.
+from the joint distributionP(X, Y)rules out any constraint
+sampling heuristics.
+IV. PRACTICALCOMPUTATIONS FORSAFEUPDATES
+We now present our computational framework for estimat-
+ing maximal LIDs. Directly solving the optimization problem
+(2) over arbitrary connected domainsTis computationally
+intractable. To obtain tractable approximations, we introduce
+two relaxations. First, we restrictTto a parametric family of
+abstract domains, denotedT(α), whereαencodes the domain
+parameters (e.g., widths of orthotopes or linear constraints of
+zonotopes). Second, we approximate the inner expectation by
+an empirical average over a finite sample. These relaxations
+yield the following bi-level optimization problem:
+max
+α
+|T(α)|S s.t.max
+θ′∈T(α)
+"
+1
+N
+NX
+i=1
+ϕ(θ′, xi, yi)
+#
+≤δ.(4)
+In the subsequent sections, we outline the propagation of
+our chosen abstract domains and describe our primal-dual
+algorithm for solving this formulation.
+A. Propagation of Abstract Domains
+The inner maximization in (4) corresponds to aparameter-
+space verification problem, which seeks to upper bound the
+empirical loss over a set of model parameter values. This for-
+mulation is analogous to recent work on verifying robustness
+to parameter-space perturbations [23], [36], but differs from
+standard adversarial robustness settings that consider pertur-
+bations over the input space. Specifically, we are concerned
+with the worst-case model outputs over all parameter vectors
+rather than input vectors. For ease of exposition, we discuss
+the case whereTis theinterval domain, denotedT(α)with
+α:= [α L, αU ], which encodes all parameter vectorsθ∈R p
+satisfying
+θ∈T(α)⇐⇒ ∀i∈ {1, . . . , p}, α L
+i ≤θ i ≤α U
+i .
+This representation defines a box in parameter space and
+serves as an abstract domain, formally known as the orthotope
+domain, over which we can compute bounds on the output of
+a neural network using Interval Bound Propagation (IBP) [20].
+Given a neural networkf θ and an interval domainT(α),
+IBP computes lower and upper bounds on the network output
+at an input pointxfor anyθ∈T(α). This propagation relies
+on all used activation functions being monotonic (e.g., ReLU,
+tanh) [20]. This assumption should not be substantially restric-
+tive in practice, as most commonly used activation functions
+are monotonic. Moreover, there are some ways to relax this
+requirement. Subsequently, these output bounds can then be
+propagated through the specification functionϕto obtain a
+sound upper bound on the empirical specification estimate. In
+particular, we use the following IBP-based relaxation:
+max
+θ∈T(α)
+1
+n
+nX
+i=1
+ϕ(θ, xi, yi)≤ 1
+n
+nX
+i=1
+ϕIBP (T(α), xi, yi),
+whereϕ IBP(·)denotes the IBP-derived upper bound on
+ϕ(θ, xi, yi)valid for allθ∈T(α). The IBP approximation
+is bothsound(it provides a guaranteed upper bound) and
+computationally efficient, requiring at most 4×the cost of
+a standard forward pass [20]. Moreover, the IBP procedure
+is differentiable with respect to the parameters[α L, αU ],
+enabling gradient-based optimization of the outer problem.
+B. Primal-Dual Optimization for Computing Maximal Locally
+Invariant Domains
+Interval domains offer not only a natural parameterization
+for the constrained problem in (4), but also a differentiable
+and sound over-approximation of the constraint. This yields a
+single-level constrained optimization problem that constitutes
+asound under-approximationof the original formulation. That
+is, any solution identified via this relaxation defines a LID that
+satisfies the safety specification, although it may be strictly
+smaller than the solution of the original bi-level problem (4).
+Although the relaxed problem still does not admit an ana-
+lytic solution, it is amenable to Lagrangian-based optimization.
+Specifically, to maximize the size of the abstract domain
+subject to the IBP-based constraint, we formulate the following
+Lagrangian:
+L(α, λ) =|T(α)|S +λ
+ 
+δ− 1
+n
+nX
+i=1
+ϕIBP (T(α), xi, yi)
+!
+,
+whereλ≥0is the Lagrange multiplier for the (bounded)
+safety specification constraint.
+This gives rise to the saddle-point optimization
+maxα minλ≥0 L(α, λ)which can be locally solved using
+alternating gradient descent-ascent[42], which performs the
+updates:
+λt+1 = [λt +η d∇λL(αt, λt)]+ ,(5)
+αt+1 =α t −η p∇αL(αt, λt+1),(6)
+whereη d andη p are step sizes for the dual and primal
+updates, respectively, and[·] + denotes projection onto the
+non-negative orthant to ensureλ≥0 2. We additionally
+apply an extra projection step toαthat enforces that the
+nominal parametersθremain insideT(α). The above primal-
+dual optimization procedure is designed to maintain feasibility
+with respect to the safety specification constraint through-
+out training. However, due to the inherent stochasticity of
+2We employ thecooperlibrary for Lagrangian-based optimization [43].
+gradient-based optimization, the final iterate may not strictly
+satisfy the original constraint. To formally verify that the
+returned LID, denotedT(α), satisfies the desired specifica-
+tion, we compute a post-optimization certificate by computing
+maxθ′∈T(α)
+1
+n
+Pn
+i=1 ϕ(θ′, xi, yi).
+C. Choice of Specification Function
+Effectively applyingalternating gradient descent-ascental-
+gorithms and solving Equation 4 imposes specific require-
+ments on the specification functionϕ. Most notably, any
+specification function must be differentiable. While a con-
+venient choice forϕis accuracy, due to its interpretability,
+we cannot directly use accuracy since it is non-differentiable.
+Thus, our experiments rely on using soft accuracyϕ soft as a
+differentiable surrogate:
+ϕsoft(θ) = 1
+N
+NX
+k=0
+CX
+c=1
+yk,cSoftmax(fθ(xk))c
+wherey k is taken to be the one-hot encoding vector of the
+correct class label.
+Although soft accuracy, or any differentiable surrogate,
+serves as the specification function during maximal LID
+computation, the final certificate of the LID must be based
+on the true specification function (e.g., minimum accuracy
+over the LID). This distinction preserves the correctness of
+our approach. For further discussion we refer to Appendix C.
+D. Early stopping and Checkpointing
+One specific improvement we propose—alongside less no-
+table, further adaptations found in Appendix B—is early
+stopping and check-pointing based on findings in Figure 2.
+Figure 2 shows an example LID computation using our primal-
+dual optimization. We observe that the primal objective (the
+LID size metric) does not converge within 1000 iterations.
+On the other hand, by inspecting the LIDs at each step
+of optimization, we observe that the LIDs with the best
+downstream performance on Task 2 occur early on in the LID
+optimization. This suggests that the LID computation tends to
+prioritize weights that do not contribute significantly to the
+model’s output while keeping decisive weights for the next
+task frozen (i.e., assigning them a very small interval).
+To mitigate this effect our implementation saves the current
+LID periodically during the computation and terminates the
+LID optimization before convergence. This produces a setO
+of domain parameters each corresponding to a LID. We then
+issue a certificate of the minimum accuracy for each LID in
+O. When training the next task, we must project the model
+parameters (the result of proposed updates)θonto the set of
+LIDsO. Several strategies could be used to choose the LIDo ∗
+on which we projectθ. An intuitive extension of the general
+case above is projecting onto the closest LID using:
+o∗ = arg min
+o∈O
+∥Π(θ, o)−θ∥2
+2
+whereΠis the projection operator defined as:
+Π(θ, o)i = Clamp(θi, θL
+i , θU
+i ), o= [θ L, θU ]
+0 500 1000
+Iterations
+0
+2000
+4000
+Objective Value
+Primal Objective
+(LID Size)
+0 500 1000
+Iterations
+0.6
+0.8
+1.0
+Accuracy
+Dual Objective
+(Constraint Satisfaction)
+Target Specification
+0 500 1000
+Iterations
+0.00
+0.25
+0.50
+0.75
+1.00
+Task 2 Accuracy
+LID Utility
+(Task 2 Performance)
+Best LID
+Fig. 2. Analysis of primal-dual optimization for LID computation. We observe that although the primal-dual optimization continues to find larger LIDs
+according to the primal objective, the LIDs with the best utility occur early on in optimization.
+0
+1
+Accuracy
+(Zero Buffer)
+Class IL     
+1 2 3 4 5
+        Train Task
+0
+1
+Accuracy
+(With Buffer)
+Final
+Domain IL    
+1 2 3 4 5
+        Train Task
+Final
+Task IL      
+1 2 3 4 5
+        Train Task
+Final
+SGD EWC LwF ICN PGD w/ LID
+A-GEM ZERO buf. SMALL buf. MEDIUM buf. LARGE buf.
+Fig. 3. Performance on the Split-MNIST dataset under three continual learning scenarios. The top panel shows the performance of our method with zero
+buffer, while the bottom panel shows the performance with various buffer sizes. The dashed line and hashed bars display the certificates on performance.
+Error bars illustrate the 80% confidence interval over 100 runs for the zero buffer and 15 runs for the buffer case.
+Another strategy is to choose the LIDo ∗ that results in
+the best immediate performance on our current batch. Letting
+B:={(x (i), y(i)}B
+i=1 be a batch of data the loss :
+o∗ = arg min
+o∈O
+L(Π(θ, o),B)
+whereL(θ,B)denotes the loss over the batch atθ.
+a) Downstream Advantages of Checkpointing:The intro-
+duction of checkpointing forced an adaptation in our overall
+algorithm to allow for multiple LIDs for a single model.
+This can be combined with aforementioned biasing methods
+to compute distinctly biased LIDs that can be adapted to
+different types of downstream tasks. Having LIDs that are
+expanded along separate dimensions of the parameter space,
+lends a significant amount of flexibility to our algorithm that
+predecessors like InterContiNet did not exploit [24].
+While we do not further explore the practical impact of
+obtaining differently biased LIDs for a single model, we
+consider this a considerable advantage of isolating the LID
+problem. LID multiplicity may be a fruitful area of study for
+future works.
+E. Algorithm Discussion
+a) Strengths:A major strength of our proposed frame-
+work is its compatibility with a wide range of prior research
+advances. In particular, we can leverage a large number of
+existing approaches in forgetting-safe continual learning and
+in alignment-preserving fine-tuning. Moreover, given that our
+method is independent of how one arrives atθfor their initial
+task, our method can be used, in principle with any machine
+learning model. This means we can accommodate arbitrarily
+large foundation models. Additionally, because maintaining
+our guarantees only requires the introduction of a projection
+operator, we can apply our approach to any proposed updating
+scheme. This is particularly advantageous given the rapid rate
+at which model updating algorithms advance, e.g., RLHF al-
+gorithms such as DPO, PPO, and GRPO. Finally, our approach
+relying on abstract interpretation is computationally efficient
+0
+1
+Accuracy
+(Zero Buffer)
+Class IL     
+1 2 3 4 5
+        Train Task
+0
+1
+Accuracy
+(With Buffer)
+Final
+Domain IL    
+1 2 3 4 5
+        Train Task
+Final
+Task IL      
+1 2 3 4 5
+        Train Task
+Final
+SGD EWC LwF ICN PGD w/ LID
+A-GEM ZERO buf. SMALL buf. MEDIUM buf. LARGE buf.
+Fig. 4. Performance on the Split-CIFAR10 [26] dataset under three continual learning scenarios. The top panel shows the average accuracy over all seen
+tasks without replay data, while the bottom panel the average performance over seen tasks, while having varying amounts of buffer data available. The dashed
+line and hashed bars display the certificates returned by our method. Error bars illustrate the 80% confidence interval over 15 runs.
+and is able to certify a LID, expressed as an interval domain,
+in4×the cost of a simple forward pass.
+b) Limitations:Despite its computational efficiency and
+differentiability, the IBP approximation we leverage is known
+to exhibit increasing looseness with network depth and
+width [23], [44]. Thus, while arbitrarily large networks can
+be considered, parameter intervals over the early layers of the
+network contribute disproportionately to the overall interval
+bounds on the outputs [45]. As a result, our LIDs likely exhibit
+larger intervals for the later layers of the network compared
+to the earlier layers. In sufficiently deep networks, this effect
+can lead to the early layers becoming effectively ‘frozen,’ with
+little (or no) flexibility for future adaptation, while the final
+layers, subject to less over-approximation, remain relatively
+less constrained. This difficulty means that ensuring useful
+guarantees for large models requires careful design and hyper-
+parameter choices; we provide further systematic discussion of
+this phenomenon in Appendix C.
+c) Potential Future Applications:In this section we
+discuss some of the potential future applications enabled by
+a framework that enablesa priorisafe update guarantees.
+Most directly, the requirement for ana priorisafe update
+mechanism has been put forth as a regulatory requirement for
+adjusting models in some critical domains. For instance, the
+U.S. Food and Drug Administration (FDA) outlined guidelines
+that enable pre-planned model updates, but only if they can be
+demonstrated to be safea priori[9]. Furthermore, regulatory
+attention has also been attracted by the wide-spread use of
+foundation models (e.g. large language models). Regulations
+surrounding foundation models may require persistent safety
+mechanisms, especially given that models must respond dy-
+namically to emerging vulnerabilities. While a valid response
+would be model de-provisioning (taking the model offline),
+using known-safe model updates is preferable for availability-
+critical systems. In the context of updating provided or open-
+source large language models, a potential use case of our
+method could be guaranteeing the preservation of learned
+behavior (e.g. alignment) for down-stream fine-tuners. As we
+have discussed, if not done carefully, fine-tuning can rapidly
+erode alignment properties [18], [19]. Thus, allowing third-
+party users to safely tune a model while the publishing
+entity can ensure,a priori, that this individualized updating
+procedure does not yield a model that violates originally
+aligned behavior. Such a guarantee may lead to robust terms-
+of-use.
+V. EXPERIMENTS
+We empirically validate our approach on standard continual
+learning benchmarks and provide further experimental details
+and ablations in Appendix D. All experiments were performed
+on compute infrastructure equipped with 2x NVIDIA L40
+GPUs, using a custom Pytorch implementation. Our codebase
+will be publicly released upon publication.
+A. Continual Learning Experiments
+BaselinesWe compare our method against the follow-
+ing established continual learning methods: (1) EWC [7]:
+a regularization approach that selectively weights important
+parameters based on Fisher information, (2) LwF [12]: a
+distillation-based method that preserves functional behavior by
+using current task samples, (3) SGD: sequential training across
+tasks without explicit mitigation of catastrophic forgetting and
+(4) InterContiNet (ICN): a weight-space-constraint based ap-
+proach to avoiding catastrophic forgetting [24]. To benchmark
+our buffer extension, we observe our method compared to
+its standard, zero-buffer implementation and Averaged GEM
+(A-GEM) [46]. For each baseline we consider the main
+incremental learning protocols outlined in [34]:
+•Class-IL:The model learns to discriminate between an
+expanding set of classes. Each context introduces a new
+set of classes (e.g., first context contains ‘0’ and ‘1’,
+second context contains ‘2’ and ‘3’, etc.), and the model
+must classify across all previously encountered classes
+without task identity information at test time.
+•Domain-IL:The underlying task remains constant while
+the input distribution shifts across contexts. The model
+performs binary classification (odd vs. even digits in
+Split-MNIST and animal vs. non-animal in Split-CIFAR),
+but each context presents previously unseen input do-
+mains. Task identity remains unavailable during infer-
+ence.
+•Task-IL:Learning to classify an expanding set of classes,
+but only within the boundaries of each task context. Crit-
+ically, task identity is provided during inference, allowing
+the model to constrain its prediction space appropriately.
+a) Evaluations:In Figures 3 and 4 we compare the
+performance of our approach and baselines. In the top row
+of each figure we plot the average accuracy/certificate on all
+previously seen tasks (y-axis), as we observe the current task
+(x-axis). In the bottom row, we show the performance of the
+buffer-extension to our approach using a small (1000 samples),
+medium (5000 samples), and large (15000 samples) buffer.
+Additionally, we compare our method with A-GEM with a
+large buffer and present results in a manner similar to the top
+row plots.
+b) Split-MNIST:We divide the standard MNIST dataset
+[25] into five sequential contexts, each containing an odd
+and an even number. Digit allocation across contexts was
+randomized for each experimental run, with reported perfor-
+mance metrics averaged across 100 independent runs. Figure 3
+presents our method’s performance across the three Split-
+MNIST scenarios. We train a feedforward neural network with
+2 convolutional layers (each with 8 channels and a5×5
+kernel), followed by a dense layer. In Task-IL, all contin-
+ual learning approaches effectively acquire new tasks while
+preserving performance on previous ones. However, for the
+more challenging Class-IL and Domain-IL settings, average
+accuracy deteriorates as task count increases. Impressively,
+our approach demonstrates competitive performance in the
+Class-IL setting, while simultaneously providing theoretical
+guarantees (dashed line) that bound the minimum accuracy
+under any future learning. In Domain-IL, our method main-
+tains competitive average performance compared to baseline
+approaches while exhibiting improved retention of first-task
+performance. Moreover, our method observes more flexibility
+in its constraints, whereas ICN is highly prone to constraint
+collapse, as evident by the depicted tightness of the bounds.
+Additionally, using buffer data can drastically increase the
+performance of our method with a large buffer outperforming
+even A-GEM in the most difficult continual learning setting,
+CIL, and strictly improving performance in Domain-IL. Task-
+IL does not show the same trend as the setting is too simple
+and allows for enough model flexibility for even the zero buffer
+case to extract consistently high performance.
+c) Split-CIFAR:We now turn to the Split-CIFAR10
+dataset and consider the training and subsequent fine-tuning of
+a pre-trained ResNet18 model. The entire model is first trained
+on the initial task, after which subsequent tasks are learned by
+fine-tuning only the final linear layer of the network. The 10
+classes are randomly allocated to 5 tasks, following the three
+incremental learning settings described above. In Figure 4, we
+observe similar overall trends to Split-MNIST; specifically, our
+method is consistently competitive with baseline approaches,
+while also offering formal guarantees on forgetting perfor-
+mance. In Domain-IL, we observe consistently better accuracy
+than baselines though our worst-case guarantees are below
+the performance of baseline methods (which is generally to
+be expected). Class incremental learning remains extremely
+challenging for all methods–where we consider only preserv-
+ing task 1 performance, our method significantly out-performs
+baselines.
+Following the findings on Split-MNIST, our method further
+distinguishes itself from InterContiNet on Split-CIFAR10,
+where ICN lacks significant adaptability to different task
+settings due to its sensitivity to hyperparameters and numerical
+instability.
+B. Fine-Tuning Experiments
+Previous experiments have primarily focused on multi-step
+updates, we now further explore our method on single-step
+updates via foundation model fine-tuning.
+1) Foundation Model Performance on Hate-Speech Clas-
+sification:We evaluate our approach on the binary task
+of Hate-Speech Classification (non-hate, hate labels) for the
+following datasets: Jigsaw [47], Twitter Hate Speech [48],
+Civil Comments [49], Hatemoji [50], Sbic [51] and Hatecheck
+[52]. For that purpose we use the frozen embeddings of the
+following foundation models that at the time of writing have
+top performance on existing benchmarks : 3-large (OpenAI)
+[53], MXBAI (Mistral) [54], M2-BERT (Together) [55], GTE-
+Large (Alibaba) [56], V oyage-3 (V oyage) [57].
+For each foundation model, we proceed by first training a
+linear layer in an unconstrained manner on the frozen embed-
+dings of that model on the Jigsaw dataset. For each model, we
+then certify approximately maximal LIDs for the linear layer
+assuming a macro-accuracy (also known as balanced accuracy)
+constraint on Jigsaw.
+We then evaluate our approach by updating the Jigsaw-
+trained model on each of the five downstream datasets. The
+results are summarized in Figure 5, where each subplot
+corresponds to a different target dataset and visualizes the
+performance trade-offs induced by LID-constrained updates.
+Along the x-axis, we show performance on the original task
+(Jigsaw), while the y-axis reflects performance on the new
+task. In particular, the x-axes show the initial performance on
+Jigsaw (denoted with a star), the post-finetuning performance
+with the LID (denoted with an open dot), and the formal lower-
+bound from the LID on Jigsaw macro accuracy (denoted with
+0.5 1.0
+0.5
+0.6
+0.7
+0.8
+0.9
+Twitter
+Hate Speech
+0.5 1.0
+Civil
+Comments
+0.5 1.0
+Hatemoji
+0.5 1.0
+Sbic
+0.5 1.0
+Hatecheck
+Task 1 Accuracy (Jigsaw)
+Task 2 Accuracy
+Pre-Finetuning Acc. Post-Finetuning Acc. Certificate Task 2 Baseline
+3-large (OpenAI) MXBAI (Mistral) M2-BERT (Together) GTE-Large (Alibaba) Voyage-3 (Voyage AI)
+Fig. 5. Performance of fine-tuning with LIDs in the Hate-Speech Classification setting, where certificates are given with respect to the first task. Each color
+corresponds to a different LLM embedding model with the company of origin in parentheses. The gray dashed line denotes the average baseline performance
+on the fine-tuned task when directly using the M2-BERT model..
+0.5 1.00.65
+0.70
+0.80
+0.85
+Twitter
+Hate Speech
+0.5 1.0
+Hatemoji
+0.5 1.0
+Hatecheck
+Task 1 Accuracy (Jigsaw)
+Task 2 Accuracy
+Pre-Finetuning Acc.
+Post-Finetuning Acc.
+Certificate
+Task 2 Baseline
+Synaptic Intelligence - Lookahead
+Fisher Information - Lookahead
+Fisher Information
+Synaptic Intelligence
+Fig. 6. Performance of various biasing metrics applied to LLM head fine-
+tuning for hate speech classification. All data points are based on 3-large
+(OpenAI) as the underlying foundation model. The baseline corresponds to
+certified fine-tuning without any biasing.
+a bar). Performance on the new task is shown along the y-axis,
+with the gray dashed line indicating the baseline performance
+of M2-BERT with EWC. Across all model-dataset pairs, we
+observe that LID-constrained updates may slightly degrade
+downstream accuracy, though in some cases performance is on
+par with or exceeding the unconstrained M2-BERT baseline
+is observed. Simultaneously, our method certifies non-trivial
+lower bounds on the original task’s macro accuracy, often
+guaranteeing that substantial accuracy is retained even under
+worst-case perturbations within the safe domain.
+2) Foundation Model Performance on Multilingual Sen-
+timent Analysis:Following the same procedure as above,
+we additionally evaluate our approach on the multilingual
+classification task of sentiment analysis (negative, neutral,
+positive) for the following multilingual dataset : XLM-T [58]
+which contains 8 splits corresponding to 8 different languages
+We provide a subset of the results in Figure 7. The dotted
+gray line represents the baseline performance of V oyage-3
+using EWC [7]. When looking at the performances on Gemini,
+V oyage-AI and 3-large, we observe that our method achieves
+performances comparable to the EWC baseline and even
+occasionally outperforms it. Additionally, our method certi-
+fies non-trivial bounds on the original task macro-accuracy.
+These results provide the first empirical evidence that formal
+forgetting/alignment-preserving guarantees can be achieved
+in real-world LLM-based NLP pipelines, without sacrificing
+utility on the new task. The certified safety margins, though
+conservative, are large enough to ensure that updates remain
+practically useful.
+C. LID Biasing Experiments
+In this section we explore ablations on our proposed LID
+biasing approaches by considering the Split-MNIST CIL set-
+ting. We keep the convolutional architecture described in prior
+experiments and consider a non-biased LID computation as
+a baseline. We explore biasing the optimization using the
+Fisher information matrix [59] and synaptic intelligence [60]
+to obtain weight importance metrics by training our model on
+a batch with either lookahead data or the original task data.
+All experiments in this section consider pruning rather than
+regularization.
+In Table I, we show the performance on a downstream task
+across different pruning percentages. We re-run our results
+using 15 different random seeds and plot the standard deviation
+as our error bar. For both weight selection using Fisher
+information and synaptic intelligence, we observe significant
+gains in the average case, but with large variance. On the other
+hand, with a lookahead buffer, we observe that biasing can aid
+in downstream performance across a relatively broad range of
+Fig. 7. Performance of fine-tuning with LIDs on multilingual sentiment analysis task. We update a sentiment analysis classifier originally trained on english
+language reviews on multilingual reviews. We observe non-trivial guarantees on all benchmarks (vertical line) while maintaining performance on task 1 (hollow
+dot, x-axis) and besting baseline performance (dashed line, y-axis).
+TABLE I
+TASK2ACCURACY COMPARISON ACROSS DIFFERENT PRUNING PROPORTIONS WITH AND WITHOUT LOOKAHEAD BUFFERS. VALUES ARE REPORTED AS
+MEAN±STDDEV. THE BASELINE PERFORMANCE FOR AN UNBIASEDLIDIS0.20.
+Pruning Prop. 0.5 0.7 0.8 0.825 0.85 0.9 0.95
+With Lookahead
+Synaptic Intelligence0.37±0.22 0.53±0.29 0.67±0.19 0.73±0.18 0.65±0.19 0.39±0.22 0.07±0.14
+Fisher Information0.35±0.18 0.45±0.31 0.64±0.26 0.73±0.15 0.67±0.12 0.38±0.25 0.05±0.12
+Pruning Prop. 0.5 0.3 0.2 0.175 0.15 0.1 0.05
+Standard (No Buffer)
+Synaptic Intelligence0.14±0.11 0.37±0.20 0.28±0.18 0.28±0.17 0.38±0.18 0.38±0.26 0.39±0.24
+Fisher Information0.14±0.10 0.35±0.21 0.31±0.21 0.31±0.22 0.36±0.23 0.39±0.21 0.39±0.25
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Task 2 Accuracy
+0.200
+0.729 0.731
+0.389 0.394
+Weight Pruning Performance
+Baseline
+Fisher Information
+- Lookahead
+Synaptic Intelligence
+- Lookahead
+Fisher Information
+Synaptic Intelligence
+Fig. 8. Performance of all of our biasing approaches for the best performing
+pruning percentages based on Table I. Pruning percentages are 82.5% and 5%
+for lookahead and no lookahead pruning, respectively. All methods are run
+across 15 seeds, displaying the mean performance with error bars showing
+the standard deviation.
+pruning proportions. Performance seems to peak at 82.5% and
+5% of frozen parameters for the lookahead and naive method,
+respectively.
+Figure 8 further highlights the significance of the perfor-
+mance improvements for single-step continual learning sce-
+narios (i.e. limited to two tasks) when using LID biasing. In
+particular, lookahead biasing unlocks a significant amount of
+performance by drastically simplifying the LID optimization
+problem. However, even the smaller amount of pruning that
+occurs in the non-lookahead optimization yields a simplifica-
+tion that is often sufficient to extract additional performance.
+We additionally explore these ablations for fine-tuning
+LLMs. Figure 6 shows that lookahead biasing performs better
+than or equal to an unbiased baseline in all of the explored
+settings, whether it be hate speech detection or multilingual
+sentiment analysis. Our observations from the MNIST setting
+remain valid in LLM fine-tuning with LID biasing playing a
+relatively minor role when lookahead buffer data is not used.
+Interestingly, we find that synaptic intelligence with a looka-
+head buffer allows noticeable improvements in both formal
+guarantees and downstream performance. Further experimental
+details can be found in Table V in the appendix.
+VI. CONCLUSION
+In this work, we introduce a novel framework for computing
+provably safe model updates via maximal locally invariant
+domains (LIDs), offering formal guarantees that behavioral
+properties such as alignment and task performance are pre-
+served. By leveraging abstract interpretation and a primal-
+dual optimization strategy, our approach enables efficient
+certification of model updates in both continual learning
+and foundation model fine-tuning scenarios. Across diverse
+empirical settings, we demonstrated that our method not only
+provides formal safety guarantees for these updates, but also
+matches or outperforms existing baselines in practice.
+We then extend this approach by directing the optimization
+of locally invariant domains using biasing inspired by classical
+continual learning approaches. In particular, we find that bias-
+ing drastically reduces the complexity of the LID computation,
+yielding more effective parameter subspaces. We further show
+that this not only holds theoretically but also experimentally.
+REFERENCES
+[1] R. Bommasani, D. A. Hudson, E. Adeli, R. Altman, S. Arora, S. von
+Arx, M. S. Bernstein, J. Bohg, A. Bosselut, E. Brunskillet al.,
+“On the opportunities and risks of foundation models,”arXiv preprint
+arXiv:2108.07258, 2021.
+[2] L. Szpruch, A. Orfanoudaki, C. Maple, M. Wicker, Y . Bengio, K.-Y .
+Lam, and M. Detyniecki, “Insuring ai: Incentivising safe and secure
+deployment of ai workflows,”Available at SSRN 5505759, 2025.
+[3] X. Qi, Y . Zeng, T. Xie, P.-Y . Chen, R. Jia, P. Mittal, and P. Henderson,
+“Fine-tuning aligned language models compromises safety, even when
+users do not intend to!”arXiv preprint arXiv:2310.03693, 2023.
+[4] X. Yang, X. Wang, Q. Zhang, L. Petzold, W. Y . Wang, X. Zhao,
+and D. Lin, “Shadow alignment: The ease of subverting safely-aligned
+language models,”arXiv preprint arXiv:2310.02949, 2023.
+[5] Q. Zhan, R. Fang, R. Bindu, A. Gupta, T. Hashimoto, and D. Kang,
+“Removing rlhf protections in gpt-4 via fine-tuning,”arXiv preprint
+arXiv:2311.05553, 2023.
+[6] S. Lermen, C. Rogers-Smith, and J. Ladish, “Lora fine-tuning effi-
+ciently undoes safety training in llama 2-chat 70b,”arXiv preprint
+arXiv:2310.20624, 2023.
+[7] J. Kirkpatrick, R. Pascanu, N. Rabinowitz, J. Veness, G. Desjardins,
+A. A. Rusu, K. Milan, J. Quan, T. Ramalho, A. Grabska-Barwinska
+et al., “Overcoming catastrophic forgetting in neural networks,”Pro-
+ceedings of the national academy of sciences, vol. 114, no. 13, pp.
+3521–3526, 2017.
+[8] L. Wang, X. Zhang, H. Su, and J. Zhu, “A comprehensive survey of
+continual learning: Theory, method and application,”IEEE Transactions
+on Pattern Analysis and Machine Intelligence, 2024.
+[9] U.S. Food and Drug Administration and Health Canada and Medicines
+and Healthcare products Regulatory Agency, “Predetermined change
+control plans for machine learning-enabled medical devices: guiding
+principles,” 2023.
+[10] J. M ¨okander, J. Schuett, H. R. Kirk, and L. Floridi, “Auditing large
+language models: a three-layered approach,”AI and Ethics, vol. 4, no. 4,
+pp. 1085–1115, 2024.
+[11] M. Wicker, L. Szpruch, and S. Mørk, “Move fast without breaking the
+bank model risk management of genai workflows,” 2025.
+[12] Z. Li and D. Hoiem, “Learning without forgetting,”IEEE transactions
+on pattern analysis and machine intelligence, vol. 40, no. 12, pp. 2935–
+2947, 2017.
+[13] Y . Shen, Y . Xiong, W. Xia, and S. Soatto, “Towards backward-
+compatible representation learning,” inProceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, 2020, pp.
+6368–6377.
+[14] S.-A. Rebuffi, A. Kolesnikov, G. Sperl, and C. H. Lampert, “icarl:
+Incremental classifier and representation learning,” inProceedings of the
+IEEE conference on Computer Vision and Pattern Recognition, 2017, pp.
+2001–2010.
+[15] T. Huang, S. Hu, F. Ilhan, S. Tekin, and L. Liu, “Lisa: Lazy safety
+alignment for large language models against harmful fine-tuning at-
+tack,”Advances in Neural Information Processing Systems, vol. 37, pp.
+104 521–104 555, 2024.
+[16] A. A. Rusu, N. C. Rabinowitz, G. Desjardins, H. Soyer, J. Kirkpatrick,
+K. Kavukcuoglu, R. Pascanu, and R. Hadsell, “Progressive neural
+networks,”arXiv preprint arXiv:1606.04671, 2016.
+[17] H. Kang, R. J. L. Mina, S. R. H. Madjid, J. Yoon, M. Hasegawa-
+Johnson, S. J. Hwang, and C. D. Yoo, “Forget-free continual learning
+with winning subnetworks,” inInternational Conference on Machine
+Learning. PMLR, 2022, pp. 10 734–10 750.
+[18] M. Anderljung, J. Barnhart, A. Korinek, J. Leung, C. O’Keefe, J. Whit-
+tlestone, S. Avin, M. Brundage, J. Bullock, D. Cass-Beggset al.,
+“Frontier ai regulation: Managing emerging risks to public safety,”arXiv
+preprint arXiv:2307.03718, 2023.
+[19] X. Qi, B. Wei, N. Carlini, Y . Huang, T. Xie, L. He, M. Jagielski, M. Nasr,
+P. Mittal, and P. Henderson, “On evaluating the durability of safeguards
+for open-weight llms,”arXiv preprint arXiv:2412.07097, 2024.
+[20] S. Gowal, K. Dvijotham, R. Stanforth, R. Bunel, C. Qin, J. Uesato,
+R. Arandjelovic, T. Mann, and P. Kohli, “On the effectiveness of interval
+bound propagation for training verifiably robust models,”arXiv preprint
+arXiv:1810.12715, 2018.
+[21] C. Tsay, J. Kronqvist, A. Thebelt, and R. Misener, “Partition-based
+formulations for mixed-integer optimization of trained relu neural net-
+works,”Advances in neural information processing systems, vol. 34, pp.
+3068–3080, 2021.
+[22] T. Gehr, M. Mirman, D. Drachsler-Cohen, P. Tsankov, S. Chaudhuri, and
+M. Vechev, “Ai2: Safety and robustness certification of neural networks
+with abstract interpretation,” in2018 IEEE symposium on security and
+privacy (SP). IEEE, 2018, pp. 3–18.
+[23] P. Sosnin, M. N. M ¨uller, M. Baader, C. Tsay, and M. Wicker, “Certified
+robustness to data poisoning in gradient-based training,”arXiv preprint
+arXiv:2406.05670, 2024.
+[24] M. Wołczyk, K. Piczak, B. W ´ojcik, L. Pustelnik, P. Morawiecki, J. Tabor,
+T. Trzcinski, and P. Spurek, “Continual learning with guarantees via
+weight interval constraints,” inInternational Conference on Machine
+Learning. PMLR, 2022, pp. 23 897–23 911.
+[25] Y . LeCun, L. Bottou, Y . Bengio, and P. Haffner, “Gradient-based learning
+applied to document recognition,”Proceedings of the IEEE, vol. 86,
+no. 11, pp. 2278–2324, 1998.
+[26] A. Krizhevsky, G. Hintonet al., “Learning multiple layers of features
+from tiny images,” 2009.
+[27] T. Huang, S. Hu, F. Ilhan, S. F. Tekin, and L. Liu, “Harmful fine-
+tuning attacks and defenses for large language models: A survey,”arXiv
+preprint arXiv:2409.18169, 2024.
+[28] S. Zhao, M. Jia, Z. Guo, L. Gan, X. XU, X. Wu, J. Fu, F. Yichao, F. Pan,
+and A. T. Luu, “A survey of recent backdoor attacks and defenses in
+large language models,”Transactions on Machine Learning Research.
+[29] X. Huang, W. Ruan, W. Huang, G. Jin, Y . Dong, C. Wu, S. Bensalem,
+R. Mu, Y . Qi, X. Zhaoet al., “A survey of safety and trustworthiness of
+large language models through the lens of verification and validation,”
+Artificial Intelligence Review, vol. 57, no. 7, p. 175, 2024.
+[30] J. Mukhoti, Y . Gal, P. H. Torr, and P. K. Dokania, “Fine-tuning can
+cripple your foundation model; preserving features may be the solution,”
+arXiv preprint arXiv:2308.13320, 2023.
+[31] B. Wei, K. Huang, Y . Huang, T. Xie, X. Qi, M. Xia, P. Mittal, M. Wang,
+and P. Henderson, “Assessing the brittleness of safety alignment via
+pruning and low-rank modifications,”arXiv preprint arXiv:2402.05162,
+2024.
+[32] D. Rosati, J. Wehner, K. Williams, L. Bartoszcze, R. Gonzales, S. Ma-
+jumdar, H. Sajjad, F. Rudziczet al., “Representation noising: A defence
+mechanism against harmful finetuning,”Advances in Neural Information
+Processing Systems, vol. 37, pp. 12 636–12 676, 2024.
+[33] J. Rando, J. Zhang, N. Carlini, and F. Tram `er, “Adversarial ml prob-
+lems are getting harder to solve and to evaluate,”arXiv preprint
+arXiv:2502.02260, 2025.
+[34] G. M. Van de Ven, T. Tuytelaars, and A. S. Tolias, “Three types of
+incremental learning,”Nature Machine Intelligence, vol. 4, no. 12, pp.
+1185–1197, 2022.
+[35] J. Yoon, E. Yang, J. Lee, and S. J. Hwang, “Lifelong learning with
+dynamically expandable networks,”arXiv preprint arXiv:1708.01547,
+2017.
+[36] M. Wicker, J. Heo, L. Costabello, and A. Weller, “Robust explanation
+constraints for neural networks,”arXiv preprint arXiv:2212.08507, 2022.
+[37] M. Wicker, P. Sosnin, I. Shilov, A. Janik, M. N. M ¨uller, Y .-A. de Mon-
+tjoye, A. Weller, and C. Tsay, “Certification for differentially private
+prediction in gradient-based training,”arXiv preprint arXiv:2406.13433,
+2024.
+[38] J. Bitterwolf, A. Meinke, and M. Hein, “Certifiably adversarially robust
+detection of out-of-distribution data,”Advances in Neural Information
+Processing Systems, vol. 33, pp. 16 085–16 095, 2020.
+[39] W. Wang, A. J. Levine, and S. Feizi, “Improved certified defenses against
+data poisoning with (deterministic) finite aggregation,” inInternational
+Conference on Machine Learning. PMLR, 2022, pp. 22 769–22 783.
+[40] A. Mallya and S. Lazebnik, “Packnet: Adding multiple tasks to a single
+network by iterative pruning,” inProceedings of the IEEE Conference
+on Computer Vision and Pattern Recognition (CVPR), June 2018.
+[41] S. Golkar, M. Kagan, and K. Cho, “Continual learning via neural
+pruning,” 2019. [Online]. Available: https://arxiv.org/abs/1903.04476
+[42] G. Zhang, Y . Wang, L. Lessard, and R. B. Grosse, “Near-optimal
+local convergence of alternating gradient descent-ascent for minimax
+optimization,” inInternational Conference on Artificial Intelligence and
+Statistics. PMLR, 2022, pp. 7659–7679.
+[43] J. Gallego-Posada, J. Ramirez, M. Hashemizadeh, and S. Lacoste-Julien,
+“Cooper: A library for constrained optimization in deep learning,”arXiv
+preprint arXiv:2504.01212, 2025.
+[44] G. Katz, C. Barrett, D. L. Dill, K. Julian, and M. J. Kochenderfer,
+“Reluplex: An efficient smt solver for verifying deep neural networks,”
+inComputer Aided Verification: 29th International Conference, CAV
+2017, Heidelberg, Germany, July 24-28, 2017, Proceedings, Part I 30.
+Springer, 2017, pp. 97–117.
+[45] M. Wicker, L. Laurenti, A. Patane, and M. Kwiatkowska, “Probabilistic
+safety for bayesian neural networks,” inConference on uncertainty in
+artificial intelligence. PMLR, 2020, pp. 1198–1207.
+[46] A. Chaudhry, M. Ranzato, M. Rohrbach, and M. Elhoseiny,
+“Efficient lifelong learning with a-gem,” 2019. [Online]. Available:
+https://arxiv.org/abs/1812.00420
+[47] cjadams, J. Sorensen, J. Elliott, L. Dixon, M. McDonald, nithum, and
+W. Cukierski, “Toxic comment classification challenge,” https://kaggle.c
+om/competitions/jigsaw-toxic-comment-classification-challenge, 2017,
+kaggle.
+[48] T. Davidson, D. Warmsley, M. Macy, and I. Weber, “Automated hate
+speech detection and the problem of offensive language,” inProceedings
+of the international AAAI conference on web and social media, vol. 11,
+no. 1, 2017, pp. 512–515.
+[49] D. Borkan, L. Dixon, J. Sorensen, N. Thain, and L. Vasserman,
+“Nuanced metrics for measuring unintended bias with real data for text
+classification,”CoRR, vol. abs/1903.04561, 2019. [Online]. Available:
+http://arxiv.org/abs/1903.04561
+[50] H. R. Kirk, B. Vidgen, P. R ¨ottger, T. Thrush, and S. Hale, “Hatemoji:
+A test suite and adversarially-generated dataset for benchmarking
+and detecting emoji-based hate,”CoRR, vol. abs/2108.05921, 2021.
+[Online]. Available: https://arxiv.org/abs/2108.05921
+[51] M. Sap, S. Gabriel, L. Qin, D. Jurafsky, N. A. Smith, and Y . Choi,
+“Social bias frames: Reasoning about social and power implications of
+language,” inACL, 2020.
+[52] P. R ¨ottger, B. Vidgen, D. Nguyen, Z. Waseem, H. Z. Margetts,
+and J. B. Pierrehumbert, “Hatecheck: Functional tests for hate
+speech detection models,”CoRR, vol. abs/2012.15606, 2020. [Online].
+Available: https://arxiv.org/abs/2012.15606
+[53] OpenAI, “text-embedding-3-large,” https://platform.openai.com/docs
+/guides/embeddings, 2024, accessed May 2025. An embedding model
+from the GPT family.
+[54] C. Choi, J. Kim, S. Lee, J. Kwon, S. Gu, Y . Kim, M. Cho,
+and J.-y. Sohn, “Linq-embed-mistral technical report,”arXiv preprint
+arXiv:2412.03223, 2024.
+[55] T. Computer, “m2-bert-80m-2k-retrieval,” https://huggingface.co/toget
+hercomputer/m2-bert-80M-2k-retrieval, 2024, accessed May 2025.
+Open-weight embedding model optimized for retrieval tasks.
+[56] X. Ye, S. Iyer, A. Celikyilmaz, V . Stoyanov, G. Durrett, and R. Pasunuru,
+“Complementary explanations for effective in-context learning,”arXiv
+preprint arXiv:2211.13892, 2022.
+[57] V . AI, “V oyage-3 embedding model,” https://docs.voyageai.com/docs
+/embeddings, 2024, accessed May 2025. Proprietary embedding model
+optimized for search and classification.
+[58] F. Barbieri, L. Espinosa Anke, and J. Camacho-Collados, “XLM-
+T: Multilingual language models in Twitter for sentiment analysis
+and beyond,” inProceedings of the Thirteenth Language Resources
+and Evaluation Conference. Marseille, France: European Language
+Resources Association, Jun. 2022, pp. 258–266. [Online]. Available:
+https://aclanthology.org/2022.lrec-1.27
+[59] A. Aich, “Elastic weight consolidation (ewc): Nuts and bolts,” 2021.
+[Online]. Available: https://arxiv.org/abs/2105.04093
+[60] F. Zenke, B. Poole, and S. Ganguli, “Continual learning through
+synaptic intelligence,” inProceedings of the 34th International
+Conference on Machine Learning, ser. Proceedings of Machine
+Learning Research, D. Precup and Y . W. Teh, Eds., vol. 70.
+PMLR, 06–11 Aug 2017, pp. 3987–3995. [Online]. Available:
+https://proceedings.mlr.press/v70/zenke17a.html
+[61] S. M. Rump, “Fast and parallel interval arithmetic,”BIT Numerical
+Mathematics, vol. 39, pp. 534–554, 1999.
+[62] M. Wicker, A. Patane, L. Laurenti, and M. Kwiatkowska, “Adversarial
+robustness certification for bayesian neural networks,”arXiv preprint
+arXiv:2306.13614, 2023.
+[63] M. Wicker, L. Laurenti, A. Patane, N. Paoletti, A. Abate, and
+M. Kwiatkowska, “Certification of iterative predictions in bayesian
+neural networks,” inUncertainty in Artificial Intelligence. PMLR, 2021,
+pp. 1713–1723.
+[64] H. Dang, M. R. Wicker, G. Botterweck, and A. Patane, “Certifiably
+quantisation-robust training and inference of neural networks,” inThe
+28th International Conference on Artificial Intelligence and Statistics,
+2025.
+[65] P. Krukowski, A. Bielawska, K. Ksia ˙zek, P. Wawrzy ´nski, P. Batorski,
+and P. Spurek, “Hint: Hypernetwork approach to training weight interval
+regions in continual learning,”Information Sciences, p. 122261, 2025.
+APPENDIX
+A. Additional Related Works
+In this section, we expand upon the related works provided
+in the main text to discuss provable guarantees that are
+related to this work. Firstly, we highlight that guarantees
+we leverage, in the interval case, build on the algorithm
+proposed in [61]. This algorithm found use in neural network
+architectures with Bayesian neural networks [45], [62] and
+has subsequently been used in explainability [36], control
+[63], quantization robustness [64], and in the initial work on
+continual learning [24]. In the initial work, [24], the authors
+focus particularly on continual learning application and spend
+considerable time discussing the problem of intersecting safe
+regions and its complexity. In this paper, on the other hand,
+we focus primarily on a principled approach to computing
+a locally invariant domain. Thus, our problem formulation is
+slightly different and our perspective on the problem leads us
+to explore some practically important aspects not covered in
+[24] including the use of buffer data and providing analysis
+of finite-sample guarantees for our method. Within our main
+text we reference the numerical instability of the approach
+given by [24], a symptom of which can be observed in their
+appendix where they use a learning rate hyperparameter that
+ranges in magnitude from1e3to1e−20. This is due to the
+fact that interval bound propagation can be very loose for even
+moderate networks, thus as the problem scales to medium
+networks (CNNs even), the approach of [24] will need to use
+vanishingly small learning rates. Similar to ICN, the approach
+provided in [65] attempts to improve the computation of LIDs
+using hypernetworks. We do not compare with this method
+as the proposal is not strictly sound due to the lack of hard
+constraints when updating hypernetwork weights.
+B. Interval Bound Propagation
+This section details the interval bound propagation (IBP)
+procedure we use to compute a sound over-approximation of
+the specification function required for our LID computation.
+For clarity, we focus on feed-forward networks with mono-
+tonic activations, though the approach generalizes straightfor-
+wardly to other architectures such as convolutional networks.
+Feedforward Neural Networks.We consider a neural
+network modelf θ :R n0 →R nK with parametersθ=
+{(Wi, bi)}K
+i=1 composed ofKlayers. Each layer performs the
+following operations:
+ˆzk =W kzk−1 +b k, z k =σ(ˆzk)(7)
+wherez 0 :=x,f θ(x) := ˆzK, andσis the activation function,
+which we assume to be monotonic (e.g., ReLU).
+Interval Arithmetic.We now define interval representa-
+tions for matrices, and their corresponding arithmetic opera-
+tions. We represent each matrixAby its element-wise interval
+bounds[A L, AU ], whereA L andA U denote the lower and
+upper bounds respectively. The key operations required for
+neural network forward passes are interval matrix addition and
+multiplication.
+Given interval matrices[A L, AU ]and[B L, BU ], we define:
+leftmargin=*
+•Interval Matrix Addition:[A L, AU ]⊕[B L, BU ] = [AL +
+BL, AU +B U ]
+•Interval Matrix Multiplication:Using center matrices
+Aµ = (A U +A L)/2,B µ = (B U +B L)/2and radius
+matricesA r = (A U −A L)/2,B r = (B U −B L)/2,
+Rump’s algorithm gives[A L, AU ]⊗[B L, BU ] =
+[CL, CU ]where
+CL =A µBµ − |Aµ|Br −A r|Bµ| −ArBr
+CU =A µBµ +|A µ|Br +A r|Bµ|+A rBr
+These operations ensureA ′ ⊕B ′ ∈[C L, CU ]andA ′ ⊗B ′ ∈
+[CL, CU ]for allA ′ ∈[A L, AU ],B ′ ∈[B L, BU ]. Both
+operations incur modest computational costs compared with
+their non-interval counterparts (2×for addition and 4×for
+multiplication).
+Bounding the Forward Pass.Using the interval operations
+defined above, we can propagate bounds through the neural
+network. For any inputxand parametersW k ∈[W L
+k , WU
+k ],
+bk ∈[b L
+k , bU
+k ]fork= 1, . . . , K, we compute interval bounds:
+[ˆzL
+k ,ˆzU
+k ] = [WL
+k , WU
+k ]⊗[z L
+k−1, zU
+k−1]⊕[b L
+k , bU
+k ]
+[zL
+k , zU
+k ] = [σ(ˆzL
+k ), σ(ˆzU
+k )]
+This procedure guarantees thatf θ(x)∈[ˆzL
+K,ˆzU
+K]for all valid
+parameter combinations within their respective intervals.
+For the monotonic activation functionσ, we can apply the
+function element-wise to both the lower and upper bounds of
+the input interval to obtain a valid output interval, preserv-
+ing the soundness of the over-approximation throughout the
+forward pass.
+Bounding the Specification.The procedure for propagating
+intervals through the specification function depends on the
+exact choice of specification function. We assume we have the
+interval bounds on the output logits of the network,[ˆz L
+K,ˆzU
+K],
+computed using the procedure above. Letydenote the true
+class index.
+Standard performance metrics, such as model accuracy,
+are monotonically increasing in the logit of the correct
+class, and monotonically decreasing in the logits of all other
+classes. Thus, the ‘worst-case’ output logits within the interval
+[ˆzL
+K,ˆzU
+K]are given by
+ˆzworst
+K = ˆzL
+K ·e y + ˆzU
+K ·(1−e y),(8)
+wheree y ∈R C is the one-hot vector corresponding to the true
+classy.
+Thus, propagating interval bounds through common per-
+formance metrics corresponds to evaluating this worst-case
+output:
+•Cross-Entropy Loss:
+ϕce(θ, x, y) =−log
+ 
+softmax(fθ(x))y
+
+≤ϕ IBP
+ce =−log
+ 
+softmax(ˆzworst
+K )y
+
+,
+where the inequality reflects thatϕ IBP
+acc is a certified upper
+bound on the true loss for anyθin our interval domain.
+•(Negative) Accuracy:
+ϕacc(θ, x, y) =−I
+
+arg max
+i
+{fθ(x)i}=y
+
+≤ϕ IBP
+acc =−I
+
+arg max
+i
+{ˆzworst
+K,i }=y
+
+,
+where the inequality reflects thatϕ IBP
+acc represents a lower
+bound on the accuracy.
+•(Negative) Soft Accuracy:
+ϕsoft acc (θ, x, y) =−softmax(fθ(x))y
+≤ϕ IBP
+soft acc =−softmax(ˆzworst
+K )y,
+which represents a certified lower bound on the soft
+accuracy of the model. We include the soft accuracy as
+a differentiable proxy of a hard accuracy specification in
+the primal-dual computation of LIDs.
+Since our definition of LID requiresϕto be bounded from
+above, we define the specification for accuracy and soft
+accuracy to be the negation of the nominal value.
+C. Heuristics for Effective LID Computation
+De-bias regularisationOne observation from our first
+experiments in the CIL setting was that the model trained on
+the first task is heavily biased towards the first classes (i.e.
+the network will result in a very confident prediction of a
+class from task 1 when confronted with data points from task
+2). This means that there might be an important distance in
+parameter space that needs to be travelled before the model can
+start predicting other output classes, making future learning
+challenging within our current local invariant domain. Thus,
+we added a regularisation term that passes noise through the
+model and penalises over-confidence on any particular output.
+Here is a formal description of our method: LetFbe a noisy
+distribution over the input spaceX ∈R n.Fcan be taken to
+be gaussian, uniform or anything else. We show below which
+distributions worked well in practice. We denote our machine
+learning model as parameterized functionsf θ :R n → Ywith
+parametersθ∈R p. In practice this function can be further
+expressed as follow:
+fθ(x) = arg max
+i
+hθ(x)
+whereh θ :X →R C maps the input to their corresponding
+logits inR C withCbeing the number of classes we consider.
+The de-bias regularisation termU(θ)is expressed as follow :
+U(θ) = 1
+m
+mX
+k=0
+∥s(hθ(Xk))−¯ s(hθ(Xk))∥2
+X1, ..., Xm
+i.i.d.
+∼F
+wheresis the softmax function and¯ sis the coordinate-
+wise mean softmax function. This encourages the predicted
+probabilities of each classes to stay close to each other for
+noisy samples. During gradient descent the de-bias termU(θ)
+is added to the overall loss multiplied by a regularisation factor
+λ.
+Choosing the right distributionFis decisive in ensuring that
+the neural network stays unbiased when confronted with new
+samples. Note thatFshould be sufficiently distinct from the
+task distributionD t, otherwise learning tasktmay effectively
+be compromised. In addition,Fshould stay general enough
+to represent all potential inputs we might be confronted with
+in the future. In our experiments we chooseFto be uniform
+over the minimum and maximum value coordinate wise we
+encounter in our datasetD:={(x (i), y(i)}N
+i=1.
+D. Experimental Details and Additional Ablation Studies
+In this chapter we explore the experimental setups further.
+All of the three main experiments follow similar testing and
+evaluation pipelines:
+Split MNIST.As mentioned in section V-A we use a two
+layer CNN follow by a single fully connected classification
+head. We first train this neural network on an initial task –
+task details are depending on the specific continual learning
+setup – then compute a LID for the given, trained model. Sub-
+sequently, we use projected gradient descent to train the model
+on each of the following tasks within the constraints provided
+by the LID. In-between tasks, we continue to compute LIDs
+for the most recently learned task, taking intersections between
+the existing LID and the newly computed LID to produce
+guarantees not only for the most recent task, but for all
+previous tasks. This procedure results in algorithm 1:
+Algorithm 1Certified Continual Learning with Locally In-
+variant Domains
+Input:f- NN model,θ ′ - initial parameter,E- # of epochs,
+ϕ- specification function,α- learning rate,δ- minimum
+accuracy.
+Output:θ- Param. with acceptable error,t- number of tasks
+completed
+1:D 1 ={(x (i), y(i))}k
+i=1 ∼P 1(X, Y)
+2:θ 1 ←SGD(θ ′,D1, E, α)
+3:[θ L
+1 , θU
+1 ]←LID(θ,D 1, ϕ, δ)
+4:forj∈2, ..., tdo
+5:D j ={(x (i), y(i))}k
+i=1 ∼P j(X, Y)
+6:θ j ←PGD(θ j−1,Dj, E, α,[θL
+j−1, θU
+j−1])
+7:[θ L
+j , θU
+j ]←LID(θ,D j, ϕ, δ)
+8:[θ L
+j , θU
+j ]←[θ L
+j , θU
+j ]∩[θ L
+j−1, θU
+j−1]
+9:if[θ L
+1 , θU
+1 ] ==∅then
+10:returnθ j
+11:end if
+12:end for
+13:returnθ t
+To split MNIST into separate tasks we randomly separate
+the ten digits from MNIST into five tasks of two digits each,
+while ensuring that each of the pairs is a combination of an
+odd and an even number to make sure that the tasks are well
+defined for domain IL.
+Split CIFAR.For split CIFAR we also follow algorithm
+1 with the only difference being the task creation. Here, we
+hand pick well defined tasks to create the following splits:cat
+TABLE II
+EXPERIMENTALHYPERPARAMETERS FORSPLIT-MNISTANDSPLIT-CIFAR.
+Category HyperparamSplit-MNIST Split-CIFAR
+(TIL/DIL/CIL) (TIL/DIL/CIL)
+LearningLearning Rate 0.001 0.02
+Batch Size 64 128
+Number of Epochs 5 5
+ℓ2 Regularisation 0.01 0.01
+De-bias Regularisation 0.01 0.01
+Projection strategy sample largest closest best loss
+LID OptimizationPrimal Learning Rate (η p) 0.33 0.33
+Dual Learning Rate (η d) 0.01 0.01
+Batch Size 400 400
+Number of Iterations 200 200
+LID Saving Period 20 2
+BaselinesLwFλ0.001/0.05/0.05 0.1
+EWCλ1e6 1e6
+InterContiNetLearning Rate 0.01 0.01
+Batch Size 1e6 128
+Epochs 15/5/5 30
+Radii lr 100/1000/1 1/1/0.1
+TABLE III
+EXPERIMENTALHYPERPARAMETERS FORLLM EXPERIMENTS
+Category HyperparamDefault M2-BERT MXBAI
+LearningLearning Rate 0.0005 0.0005 0.0005
+Batch Size 64 64 64
+Number of Epochs 1 1 1
+ℓ2 Regularisation 0 0.01 0.01
+De-bias Regularisation 0 0 0
+Projection strategy best loss best loss best loss
+LID OptimizationPrimal Learning Rate (η p) 0.1 0.03 0.03
+Dual Learning Rate (η d) 0.1 0.001 0.001
+Batch Size 1024 1024 1024
+Number of Iterations 700 700 700
+LID Saving Period 20 20 20
+vstruck,frogvsship,horsevsautomobile, anddogvsair-
+plane. To make the tasks compatible with domain incremental
+learning, note that each of the tasks uses an animal and a
+mode of transportation - two separate domains. Another slight
+difference for CIFAR is that we used a ResNet18 model and
+then train a MLP classifier on the embeddings obtained from
+the ResNet. We restrict our LID computations and continual
+learning to the MLP only as opposed to the entire model
+pipeline as is the case for the MNIST setup.
+E. Foundation Model Hyperparameters
+We present the hyperparameters used in Table III.
+F . Buffer-based Learning Scheme
+The algorithm for the buffer-based case is reasonably similar
+to the procedure described in algorithm 1. The main difference
+is that instead of exiting after achieving the maximum accuracy
+within a given LID, we check if the achieved performance
+exceeds a certain target performance. If it does, we proceed
+to the next task, if it doesn’t, we recompute the LID using
+samples stored in a buffer. When updating, we drawk= 200
+samples of each task from the buffer and use the combined
+data to compute an updated LID. This updated LID, now
+centered at the most recent set of model parameters,θ, ought
+to allow for further increases in performance on the current
+task, while still maintaining a safe-area with guarantees. This
+results in algorithm 2.
+The hyperparameters for the buffer algorithm are largely the
+same as those shown in table II with the only addition being
+the aforementionedk, the target accuracy, and the maximum
+buffer calls per task shown in table IV
+G. Empirical Computational Analysis
+To discuss the introduced computational overhead of pro-
+viding safe updates we train each method found in Table VI
+on two separate tasks of Split MNIST with an interleaved safe
+space computation for our method and ICN. Across 50 runs
+we report the mean time taken and one standard deviation
+of variance in seconds. It becomes apparent that our method
+does introduce some overhead compared to methods that do
+not compute safe spaces. While there is some additional delta
+due to the projection step during projected gradient descent,
+most of the overhead comes from the one-off step of the LID
+computation.
+TABLE IV
+EXPERIMENTALHYPERPARAMETERS FORSPLIT-MNISTANDSPLIT-CIFARFOR OUR BUFFER-BASED ALGORITHM.
+Category HyperparamSplit-MNIST Split-CIFAR
+(TIL/DIL/CIL) (TIL/DIL/CIL)
+LID OptimizationTarget Accuracy 0.65/0.65/0.65 0.65/0.75/0.55
+Max Buffer Calls 1/3/7 1/3/7
+BaselinesA-GEM memory size 3750 3750
+TABLE V
+EXPERIMENTAL HYPERPARAMETERS FOR WEIGHT PRUNING EXPERIMENTS. THIS ACTS AS AN EXTENSION TOLLMANDSPLIT-MNISTEXPERIMENTS,
+HENCE THE BASELINE USES HYPERPARAMETERS SPECIFIED INTABLESIIANDIIIUNLESS MENTIONED OTHERWISE.
+Category HyperparamSplit-MNIST LLM
+LID OptimizationNumber of Iterations 300 300
+LID Saving Period 100 100
+Freezing Proportion - Lookahead 0.825 0.85
+Freezing Proportion 0.05 0.05
+TABLE VI
+EMPIRICAL ANALYSIS OF COMPUTATIONAL COST OF DIFFERENT
+CONTINUAL LEARNING METHODS IN SECONDS AND ONE STANDARD
+DEVIATION.
+Method Value [s]
+Ours43.18±2.19
+of which LID12.92±0.79
+ICN70.09±2.88
+of which LID51.81±2.13
+SGD16.08±0.82
+EWC15.17±1.49
+A-GEM20.29±0.89
+LwF14.96±0.80
+Algorithm 2Certified Continual Learning with Locally In-
+variant Domains and Buffers
+Input:f- NN model,θ ′ - initial parameter,E- # of epochs,
+ϕ- specification function,α- learning rate,δ- minimum
+accuracy,target acc- target accuracy,M- buffer,b- buffer
+size,acc- accuracy metric,max calls- maximum number
+of buffer calls per task.
+Output:θ- Param. with acceptable error,t- number of tasks
+completed
+1:D 1 ={(x (i), y(i))}k
+i=1 ∼P 1(X, Y)
+2:θ 1 ←SGD(θ ′,D1, E, α)
+3:[θ L
+1 , θU
+1 ]←LID(θ,D 1, ϕ, δ)
+4:D ∗
+1 ={(x (i), y(i))}bi
+i=1 ∼P 1(X, Y)
+5:M 1 ←D 1
+6:forj∈2, ..., tdo
+7:D j ={(x (i), y(i))}k
+i=1 ∼P j(X, Y)
+8:θ j ←PGD(θ j−1,Dj, E, α,[θL
+j−1, θU
+j−1])
+9:[θ L
+j , θU
+j ]←LID(θ,D j, ϕ, δ)
+10:[θ L
+j , θU
+j ]←[θ L
+j , θU
+j ]∩[θ L
+j−1, θU
+j−1]
+11:curr acc=acc(θ, Dj)
+12:whilen < max calls&not empty(M i:j−1) &
+target acc > curraccdo
+13:D 1:j−1 ={(x (i), y(i))}k
+i=1 ∼M 1:j−1
+14:[θ L
+j−1, θU
+j−1]←LID(D 1:j−1, ϕ, δ)
+15:θ j ←PGD(θ j,Dj, E, α,[θL
+j−1, θU
+j−1])
+16:curr acc=acc(θ, Dj)
+17:end while
+18:D ∗
+j ={(x (i), y(i))}bi
+i=1 ∼P j(X, Y)
+19:M j ←D ∗
+j
+20:if[θ L
+1 , θU
+1 ] ==∅then
+21:returnθ j
+22:end if
+23:end for
+24:returnθ t

@@ -1,0 +1,1807 @@
+Efficiently Learning Branching Networks for Multitask
+Algorithmic Reasoning
+Dongyue Li†, Zhenshuo Zhang†, Minxuan Duan†,
+Edgar Dobriban‡, and Hongyang R. Zhang†
+†Northeastern University, Boston, Massachusetts
+‡University of Pennsylvania, Philadelphia, Pennsylvania
+December 2, 2025
+Abstract
+Algorithmic reasoning—the ability to perform step-by-step logical inference—has become a
+core benchmark for evaluating reasoning in graph neural networks (GNNs) and large language
+models (LLMs). Ideally, one would like to design a single model capable of performing well
+on multiple algorithmic reasoning tasks simultaneously. However, this is challenging when the
+execution steps of algorithms differ from one another, causing negative interference when they
+are trained together.
+We proposebranching neural networks, a principled architecture for multitask algorithmic
+reasoning. Searching for the optimal k-ary tree with L layers over n algorithmic tasks is
+combinatorial, requiring exploration of up toknL possible structures. We develop AutoBRANE,
+an efficient algorithm that reduces this search toO(nL)time by solving a convex relaxation at each
+layer to approximate an optimal task partition. The method clusters tasks using gradient-based
+affinity scores and can be used on top of any base model, including GNNs and LLMs.
+We validate AutoBRANE on a broad suite of graph-algorithmic and text-based reasoning
+benchmarks. We show that gradient features estimate true task performance within 5% error
+across four GNNs and four LLMs (up to 34B parameters). On the CLRS benchmark, it
+outperforms the strongest single multitask GNN by 3.7% and the best baseline by 1.2%, while
+reducing runtime by 48% and memory usage by 26%. The learned branching structures reveal
+an intuitively reasonable hierarchical clustering of related algorithms. On three text-based graph
+reasoning benchmarks, AutoBRANE improves over the best non-branching multitask baseline by
+3.2%. Finally, on a large graph dataset with 21M edges and 500 tasks, AutoBRANE achieves
+a 28% accuracy gain over existing multitask and branching architectures, along with a 4.5×
+reduction in runtime.
+1 Introduction
+Reasoning is tied to the ability of a learning system to make inductive inferences based on its
+internally stored states, and it remains one of the central challenges in artificial intelligence [6]. Many
+formalisms—most notably probabilistic reasoning via Bayesian networks—have been developed to
+build models that can reason efficiently under uncertainty [34]. More recently, a complementary
+This is the preprint of a paper that will appear in KDD 2026. Email correspondence:{li.dongyu, zhang.zhens,
+duan.min, ho.zhang}@northeastern.eduanddobriban@wharton.upenn.edu.
+1
+arXiv:2512.01113v1  [cs.LG]  30 Nov 2025
+Task 1:
+BFS 
+Task 3:
+DFS
+Task 2: 
+Bellman-Ford
+…
+2
+1
+3 5
+4An input graph: 
+Output: The intermediate and final steps of 𝑛 algorithmic 
+reasoning tasks, represented as node labels below
+GNN
+GNN
+GNN
+GNN
+DFSBellman-Ford,
+BFS
+GNN
+GNN
+Kruskal
+Source node
+1 1 3 4 5
+1 1 1 4 5
+1 1 1 2 5
+1 1 1 2 2
+1 1 3 4 5
+1 1 3 2 5
+1 1 3 2 2
+1 1 1 2 2
+1 1 3 4 5
+1 1 1 4 5
+1 1 1 2 5
+1 1 1 2 2
+DFS, BFS,
+Bellman-Ford
+KruskalStep 1: 
+Step 2: 
+Step 3: 
+Step 4: 
+𝑛 algorithmic reasoning tasks
+Problem setup
+Illustration of a branching network with 
+GNN as the base model Overview of our approach
+𝑆2
+𝑆𝑚
+𝑾(𝟎)
+෡𝑊𝑆1
+෡𝑊𝑆2
+෡𝑊𝑆𝑚
+Projected 
+gradients on 𝑆1
+Input: A set of algorithmic tasks and a base model (e.g., GNN)
+DFS
+BFS
+Bellman-Ford
+BFS
+Bellman-Ford
+DFS ……
+Figure 1: An illustration of our problem setup and the proposed solution.Left:We study learning
+graph algorithms such as BFS, Bellman-Ford, and DFS, formulating the prediction of intermediate
+algorithmic states as a node-labeling classification problem.Center:Given n algorithmic reasoning
+tasks and a base model (e.g., GNNs or low-rank adapters), we develop an efficient method to construct
+a branching network that automatically learns parameter-sharing structures across all tasks.Right:
+Our algorithm identifies a task partition at each layer and then searches for a corresponding tree
+structure over layers1, 2, . . . , L. Overall, the procedure runs in timeO(nL)—dramatically faster
+than the naive worst-case ofO(2nL).
+line of work has sought to characterize the reasoning ability of neural networks through the lens of
+algorithmic execution, viewing reasoning as the step-by-step computation performed by a classical
+algorithm. Surprisingly, for a wide range of basic graph algorithms such as shortest paths and
+reachability, neural networks can be trained to accurately predict not only the final output of the
+algorithm but also its intermediate states [40]. This raises a natural next question: can we design a
+model capable of solving multiple algorithmic reasoning tasks simultaneously? Since the number of
+possible combinations amongn tasks grows combinatorially, the central challenge becomes developing
+architectures and training methods that enable efficient and scalable multitask algorithmic reasoning.
+A rigorous study of algorithmic reasoning is valuable not only from a foundational perspective [41],
+but also for its potential to improve the reasoning abilities of large language models (LLMs), especially
+on tasks involving graphs and structured computation [5, 45, 35]. In our own experiments, we observe
+that prompting open-source LLMs (e.g., Llama-3-8B and Qwen-3-1.7B) with textual descriptions of
+algorithmic tasks, such as shortest paths, performs roughly 65% worse than directly training a graph
+neural network on the same task. Besides, the ability to accurately predict intermediate algorithmic
+execution steps can also be linked to reasoning in chain-of-thought fine-tuning [30, 44, 3].
+Several existing works have sought to design neural networks for tackling a single algorithmic
+reasoning task, while the problem of multitask algorithmic reasoning has not been studied in
+depth. Veličković et al. [40] introduce CLRS-30, a dataset of 30 algorithmic tasks, and find that
+message-passing neural networks can learn to accurately predict both the intermediate and final
+steps of a graph algorithm (where a graph is sampled from a fixed distribution). In particular,
+each intermediate step is treated as a node labeling sub-task, and the loss objective sums over all
+the intermediate node labeling sub-tasks (cf. equation(1), Section 2 for the definition). Consider
+breadth-first search (BFS) as an example (See also Figure 1 for an illustration). Starting from a
+graph and a source node to conduct the search, at each intermediate step, a network is trained to
+predict the index of the predecessor node in the current traversal path from the source. Ibarz et al.
+[13] conduct multitask experiments by training a single network across all CLRS-30 tasks, noting
+both positive and negative transfer compared to single-task training. Müller et al. [29] design a
+tri-attention mechanism in graph transformers, and use this new architecture to improve algorithmic
+2
+reasoning over existing graph neural networks. Both works leave open the question of designing
+specialized optimizers for multitask algorithmic reasoning.
+A key insight of this paper is that training a single neural network for multitask algorithmic
+tasks is inherently difficult due to complex interference between the intermediate steps (or node
+labels) of different algorithms. For example, in Figure 1, on a toy graph example, we notice that BFS
+and Bellman-Ford share the same intermediate node labels, while depth-first search (DFS) differs in
+Steps 2 and 3. However, if we use a single processor to predict all three tasks, this interference is
+unavoidable (See our study in Figure 6, Section 4.4). On the other hand, training a separate network
+for each task requires storingn models. This increases the memory at inference byn times, sincen
+networks need to be evaluated.
+To address this challenge, we explore the design of branching networks for multitask algorithmic
+reasoning by dividing algorithms into separate branches, taking into account their similarities.
+Searching over anL-layer, k-ary branching network forn tasks takesO(knL)time in the worst case.
+We introduce an efficient algorithm whose runtime is onlyO(nL). Further, this algorithm can be
+applied on top of any base model, including GNNs or LLMs with low-rank adapters. A key technical
+ingredient of this algorithm is to recursively estimate the affinity scores of several algorithms relative
+to each other, conditioned on the partitioning from the previous layers. In more detail, our algorithm
+involves two steps:
+• First, we design an algorithm that, given a set of algorithmic reasoning tasks, partitions
+them into (at most)k groups via convex optimization. We quantify the similarity scores
+by leveraging advances from the data attribution and influence functions literature [14, 31].
+Crucially, we develop a new notion of layer-wise affinity scores, conditioned on the partitioning
+from previous layers. The main intuition of this procedure is that we can approximate the loss
+of a well-trained neural network via first-order approximations, a key geometric property of
+over-parameterized networks [15]. The runtime involves computing the gradients and functional
+values of the training samples of all tasks once at a pretrained initialization, leading toO(n)
+runtime; Additional computations involved, such as running the clustering algorithms, incur
+negligible costs.
+• Second, we search for a branching network recursively from the first layer until layerL. Taken
+together, the overall running time of the algorithm isO(nL). The benefit of this branching
+network is that the memory overhead over multitask training [13] is onlyk
+L (typically ≤ 2),
+making it amenable to larger network architectures such as edge transformers [29].
+See Figure 1 for a high-level overview of our approach.
+We evaluate our approach on various algorithmic reasoning tasks across graph and text datasets.
+First, we find that the gradient-based approximation can estimate the true performances with less
+than5% error for four GNNs and four LLMs with up to 34 billion parameters. Second, we apply
+AutoBRANEon the CLRS benchmark [40] using GNNs as the base model and observe that
+AutoBRANEoutperforms the state-of-the-art single multitask network [29] by3.7% on average
+across twelve graph algorithmic reasoning tasks.AutoBRANEimproves over the most recent
+branching networks [10] and multitask networks [21] by1.2%on average, while reducing GPU hours
+by28%and GPU memory by26%. In fine-tuning language models on three text-based graph
+reasoning benchmarks (including CLRS-Text [28], GraphQA [5], and GraphWiz [3]),AutoBRANE
+outperforms the strongest multitask learning baseline [21] by3.2% on average. Additionally, we
+show thatAutoBRANEapplies beyond algorithmic reasoning, using it on overlapping community
+detection (on a graph of over 21M edges and 500 tasks) [46].AutoBRANEimproves accuracy by
+3
+28%over branching and multitask networks [10, 21], while achieving the best trade-off in runtime
+and memory.
+Summary of contributions.This paper makes three contributions to the problem of algorithmic
+reasoning. First, we develop a fast approximation procedure for efficiently finding the optimal
+parameter-sharing paradigms as a branching network, and we empirically validate that it accurately
+approximates true performance across various models. Second, we design an automatic branching
+network that can improve the average performance over multiple algorithmic reasoning tasks and can
+build on any base model. Third, we evaluate our algorithm across graph and text-based algorithmic
+reasoning tasks and show that our algorithm yields competitive performance with the best trade-off
+in runtime and model memory. Our work reinforces the importance of several open problems
+relating to algorithmic reasoning, in particular the learnability of an algorithm via neural networks
+[41, 25], and generalization in algorithmic reasoning [9]. It would be interesting to use the new
+techniques developed in this paper to better understand the sample complexity (and in-context
+learnability) of algorithmic reasoning tasks. The code for reproducing this work can be found at
+https://github.com/VirtuosoResearch/Multitask-algorithmic-reasoning.
+2 Preliminaries
+We follow the definition of algorithmic reasoning from prior work [41, 40]. LetA(1), A(2), . . . , A(n)
+denote n algorithms. Our goal is to learn a neural networkfW (such as a GNN) parameterized
+by W to minimize the risk averaged over then algorithmic execution sequences. Given an input
+X, the encoding of the j-th intermediate step of A(i) on input X is denoted as A(i)
+j (X), for
+j= 1,2, . . . , S(i)(X), whereS (i)(X)denotes the total number of execution steps by runningA(i).
+Given an inputX, an algorithmic reasoning task involves predictingA(i)
+j (X)as accurately as
+possible, for allj = 1, . . . , S(i)(X). Then, let ℓ denote a loss function (e.g., cross-entropy) over
+predictions f(i)
+W (X; j)of A(i) at stepj and ground truth labelsA(i)
+j (X). The test lossL(fW )of fW
+is defined as:
+E
+X∼D
+
+1
+n
+nX
+i=1
+1
+S(i)(X)
+S(i)(X)X
+j=1
+ℓ
+
+f(i)
+W (X;j), A(i)
+j (X)
+
+
+,(1)
+where D denotes a fixed distribution from whichX is drawn. For example, in the case of graphs, the
+input X corresponds to a graph, and the labels are represented as node labels.D can be Erdös-Rényi
+random graphs or preferential attachment graphs. For each algorithm, the node labels are generated
+by running the algorithm on an input graph. Then, the node traversal trajectories at each step are
+recorded as labels.
+To help understand the above definition, consider the example illustrated in Figure 2 on a toy
+graph with five nodes, for three algorithms (breadth-first search, depth-first search, and Bellman-
+Ford). To understand the encoding, each intermediate step is labeled by the predecessor of each
+node along the traversal path, leading to a node label vector for each step. The node labels are
+initially the indexes of the nodes.
+• In BFS, starting from node1, the first step visits node2. Hence, we update node2’s label as
+1, which is its predecessor. In step2, node3is visited, hence its node label is1. Step3visits
+node4(with predecessor2) and Step4visits node5with predecessor2.
+4
+123228123228123228123228123228
+Input: 𝑋
+BFS:
+Step 1: 𝐴(")(𝑋) Step 4: 𝐴($)(𝑋)Step 2: 𝐴(%)(𝑋)Step 3: 𝐴(&)(𝑋)
+Bellman-Ford:
+DFS:
+12345
+Source node: 1
+11345 11145 11125 11122Node labels:
+12345 11345 11325 11322 11122Node labels:
+12345 11345 11145 11125 11122Node labels:
+Source node: 1
+Source node: 1
+Figure 2: We give three examples of algorithmic reasoning tasks: Breadth-first search (BFS),
+depth-first search (DFS), and Bellman-Ford. The node labels of each intermediate step encode
+the predecessor of each node. We illustrate the predecessors with arrows. One can see that these
+algorithms share some intermediate steps, but not all, and the goal of this paper is to automatically
+identify such similarities.
+• In DFS, the first step1visits node2, whose predecessor becomes1. Step2visits node3, whose
+predecessor is2. Step3visits node4from3and step4visits node5from4.
+• Notice that in step2, BFS and Bellman-Ford follow the same traversal path, but DFS follows
+a different path.
+Problem statement.Given n algorithmic reasoning tasks, can we design a neural network to
+predict the logical steps of all algorithms simultaneously? Notice that in the example of Figure 2, all
+three algorithms share the same node labels at step 1, whereas DFS shares only the first two steps
+with BFS. More generally, we can expect algorithms that follow a similar logic to share similar node
+labels in the intermediate steps. Thus, the goal ofmultitask algorithmic reasoningis to design a
+neural networkfW that can minimize the test loss ofL(fW )above.
+As an extension of the above problem, suppose we are given a text description of the same
+algorithmic reasoning task, the designed output from an LLM would involve generating the correct
+execution steps for each algorithm.
+3 Our Approach
+We now describe a new algorithm that automatically learns one neural network for multitask
+algorithmic reasoning. Our approach involves learning a branching network that can be applied on
+top of any base model, enabling more flexible parameter sharing based on estimated task similarity
+scores. For example:
+• For GNNs, one can instantiate multiple networks per layer and assign a specific GNN to each
+task at each layer. See Figure 3 for several examples of branching GNNs.
+• For LLMs, one can apply parameter-efficient fine-tuning such as low-rank adapters (LoRA)
+[12], and design a branching structure of LoRAs on top of a pretrained LLM.
+5
+GNN
+GNN
+BFS Bellman-Ford
+GNN
+GNN GNN
+BFS DFS
+GNN
+GNN GNN
+Bellman-Ford DFS
+Figure 3: We present three examples of branching GNNs, each designed to learn a pair of algorithms.
+As shown in Figure 2, all three algorithms share identical node labels in the first step, so the same
+initial GNN layer applies to all. BFS and Bellman–Ford continue to share encodings in steps 2 and
+3, thus reusing the second layer, while DFS branches out. These structures are learned automatically
+from data: across the training graphs, BFS and Bellman–Ford share 75% of their encodings, whereas
+DFS overlaps by 30% with each.
+Specifically, consider building a network withL layers. Training a separate network for each task
+requires storingn models, resulting in a memory cost ofO(n), which can be expensive for storing
+larger network architectures such as edge transformers [29]. The memory reduction can be achieved
+by constructing a branching network that enables parameter sharing across selected layers among
+tasks. If each layer has at mostk possible branches, then at each layer, there areO(kn)options
+for assigningn tasks intok branches. Iterating over layer1to L leads toO(knL). By contrast, our
+approach reduces runtime toO(nL), using a top-down search to recursively partition tasks from the
+first layer to the last. Each search step, which runs inO(n)time, estimates task affinity scores based
+on the task partition inherited from the previous layer. We useW to denote all the parameters of
+the branching network, and letWi denote the parameters at thei-th layer, fori= 1, . . . , L.
+3.1 Partitioning at One Layer
+We start by describing a procedure that, givenS⊆ {1, . . . , n}at layer l, determines a disjoint
+partition ofS, corresponding to the branching structure at layerl + 1. This procedure first estimates
+task affinity scores based on partitioning inherited from previous layers1, 2, . . . , l, and then maximizes
+the estimated affinity scores via a convex relaxation program.
+Let S be a set of that containi, j, sampled from {1, 2, . . . , n}. Let ˆL(i)(fW (S))denote the
+validation loss of taski of fW (S)(trained on S). Let S1, S2, . . . , Sm denote m randomly sampled
+subsets from{1,2, . . . , n}. We define the affinity score betweeni, j, conditioned on layerl, as:
+T(i)
+j,l := 1
+mi,j
+X
+Sk:i∈S k,j∈Sk
+ˆL(i) 
+fW (Sk)
+
+,(2)
+where mi,j is number of subsetsSk where i, jare both inSk. This score is analogous to the feature
+importance score used in random forests [18, 19, 20].
+Computing T requires trainingfW for m times. Instead, we design an algorithm that estimates
+T without repeated training. The key idea is to use a first-order approximation of the network output
+around an initializationW(0), from layerlup toL:
+f(i)
+W (X;j) =f (i)
+W(0) (X;j) +
+h
+∇l:Lf(i)
+W(0) (X;j)
+i⊤
+Wl:L −W (0)
+l:L
+
++ϵ X,for anyj= 1, . . . , S(i)(X),(3)
+where we recall thatS(i)(X)is the number of execution steps ofA(i)(X), and Wl:L denotes the
+weights from layerl up toL. To obtain this initialization, we first trainfW from layerl up toL jointly
+6
+Algorithm 1FastApproxPar(Fast Approximate Partitioning)
+Input: Training/validation data for a subset of tasksS; Layerl
+Require:Network parameters W; Number of subsetsm and their sizesα; Projection dimensiond;
+Number of groupsg
+Output: A disjoint partition ofS, a trained initializationfW(0)
+1:f W(0) ←A meta-initialization trained fromWonS, with layers1,2, . . . , l−1fixed
+2:S 1, S2, . . . , Sm ←mrandom subsets ofSwith sizeα
+3:W l:L ∈R p ←Parameters of layersltoL
+4:P←Apbydisotropic Gaussian random projection matrix
+5:foreach training sampleX,j= 1, . . . , S(i)(X)do
+6:˜g (i)
+j ←P ⊤∇Wl:Lf(i)
+W(0) (X;j),∀i∈S
+7:end for
+8:fork= 1, . . . , mdo
+9: ˆWd ←arg min P
+X ˜ℓ(f(i)
+W (X))
+10: ˆWSk ←W (0) +P ˆWd
+11: ˆL(i)
+
+f ˆWSk
+(Sk)
+
+←Validation loss off ˆWSk
+onA (i),∀i∈S k
+12:end for
+13:T← |S|by|S|affinity score matrix via equation (2)
+14:S 1, S2, . . . , Sg ←A disjoint partition ofSvia clustering onT
+15:Return(S 1, l+ 1),(S2, l+ 1), . . . ,(Sg, l+ 1);fW(0)
+on all tasks ofS, leading to an initializationfW(0) with the firstl− 1layers frozen. Our experiments
+(See Table 2, Section 4.2) show that this approximation yields less than 5% on algorithmic reasoning
+tasks across four GNNs and four LLMs. This estimation leverages the fact that a well-trained neural
+network uses its gradients as features [15]. Hence, the linear approximation is accurate around a
+local vicinity of the initialization [20].
+Building on the above approximation, we propose to estimateˆL(i)(fW (Sk)), for anyk = 1, . . . , m,
+given W(0). For simplicity, we illustrate the case for binary classification, while the same logic can
+be used in multi-class and regression problems. We solve a logistic regression problem using the
+gradients as features:
+˜ℓ(f(i)
+W (X)) =
+S(i)
+X
+j=1
+log
+
+1 + exp
+ 
+−A (i)
+j (X)
+
+g(i)
+j
+⊤
+Wl:L −W (0)
+l:L
+
+−A(i)
+j (X)f (i)
+W(0) (X;j)
+
+,whereg (i)
+j =∇ l:Lf(i)
+W(0) (X;j).
+In practice, we use random projections of the gradients based on the Johnson-Lindenstrauss lemma.
+Solving the above logistic regression problem leads to˜ℓ(f(i)
+W (X)), which leads to approximation of
+T(i)
+j,l after averaging over all ofX in Sk. The output of this step is an|S| × |S|task affinity matrix.
+Crucially, this step runs inO(|S|)time, which involves trainingW(0) and evaluating the gradients
+on the samples inS. Additional costs include runningm logistic regression, which can be done on
+CPUs and completes in a few seconds.
+Finally, we apply a convex relaxation program to maximize the average density of affinity scores
+within clusters. We adjust the cluster size by regularizing the trace of the assignment variable. The
+details can be found in Appendix B.1. This clustering step takes less than a few seconds. In practice,
+we can apply the clustering step several times to find the optimal cluster size. In summary, the
+7
+Algorithm 2AutoBRANE(Automated BRAnching NEtworks)
+Input: Training and validation datasets fornalgorithmic tasks
+Output: A branching neural networkfW
+1:f W ←AnL-layer network with initialized parametersW, with one model at each layer
+2:Q← {({1,2, . . . , n},1)}
+3:whileQ̸=∅do
+4:S←Dequeue one subset fromQwith layer indexl
+5:ifl < Lthen
+6:(S 1, l+ 1), . . . ,(Sk, l+ 1);fW(0) ←FastApproxPar
+ 
+S, l;W
+
+7:W l ←W l ∪
+n
+W(0)
+l
+o
+▷Update the branching network
+8:Q←Q∪
+
+(S1, l+ 1), . . . ,(Sk, l+ 1)
+	
+9:end if
+10:end while
+11:Returnf W
+partitioning procedure at one layer is described in Algorithm 1.
+3.2 Learning Branching Structures
+Next, we search for a branching network via a top-down procedure. The algorithm begins with a
+single network with one module per layer. Starting atl = 1, tasks are grouped intok1 clusters,
+creating k1 modules. If k1 = 2, tasks are split into two groups, denoted asS1 and S2. The procedure
+continues recursively: Each group is further split at the next layer. If both are split into two groups,
+the second layer then contains four modules, denoted asS3, S4, S5, andS6. This continues until
+layerL. The full procedure is in Algorithm 2.
+In terms of running time, at each layer, the algorithm takesO(n)time to find a partitioning,
+since the union of sets is at mostn. In total, Algorithm 2 takesO(nL)time. Regarding memory
+usage, suppose the last layer containsk clusters, and at each layer, the number of clusters grows by
+a constant factora. Then the total number of nodes in the tree is roughlyPL−1
+i=0 ai = k−1
+k1/L−1 ≤k ,
+wherea L−1 ≈k.
+Let the running time for training a singleL-layer network on one task beT, with memory usage
+B. In summary, our algorithm runs in timenLT and uses kB
+L memory to store the network. For
+comparison, training a separate network for each task (i.e., single task learning) takesnT time and
+requires nB memory to storen models. A mixture of experts withk networks takesknT time
+andkBmemory. Task affinity grouping [7] with fully-computed affinity scores takesn2Ttime and
+kB memory. LearningToBranch [10] takeskLnT time and usesnB memory since it trains withn
+modules per layer. This comparison is summarized in Table 1.
+Remark 3.1.Our approach does not assume that tasks exhibit hierarchical dependencies. The
+branching design applies when tasks exhibit various levels of similarity, where more similar tasks
+share more layers, and dissimilar tasks share fewer. The procedure can handle any type of task
+dependencies in principle.
+Additionally, this approach can be extended to incorporate new tasks into the branching network.
+One way is to determine the new tasks’ group partition layer by layer by incrementally fine-tuning
+each layer with new tasks and estimating its task affinities. Our approximation procedure can also
+be extended to handle this extension.
+8
+Table 1: Summary of runtime and memory cost ofAutoBRANEand existing multitask and
+branching networks. Heren is the number of tasks,L is the number of layers, andk is the number
+of branches at the last layer.T denotes the runtime of training a single network ofL layers for one
+model.Bdenotes the memory usage of one base model.
+Methods Runtime Memory
+Single task learning (STN)nT nB
+Multitask learning (MTN)nT B
+Multi-gate MoE (MMoE) [27, 11]knT kB
+Task affinity grouping (TAG) [7, 18]n 2T kB
+LearningToBranch [10]k LnT nB
+AutoBRANE(Algorithm 2)nLT kB
+L
+Remark 3.2.For LLMs, our approach constructs one branching structure of LoRA adapters on top
+of each model, which can be computed efficiently with the fast approximation algorithm. Notice
+that the approach can be applied when using other parameter-efficient fine-tuning methods besides
+LoRA to construct the adapters.
+3.3 Theoretical Analysis
+In this section, we show that the error introduced by the approximation inFastApproxParis
+bounded. We will show that the training loss of the estimated parametersˆWS by solving the logistic
+regression is bounded.
+Proposition 3.3.Let D be a search space of model weightsW whose radius is at mostD. Suppose
+the gradient offW(0) at the initializationW(0) in the training set is at mostG in Euclidean norm.
+Let T be the training set of inputs. For each algorithmic reasoning taski∈ {1, 2, . . . , n}, the training
+data is collected by executing the algorithm on each input. Suppose that for every taski, the average
+error of the linear approximation is bounded as follows:
+1
+|T|
+X
+X∈T
+1
+S(i)(X)
+S(i)(X)X
+j=1
+ϵ(i)
+X,j ≤δ,
+where
+ϵ(i)
+X,j =
+f(i)
+W (X;j)−f (i)
+W(0) (X;j)−
+h
+∇f(i)
+W(0) (X;j)
+i⊤
+W−W (0)
+.
+Let ˆLS(fW )be the training loss of a subset of tasksS⊆ {1,2, . . . , n}defined as:
+ˆLS(W) = 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+ℓ
+
+f(i)
+W (X;j), A(i)
+j (X)
+
+.
+Provided that the projection dimensiond = O
+
+logp
+ϵ2
+
+, the training loss ofˆWS is bounded away from
+the minimum training loss for anySas
+ˆLS( ˆWS)≤min
+W∈D
+ˆLS(W) + 2δ+ 2GDϵ.(4)
+9
+The proof is based on using the Johnson-Lindenstrauss Lemma [16]. The idea is to relate the loss
+ˆLS( ˆWS)andmin W∈D ˆLS(W)by the1-Lipschitz continuous property of the logistic loss. The error
+in the random projection is bounded by the JL Lemma, and the error in the linear approximation is
+bounded by Taylor’s expansion errorδ. As ϵ goes to zero, equation(4) guarantees the gap between
+ˆLS( ˆWS)and min ˆLS(W)will be small. We note that this error bound also applies to using the
+approximation to certain layers by restricting the search space for the parameters in specified layers.
+4 Experiments
+We now evaluateAutoBRANEon algorithmic reasoning tasks in various settings. The evaluation
+focuses on the following questions. First, how accurate is the first-order loss approximation for
+algorithmic reasoning tasks? Second, how well doesAutoBRANEperform on the CLRS benchmark,
+and what hierarchical structures does it discover? Third, how effectively doesAutoBRANE
+generalize to text-based graph reasoning and large-scale multitask scenarios?
+Our experiments show that the first-order approximation estimates the losses of fully trained
+networks with less than 5% relative error across four GNNs and four language models. On twelve
+algorithmic tasks from the CLRS benchmark,AutoBRANEoutperforms state-of-the-art networks
+by an average of3.7% and the strongest multitask baselines, LearningToBranch [10] and GradTAG
+[20], by1.2%, while reducing GPU hours by48% and memory usage by26%.AutoBRANEreveals
+branching structures that group tasks with similar intermediate steps. On three text-based graph
+reasoning benchmarks, it achieves up to3.2% gains over the strongest multitask baseline. Finally,
+on a large-scale community dataset with 500 labeling tasks and 21M edges,AutoBRANEdelivers
+a28% relative improvement over baselines, with the best trade-off in runtime and memory usage.
+4.1 Experimental Setup
+4.1.1 Datasets and Models
+We evaluateAutoBRANEon various algorithmic reasoning tasks in both graph and text formats,
+focusing on performance, runtime, and memory trade-offs. First, we use the graph-format datasets
+of twelve graph algorithmic reasoning tasks in the CLRS benchmark [40]. The full list of tasks is
+described in Appendix C. Following the protocol of CLRS, for each algorithm, we use a training
+dataset of 1,000 Erdös-Rényi graphs with 16 nodes and a validation set of 32 graphs with 16 nodes.
+Then, we evaluate the performance on a test set of 32 graphs with 64 nodes. On CLRS, we evaluate
+AutoBRANEwith the edge transformer [29], which achieves state-of-the-art performance. We also
+evaluateAutoBRANEusing a standard MPNN [40] and graph attention networks [42].
+Second, we evaluateAutoBRANEon text-based graph algorithmic reasoning tasks, where we
+construct a branching network of LoRA adapters to fine-tune LLMs. We first use the CLRS-Text
+benchmark [28], which encodes graphs as flattened adjacency lists and represents outputs as the
+intermediate steps from CLRS. We use the same twelve graph algorithms as in CLRS, with 1,000
+training graphs of 10 nodes and 200 graphs each for validation and testing. Second, we evaluate
+on GraphQA [5], which includes text-based graph reasoning tasks such as edge existence, node
+degree, and cycle detection. We use twelve tasks from this benchmark. Third, we evaluate on the
+datasets from GraphWiz [3], which constructs textual descriptions of the reasoning processes for
+solving graph-related tasks by prompting from GPT-4. We use the nine tasks from this dataset. The
+description of the tasks, their input, and output information is provided in Appendix C. For the
+datasets, we fine-tune QWen-3-1.7B and Llama-3-1B using LoRA [12] with rank 16.
+10
+Lastly, we evaluateAutoBRANEon a large-scale multi-label prediction task involving 500
+labels. We use the Orkut social network dataset from SNAP [49], which contains 395K nodes, 21M
+edges, and 500 community labels. Each community is a subgraph of a graph. Given a partially
+labeled subgraph, the task is to predict the remaining node labels. For each community, we sample
+10% of nodes for training, 20% for validation, and use the rest for testing. As the encoder, we adopt
+a 3-layer SIGN model [8] with 256 hidden units, which is an efficient variant of GCNs.
+4.1.2 Metrics
+In the CLRS benchmark, we follow the official protocol and report task scores on the test set, using
+the metric specified for each task, such as theF1 score for node label predictions. For text-based
+graph reasoning, we evaluate test accuracy as the exact match at every output position. In community
+detection, we evaluate the average macroF1-score over 500 tasks.
+We calculate the average task score (of various metrics, such as accuracy orF1-score) across all
+tasks and report the error rate as one minus the average task score. We measure the efficiency in
+GPU hours and GPU memory usage in GB.
+4.1.3 Implementations
+Recall thatAutoBRANErequires setting the number of subsetsm, the subset sizeα, the gradient
+projection dimensiond, and the number of clustersg. To determine the task clusterings, we tune
+the hyperparameters one by one sequentially. We begin by increasing the number of subsets until
+the affinity scores converge. For task countsn from12to500, we vary m between500to5000and
+vary α between4to25. We observe that affinity scores typically stabilize once whenm reaches
+over10 n. Next, we compute task affinities using the linear approximation technique, varying the
+gradient projection dimensiond between200and1000. We find that d larger than400is sufficient
+to yield approximation errors within 5%. After obtaining affinity scores, we tune the cluster size and
+select the configuration with the highest average within-cluster affinity, which can be done efficiently
+by running the clustering step. We discuss key parameters in deciding the branching structure in
+Section 4.3.4.
+4.2 Approximation Results
+First, we assess the accuracy of the first-order approximation used in our search algorithm. Recall
+that we apply the approximation to the model loss around an initializationW(0). We show that
+the error term induced by the approximation is small. Given the inputX and an algorithmAi, we
+compute the average residual sum of squares (RSS) across all output steps as follows:
+1
+s(i)(X)
+s(i)(X)X
+i=j
+f(i)
+W (X;j)−f (i)
+W(0) (X;j)−
+
+g(i)
+j
+⊤ 
+W−W (0)
+2
+f(i)
+W (X;j)
+
+2 .
+We conduct experiments across various models, using twelve graph algorithmic reasoning tasks
+from both the CLRS benchmark [40] and its text-format version [28]. On graph-format datasets, we
+test four GNN architectures, including a standard MPNN [40], GAT [42], Triplet-GMPNN [13], and
+Edge Transformer [29]. On text-format datasets, we test four language models, including QWen-3-
+1.7B, Llama-3-8B, QWen-3-14B, and CodeLlama-34B. We use LoRA [12] as the base fine-tuning
+procedure.
+11
+Table 2: We measure the approximation error of losses on algorithmic reasoning datasets using a
+first-order Taylor expansion around the initialization trained on all tasks. Results are averaged
+over 50 random subsets of algorithmic reasoning tasks. We measure the errors across four GNNs,
+including MPNN [40], GAT [42], Triplet-GMPNN [13], and Edge Transformer [29]. We measure four
+LLMs with up to 34 billion parameters for text-based reasoning tasks (by applying the approximation
+to LoRA parameters).
+MPNN GAT Triplet-GMPNN Edge Transformer
+Dist. RSS RSS RSS RSS
+2% 2.3±0.7×10−3 1.2±0.1×10−3 3.6±0.2×10−4 3.9±0.4×10−3
+4% 7.0±0.8×10−3 1.3±0.2×10−3 1.6±0.2×10−3 6.5±0.5×10−3
+6% 8.2±1.4×10−3 1.6±0.4×10−3 3.9±0.7×10−3 7.7±1.6×10−3
+8% 8.6±1.2×10−3 2.3±1.4×10−3 4.1±0.3×10−3 8.4±2.4×10−3
+10% 9.2±2.4×10−3 3.8±2.0×10−3 7.9±1.2×10−3 9.6±1.1×10−3
+QWen-3-1.7B Llama-3-8B QWen-3-14B CodeLlama-34B
+Dist. RSS RSS RSS RSS
+2% 3.9±1.8×10−3 4.8±1.9×10−3 2.0±1.1×10−3 2.0±1.8×10−3
+4% 5.5±2.1×10−3 4.9±2.0×10−3 2.1±1.4×10−3 2.0±1.7×10−3
+6% 1.1±0.4×10−2 5.5±2.0×10−3 2.5±1.6×10−3 2.1±1.7×10−3
+8% 2.3±0.9×10−2 7.1±2.0×10−3 2.6±1.8×10−3 2.4±1.7×10−3
+10% 4.6±1.6×10−2 9.0±3.0×10−3 3.0±1.6×10−3 2.7±1.9×10−3
+To evaluate the RSS, we first obtain an initializationW(0) by training a model on all datasets.
+We then fine-tune the model on random task subsets to obtainW and evaluate the RSS under
+various relative distances∥W−W (0)∥
+∥W∥ . For language models,W refers to the parameters in LoRA
+adapters. Across 50 random task subsets, we find that the fine-tuned weights remain close to the
+initialization, typically within 10% relative distance.
+The results are shown in Table 2. For all four GNN architectures, the first-order approximation
+yields under1%relative error when the distance from initialization is within 10%. On language
+models, the error remains below5%, with larger models generally yielding lower errors. We further
+observe that freezing early layers improves approximation accuracy. When the first three layers
+are frozen, the RSS drops below0.06%, shown in Appendix C.2. This supports the premise of our
+algorithm to avoid repeated training on task subsets.
+4.3 Comparison Results
+4.3.1 Baselines
+We compareAutoBRANEagainst multitask optimization baselines. Multitask network (MTN):
+This trains a single shared network trained on all tasks [33]. Multi-gated Mixture-of-Expert model
+(MMoE) [27]: This uses task-specific gating networks to combine outputs from multiple expert
+models. Task Affinity Grouping (TAG) [7]: This clusters tasks based on pairwise affinities and trains
+a separate model for each group. LearningToBranch [10]: This is the most recent branching network
+that learns branching decisions using the Gumbel-Softmax technique. GradTAG [20]: This is the
+most recent multitask learning approach that estimates task affinities based on gradients and trains
+separate networks per group, without a branching structure. For the baselines, we select network
+size based on average validation performance across tasks.
+12
+0 10 20 30 40 50
+GPU Hours
+25
+26
+27
+28
+29Error %
+MTN MMoE
+TAG
+LearningToBranch
+GradTAG
+AutoBRANE
+MPNN
+0 10 20 30 40 50
+GPU Memory (GB)
+25
+26
+27
+28
+29Error %
+MTN MMoE
+TAG
+LearningToBranch
+GradTAG
+AutoBRANE
+MPNN
+0 50 100 150 200 250
+GPU Hours
+13
+14
+15
+16
+17Error %
+MTN
+MMoE
+TAG
+LearningToBranch
+GradTAG
+AutoBRANE
+Edge Transformer
+0 25 50 75 100 125
+GPU Memory (GB)
+13
+14
+15
+16
+17Error %
+MTN
+MMoE
+TAG
+LearningToBranch
+GradTAG
+AutoBRANE
+Edge Transformer
+Figure 4: Illustration of the trade-off between error rate, GPU hours, and memory usage for
+AutoBRANEcompared to existing multitask and branching network baselines. We show the results
+of using MPNN or edge transformers [29] as the base model.AutoBRANEoutperforms a single
+multitask network by 3.7%, demonstrating the effectiveness of branching networks in leveraging
+positive task transfer. It also achieves the best overall trade-off, reducing the average error rate by
+1.2% compared to the strongest baseline, while using 48% fewer GPU hours and 26% less memory.
+12 Graph Algorithms from CLRS
+DijkstraPrim's alg.
+DijkstraPrim
+Articulation point, Bellman-Ford, BFS, Bridges, DAG, DFS, SCC, Topological sort
+Bellman-FordBFS
+Bellman-FordBFS
+DFS-related
+Articulation point, Bridges
+DAG, DFS,Topological sort
+DAG DFS,Topological sort
+SCC
+Floyd-MarshallKruskal's alg. 
+Floyd-Warshall
+Kruskal
+Figure 5: Illustration of the tree structure of the branching network learned on twelve algorithmic
+reasoning tasks from the CLRS benchmark. Our algorithm identifies clusters of algorithms that
+follow similar intermediate steps.
+4.3.2 Results on GNNs
+Shown in Figure 4,AutoBRANEachieves the best trade-off between performance, runtime, and
+memory among all baselines. Compared to a single Edge Transformer, which is previously the
+state-of-the-art on CLRS, our method improves average accuracy by3.7%. Relative to the strongest
+multitask baselines, including LearningToBranch [10] and GradTAG [20],AutoBRANEyields a
+1.2% accuracy gain while reducing GPU hours by48% and memory usage by26%. We observe
+similar performance gains when using MPNN as the backbone. Our approach achieves1.2% accuracy
+gains over the best multitask baselines, while reducing GPU hours by50% and GPU memory usage
+by29%. We report the full results in Appendix C.
+Figure 5 illustrates the branching network structure discovered byAutoBRANEwhen training
+Edge Transformers on the twelve graph-based algorithmic reasoning tasks. The resulting structure
+aligns well with task similarities in their intermediate steps, revealing three major clusters. The
+largest includes BFS, Bellman-Ford, and several DFS-based algorithms. Notably, BFS and Bellman-
+Ford are grouped together, consistent with observations from [43]. Five DFS-related tasks, including
+topological sort and DAG shortest paths, are clustered around DFS. Prim’s and Dijkstra’s algorithms
+form a group, reflecting their shared greedy edge-selection strategy. Kruskal’s and Floyd-Warshall
+are grouped as well, both involving edge selection within components. A similar structure is observed
+using MPNN, which we omit for brevity.
+13
+Table 3: We report the average test macroF1-score, the number of GPU hours, and GPU memory
+usage (in GB) of our algorithm, evaluated on the Orkut community detection dataset with 500
+community node labelings.
+MacroF1-score GPU hours Memory
+BigCLAM [49] 22.69±0.2511.239.1
+MTN [33] 27.24±1.66 37.85.7
+LearningToBranch [10] 34.53±3.50 366.6 91.2
+GradTAG [20] 38.77±4.63 68.0 125.4
+AutoBRANE(Ours)49.69±2.9781.4 89.5
+4.3.3 Results on LLMs
+We now present results on text-based graph reasoning tasks.AutoBRANEis compared against
+MTN, which fine-tunes a single LoRA adapter across all tasks, and GradTAG [20], the strongest
+multitask baseline. We exclude LearningToBranch [10], as it is not applicable to text-based datasets.
+On the CLRS-Text benchmark,AutoBRANEimproves average test accuracy by5.5% relative
+to MTN and by3.2% over GradTAG. This highlights the advantage of the branching structure in
+capturing varying levels of task similarity. To demonstrate the broader applicability of our approach,
+we also evaluate on the GraphQA and GraphWiz datasets and observe quantitatively similar gains.
+On GraphQA,AutoBRANEsurpasses MTN by3.3% and GradTAG by2.2% on average. On
+GraphWiz, it achieves gains of3.8% over MTN and1.8% over GradTAG. Complete results are
+provided in Appendix C.
+4.3.4 Results on Community Detection
+We then applyAutoBRANEto a large instance of multitask learning with 500 tasks on the
+community detection dataset. We compareAutoBRANEwith MTN, LearningToBranch [10],
+and GradTAG [20]. To illustrate the relative improvement, we also compare our algorithm with a
+well-known community detection method, BigClam [49].
+The results are shown in Table 3. We observe that our algorithm outperforms the most competitive
+MTL baselines by28%. Compared to LearningToBranch, our algorithm uses4.5× less GPU hours.
+Compared to GradTAG, our algorithm uses28% less GPU memory.
+4.3.5 Ablation Analysis
+Next, we discuss the key parameters in building the branching network, including the number of
+layers L and the number of clustersk in the final layer. For GNNs, we tuneL on a single multitask
+network from3to6and select the one with the best average validation performance. We setL = 5
+for the CLRS benchmark andL = 3for the community detection dataset. For language models,
+L is set as the depth of the pretrained language model, which is28for Qwen-3-1.7B and16for
+Llama-3-1B. We perform the partition of tasks every four layers.
+For the cluster size, we determine the number of clusters at each layer, judged by the average
+affinity score within clusters. We control the growth of the cluster size (within5times) to prevent
+dramatic expansion of the tree. On the CLRS benchmark, this leads tok = 10clusters in the final
+layer. On the community detection dataset, there arek = 22clusters in the final layer. We note
+that once task affinity scores are computed, clustering can be repeated within seconds to select the
+best configuration. We report all hyperparameters, along with base model runtime and memory
+usage, in Appendix C.
+14
+4 8 12 16 20 24
+Number of Nodes
+0
+1
+2
+3
+4Number of Samples
+×105
+Prim ST
+Dijkstra ST
+BFS ST
+4 8 12 16 20 24
+Number of Nodes
+0
+1
+3
+5Number of Samples
+×105
+Prim MT
+Prim ST
+Dijkstra MT
+Dijkstra ST
+Figure 6: We illustrate the sample complexity scaling for learning three graph algorithms on graphs
+with different numbers of nodes. We find that the sample complexity for single-task training (ST) on
+the three algorithms differs when they are trained separately, with Prim requiring the most training
+samples. Standard multi-task training (MT) tends to increase the sample complexity over ST.
+Further, we validate branching structures by randomly varying the positions of tasks in different
+branches. Compared to the tree in Figure 5, we find that swapping positions between branches, such
+as between Kruskal’s and BFS or DFS and Bellman-Ford, leads to more than 2% performance drops.
+4.4 Empirical Sample Complexities
+Finally, we evaluate the empirical sample complexity for learning three graph algorithms: BFS,
+Dijkstra’s algorithm, and Prim’s algorithm. In particular, we set the target error rate as 1% and
+increase the number of samples until the validation error of the trained GNN drops below 1%. The
+results are shown in Figure 6. Interestingly, we find that the sample complexity for learning the
+three algorithms differs, with Prim being the most difficult to learn. Furthermore, we found that
+standard multi-task training (MT) with a single GNN network increases the sample complexity. It
+remains an interesting future direction to explain this observation. Specifically, what determines the
+learnability of an algorithm? One hypothesis is that the higher sample complexity of learning Prim
+comes from the non-local nature of its execution trace.
+5 Related Work
+Recent work has examined whether neural networks can be trained to imitate classical algorithms in
+a step-by-step manner. For graph algorithms, Veličković et al. [43] showed that message-passing
+neural networks with maximization aggregation closely align with the internal computations of
+algorithms such as reachability and shortest paths. Their results further indicate that parameter
+sharing across layers yields positive transfer between related algorithms. To systematically investigate
+this challenging problem, the CLRS benchmark was introduced [40], providing a unified evaluation
+suite covering thirty algorithms from the standard textbook by Cormen et al. [4].
+Several recent works have proposed architectures tailored for algorithmic reasoning. Ibarz et al.
+[13] introduce a triplet-GMPNN model that assigns values to edges and updates each edge based
+on the values of its adjacent edges. When applied to tasks such as reachability and shortest paths,
+the network follows similar execution steps [13]. More recently, augmenting transformers with
+tri-attention over node pairs relative to other—conditioning their interactions on other nodes—has
+been shown to substantially improve prediction accuracy on algorithmic graph tasks [29]. Branching
+architectures have also been studied in computer vision [24, 10]. Branched multitask networks [39]
+aim to find a tree-structured architecture that minimizes the sum of task affinity scores across layers.
+Another relevant direction is the design of mixture-of-experts models for multitask learning.
+Such models comprise multiple expert subnetworks together with a gating mechanism that produces
+15
+weighted combinations of expert outputs. Examples include task-specific gating functions [27] and
+differentiable sparse gating [11]. A complementary line of work studies multitask learning from a
+regularization perspective [47, 48]. Recent analyses investigate how implicit and explicit regularization
+influence task interference and representation sharing [19, 22], and apply gradient-based task features
+to supervised fine-tuning [22] and in-context learning [52], highlighting the role of gradient geometry
+in understanding task relatedness. Our work establishes a first connection between this body of
+literature and the problem of multitask algorithmic reasoning.
+We now discuss recent studies evaluating the reasoning capabilities of LLMs on graph problems.
+GraphQA [5] systematically evaluates prompting strategies for encoding graphs (e.g., adjacency
+or incidence matrices) across twelve algorithms and retrieval tasks, finding that even large models
+such as PaLM-62B can underperform simple majority-vote baselines. NLGraph [45] introduces eight
+graph reasoning tasks and shows that GPT-3.5 succeeds on problems like graph connectivity and
+shortest paths but struggles with more complex computations, such as Hamiltonian paths. GraphWiz
+[3] applies instruction tuning with explicit reasoning traces, while GraphInstruct [26] develops
+instruction-tuned datasets over twenty-one graph reasoning tasks with detailed intermediate steps. It
+is worth clarifying that these existing works focus onpredicting the final output of the algorithmic task.
+By contrast, we focus onmodels capable of generating the intermediate steps. Our fine-tuning
+experiments with Llama on GraphQA versus CLRS-Text further indicate that producing intermediate
+states is substantially more challenging—a gap that warrants further exploration. CLRS-Text [28]
+reformulates CLRS tasks as natural-language descriptions, showing that transformers can be trained
+to mimic algorithm execution, though they typically require significantly more training data than
+GNNs. Bounsi et al. [2] introduce a multimodal architecture that jointly pretrains transformers and
+GNNs using cross-attention to integrate their representations. GraphArena [36] proposes broader
+benchmarks evaluating feasibility, hallucination, and other dimensions of graph-reasoning behavior.
+Various techniques have been proposed to enhance LLM performance on graph-related prob-
+lems. One class of approaches develops multimodal architectures that integrate GNNs with LLMs.
+GreaseLM [51] augments LLMs with knowledge-graph signals through a fusion layer that combines
+textual and graph-based representations. GNP [37] incorporates a GNN module to encode knowledge
+graphs as embeddings within LLM prompts, while GraphToken [32] encodes graph-structured data
+into compact embeddings that are appended to LLM prompts for downstream reasoning tasks.
+Other lines of work explore code-generation pipelines (e.g., fine-tuning code LMs in graph coders),
+specialized tool-calling instructions (GraphTool-Instruction), and LLM-based multi-agent frameworks.
+Our work is complementary to these works and focuses on multitask algorithmic reasoning, with
+an emphasis on predicting not only final answers but also intermediate algorithmic states. An
+interesting direction is to provide better explanations of GNNs for algorithmic reasoning, for instance
+by measuring the topology of complex predictions [23], as well as to study broader algorithmic tasks
+including randomized computation [38, 1, 17, 50].
+6 Conclusion
+This work introduces a branching network capable of solving multiple algorithmic reasoning tasks
+simultaneously. We design an algorithm that automatically learns an optimal branching structure
+to capture the varying similarities between tasks. This algorithm efficiently finds the structure,
+enabled by a fast sub-procedure that determines the task partition at every layer. Across various
+algorithmic reasoning tasks and model architectures, our method outperforms existing multitask and
+branching networks, while achieving an optimal trade-off between runtime and model memory usage.
+Overall, these findings highlight the effectiveness of branching architectures for multitask learning
+16
+and demonstrate the promise of combining specialized geometric representations with large-scale
+text models.
+Acknowledgments
+Thanks to Jonathan Ullman for several discussions during the early stage of this work. Thanks to
+David Gleich for the discussions. Thanks to the anonymous referees for their feedback. The work of
+D. Li, Z. Zhang, M. Duan, and H. R. Zhang is partially funded by NSF award IIS-2412008. D. Li
+is also partially funded by a PhD fellowship from JPMorgan Chase & Co. Any views or opinions
+expressed herein are solely those of the authors listed, and may differ from those expressed by NSF
+or JPMorgan Chase.
+References
+[1] R. Andersen, C. Borgs, J. Chayes, J. Hopcraft, V. S. Mirrokni, and S.-H. Teng. “Local
+computation of pagerank contributions”. In:International Workshop on Algorithms and Models
+for the Web-Graph. Springer. 2007, pp. 150–165 (page 16).
+[2] W. Bounsi, B. Ibarz, A. Dudzik, J. B. Hamrick, L. Markeeva, A. Vitvitskyi, R. Pascanu,
+and P. Veličković. “Transformers meet Neural Algorithmic Reasoners”. In:arXiv preprint
+arXiv:2406.09308(2024) (page 16).
+[3] N. Chen, Y. Li, J. Tang, and J. Li. “GraphWiz: An Instruction-Following Language Model for
+Graph Problems”. In:KDD(2024) (pages 2, 3, 10, 16, 26, 28).
+[4] T. H. Cormen, C. E. Leiserson, R. L. Rivest, and C. Stein.Introduction to algorithms. MIT
+press, 2022 (page 15).
+[5] B. Fatemi, J. Halcrow, and B. Perozzi. “Talk like a Graph: Encoding Graphs for Large Language
+Models”. In:ICLR. 2023 (pages 2, 3, 10, 16, 25, 26, 28).
+[6] E. A. Feigenbaum and J. Feldman. “Computers and thought.” In: (1963) (page 1).
+[7] C. Fifty, E. Amid, Z. Zhao, T. Yu, R. Anil, and C. Finn. “Efficiently identifying task groupings
+for multi-task learning”. In:Advances in Neural Information Processing Systems34 (2021),
+pp. 27503–27516 (pages 8, 9, 12).
+[8] F. Frasca, E. Rossi, D. Eynard, B. Chamberlain, M. Bronstein, and F. Monti. “Sign: Scalable
+inception graph neural networks”. In:arXiv preprint arXiv:2004.11198(2020) (page 11).
+[9] D. G. Georgiev, P. Lio, J. Bachurski, J. Chen, T. Shi, and L. Giusti. “Beyond erdos-renyi:
+Generalization in algorithmic reasoning on graphs”. In:The Second Learning on Graphs
+Conference. 2023 (page 4).
+[10] P. Guo, C.-Y. Lee, and D. Ulbricht. “Learning to branch for multi-task learning”. In:ICML.
+PMLR. 2020 (pages 3, 4, 8–10, 12–15, 24).
+[11] H. Hazimeh, Z. Zhao, A. Chowdhery, M. Sathiamoorthy, Y. Chen, R. Mazumder, L. Hong,
+and E. Chi. “Dselect-k: Differentiable selection in the mixture of experts with applications to
+multi-task learning”. In:NeurIPS(2021) (pages 9, 16).
+[12] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen. “Lora:
+Low-rank adaptation of large language models”. In:ICLR(2021) (pages 5, 10, 11, 25, 29).
+17
+[13] B. Ibarz, V. Kurin, G. Papamakarios, K. Nikiforou, M. Bennani, R. Csordás, A. J. Dudzik,
+M. Bošnjak, A. Vitvitskyi, Y. Rubanova, A. Deac, B. Bevilacqua, Y. Ganin, C. Blundell, and
+P. Veličković. “A generalist neural algorithmic learner”. In:Learning on graphs conference. 2022
+(pages 2, 3, 11, 12, 15).
+[14] A. Ilyas, S. M. Park, L. Engstrom, G. Leclerc, and A. Madry. “Datamodels: Predicting
+predictions from training data”. In:International conference on machine learning(2022)
+(page 3).
+[15] A. Jacot, F. Gabriel, and C. Hongler. “Neural tangent kernel: Convergence and generalization
+in neural networks”. In:Advances in neural information processing systems31 (2018) (pages 3,
+7).
+[16] W. B. Johnson. “Extensions of Lipshitz mapping into Hilbert space”. In:Conference modern
+analysis and probability, 1984. 1984, pp. 189–206 (pages 10, 22).
+[17] K. Kloster and D. F. Gleich. “Heat kernel based community detection”. In:Proceedings of the
+20th ACM SIGKDD international conference on Knowledge discovery and data mining. 2014,
+pp. 1386–1395 (page 16).
+[18] D. Li, H. Ju, A. Sharma, and H. R. Zhang. “Boosting multitask learning on graphs through
+higher-order task affinities”. In:KDD. 2023 (pages 6, 9, 29).
+[19] D. Li, H. Nguyen, and H. R. Zhang. “Identification of Negative Transfers in Multitask Learning
+Using Surrogate Models”. In:Transactions on Machine Learning Research(2023) (pages 6, 16).
+[20] D. Li, A. Sharma, and H. R. Zhang. “Scalable Multitask Learning Using Gradient-based
+Estimation of Task Affinity”. In:KDD. 2024 (pages 6, 7, 10, 12–14).
+[21] D. Li, Z. Zhang, L. Wang, and H. Zhang. “Scalable Fine-tuning from Multiple Data Sources:
+A First-Order Approximation Approach”. In:Findings of the Association for Computational
+Linguistics: EMNLP 2024. 2024, pp. 5608–5623 (pages 3, 4, 29, 31).
+[22] D. Li, Z. Zhang, L. Wang, and H. R. Zhang. “Efficient Ensemble for Fine-tuning Language
+Models on Multiple Datasets”. In:ACL(2025) (page 16).
+[23] M. Liu, T. K. Dey, and D. F. Gleich. “Topological structure of complex predictions”. In:Nature
+Machine Intelligence5.12 (2023), pp. 1382–1389 (page 16).
+[24] Y. Lu, A. Kumar, S. Zhai, Y. Cheng, T. Javidi, and R. Feris. “Fully-adaptive feature sharing
+in multi-task networks with applications in person attribute classification”. In:CVPR. 2017
+(pages 15, 24).
+[25] A. B. de Luca and K. Fountoulakis. “Simulation of Graph Algorithms with Looped Transform-
+ers”. In:International Conference on Machine Learning. 2024 (page 4).
+[26] Z. Luo, X. Song, H. Huang, J. Lian, C. Zhang, J. Jiang, and X. Xie. “Graphinstruct: Empowering
+large language models with graph understanding and reasoning capability”. In:arXiv preprint
+arXiv:2403.04483(2024) (page 16).
+[27] J. Ma, Z. Zhao, X. Yi, J. Chen, L. Hong, and E. H. Chi. “Modeling task relationships in
+multi-task learning with multi-gate mixture-of-experts”. In:KDD. 2018 (pages 9, 12, 16).
+[28] L. Markeeva, S. McLeish, B. Ibarz, W. Bounsi, O. Kozlova, A. Vitvitskyi, C. Blundell, T.
+Goldstein, A. Schwarzschild, and P. Veličković. “The CLRS-Text Algorithmic Reasoning
+Language Benchmark”. In:arXiv preprint arXiv:2406.04229(2024) (pages 3, 10, 11, 16, 24, 25,
+29).
+18
+[29] L. Müller, D. Kusuma, B. Bonet, and C. Morris. “Towards Principled Graph Transformers”. In:
+NeurIPS(2024) (pages 2, 3, 6, 10–13, 15, 29).
+[30] M. Nye, A. J. Andreassen, G. Gur-Ari, H. Michalewski, J. Austin, D. Bieber, D. Dohan, A.
+Lewkowycz, M. Bosma, D. Luan, C. Sutton, and A. Odena. “Show Your Work: Scratchpads
+for Intermediate Computation with Language Models”. In:Deep Learning for Code Workshop.
+2022 (page 2).
+[31] S. M. Park, K. Georgiev, A. Ilyas, G. Leclerc, and A. Madry. “Trak: Attributing model behavior
+at scale”. In:ICML(2023) (page 3).
+[32] B. Perozzi, B. Fatemi, D. Zelle, A. Tsitsulin, M. Kazemi, R. Al-Rfou, and J. Halcrow. “Let your
+graph do the talking: Encoding structured data for llms”. In:arXiv preprint arXiv:2402.05862
+(2024) (page 16).
+[33] S. Ruder. “An Overview of Multi-Task Learning in Deep Neural Networks”. In:arXiv preprint
+arXiv:1706.05098(2017) (pages 12, 14).
+[34] S. Russell and P. Norvig. “Artificial Intelligence: A modern approach”. In:Artificial Intelligence.
+Prentice-Hall, Egnlewood Cliffs25.27 (1995), pp. 79–80 (page 1).
+[35] C. Sanford, B. Fatemi, E. Hall, A. Tsitsulin, M. Kazemi, J. Halcrow, B. Perozzi, and V. Mirrokni.
+“Understanding transformer reasoning capabilities via graph algorithms”. In:NeurIPS(2024)
+(page 2).
+[36] J. Tang, Q. Zhang, Y. Li, N. Chen, and J. Li. “Grapharena: Evaluating and exploring large lan-
+guage models on graph computation”. In:International Conference on Learning Representations
+(2024) (page 16).
+[37] Y. Tian, H. Song, Z. Wang, H. Wang, Z. Hu, F. Wang, N. V. Chawla, and P. Xu. “Graph
+neural prompting with large language models”. In:AAAI. 2024 (page 16).
+[38] H. Tong, C. Faloutsos, and J.-Y. Pan. “Fast random walk with restart and its applications”. In:
+Sixth international conference on data mining (ICDM’06). IEEE. 2006, pp. 613–622 (page 16).
+[39] S. Vandenhende, S. Georgoulis, B. De Brabandere, and L. Van Gool. “Branched multi-task
+networks: Deciding what layers to share”. In:BMVC(2020) (pages 15, 24).
+[40] P. Veličković, A. P. Badia, D. Budden, R. Pascanu, A. Banino, M. Dashevskiy, R. Hadsell,
+and C. Blundell. “The CLRS algorithmic reasoning benchmark”. In:ICML. 2022 (pages 2–4,
+10–12, 15, 26, 29).
+[41] P. Veličković and C. Blundell. “Neural algorithmic reasoning”. In:Patterns2.7 (2021) (pages 2,
+4).
+[42] P. Veličković, G. Cucurull, A. Casanova, A. Romero, P. Liò, and Y. Bengio. “Graph Attention
+Networks”. In:International Conference on Learning Representations. 2018 (pages 10–12).
+[43] P. Veličković, R. Ying, M. Padovano, R. Hadsell, and C. Blundell. “Neural execution of graph
+algorithms”. In:ICLR(2020) (pages 13, 15).
+[44] B. Wang, X. Deng, and H. Sun. “Iteratively Prompt Pre-trained Language Models for Chain of
+Thought”. In:Proceedings of the 2022 Conference on Empirical Methods in Natural Language
+Processing. 2022, pp. 2714–2730 (page 2).
+[45] H. Wang, S. Feng, T. He, Z. Tan, X. Han, and Y. Tsvetkov. “Can Language Models Solve
+Graph Problems in Natural Language?” In:NeurIPS(2023) (pages 2, 16).
+19
+[46] J. J. Whang, D. F. Gleich, and I. S. Dhillon. “Overlapping community detection using
+neighborhood-inflated seed expansion”. In:IEEE Transactions on Knowledge and Data Engi-
+neering28.5 (2016), pp. 1272–1284 (page 3).
+[47] S. Wu, H. R. Zhang, and C. Ré. “Understanding and improving information transfer in
+multi-task learning”. In:ICLR(2020) (page 16).
+[48] F. Yang, H. R. Zhang, S. Wu, C. Ré, and W. J. Su. “Precise high-dimensional asymptotics for
+quantifying heterogeneous transfers”. In:Journal of Machine Learning Research26.113 (2025),
+pp. 1–88 (page 16).
+[49] J. Yang and J. Leskovec. “Overlapping community detection at scale: a nonnegative matrix
+factorization approach”. In:WSDM. 2013 (pages 11, 14).
+[50] H. Zhang, P. Lofgren, and A. Goel. “Approximate personalized pagerank on dynamic graphs”.
+In:Proceedings of the 22nd ACM SIGKDD international conference on knowledge discovery
+and data mining. 2016, pp. 1315–1324 (page 16).
+[51] X. Zhang, A. Bosselut, M. Yasunaga, H. Ren, P. Liang, C. D. Manning, and J. Leskovec.
+“Greaselm: Graph reasoning enhanced language models for question answering”. In:ICLR
+(2022) (page 16).
+[52] Z. Zhang, Z. Zhang, D. Li, L. Wang, J. Dy, and H. R. Zhang. “Linear-Time Demonstration
+Selection for In-Context Learning via Gradient Estimation”. In:Proceedings of the 2025
+Conference on Empirical Methods in Natural Language Processing. 2025, pp. 16470–16488
+(page 16).
+20
+A Proof of Proposition 3.3
+We provide a proof for the Proposition 3.3 using the logistic loss in binary classification. We note
+that the extension to multiple classification loss is straightforward using the same technique, which
+requires additional notations.
+Proof of Proposition 3.3.Recall that the estimated weightˆWS is obtained from the minimizer of
+the logistic regression using the projected gradients as the features. To make it clear, we annotate
+the vector with its dimension so that it is easy to distinguish. LetˆWd denote the minimizer of the
+logistic regression in dimensiond. We haveˆWS = P Wd + W(0) given ap by d random projection
+matrixPand the weight initializationW (0).
+Specifically, ˆWd is the minimizer of the following problem:
+h1(W) = 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+log
+
+1 + exp
+
+−A (i)
+j (X)
+
+g(i)
+j
+⊤P W+b(i)
+j
+
+,
+forW∈R d, whereg (i)
+j =∇f (i)
+W(0) (X;j), b(i)
+j =−A (i)
+j (X)f (i)
+W(0) (X;j).
+To relate this loss with the training lossˆLS(W), we define an intermediate solution ¯Wp in
+dimensionpfor the following problem:
+h2(W) = 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+log
+
+1 + exp
+
+−A (i)
+j (X)
+
+g(i)
+j
+⊤P P⊤(W−W (0))
+
++b (i)
+j
+
+.
+We can know thath1( ˆWd) ≤h 2( ¯Wp), since the second problem is a specific case of the first one.
+DenoteW ⋆ as the minimizer for the training loss:
+min ˆLS(W) = 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+log
+
+1 + exp
+
+−A (i)
+j (X)f (i)
+W (X;j)
+
+.
+We will complete the proof by showing that the following two bounds hold. First, we will show
+that the error betweenh1( ˆWd)and ˆLS(W⋆)is bounded:
+h1( ˆWd)≤h 2( ¯Wp)≤h 2(W⋆)≤ ˆLS(W⋆) +δ+ 2GDϵ.(5)
+Second, we will show that the error betweenh1( ˆWd)and ˆLS(P ˆWd +W (0))is also bounded:
+h1( ˆWd)− ˆLS(P ˆWd +W (0))
+ ≤δ.(6)
+Next, we prove the first bound in Equation(5). We have known thath1( ˆWd) ≤h 2( ¯Wp)and
+h2( ¯Wp) ≤h 2(W⋆), as ¯Wp is minimizer ofminh 2(W). We will bound the error betweenh2(W⋆)and
+ˆLS(W⋆). Let’s expand the training loss atW⋆. To simplify the notations, we write down one logistic
+loss:
+log
+
+1 + exp
+
+−A (i)
+j (X)f (i)
+W⋆(X;j)
+
+= log
+
+1 + exp
+
+−A (i)
+j (X)
+
+g(i)
+j
+⊤(W⋆ −W (0)) +b (i)
+j + ¯ϵ(i)
+j
+
+= log
+
+1 + exp
+
+−A (i)
+j (X)
+
+g(i)
+j
+⊤P P⊤(W⋆ −W (0)) +b (i)
+j + ¯ϵ(i)
+j + ˜ϵ(i)
+j
+
+,
+21
+where¯ϵ(i)
+j =−A (i)
+j (X)ϵ(i)
+X,j involves the Taylor’s expansion error and
+˜ϵ(i)
+j =
+
+g(i)
+j
+⊤(Idd −P P⊤)(W⋆ −W (0)).
+Then, we leverage the fact that the logistic loss is1-Lipschitz continuous. Based on the mean value
+theorem, we can have that:
+log(1 + exp(−x+ϵ))≤log(1 + exp(−x)) +|ϵ|.
+Therefore, we can bound the error betweenh2(W⋆)and ˆLS(W⋆)as follows:
+h2(W⋆)≤ ˆLS(W⋆) + 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+(
+¯ϵ(i)
+j
+ +
+˜ϵ(i)
+j
+).
+From the assumption that the averaged Taylor’s expansion error is at mostδ, we have:
+1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+¯ϵ(i)
+j
+ ≤δ.
+We then bound the second error term by the Johnson-Lindenstrauss Lemma [16]. Provided that
+d=O
+ logp
+ϵ2
+
+, we have
+
+D
+gi, W⋆ −W (0)
+E
+−
+D
+P gi, P(W⋆ −W (0))
+E ≤ϵ
+
+D
+gi, W⋆ −W (0)
+E ≤2GDϵ.
+Therefore, we have proved the first bound in equation (5):
+h2(W⋆)≤ ˆLS(W⋆) + 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+(
+¯ϵ(i)
+j
+ +
+˜ϵ(i)
+j
+)≤δ+ 2GDϵ.
+Next, we prove the second bound in Equation(6) using the same idea. This is based on observing
+the training loss onP ˆWd +W (0):
+log
+
+1 + exp
+
+−A (i)
+j (X)f (i)
+P ˆWd+W(0) (X;j)
+
+= log
+
+1 + exp
+
+−A (i)
+j (X)
+
+g(i)
+j
+⊤P ˆWd +b (i)
+j + ¯ϵ(i)
+j
+
+,
+where¯ϵ(i)
+j involves the Taylor expansion error.
+Using the1-Lipschitz continuous property of the logistic loss again, we can have that
+h1( ˆWd)− ˆLS(P ˆWd +W (0))
+ ≤ 1
+|T||S|
+X
+X∈T
+X
+i∈S
+1
+S(i)(X)
+S(i)(X)X
+j=1
+¯ϵ(i)
+j
+ ≤δ.
+We have now completed the proof.
+B Detailed Approach
+We list the notations we use in the paper as follows.
+22
+Table 4: A list of mathematical notations used in the paper.
+Notation Meaning
+A(i) Thei-th algorithm
+XInput, including the graph structure
+A(i)
+j j-th intermediate step of thei-th algorithm
+S(i)(X)Total number of steps of applying thei-th algorithm on inputX
+SSubset of tasks
+fW A neural network with parametersW
+f(i)
+W (X;j)The prediction of the stepjof thei-th algorithm
+g(i)
+j The gradient off(i)
+W (X;j)with regard to the network parameterW
+T(i)
+j,l Layer-wise task affinity between taskiandjat layerl
+B.1 Clustering Algorithms
+We provide further details of our fast approximation algorithm, which uses a first-order expansion of
+the network output and logistic regression on gradient-based features, combined with a dimension
+reduction step. In the following discussion, we focus on binary classification, such thatA(i)
+j (X) ∈
+{+1,−1}. Recall the gradient-based approximation off(i)
+W (X, j), given the inputX and intermediate
+stepj:
+f(i)
+W (X, j)≈f(i)
+W(0) (X, j) +
+
+∇Wl:Lf(i)
+W(0) (X, j)
+⊤ 
+Wl:L −W (0)
+l:L
+
++ϵ X.(7)
+Let us denote∇l:Lf(i)
+W1:L(X, j)as g(i)
+j and −A(i)
+j (X)f(0)
+W(0) (X, j)as b(i)
+j , for any intermediate stepj.
+Using logistic loss, the approximate loss term for each sample is
+˜ℓ(f(i)
+W (X)) = log
+
+1 + exp
+ 
+−A (i)
+j (X)g(i)⊤
+j
+ 
+Wl:L −W (0)
+l:L
+
++b (i)
+j
+
+,(8)
+forW∈R p. Denote the combined data set in the task subsetSas
+DS ={(X 1, A(i)
+1 (X), . . . , Y), . . . ,(XnS , A(i)
+1 (XnS ), . . . , YnS )}i∈S
+where nS is the combined number of data samples in the setDS. The main idea is to solve a logistic
+regression problem withg(i)
+j being the feature vector andA(i)
+j (X)being the response label.
+Since g(i)
+j can be very high-dimensional (on the order of the neural network’s parameter count),
+we apply a Johnson-Lindenstrauss (JL) random projection to reduce dimension without losing much
+precision. Specifically, letP∈R p×d be a Gaussian random matrix, , where each entry is drawn i.i.d.
+from N(0, d−1). We project the gradient from dimensionp onto dimensiond as ˜g(i)
+j = P⊤g(i)
+j . Then,
+we solve the followingd-dimensional logistic regression, which is now in dimensiond:
+ˆWd ←arg min
+W∈Rd
+ˆL(W) = 1
+nS
+X
+X∈DS
+sX+1X
+j=1
+˜ℓ(f(i)
+W (X)),
+wheres X denotes the number of intermediate steps for the sampleX.
+Finally, we map the learnedˆWd ∈R d back to the fullp-dimensional space: ˆWSk = P ˆWd + W(0).
+The ˆWSk then serves as the fine-tuned parameter estimate for taskskin subsetSk.
+23
+Task Affinity based Clustering.Let T denote the task affinity matrix at a layerl. The goal is
+to solve clustern tasks intok groups such that tasks with higher affinity are grouped together. This
+can be formulated as a rank-constrained maximization problem:
+max
+X∈Rn×n
+⟨T, X⟩
+Xe=e,Tr[X] =k,rank(X) =k
+X≥0, X⪰0.
+Given the number of clustersk, letv1, . . . , vk be binary indicator vectors indicating whether a
+task is in each cluster. The average density is computed asPk
+i=1(v⊤
+i T(l)vi/v⊤
+i vi). However, the
+integral objective is NP-hard in general. Therefore, we relax it using semi-definite programming
+(SDP), followed by a rounding step to obtain discrete clusters.
+Since splitting tasks intok clusters at layerl increases the network size by(L−l )k, we apply
+the SDP relaxation with a regularization term on the number of clustersk to control the network
+size. Specifically, let a new variable asX = Pk
+i=1(viv⊤
+i /v⊤
+i vi). As viv⊤
+i is a rank-one semi-definite
+matrix, the rank and trace ofXare equal tok. The regularized SDP objective becomes:
+max
+X∈Rn×n
+⟨T, X⟩ −λ(L−l) Tr[X](9)
+Xe=e, X≥0, X⪰0
+where λ is a hyperparameter that controls how much we penalize the increase in network size. Once
+we obtain the SDP solutionˆX, we round ˆX into an integer solution using a threshold of1/n. The
+SDP solution for ann×n is computationally efficient, taking less than 5 seconds, making it negligible
+compared to the overall model training time.
+Discussion.Let the running time for training a singleL-layer network on one task beT, with
+memory usage B. Our algorithm discovers the branching network innLT time and useskB/L
+memory. By contrast, training a mixture of expert networks withk networks takesknT time and
+kBmemory. Task grouping based on fully computed task affinity takesn2Ttime andkBmemory.
+LearningToBranch [10] that searches for branching decisions takeskLnT time and usesnB memory
+since it trains withn modules per layer. One existing method [24] takes a layer-by-layer search
+approach from the last layer to the first. At each layer, their method determines the number of
+groups for the branching by optimizing a criterion over task-relatedness and model complexity. In
+contrast, LearningToBranch [10] parameterizes the branching decisions at each layer and optimizes
+the variables in an end-to-end training pipeline. Vandenhende et al. [39] designs a method that
+exhaustively searches over all possible trees ofL layers to find the tree structure that has the
+minimum sum of task affinity scores over all layers. These methods use a search space ofO(knL).
+Other strategies have also been explored for tree construction. For example, one can still proceed
+from the last layer toward the first layer. Our algorithm can be applied generically to these different
+branching strategies, providing flexibility when building a branched multi-task network.
+B.2 Using Node Embeddings for Graph Algorithmic Reasoning
+Next, we use the embeddings learned from Algorithm 2 to deal with text descriptions of a graph
+reasoning task. To motivate our approach, we first evaluate whether existing open-source language
+models can solve the tasks accurately. We use four CLRS-Text tasks, including BSF, Bellman-Ford,
+Dijkstra, and Prim’s MST algorithm [28]. We use Llama-3-8B as the base language model. The input
+24
+Algorithm 3Fine-tuning LLMs withAutoBRANEEmbeddings
+Input: Training and validation datasets ofnalgorithmic reasoning tasks in text formats,
+Pretrained language model LM(·)
+Require:A text instructionP instruction, Numbermof subsets and their sizeα, Projection
+dimensiond, Regularization parameterλ
+Output: A fine-tuned language model with anAutoBRANE
+1:Convert the text input descriptions into graphs for every task
+2:Train anL-layerAutoBRANEon thentasks with graph inputs, using Algorithm 2
+3:For each training sample, concatenate the node embeddings ofAutoBRANEwith the text
+embeddings ofP instruction
+4:Fine-tune the LM with theAutoBRANE, using the concatenated embeddings as input, and
+minimizing the fine-tuning loss
+involves a text description of a graph instance and the algorithmic task. The output involves a text
+description of the intermediate steps and the final output. The results are evaluated by comparing
+the outputs to the ground truth. See Figure 1 for an example.
+We find that there is a large gap between the LLM results and the GNN results. We evaluate
+directly prompting the text description to the language model by showingm demonstrations and
+also a query. We also fine-tune Llama-3-8B with LoRA [12] based on the text description. For
+fine-tuning, we use the same number of training samples as in the MPNN. Table 5 shows the results.
+We find that directly prompting the LLama model performs poorly. While fine-tuning helps, it still
+lags behind MPNNs by up to 23%.
+Can we combine the embeddings from the branching network along with a language model to
+enhance its graph reasoning performance? A natural idea is to use the node embeddings of the input
+graph trained fromAutoBRANEand combine that with the embeddings of the text description.
+To align these two embeddings, we add a linear layer after the node embeddings. Then, these are
+used as the input to the language model for fine-tuning. The overall procedure is summarized in
+Algorithm 3.
+Another benefit of using GNN embeddings is that they reduce the memory cost of LLMs by
+reducing the input lengths. Suppose a graph has|V| nodes and|E| edges, text-based descriptions of
+graphs use the flattened adjacency matrix (as in [28]) and incidence matrix (as in [5]), which have a
+length of|V| 2 and |V||E| , respectively. As the model’s memory requirements typically scale with the
+square of these lengths, the overall memory usage becomesO(|V| 4)and O(|V| 2|E|2). In contrast,
+using GNN-produced node embeddings creates an input of length|V| , thereby reducing the memory
+requirement toO(|V| 2).
+Other methods also exist for fusing the graph embeddings with the text embeddings. For instance,
+one approach is to apply a cross-attention layer between the graph and text embeddings, and then
+feed the transformed embeddings to the LLM. We find that training a cross-attention layer between
+the embeddings converges more slowly than directly training on the concatenated embeddings. Thus,
+we choose the simpler concatenation in our method.
+Results of Graph Algorithmic Reasoning with GNN Node EmbeddingsWe observed that
+fine-tuning LMs on the text descriptions of tasks underperforms training GNNs. We now evaluate
+our algorithm that uses the embeddings of the GNN-based branching network to fine-tune LLMs.
+We use the text-based graph reasoning tasks from the CLRS-Text benchmark [28], training on 1,000
+graphs and evaluating on validation and test sets, each containing 200 graphs. We use Llama-3-8B
+as the base model. For each task, we evaluate the exact match accuracy between model outputs and
+25
+Table 5: Comparison between GNN training, prompt demonstration withm examples, parameter-
+efficient fine-tuning, and our approach that leverages GNN embeddings in fine-tuning. All are
+evaluated on Llama-3-8B.
+BFS Bellman-Ford Dijkstra MST
+MPNN [40] 99.80 99.40 99.20 99.60
+Prompting,m= 022.47 2.78 4.60 3.95
+Prompting,m= 534.28 31.54 25.17 25.31
+Prompting,m= 1034.65 32.44 25.32 25.98
+Prompting,m= 2035.88 33.56 25.80 26.59
+PrefixTuning 92.1±0.4 80.2±0.6 65.3±0.3 74.6±0.8
+Adapter 96.5±0.6 83.1±0.6 69.4±0.4 74.3±0.3
+LoRA 98.2±0.3 89.2±0.2 75.6±0.4 78.5±0.5
+Algorithm 3 (Ours)99.3±0.2 92.6±0.6 78.7±0.6 79.4±0.3
+the ground truth.
+We compare our algorithm with several parameter-efficient fine-tuning methods for fine-tuning
+LLama-3-8B. These include prefix tuning, adapter tuning, and LoRA fine-tuning. In our algorithm,
+we use LoRA to fine-tune the LM together withAutoBRANE. For all baselines, we train the same
+number of parameters as in our algorithm. Table 5 shows the results. Our algorithm outperforms
+the other fine-tuning baselines by2.1% on average.
+C Additional Experiments
+C.1 Datasets and Models
+CLRS Tasks.We summarize the input and output definitions of the algorithmic reasoning tasks
+in the CLRS benchmark [40] in Table 7. Each task represents an algorithmic problem where the
+input includes the graph structure itself.
+GraphQA Tasks.We use twelve text-based graph reasoning tasks from the GraphQA benchmark
+[5]. We summarize the input and output definitions of the tasks in Table 8. While not all tasks involve
+an algorithmic problem, we evaluate on this benchmark to demonstrate the broad applicability of
+our algorithm.
+GraphWiz Tasks.We use nine graph-related tasks from GraphWiz [3]. Compared to other
+datasets, this dataset provides textual descriptions of graph problem inputs and the reasoning
+processes that describe the rationale for solving the tasks generated by chain-of-thought prompting
+GPT-4. We summarize the input and output definitions of the tasks in Table 9.
+Implementation.OnCLRS,weusetheencode-process-decodearchitectureintroducedinVeličković
+et al. [40]. The encoder embeds inputs into feature representations of the algorithm. The processor
+performs message-passing computations of the input embeddings over the graph using GNNs. The
+decoder is a linear layer that transforms the final embeddings into a label space. The output of
+the decoder is viewed as the predicted steps for the next step and as the output at the final step.
+We train the encode-process-decode model with the sum of the losses computed on each step. At
+26
+Table 6: List of hyperparameters for each dataset tested in the experiments, corresponding to the
+results that we reported in Section 4.
+Dataset Model m α L k T BLearning rate Epochs
+CLRS Edge Transformer 200 3 5 10 2.5 hours 10.5 GB 2e −4 8
+CLRS MPNN 200 3 5 10 0.3 hours 4.2 GB 2e −4 8
+CLRS-Text QWen-3-1.7B 200 3 28 7 6.0 hours 13.6 GB 2e −5 10
+GraphQA Llama-3-1B 200 3 16 8 0.5 hours 12.4 GB 1e −5 10
+GraphWiz Llama-3-1B 200 3 16 8 0.9 hours 21.5 GB 1e −5 10
+Orkut SIGN 5000 25 3 22 0.1 hours 5.7 GB 1e −2 100
+Table 7: Definitions of input and intermediate steps of12graph-based algorithmic reasoning tasks
+from the CLRS benchmark.
+Task Inputs Intermediate and final steps
+Articulation points An undirected graph. Node-level zero-one mask features indicate the
+node is the articulation point at the end
+Bellman-ford’s algorithm A weighted directed graph;
+The source node
+Node-level pointer features indicating the prede-
+cessor node of the node in the end
+Breadth-first search An undirected graph; The
+source node
+Node-level pointer feature to the predecessor node
+of each node at the end of the algorithm
+Bridges An undirected graph Edge-level zero-one mask features indicate the
+edge is the bridge at the end
+DAG shortest paths algo-
+rithm
+A weighted directed
+acyclic graph; The source
+node
+Node-level pointer features indicating the prede-
+cessor node of the node in the end
+Depth-first search A directed graph; The
+source node
+Node-level pointer feature to the predecessor node
+of each node at the end of the algorithm
+Dijkstra’s algorithm A weighted directed graph;
+The source node
+Node-level pointer features indicating the prede-
+cessor node of the node in the end
+Floyd-Warshall algorithm A weighted undirected
+graph
+Edge-level pointer feature indicating the source
+node of the shortest path of the current edge
+Kruskal’s algorithm An undirected weighted
+graph
+Edge-level zero-one mask features indicating
+whether the edge is in the MST in the end
+Prim’s algorithm An undirected weighted
+graph; The root of MST
+Edge-level zero-one mask features indicating
+whether the edge is in the MST in the end
+Strongly connected compo-
+nents
+A directed graph Node-level pointer features indicating the ids of
+strongly connected components at the end
+Topological sort A directed acyclic graph Node-level pointer feature to the predecessor node
+of each node at the end of the algorithm
+each algorithm stept, the encoder generates embeddings for the nodes, edges, and graph-level
+features. The processor updates node embeddings, incorporating both the initial input features and
+the embeddings from previous steps. Finally, the decoder predicts intermediate steps or the final
+output step. The entire model is trained to optimize predictions across all steps.
+27
+Table 8: Definition of input and output of 12 graph reasoning tasks from GraphQA [5].
+Task Inputs Outputs
+Edge existence An undirected graph Whether two nodes are connected by an edge in the
+graph
+Node degree An undirected graph The degree of a given node
+Node count An undirected graph How many nodes are in this graph
+Edge count An undirected graph How many edges are in this graph
+Connected nodes An undirected graph A list of all the nodes connected to a given node in
+alphabetical order
+Cycle check An undirected graph Whether there is a cycle in the graph
+Disconnected nodes An undirected graph A list of all the nodes that are not connected to a given
+node in alphabetical order
+Reachability An undirected graph Whether there is a path from a given source node to a
+given target node
+Shortest path A weighted undirected graph The length of the shortest path from a given source
+node to a given target node
+Maximum flow A weighted undirected graph The maximum capacity of the flow from a given source
+node to a given target node
+Triangle counting An undirected graph The number of triangles in the given graph
+Node classification An undirected graph and the
+labels of a subset of nodes
+The label of a given node
+Table 9: Definition of input and output of 9 graph reasoning tasks from GraphWiz [3].
+Task Inputs Outputs
+Cycle Detection An undirected graph Whether the given graph contains any cycles.
+Connectivity An undirected graph Whether two nodes in the given graph are connected
+via a path
+Bipartite Graph An undirected graph Whether the given graph is a bipartite graph
+Topological Sort A directed graph Find a topological ordering of vertices in the directed
+acyclic graph
+Shortest Path A weighted undirected graph The shortest path between two specific nodes in the
+given graph
+Maximum Triangle
+Sum
+A weighted undirected graph The maximum sum of weights for any connected triplet
+of vertices in the graph
+Maximum Flow A weighted directed graph The maximum flow from a source node to a sink node
+in the graph
+Hamilton Path An undirected graph Whether the graph has a Hamiltonian path that visits
+each vertex exactly once
+Subgraph Matching Two undirected graphs Whether there exists a subgraph in the first graph that
+is isomorphic to the second graph
+28
+C.2 Additional Evaluations
+First-order approximation.In Table 10, we measure the first-order approximation error by
+freezing different numbers of bottom layers of the models. Linear approximation consistently yields
+under 1% error, for Edge Transformers [29] and MPNN [40]. The approximation becomes better in
+higher layers. The RSS falls below 0.06% after freezing the first three layers.
+Table 10: Measuring the error for approximating the algorithmic reasoning task loss, using the
+first-order Taylor’s expansion around the initialization trained on all tasks. The results are averaged
+over50random subsets of graph algorithmic reasoning tasks. We apply the approximation to
+parameters after layerland use MPNN [40] or edge transformer [29] as the base model.
+RSS(fW): Base model=MPNN RSS(f W): Base model=Edge Transformer
+Dist. Freeze layer1Freeze layer1,2Freeze layer1,2,3Dist. Freeze layer1Freeze layer1,2Freeze layer1,2,3
+2% 2.3±0.7×10−3 2.0±0.6×10−3 2.3±0.4×10−5 2% 3.9±0.4×10−3 3.0±0.2×10−3 4.1±0.2×10−5
+4% 7.0±0.8×10−3 6.0±1.7×10−3 9.4±1.7×10−5 4% 6.5±0.5×10−3 6.4±1.0×10−3 8.6±2.1×10−5
+6% 8.2±1.4×10−3 8.0±1.2×10−3 2.1±0.4×10−4 6% 7.7±1.6×10−3 7.4±0.9×10−3 3.4±0.7×10−4
+8% 8.6±1.2×10−3 9.1±1.6×10−3 3.7±0.7×10−4 8% 8.4±2.4×10−3 8.5±2.0×10−3 4.5±1.8×10−4
+10% 9.2±2.4×10−3 9.4±2.1×10−3 5.8±1.1×10−4 10% 9.6±1.1×10−3 9.0±0.8×10−3 6.7±2.2×10−4
+Results on the CLRS benchmark.Table 11 reports the full experimental results in terms of
+test task scores, GPU hours, and GPU memory, comparing our algorithm with baseline methods on
+the CLRS benchmark. To further demonstrate the generality of our approach, we further evaluate it
+using the GAT model as the base model. The results show that our approach outperforms a single
+multitask network by 4.2% and a multitask baseline GradTAG [18] by 1.8% on average.
+Results on text-based graph reasoning benchmarks.Table 12 reports the full experimental
+results in text-based graph reasoning datasets. We compare our algorithm with fine-tuning a
+single adapter (MTN) and the most competitive MTL baseline, GradTAG [21], on the CLRS-Text,
+GraphQA, and GraphWiz datasets.
+Additional evaluations on CLRS-Text.Next, we conduct an empirical evaluation on graph
+algorithmic reasoning datasets, as studied in the CLRS benchmark [40, 28]. We use twelve text-based
+graph algorithmic datasets, including the Bellman-Ford algorithm, BFS, and DFS. The input sample
+is encoded as a flattened adjacency matrix of the graph, and intermediate steps are encoded as lists
+of node labels. We fine-tune the pretrained QWen-3-1.7B model on graphs of 10 nodes, using LoRA
+[12] as the base fine-tuning method. We evaluate the error rates as one minus the average exact
+match across output text sequences.
+First, we find that the sample complexity of generating intermediate steps can be higher than
+predicting only the final step. We compare (A1) fine-tuning with intermediate steps and (A2) fine-
+tuning with only the final step, in terms of the error rates of the final step. We observe that under
+low-sample regimes (e.g., within 1,000 samples for the Bellman-Ford algorithm), A1 performs worse
+than A2. However, with sufficient data samples, A1 ultimately outperforms A2 in all algorithms.
+Second, we find that training on certain combinations of datasets can either positively or
+negatively affect the average sample complexity. Consider the example shown in Figure 2. The
+Bellman-Ford algorithm shares all steps with BFS on the graph, whereas DFS shares only the first
+two steps with BFS. One might expect that combining the datasets of Bellman-Ford and BFS would
+improve their average sample complexity. We fine-tune a model on each pair of datasets (B1) and
+29
+Table 11: Test score (%) evaluated on twelve graph algorithmic reasoning tasks. We report the
+average score over all tasks, the GPU memory of the resulting model, and the runtime in terms
+of GPU hours, for each baseline method. For each experiment, we run the experiment with three
+random seeds and report the average results.
+Using MPNN STN MTN MMoE TAG LearningToBranch GradTAGAutoBRANE
+BFS 100.0±0.0 98.0±0.4 89.4±0.2 99.4±0.5 93.2±0.4 99.4±0.4 99.6±0.3
+DFS 38.7±1.5 29.7±1.6 30.2±2.7 36.7±1.4 34.4±3.2 25.1±4.5 38.7±1.5
+Topo. sort 66.0±2.6 71.3±3.6 74.8±2.4 72.8±1.2 75.4±2.1 61.4±3.1 74.2±1.7
+Articulation points 99.8±0.2 99.8±0.1 97.1±1.2 97.4±1.3 95.5±1.6 85.7±0.8 93.0±0.2
+Bridges 82.6±2.0 69.3±0.4 91.1±1.2 92.1±1.9 92.2±2.4 81.2±2.5 96.2±1.4
+SCC 93.1±3.1 92.4±4.7 93.5±2.6 89.0±1.3 93.4±2.6 90.1±3.5 92.0±1.8
+MST Kruskal 69.9±1.5 63.6±2.0 66.2±1.4 64.5±0.8 68.0±2.5 69.4±1.1 66.4±1.3
+MST Prim 53.8±1.3 54.3±3.6 52.3±1.4 50.1±3.5 54.3±2.7 95.3±1.7 52.2±2.4
+Dijkstra 70.9±2.3 69.3±1.9 69.3±2.4 67.3±1.5 72.1±1.4 78.3±1.0 68.8±1.7
+Bellman Ford 63.8±4.1 59.2±3.3 56.8±1.6 61.9±2.7 58.0±3.4 85.9±0.6 61.8±2.4
+DAG 89.2±1.4 90.0±2.7 83.6±1.6 89.8±1.0 86.1±2.4 88.6±0.7 89.1±1.5
+Floyd Warshall 69.4±0.5 62.5±0.7 56.1±0.7 58.4±1.7 58.1±2.8 25.4±1.4 63.1±1.3
+Avg. score 75.2 71.6 71.7 73.1 73.7 73.5 74.6
+GPU hours 3.2 3.3 33.4 14.9 21.8 4.5 10.8
+GPU memory 49.6 11.7 38.2 38.8 26.8 38.8 18.9
+Using Edge Transformers STN MTN MMoE TAG LearningToBranch GradTAGAutoBRANE
+BFS 99.7±0.4 98.6±0.1 100.0±0.0 100.0±0.0 100.0±0.0 99.7±0.0 99.8±0.0
+DFS 65.6±1.6 51.4±1.5 39.9±2.6 34.1±1.8 36.7±1.8 37.6±3.7 42.6±2.4
+Topo. sort 98.7±0.2 99.0±0.9 97.7±0.6 97.7±0.7 98.7±0.9 97.6±2.3 96.2±0.2
+Articulation points 93.0±3.6 96.4±1.4 89.2±2.3 89.2±2.1 91.2±1.4 99.0±0.3 98.1±1.0
+Bridges 91.9±0.3 92.2±0.3 99.0±0.0 99.2±0.1 99.2±0.2 93.5±1.7 97.3±0.2
+SCC 65.8±3.6 69.1±2.9 64.2±3.4 75.3±3.4 76.7±1.2 68.1±2.8 63.9±1.2
+MST Kruskal 84.0±1.4 82.2±0.8 80.4±1.8 80.4±1.6 81.4±1.8 79.5±0.5 81.9±0.3
+MST Prim 93.0±1.6 71.9±1.4 85.5±3.0 85.5±1.8 87.1±3.0 84.6±1.0 92.8±1.4
+Dijkstra 91.9±1.6 93.1±3.8 94.0±1.6 92.5±1.1 93.7±2.0 96.9±0.4 98.7±0.9
+Bellman-Ford 89.9±1.4 90.3±2.3 92.7±1.7 90.2±1.4 92.4±1.9 90.4±0.6 96.7±1.4
+DAG 97.6±0.8 96.1±0.2 98.3±0.7 98.3±0.3 99.3±0.4 94.7±0.5 99.0±0.6
+Floyd Warshall 61.5±3.4 76.9±2.3 77.7±1.4 77.7±1.5 78.7±2.7 82.2±0.7 82.8±1.8
+Avg. score score 86.0 83.6 84.9 85.0 86.4 85.4 87.3
+GPU hours 30.4 19.6 107.5 220.5 148.5 60.8 77.2
+GPU memory 126.1 30.6 79.9 104.7 66.2 104.7 49.2
+compare it with training on each dataset alone (B2). We find that for Bellman-Ford and BFS, B2
+yields4 .8%better lower error rates than B2 on average across multiple sample sizes. On the contrary,
+for Bellman-Ford and DFS, B2 yields12.1%higher error rates on average. In all12×11
+2 = 66cases,
+we find 34 cases where B1 improves sample complexity than B2.
+30
+Table 12: Test accuracy (%) evaluated on text-based graph reasoning tasks from the CLRS-Text,
+GraphQA, and GraphWiz benchmarks. We compare our approach of fine-tuning a single adapter
+(MTN) and the most competitive MTL baseline, GradTAG [21]. We evaluate the test accuracy as
+the exact match of every output position. We report the average accuracy over all tasks. We run
+each experiment with three random seeds and report the average results.
+CLRS-Text MTN GradTAGAutoBRANE
+BFS 79.3±0.0 83.5±0.4 89.6±0.2
+DFS 51.1±0.7 55.7±0.8 62.5±1.9
+Topological sort 19.0±1.0 18.8±0.1 18.2±0.4
+Articulation points 96.9±0.1 97.4±0.3 98.4±0.2
+Bridges 73.4±0.0 73.3±0.8 73.2±0.7
+SCC 93.6±0.2 94.1±0.5 95.2±0.1
+MST Kruskal 98.5±0.2 98.6±0.2 98.9±0.9
+MST Prim 62.1±0.1 62.9±0.3 64.2±0.2
+Dijkstra 63.6±0.8 64.1±0.7 65.0±0.3
+Bellman Ford 74.8±0.3 79.1±0.8 85.0±0.1
+DAG 91.1±0.9 89.1±0.9 85.7±0.2
+Floyd Warshall 29.3±0.5 34.5±0.9 43.0±0.9
+Avg. accuracy 69.4 70.9 73.3
+GraphQA MTN GradTAGAutoBRANE
+Edge existence 96.7±0.3 100.0±0.0 99.6±0.4
+Node degree 98.1±0.1 99.2±0.3 99.7±0.3
+Node count 100.0±0.0 100.0±0.0 100.0±0.0
+Edge count 67.2±2.2 68.0±2.4 73.1±1.7
+Connected nodes 99.5±0.2 99.9±0.1 100.0±0.0
+Cycle check 99.4±0.2 99.4±0.1 99.8±0.2
+Disconnected nodes 81.2±1.7 81.2±0.6 94.6±0.8
+Reachability 98.0±0.2 97.7±0.2 98.2±0.9
+Shortest path 86.6±0.1 91.0±1.0 90.4±0.4
+Maximum flow 48.1±0.3 46.9±0.8 47.7±0.9
+Triangle counting 60.8±0.2 62.1±0.4 61.8±0.9
+Node classification 94.9±3.5 94.9±0.5 99.1±0.3
+Avg. accuracy 85.9 86.7 88.7
+GraphWiz MTN GradTAGAutoBRANE
+Cycle Detection 45.6±0.6 43.6±0.5 43.8±0.7
+Connectivity 75.6±0.7 76.2±0.5 78.3±0.8
+Bipartite Graph 62.7±0.6 64.7±0.7 65.6±0.5
+Topological Sort 13.7±0.3 20.1±0.3 22.1±0.3
+Shortest Path 24.7±0.9 25.2±0.2 21.6±0.8
+Maximum Triangle Sum 29.3±0.7 29.3±0.5 29.6±0.6
+Maximum Flow 10.2±0.7 13.2±0.2 15.7±0.7
+Hamilton Path 48.5±0.4 46.4±0.5 47.8±0.3
+Subgraph Matching 84.0±0.9 83.1±0.2 85.2±0.8
+Avg. accuracy 43.8 44.7 45.5
+31

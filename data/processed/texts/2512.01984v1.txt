@@ -1,0 +1,1178 @@
+ECO: Energy-Constrained Operator Learning for Chaotic
+Dynamics with Boundedness Guarantees
+Andrea Goertzen*, Sunbochen Tang*, and Navid Azizan
+Massachusetts Institute of Technology
+Abstract
+Chaos is a fundamental feature of many complex dynamical systems, including weather systems and
+fluid turbulence. These systems are inherently difficult to predict due to their extreme sensitivity to initial
+conditions. Many chaotic systems are dissipative and ergodic, motivating data-driven models that aim to
+learn invariant statistical properties over long time horizons. While recent models have shown empirical
+success in preserving invariant statistics, they are prone to generating unbounded predictions, which
+prevent meaningful statistics evaluation. To overcome this, we introduce theEnergy-Constrained
+Operator (ECO)that simultaneously learns the system dynamics while enforcing boundedness in pre-
+dictions. We leverage concepts from control theory to develop algebraic conditions based on a learnable
+energy function, ensuring the learned dynamics is dissipative. ECO enforces these algebraic conditions
+through an efficient closed-form quadratic projection layer, which provides provable trajectory bounded-
+ness. To our knowledge, this is the first work establishing such formal guarantees for data-driven chaotic
+dynamics models. Additionally, the learned invariant level set provides an outer estimate for the strange
+attractor, a complex structure that is computationally intractable to characterize. We demonstrate
+empirical success in ECO’s ability to generate stable long-horizon forecasts, capturing invariant statis-
+tics on systems governed by chaotic PDEs, including the Kuramoto–Sivashinsky and the Navier–Stokes
+equations.
+1 Introduction
+Chaotic dynamical systems.Chaos arises in a wide range of physical systems, including weather models
+[1] and fluid dynamics [2, 3]. A hallmark of chaotic systems is their sensitivity to initial conditions. That
+is, small perturbations can cause exponential divergence between trajectories, making precise long-term
+prediction intractable. Despite this unpredictability, many chaotic physical systems are dissipative, meaning
+their trajectories converge to a lower-dimensional invariant set, often referred to as the strange attractor [4].
+Once in this attractor, the system exhibits ergodicity, where the trajectory will eventually visit every state
+on the attractor [5]. The ergodic behavior of dissipative chaotic systems, coupled with the intractability in
+predicting exact pointwise trajectories, makes capturing the statistical behavior of a system on the attractor
+a natural goal.
+Recent data-driven methods have achieved impressive empirical success in constructing models that both
+speed up inference and capture the long-term invariant statistics of dissipative chaotic systems. These ap-
+proaches vary widely in terms of structural assumptions and model complexity. At one end of the spectrum,
+structured nonlinear regression techniques employ physically motivated multi-level models to efficiently fit
+time series data [6–8]. At the other end, deep learning methods use the expressive capabilities of neural net-
+works to directly learn complex chaotic dynamics from raw data, often embedding physical system knowledge
+into the architecture or regularization strategies [9–15]. Hybrid models bridge these approaches by using
+autoencoder architectures to project data into latent spaces where the dynamics become simpler—drawing
+inspiration from Koopman theory [16], Dynamic mode decomposition [17], PCA [18], etc. Recurrent se-
+quential models have been developed to enhance stability and accuracy by incorporating more input history
+*Equal Contributions.
+1
+arXiv:2512.01984v1  [eess.SY]  1 Dec 2025
+beyond a single time step [19–21]. Among these, a specific recurrent architecture designed for time series
+prediction, called reservoir computing, has shown strong performance in capturing invariant statistics and
+reconstructing attractors [22–24].
+Data-driven methods for modeling chaotic systems often adopt an autoregressive framework, where a
+model predicts the next time step based on the current state to generate long-term trajectories and capture
+statistical properties. However, this approach can suffer from accumulated errors, causing trajectories to drift
+away from the training distribution. In chaotic settings, such drift can result in unbounded or nonphysical
+predictions, ultimately corrupting statistical estimates derived from the generated trajectories. Structured
+models, such as multi-level quadratic regression, have been theoretically shown to exhibit pathological insta-
+bility in their statistical behavior [25]. In the context of recurrent neural networks (RNNs), Mikhaeil et al.
+[19] demonstrated that training such models on chaotic systems leads to gradient divergence, highlighting
+a fundamental limitation. While the theoretical understanding of machine learning models remains limited,
+empirical evidence shows that these models often produce divergent trajectories, ultimately resulting in unre-
+liable statistical predictions. This issue has also been observed in advanced time-series modeling techniques,
+including Reservoir Computing and Fourier Neural Operators [22, 26, 27]. As such, a central challenge across
+both physics-informed and purely data-driven approaches is the difficulty of maintaining stable long-term
+forecasts.
+Learning with hard constraints.Recent efforts in machine learning have explored hard-constrained
+neural networks as a means to enforce physical or structural constraints on model predictions. These methods
+can guarantee satisfaction of linear equality constraints [28, 29] or combinations of linear equality and
+inequality constraints [30, 31]. Often, these approaches employ either a specific parameterization of a given
+network or a network-agnostic, closed-form projection layer that maps neural network outputs to a feasible
+set. Such constraints have been successfully applied to enforce physical constraints such as conservation
+laws [28] as well as stability objectives in learned dynamics [32]. However, these methods are limited to
+affine constraints. [33] introduce a network parameterization method to enforce certain convex constraints,
+but is limited to input-independent constraints. Other methods [34] use iterative Newton-like approaches to
+push model outputs towards satisfaction of nonlinear equality constraints but can be expensive and are not
+guaranteed to converge under certain conditions. There remains a gap in the existing literature for closed-
+form guaranteed satisfaction of nonlinear constraints, which are of particular interest for physical systems.
+In the context of chaotic systems, enforcing boundedness in predictions can be useful for avoiding trajectory
+blow-up.
+Our contributions.We introduce the Energy-Constrained Operator (ECO), a framework for learning
+chaotic dynamics that guarantees long-term stability by construction. By integrating control-theoretic prin-
+ciples, ECO simultaneously learns the dynamics and a stabilizing energy function. To our knowledge, this
+is the first work to provide explicit formal guarantees on the boundedness of predicted trajectories for such
+systems. Our key contributions include:
+•A Learnable Energy-Based Constraint:We derive computationally efficient, algebraic dissipative
+conditions based on a learnable quadratic Lyapunov function. This allows the model to discover a
+stabilizing invariant set from data without requiring prior knowledge of the system, which is an outer-
+estimate for the attractor.
+•A Convex Quadratic Projection Layer:We design a projection layer that enforces a general
+convex quadratic constraint, including the dissipativity condition. The layer is network-agnostic, com-
+putationally efficient, and fully differentiable.
+•Theoretical Boundedness Guarantees:We provide a formal proof that our learned model is
+globally asymptotically stable, ensuring all prediction trajectories remain bounded and converge to the
+learned invariant set.
+•Empirical Results:We validate ECO on challenging chaotic benchmarks, including the Kuramoto–
+Sivashinsky and Navier–Stokes equations. Our model produces stable long-horizon forecasts that ac-
+curately reconstruct statistical properties of the strange attractors.
+2
+2 Problem Formulation
+Consider a chaotic dynamical system described with a PDE of the form,
+∂tw=F(x, w, ∂xw, ∂xxw, ...),(t, x)∈[0, T]×X
+w(0, x) =w0(x), x∈X
+B[w] (t, x) = 0,(t, x)∈[0, T]×∂X
+(1)
+Here,w(t, x)represents then-dimensional state of the dynamical system at any timet∈[0, T]and
+positionx∈X⊆R d,w 0(x)is the initial condition defined on the full spatial domainx∈X, andB[w] (t, x)
+is the boundary condition defined on the spatial boundary∂X. We adopt a discrete-time formulation of this
+problem, and consider PDEs with solutions inL2 space, i.e.,X⊂L 2,
+wt+1(x) =G(w t(x), x),(t, x)∈ {0,1,2, ...N} ×X(2)
+wherew t =w(t,·) :X→Rrepresents the state of the dynamical system at any positionx∈Xat time step
+t. We focus on PDEs that govern dissipative chaotic systems, as many physically relevant chaotic systems
+inherently exhibit dissipative behavior.
+The primary goal is to learn a neural operatorG ∗(θ)that emulates the true dynamicsG. For the
+chaotic systems we study, long-term pointwise prediction is intractable due to sensitive dependence on initial
+conditions. While individual trajectories are unpredictable, these dissipative chaotic system’s trajectories
+converge to a statistically invariant strange attractor. Consequently, a more feasible and meaningful objective
+is to learn an operator that preserves the statistical properties of the true dynamics over long horizons.
+Asignificantchallengetoachievingthisobjectiveismodelstability. WhenanapproximateoperatorG ∗(θ)
+is applied iteratively to generate long-horizon trajectory forecasts, small prediction errors can be amplified
+exponentially, whichaccumulatesandeventuallycausespredictedtrajectoriestodivergetounboundedvalues.
+This failure mode, also known as “finite-time blowup”, prevents the model from capturing any meaningful
+long-term behavior [9, 22].
+To address this issue, our solution is to construct a model architecture that is dissipative by design. Since
+dissipativity is a fundamental property of the physical system, incorporating it as an inductive bias ensures
+trajectory boundedness without sacrificing expressivity. To achieve this rigorously, we first formalize the
+concept:
+Definition 1.We say that the system in (2) isdissipativeif there exists a bounded (with respect toL2
+norm) and positively invariant setM⊂L 2 such that
+lim
+t→∞
+dist(wt, M) = 0,dist(w t, M) = inf
+y∈M
+∥wt −y∥
+In other words, every trajectory of the system will converge toMasymptotically, and stays withinMonce
+it enters.Mis said to beglobally asymptotically stable.
+Intuitively, a dissipative system loses energy until its trajectories enter and remain within a bounded
+regionM, which for chaotic PDEs is their strange attractor. However, Definition 1 isdescriptivein the
+desired property ofM, without providing a practical mechanism to verify or enforce it. Furthermore, the
+strange attractorMitself is highly system-dependent and has been known computationally intractable to
+characterize [4, 35].
+3 Dissipative Dynamics: A Control-theoretic Perspective
+Our objective is to design a neural operator architecture that enforces dissipativity by construction. The
+first challenge is that Definition 1 is non-constructive, as it relies on the strange attractorM, which is
+computationally intractable to characterize. Therefore, we must establish an alternative, computationally
+efficient condition that can be directly enforced during training and inference.
+For this purpose, we turn to a control-theoretic perspective and the concept of Lyapunov functions. These
+“energy-like” functions are extensively used to establish asymptotic stability of dynamical systems [36] and
+3
+naturally connect with the behavior of dissipative systems. Instead of analyzing the complex attractorM,
+we can use a level set of a Lyapunov function as a tractable proxy for the bounded region.
+We adapt this strategy in the following proposition, which generalizes the concept of asymptotic stability
+from a single equilibrium point to an entire level set, providing the practical conditions needed for our model
+design.
+Proposition 1(set asymptotic stability).For an infinite-dimensional dynamical system in (2), suppose
+there exists a non-negative-valued continuously differentiable functionV:L 2 →R + and a constantc >0,
+such that
+(i)∀w t /∈M(c) ={w∈L 2 :V(w)≤c}, V(w t+1)≤αV(w t),0< α <1
+(ii)∀w t ∈M(c) ={w∈L 2 :V(w)≤c}, V(w t+1)≤c
+(iii)Vis radially unbounded, i.e.,V(w)→ ∞as∥w∥ → ∞
+Then the system (2) is dissipative, where the level setM(c)is globally asymptotically stable.
+Figure 1: (A) An illustration of the conditions in Proposition 1, where the trajectory loses energy over time
+and enters an invariant level set. (B) Illustration of the fact that an inherently dissipative model would have
+an effectively smaller search space for parameters.
+As illustrated in Figure 1(A), the conditions in Proposition 1 guide any solution starting outside the level
+setM(c)to lose energy exponentially due to theαfactor, entering the level set in finite time and remaining
+inside thereafter. A detailed proof for Proposition 1 is included in Appendix A.
+Despite the simplicity of the algebraic conditions derived in Proposition 1, overall the conditions still
+obtain a form of “if-else” condition, which might not be straightforward to enforce in a neural network that
+requires differentiability for backpropagation. To resolve this issue, we unify conditions (i) and (ii) in the
+above proposition into the following single inequality constraint, which involves a ReLU activation and the
+α∈(0,1)used in condition (3):
+V(w t+1)−α[V(w t) +ReLU(c−V(w t))]≤0(3)
+Note that the reformulation here is equivalent, up to scaling the level set constant byα. More specifically,
+the inequality (3) reduces toV(wt+1)≤αV(w t)whenV(w t)/∈M(c), and reduces toV(w t+1)≤αcwhen
+V(w t)∈M(c). As a result, under the assumption forVmade in Proposition 1, the reformulated constraint
+ensures that the system is dissipative and the level setM(c)is globally asymptotically stable.
+4 Methodology
+To achieve the goal of building a neural network prediction model that ensures the trajectory it generates
+always stays bounded, we now introduce a framework that learns dissipative dynamics by design, based on
+the control-theoretic conditions derived in Section 3. As illustrated in Figure 1(B), learning an inherently
+dissipative prediction model conceptually limits the parameter search to a smaller space that is always aligned
+4
+with physical properties of the true dynamics. Compared to unconstrained models, which might search over
+parameters that lead to unstable behaviors, our approach makes the training process more efficient.
+Our methodology is built on two key components: 1) a learnable Lyapunov functionalV(w)that repre-
+sents the system’s energy, and 2) a custom dissipative projection layer that strictly enforces the constraint
+in (3). In addition to the learned model being dissipative, our framework is also able to produce an outer-
+estimate (the level setM(c)) for the complex strange attractor without any prior knowledge of the system’s
+invariant statistics, which is known to be difficult to characterize. In what follows, we discuss the details of
+our architecture design and training procedure.
+4.1 Architecture Design with Boundedness Guarantees
+We propose a neural network architecture that simultaneously learns the dynamics operator in Equation
+(2) and an energy-like Lyapunov functionalV=
+R
+D
+ 
+Q◦(w−w c)2
+(x)dx, which together guarantee the
+dissipativity conditions in Proposition 1 through the construction of a dissipative projection layer. Following
+common practices in learning operators in function spaces [13, 27, 37], we consider a discretized spatial
+domain where the queried spatial locationx∈Xis sampled from a finite setXd consisting ofngrid points,
+i.e.,x∈X d ⊂Xand the cardinality ofX d isn. As an example, if the spatial domainX= [0,2π], a fixed grid
+onXcan benevenly sampled points,X d ={k 2π
+n−1 :k= 0,1, ..., n−1}. Under the grid setting, the function
+wt ∈L 2 can be effectively represented as ann–dimensional vector, which is a collection of solution values at
+every grid pointwt :={w(t, x) :x∈X d} ∈Rn. Consequently, theL2 norm ofw t is reduced to a standard
+2–norm inRn, and the Lyapunov functional is reduced toV(w) = (w−wc)T Q(w−w c)whereQ∈S ++.
+As illustrated in Figure 2(A), our model is composed of two learnable components:
+1. An unconstrained dynamics emulator ˆG, which approximates the true dynamics operatorG. The
+backbone model for the emulatorˆGcan be any neural operator that maps between function spaces.
+Here we choose to use DeepONet proposed in [13].
+2. A quadratic Lyapunov functionalV(w) = (w−w c)T Q(w−w c), which serves as the energy function.
+The learnable parameters include a positive definite matrixQof sizen–by–nand a center vector
+wc ∈R n.
+Dissipative Neural Operator Model 
+Dissipative Projection
+Unconstrained
+NO Emulator 
+Energy Level
+Parameter 
+Closed Form Convex Quadratic Constraint Enforcement 
+Inequality projection 
+Equality projection 
+Constraint: 
+(A) (B)
+Energy
+Functional
+ 
+Figure 2: (A) An overview of the proposed model architecture. The input, current time solutionwt, is fed
+into an unconstrained neural operator (NO) emulatorˆGto produce a preliminary predictionˆwt+1 and a
+learned energy functionalVto compute its energyV(w t). The dissipative projection layer modifiesˆwt+1
+to produce a final outputw∗
+t+1 that satisfies the dissipative energy constraint in (3). (B) Illustration of the
+convex quadratic projection for a constraint in the form ofV(w)≤b. The equality projection maps any
+point not on the ellipsoid boundarywto a boundary point¯win closed form (for bothw1, w2). The quadratic
+projection is only active for when the constraint is violated, sow2 is projected whilew1 is left unchanged.
+These components are integrated into adissipative projectionlayer, which modifies the output of the
+unconstrained emulator ˆGto produce an operatorG ∗ that maps the current solutionwt to the predicted
+solution at the next time stepw∗
+t+1. By construction, thedissipative projectionlayer ensures the condition in
+(3) is satisfied, which guarantees the predicted dynamical systemw∗
+t+1 =G ∗(wt)is dissipative. As a direct
+5
+consequence of Definition 1, all trajectories generated by the operatorG∗ in an autoregressive manner are
+guaranteed to be bounded. For a high dimensional output space, we elect to use a diagonal Q matrix such
+that the projection can be computed efficiently.
+4.2 Convex Quadratic Projection Layer
+The quadratic form of the Lyapunov functionalV(w)motivates the development of a convex quadratic
+projection layer that projects the model predictions onto a feasible set of trajectories where the dynamics
+are dissipative. We introduce a differentiable convex quadratic projection layer shown in Figure 2(B) that
+can handle constraints of the form(w−w c)T Q(w−w c)≤b, wherebcan be a constant or an arbitrary
+function of the model input. This form is equivalent to (3), withb=α[V(wt) +ReLU(c−V(w t))].
+The convex quadratic constraint projection is illustrated in Figure 2. The general strategy is to define
+a projection¯wof the model outputˆwonto the equality constraintV( ¯w) =band selectively project points
+that violate the constraintV( ˆw)≤bonto their respective equality projection. For positive definiteQ, there
+exists an explicit form for the projection ofˆwonto the equality constraintV( ¯w) =b. That is, for the
+quadratic Lyapunov function described in Section 4.1, the projection¯w=wc +
+√
+b
+ 
+LT −1 ˆw−wc
+||ˆw−wc||2
+satisfies
+the equationV( ¯w) =b, whereLis the Cholesky decomposition ofQsuch thatLL T =Q. To ensure that
+this equality projection is only active when the constraint is violated, the final outputw∗ is calculated as an
+interpolation between the projected (¯w) and non-projected (ˆw) outputs.
+w∗(x) =γ(b, V( ˆw)) ˆw(x) + [1−γ(b, V( ˆw))] ¯w(x)(4)
+Ideally,γ(b, V( ˆw))is an indicator function that is1whenV( ˆwt)≤band0whenV( ˆw t)> b. However, using
+an indicator function leads to non-differentiability, which prevents the model from learning a good energy
+functionalVeffectively. Instead, we replace the indicator function with sigmoid as a smooth alternative
+γ(b, V( ˆw)) =sigmoid[k(b−V( ˆw)].
+4.3 Theoretical Guarantees
+Our framework is designed to provide formal guarantees of stability and boundedness by construction. These
+guarantees stem from the convex quadratic projection layer. While this layer utilizes a sigmoid function as
+a continuous and differentiable relaxation of a strict indicator function, it maintains rigorous theoretical
+properties. The core idea is that this principled relaxation enforces the constraint on a controllably enlarged
+invariant set, whose size is governed by the sigmoid’s steepness parameter. This is formalized in the following
+lemma.
+Lemma 1.For a quadratic positive definite Lyapunov function, the sigmoid relaxation of the projection in
+(4) maintains the boundedness of the projection outputw∗(x), with its energy upper bounded byV(w∗(x))≤
+(1 +δ) 2b, whereδ= (2kb+ 2
+√
+2kb)−1 andkis the sigmoid function parameter.
+The factorδprovides an explicit, non-asymptotic bound on the relaxation’s cost as in the enlargement of
+the projected ellipsoid for any finite sigmoid function steepnessk. This quantifiable enlargement allows us to
+enforce the conditions stated in Proposition 1 by choosing a contractivity factorαonly marginally smaller
+than 1, preserving the model’s expressiveness. This guarantee is formalized in the following theorem.
+Theorem 1.Let the learned dynamics be defined by the operatorw∗
+t+1 =G ∗(w∗
+t ), which is composed of
+an unconstrained neural operator emulatorˆGand a dissipative projection layer. Let the learned energy-like
+function be a quadratic Lyapunov functionalV(w) = (w−wc)T Q(w−w c)with learnable centerw c ∈R n and
+a symmetric positive definite matrixQ∈Sn
+++. For a choice ofc >1/αand0< α <[1 + (2k+ 2
+√
+2k)−1]−2,
+the learned dynamical system is dissipative by construction, i.e., the level setM(c)is globally asymptotically
+stable, and all trajectories generated by the learned dynamics are guaranteed to be bounded.
+Practical Implications.The condition in Theorem 1 is non-restrictive and is satisfied using fixed
+hyperparameters, obviating the need for extensive tuning. For all experiments, we fix the level-set scaling
+c≫1and setk= 100, which yields the requirementα <0.9913. Our chosen value ofα= 0.99comfortably
+satisfies this bound. Thus, our framework pairs a rigorous stability guarantee with the flexibility to learn
+6
+nearly energy-preserving dynamics with a sufficiently largek(α→1ask→ ∞), which is crucial for
+high-fidelity physical simulations.
+Due to space constraints, the proofs for Lemma 1 and Theorem 1 are provided in Appendix A.
+4.4 Training with Invariant Set Volume Regularization
+We construct the training dataset as a collection ofNinput-output pairs, denoted as{(w i, wnext,i)}N
+i=1,
+where the inputw i is the current time step solution and the outputwnext,i is the next time step solution
+based on the true dynamics. During training, each inputwi is mapped to a predicted outputw∗
+next,i, and
+the loss is computed relative to the true next statewnext,i. The dynamic loss is defined as the average
+mean squared error (MSE) between the predicted outputs{w∗
+next,i}N
+i=1 and the ground-truth future states
+{wnext,i}N
+i=1.
+While the convex quadratic projection layer enforces dissipativity and convergence to a level setM(c),
+it does not inform how to choose an appropriate level set that characterizes the attractor. The goal is to
+learn the energy functionalV(w)such that the resulting ellipsoid is a tight outer estimate of the attractor.
+To this end, we include a regularization loss in the loss function that penalizes large ellipsoid volumes using
+Q (defined in Section 4.1) and a hyperparameterλ >0.
+Loss= 1
+N
+NX
+i=1
+∥w∗
+next,i −w next,i∥2
+2 +λ 1p
+det(Q)
+,(5)
+5 Numerical Experiments
+5.1 Lorenz 63
+We first apply our methodology to the Lorenz 63 system [1], a classic low-dimensional model for visualizing
+chaotic dynamics and strange attractors. As shown in Figure 3a, our model generates a stable, 40,000-
+step trajectory from an unseen initial condition that accurately recovers the geometry of the true attractor.
+The learned ellipsoid provides a tight outer-estimate of this attractor, validating the effectiveness of volume
+regularization in learning a meaningful invariant set.
+(a) Long-term trajectory rollout.
+ (b) Learned energy levelV(wt).
+ (c) Learned flow field dynamics.
+Figure 3:Lorenz 63 prediction results.(a) A 40,000-step trajectory generated by the model from an
+unseen initial condition (orange) compared to the ground-truth attractor (blue). The learned invariant
+ellipsoid (red) is a tight outer-estimate of the strange attractor. (b) The energy of the predicted trajectory
+quickly drops below the energy levelc, and remains bounded byc. (c) The learned flow field on thew1-w2
+plane, showing that vectors correctly point inwards across the ellipsoid boundary.
+The learned energy function evaluations on both prediction and true trajectories are visualized in Fig-
+ure 3b, which validates that the energy level of the true system is indeed bounded by the level set parameter
+c, and that the learned model is dissipative as it quickly loses energy and remains in the invariant set.
+Figure 3c further visualizes this dissipative behavior by showing the learned flow field on thew1 −w 2 plane.
+7
+The vector fields along the boundary of the learned ellipsoid all point inwards, ensuring that the set is pos-
+itively invariant. Together, these results show that our framework successfully enforces long-term stability
+while learning an energy function that characterizes the system’s attractor. The governing equations and
+implementation details are provided in Appendix C.1.
+5.2 Kuramoto–Sivashinsky
+We next validate our framework on the chaotic one-dimensional Kuramoto–Sivashinsky (KS) equation [2], a
+morechallengingPDEbenchmark. Wecompareourmodel(ECO),whichaddsthedissipativeprojectionlayer
+to a DeepONet backbone, against an unconstrained vanilla DeepONet. The results in Figure 4 highlight the
+critical role of the projection layer. When rolled out for 2000 time steps from an unseen initial condition, the
+unconstrained DeepONet quickly becomes unstable and its predictions blow up. In contrast, our projected
+model remains bounded and successfully recovers the complex spatio-temporal flow patterns of the true
+dynamics (Figure 4a).
+Our method not only ensures boundedness but also successfully recovers the system’s invariant statistics.
+By projecting the trajectories onto their first two principal components, Figure 4b shows that our model’s
+predictions exhibit a similar distribution as the ground-truth data, demonstrating our model’s capability
+to reconstruct invariant statistics on the strange attractor. The unconstrained model, prior to divergence,
+samples a sparse and unstructured distribution. Furthermore, the learned energy level (red ellipse) effectively
+bounds the attractor. We provide additional statistical property evaluations in Appendix C.2 to further
+validate these findings, along with implementation details.
+0
+200
+400Position
+Ground Truth
+0
+200
+400
+DeepONet (Without Projection)
+0 200 400 600 800 1000
+Time (s)
+0
+200
+400
+Model Prediction
+4
+2
+0
+2
+4
+w(x,t)
+4
+2
+0
+2
+4
+w(x,t)
+4
+2
+0
+2
+4
+w(x,t)
+(a) Spatio-temporal plots of trajectory rollout.
+40
+ 20
+ 0 20 40
+40
+20
+0
+20
+40
+Ground Truth
+40
+ 20
+ 0 20 40
+40
+20
+0
+20
+40
+DeepONet (Without Projection)
+40
+ 20
+ 0 20 40
+40
+20
+0
+20
+40
+ECO (DeepONet + Projection)
+0.0000
+0.0005
+0.0010
+0.0015
+0.0020
+0.0025
+0.0030
+0.0035 (b) Projection of trajectories onto PCA modes.
+Figure 4:KS prediction results.(a) Comparison of ground-truth trajectory with predictions from vanilla
+and projected model. Trajectories are visualized for 1000 seconds. The vanilla model blows up, while the
+projected model stays bounded. (b) Projection of trajectories onto the first two PCA modes. The projected
+model and ground-truth sample the strange attractor. The red line represents the learned invariant set
+projected onto the first two PCA modes.
+8
+5.3 Navier–Stokes
+Finally, we test our framework on the two-dimensional Navier–Stokes equations [38] with Kolmogorov forc-
+ing, a challenging benchmark for chaotic, high-dimensional PDEs. We compare the long-term statistical
+properties of our model (ECO), against an unconstrained baseline DeepONet and the ground truth.
+When rolled out autoregressively from an unseen initial condition for 10,000 time steps, the baseline
+DeepONet quickly grows to large values deviating from the attractor, as shown in Figure 5a. In contrast, our
+model (ECO) ensures trajectory boundedness near the attractor, hence generates a flow profile that closely
+resembles the patterns seen in the snapshots of the ground-truth trajectory. Furthermore, the stability
+allows our model to accurately capture the system’s underlying statistical structure. As shown in Figure 5b,
+when trajectories are projected onto the first two principal components, our model’s predictions correctly
+reproduce the distinct ring-shaped geometry of the true attractor, while the unconstrained model fails to
+do so. Implementation details and further statistical analyses, including comparisons of the learned energy
+behavior, Fourier spectrum and spatial correlations, are provided in Appendix C.3.
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+0 25 50
+0
+20
+40
+60
+8
+6
+4
+2
+0
+2
+4
+6
+8
+vorticity
+Snapshots of Ground Truth Trajectory
+Snapshots of DeepONet (No Projection) Prediction
+Snapshots of ECO (DeepONet + Projection) Prediction
+(a) Snapshots of NS flow behavior
+150
+ 100
+ 50
+ 0 50 100 150
+150
+100
+50
+0
+50
+100
+150
+Ground Truth
+150
+ 100
+ 50
+ 0 50 100 150
+150
+100
+50
+0
+50
+100
+150
+DeepONet (No Projection)
+150
+ 100
+ 50
+ 0 50 100 150
+150
+100
+50
+0
+50
+100
+150
+ECO (DeepONet + Projection)
+0.00000
+0.00005
+0.00010
+0.00015
+0.00020
+0.00025
+0.00030 (b) Projection of trajectories onto PCA modes.
+Figure 5:NS prediction results.(a) Snapshots of the flow at various time steps for the model-predicted
+and ground-truth Navier–Stokes trajectories. The ground-truth and model-predicted dynamics exhibit sim-
+ilar patterns. (b) Projection of trajectories onto the first two PCA modes. The predicted dynamics capture
+the ring-shaped structure of the attractor.
+Table 1: Quantitative comparison of long-term statistical accuracy. ECO with a dissipative projection layer
+consistently outperforms the unconstrained baseline across both dynamical systems.
+System Approach KL Divergence
+(physical)
+KL Divergence
+(PCA)
+Log-Spectral
+Distance
+Kuramoto–
+Sivashinsky
+DeepONet (Baseline) 0.6268 11.88 33.14
+ECO (Projected) 0.0208 1.268 0.0186
+Navier–Stokes DeepONet (Baseline) 0.141 5.298 11.79
+ECO (Projected) 0.06221 0.9877 0.3689
+To quantitatively validate our approach, we compare the statistical accuracy of ECO against the uncon-
+9
+strained baseline on the two PDE benchmarks. As shown in Table 1, our method significantly improves key
+statistical metrics like the KL divergence and log-spectral distance (detailed in Appendix B). It is noteworthy
+that these gains are achieved without providing any prior information about the system’s dynamics or its
+attractor, as our model learns the stabilizing energy function and the dynamics purely from data.
+6 Conclusion
+To address the fundamental challenge of long-term stability in data-driven chaotic dynamics models, we
+introduced ECO, an energy-constrained operator design. Our framework jointly learns the system dynamics
+and a quadratic energy functional, and proposes a novel convex quadratic projection layer to enforce a
+computationally efficient dissipativity condition. This approach, to our knowledge, is the first to provide
+explicit theoretical guarantees on the long-term boundedness of a learned chaotic emulator. We demonstrated
+ECO’s effectiveness on benchmarks including Lorenz 63, Kuramoto–Sivashinsky, and Navier–Stokes, where
+it produced stable, long-horizon forecasts that accurately reproduced the systems’ invariant statistics while
+unconstrained baselines failed. This work demonstrates the value of building physically constrained models,
+marking a step toward more reliable and robust scientific machine learning.
+7 Acknowledgements
+The authors acknowledge the MIT SuperCloud and Lincoln Laboratory Supercomputing Center for providing
+computingresourcesthathavecontributedtotheresultsreportedwithinthispaper. Thisworkwassupported
+in part by MathWorks, the MIT-Amazon Science Hub, the MIT-Google Program for Computing Innovation,
+and the MIT-IBM Watson AI Lab. It was also supported by the National Science Foundation Graduate
+Research Fellowship under Grant No. 2141064.
+References
+[1] Edward N Lorenz. Deterministic nonperiodic flow.Journal of atmospheric sciences, 20(2):130–141,
+1963.
+[2] Yoshiki Kuramoto. Diffusion-induced chaos in reaction systems.Progress of Theoretical Physics Sup-
+plement, 64:346–367, 1978.
+[3] Gi Sivashinsky. Nonlinear analysis of hydrodynamic instability in laminar flames—i. derivation of basic
+equations. InDynamics of Curved Fronts, pages 459–488. Elsevier, 1988.
+[4] Andrew Stuart and Anthony R Humphries.Dynamical systems and numerical analysis, volume 2.
+Cambridge University Press, 1998.
+[5] John Guckenheimer and Philip Holmes.Nonlinear oscillations, dynamical systems, and bifurcations of
+vector fields, volume 42. Springer Science & Business Media, 2013.
+[6] Andrew J Majda, Ilya Timofeyev, and Eric Vanden Eijnden. A mathematical framework for stochastic
+climate models.Communications on Pure and Applied Mathematics: A Journal Issued by the Courant
+Institute of Mathematical Sciences, 54(8):891–974, 2001.
+[7] Andrew J Majda and John Harlim. Physics constrained nonlinear regression models for time series.
+Nonlinearity, 26(1):201, 2012.
+[8] Pawan Goyal, Igor Pontes Duff, and Peter Benner. Guaranteed stable quadratic models and their
+applications in sindy and operator inference.arXiv preprint arXiv:2308.13819v2, 2023.
+[9] Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, Andrew
+Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential equations.
+arXiv preprint arXiv:2010.08895, 2020.
+10
+[10] Sunbochen Tang, Themistoklis Sapsis, and Navid Azizan. Learning chaotic dynamics with embedded
+dissipativity.arXiv preprint arXiv:2410.00976, 2024.
+[11] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A deep
+learning framework for solving forward and inverse problems involving nonlinear partial differential
+equations.Journal of Computational physics, 378:686–707, 2019.
+[12] Steven L Brunton and J Nathan Kutz.Data-driven science and engineering: Machine learning, dynam-
+ical systems, and control. Cambridge University Press, 2022.
+[13] Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, and George Em Karniadakis. Learning nonlinear
+operators via deeponet based on the universal approximation theorem of operators.Nature machine
+intelligence, 3(3):218–229, 2021.
+[14] Dmitrii Kochkov, Jamie A Smith, Ayya Alieva, Qing Wang, Michael P Brenner, and Stephan Hoyer.
+Machine learning–accelerated computational fluid dynamics.Proceedings of the National Academy of
+Sciences, 118(21):e2101784118, 2021.
+[15] Jacob Page, Peter Norgaard, Michael P Brenner, and Rich R Kerswell. Recurrent flow patterns as a
+basis for two-dimensional turbulence: Predicting statistics from structures.Proceedings of the National
+Academy of Sciences, 121(23):e2320007121, 2024.
+[16] Bernard O Koopman. Hamiltonian systems and transformation in hilbert space.Proceedings of the
+National Academy of Sciences, 17(5):315–318, 1931.
+[17] J Nathan Kutz, Steven L Brunton, Bingni W Brunton, and Joshua L Proctor.Dynamic mode decom-
+position: data-driven modeling of complex systems. SIAM, 2016.
+[18] Karl Pearson. Liii. on lines and planes of closest fit to systems of points in space.The London, Edinburgh,
+and Dublin philosophical magazine and journal of science, 2(11):559–572, 1901.
+[19] Jonas Mikhaeil, Zahra Monfared, and Daniel Durstewitz. On the difficulty of learning chaotic dynamics
+with rnns.Advances in Neural Information Processing Systems, 35:11297–11312, 2022.
+[20] Pantelis R Vlachas, Wonmin Byeon, Zhong Y Wan, Themistoklis P Sapsis, and Petros Koumout-
+sakos. Data-driven forecasting of high-dimensional chaotic systems with long short-term memory net-
+works.Proceedings of the Royal Society A: Mathematical, Physical and Engineering Sciences, 474(2213):
+20170844, 2018.
+[21] Matteo Sangiorgio and Fabio Dercole. Robustness of lstm neural networks for multi-step forecasting of
+chaotic time series.Chaos, Solitons & Fractals, 139:110045, 2020.
+[22] Zhixin Lu, Brian R Hunt, and Edward Ott. Attractor reconstruction by machine learning.Chaos: An
+Interdisciplinary Journal of Nonlinear Science, 28(6), 2018.
+[23] Pantelis-Rafail Vlachas, Jaideep Pathak, Brian R Hunt, Themistoklis P Sapsis, Michelle Girvan, Edward
+Ott, andPetrosKoumoutsakos. Backpropagationalgorithmsandreservoircomputinginrecurrentneural
+networks for the forecasting of complex spatiotemporal dynamics.Neural Networks, 126:191–217, 2020.
+[24] Erik Bollt. On explaining the surprising success of reservoir computing forecaster of chaos? the universal
+machine learning dynamical system with contrast to var and dmd.Chaos: An Interdisciplinary Journal
+of Nonlinear Science, 31(1), 2021.
+[25] Andrew J Majda and Yuan Yuan. Fundamental limitations of ad hoc linear and quadratic multi-level
+regression models for physical systems.Discrete & Continuous Dynamical Systems-Series B, 17(4),
+2012.
+[26] Jaideep Pathak, Zhixin Lu, Brian R Hunt, Michelle Girvan, and Edward Ott. Using machine learning
+to replicate chaotic attractors and calculate lyapunov exponents from data.Chaos: An Interdisciplinary
+Journal of Nonlinear Science, 27(12), 2017.
+11
+[27] Zongyi Li, Miguel Liu-Schiaffini, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik
+Bhattacharya, Andrew Stuart, and Anima Anandkumar. Learning chaotic dynamics in dissipative
+systems.Advances in Neural Information Processing Systems, 35:16768–16781, 2022.
+[28] Hao Chen, Gonzalo E. Constante Flores, and Can Li. Physics-informed neural networks with hard linear
+equality constraints.Computers & Chemical Engineering, 2024.
+[29] Randall Balestriero and Yann LeCun. Police: Provably optimal linear constraint enforcement for deep
+neural networks.IEEE International Conference on Acoustics, Speech and Signal Processing, 2023.
+[30] Youngjae Min and Navid Azizan. Hardnet: Hard-constrained neural networks with universal approxi-
+mation guarantees.arXiv preprint arXiv:2410.10807, 2024.
+[31] Flores, Chen, and Li. Enforcing hard linear constraints in deep learning models with decision rules.
+arXiv preprint arXiv:2505.13858v1, 2025.
+[32] Youngjae Min, Spencer M Richards, and Navid Azizan. Data-driven control with inherent lyapunov
+stability. In2023 62nd IEEE Conference on Decision and Control (CDC), pages 6032–6037. IEEE,
+2023.
+[33] Jesus Tordesillas, Jonathan P. How, and Marco Hutter. Rayen: Imposition of hard convex constraints
+on neural networks.arXiv preprint arXiv:2307.08336, 2023.
+[34] Giacomo Lastrucci and Artur Schweidtmann. Enforce: Nonlinear constrained learning with adaptive-
+depth neural projection.arXiv preprint arXiv:2502.06774, 2025.
+[35] John Milnor. On the concept of attractor.Communications in Mathematical Physics, 99:177–195, 1985.
+[36] H.K. Khalil.Nonlinear Systems. Pearson Education. Prentice Hall, 2002. ISBN 9780130673893. URL
+https://books.google.com/books?id=t_d1QgAACAAJ.
+[37] Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, Andrew
+Stuart, and Anima Anandkumar. Neural operator: Learning maps between function spaces with appli-
+cations to pdes.Journal of Machine Learning Research, 24(89):1–97, 2023.
+[38] Roger Temam.Navier–Stokes equations: theory and numerical analysis, volume 343. American Math-
+ematical Society, 2024.
+12
+A Proof for Theoretical Results
+Proof for Proposition 1.By definition, condition (ii) implies thatM(c)is indeed a positively invariant set.
+SinceVis radially unbounded, for anyα >0, we can findrα such thatV(w)> αfor all∥w∥> r α. Therefore,
+any level set ofVis bounded as{x:V(w)≤α} ⊂B(r α). Thus,M(c)is both positively invariant and
+bounded.
+Based on the positive invariance property, any trajectory starting withw0 ∈M(c)will always stay within
+M(c), meaning thatlimt→∞ dist(wt, M(c)) = 0is satisfied.
+Consider a trajectory{w ′
+t}t∈N that starts outside of the level set, i.e.w′
+0 /∈M(c)andV(w ′
+0)> c >0.
+Suppose the trajectory never entersM(c), i.e.,∀t∈N, V(w ′
+t)> c. Using condition (i), we haveV(w′
+t+1)≤
+αV(w ′
+t), which impliesV(w ′
+t)≤α tV(w ′
+0). For anyt≥log α
+
+c
+V(w ′
+0)
+
+,V(w ′
+t)≤cwhich contradicts the prior
+assumption. In fact, the trajectory{w′
+t}t∈N will enterM(c)in finite time at mostlog α
+
+c
+V(w ′
+0)
+
+steps.
+Proof for Lemma 1.Let⟨u, v⟩Q :=u ⊤Qvand∥u∥ Q :=
+p
+u⊤Quso thatV(w) =∥w−w c∥2
+Q. By construction,
+¯w−wc =
+√
+b(L ⊤)−1 ˆw−wc
+∥ˆw−wc∥2
+=⇒V( ¯w) =∥¯w−wc∥2
+Q =b
+Defineˆv:= ˆw−wc,¯v:= ¯w−wc, andγ:=σ(k(b−V( ˆw)))∈(0,1). Then
+w∗ −w c =γˆv+ (1−γ)¯v.
+By Minkowski’s inequality for theQ-norm,
+∥w∗ −w c∥Q ≤γ∥ˆv∥Q + (1−γ)∥¯v∥Q =γ
+p
+V( ˆw) + (1−γ)
+√
+b.
+Hence
+V(w ∗)≤
+ √
+b+γ(
+p
+V( ˆw)−
+√
+b)
+2
+.(6)
+IfV( ˆw)≤b, then the right-hand side of (6) is at mostb. So it suffices to considerV( ˆw)≥b.
+Lets=
+p
+V( ˆw)≥
+√
+bandt=s−
+√
+b≥0. Then
+γ= 1
+1 +e k(s2−b) ≤ 1
+2 +k(s 2 −b)
+sincee x ≥1 +xfor allx≥0. Note thats 2 −b=t(t+ 2
+√
+b), so
+γt≤h(t) := t
+2 +k(t 2 + 2
+√
+b t)
+.
+Since the derivative vanishes att⋆ =
+p
+2/k, letδ= (2kb+ 2
+√
+2kb)−1.
+h′(t) = 2−kt 2
+(2 +k(t 2 + 2
+√
+b t))2 ,=⇒max
+t≥0
+h(t) =
+p
+2/k
+4 + 2
+√
+2kb
+=
+√
+b
+2kb+ 2
+√
+2kb
+=δ
+√
+b.
+Thus, for alls≥
+√
+b,
+γ(
+p
+V( ˆw)−
+√
+b)≤δ
+√
+b.(7)
+Combining (6) and (7),
+V(w ∗)≤
+ √
+b+δ
+√
+b
+2
+= (1 +δ) 2b.
+Proof for Theorem 1.Letb=α[V(w t)+ReLU(c−V(w t))], it directly follows fromc >1/αthatb≥αc >1.
+The inequality constraint in (3) states thatV(wt+1)≤b. Sinceb >1, we have(2kb+ 2
+√
+2kb)−1 <(2k+
+2
+√
+2k)−1. Using Lemma 1, the final output of our modelw∗
+t+1 satisfies thatV(w ∗
+t+1)≤(1+(2k+2
+√
+2k)−1)2b.
+13
+Sinceα <[1 + (2k+ 2
+√
+2k)−1]−2, we can always find some0< α0 <1such that[1 + (2k+ 2
+√
+2k)−1]2α≤
+α0 <1. Consequently, the inequality constraint in (3) is satisfied:
+V(w ∗
+t+1)≤(1 + (2k+ 2
+√
+2k)−1)2α[V(w t) +ReLU(c−V(w t))]≤α 0[V(w t) +ReLU(c−V(w t))]
+Given the equivalency between the constraint (3) and the conditions in Proposition 1, we have now shown
+the learned dynamicsw∗
+t+1 =G ∗(w∗
+t )is indeed dissipative.
+Note that for the predicted trajectory under the learned dynamics, at any timet >0,V(w∗
+t )is strictly
+bounded by max{V(w0), c}, which impliesV(w∗
+t )≤V(w 0). Letz=w ∗
+t −wc, the constraint can be rewritten
+asz T Qz≤V(w 0). SinceQis positive definite, we haveλmin(Q)∥z∥2 ≤z T Qz≤V(w 0). Thusw ∗
+t will always
+be bounded with respect to itsL2 norm.
+B Metrics for Statistical Property Evaluation
+We use three statistical metrics to evaluate the effectiveness of our model in capturing statistical properties.
+KLDivergence(physical):Wecomparethepixel-wisedistributionofvelocity(Kuramoto–Sivashinsky)
+or vorticity (Navier–Stokes) between the ground-truth data and the model-predicted trajectories. We eval-
+uate the distance between distributions with the Kullback–Leibler divergence:
+DKL(P||Q) =
+X
+x∈X
+P(x)log P(x)
+Q(x) (8)
+In this case,x∈ X ⊂Ris the support of the physical quantity (velocity or vorticity) across all pixels in
+space and time. That is, a single grid point on the spatial domain at a single snapshot in time represents
+one sample from the distribution. We useP(x)as the ground-truth distribution andQ(x)as the predicted
+distribution.
+KL Divergence (PCA):We also compare the Kullback–Leibler divergence between the distributions
+of the physical quantities onto their two PCA modes. Projecting every snapshot in time onto the first two
+PCA modes gives a 2D distribution of the trajectories in PCA space, as seen in Figures 4 and 5b. We then
+compute the KL divergence from Equation 8, wherex∈ X ⊂R2 is the support of the projected snapshot
+onto a 2D point across all snapshots in time. We useP(x)as the ground-truth distribution andQ(x)as the
+predicted distribution.
+Log-Spectral Distance:We create energy spectra for predicted trajectories by performing a discrete
+Fourier transform in the spatial domain of each snapshot in time. The energy of a given Fourier mode
+is computed by taking the average in time of the square signal. The Log-Spectral Distance between the
+ground-truth spectrum and the predicted spectrum is defined as
+DLS =
+(
+1
+N
+NX
+n=1
+h
+logP(n)−log ˆP(n)
+ip
+)1/p
+(9)
+Here,P(n)is the ground-truth energy of thenth Fourier mode andˆP(n)is the predicted energy of thenth
+Fourier mode. We usep= 2for the results reported in Table 1.
+C Implementation Details and Additional Numerical Results
+C.1 Lorenz 63
+Governing Equations.The Lorenz 63 system is described by the following ordinary differential equations
+(ODEs):
+˙w1 =σ(w 2 −w 1),˙w 2 =w 1(ρ−w 3)−w 2,˙w 3 =w 1w2 −βw 3.
+wherew∈R 3 is the system state. We use parametersσ= 10.0, ρ= 28.0, β= 8/3which generate chaotic
+behaviors.
+14
+Dataset Generation.The training data was generated from a single long trajectory integrated for
+10,000 seconds with a sampling interval of 0.05 seconds. The trajectory was initialized at a random state
+outside the strange attractor to ensure the model learns the dissipative flow. For evaluation, we generated
+a test trajectory by starting from a new, unseen initial condition for 2,000 seconds.
+Model Architecture.This system can be viewed as a special case of an infinite-dimensional dy-
+namical system where the spatial domain consists of just three discrete points. In this simplified context,
+backbone neural operators like the Fourier Neural Operator [37] and DeepONet [13] reduce to a simple
+multilayer perceptron (MLP). Accordingly, we constructed our unconstrained neural operator emulator,ˆG,
+as a feedforward neural network with 6 hidden layers, each containing 150 neurons.
+C.2 Kuramoto–Sivashinsky
+Governing Equations.
+wt +w xx +w xxxx + 1
+2(w2)x = 0,(t, x)∈[0,∞)×[0, L]
+w(0, x) =w0(x), x∈[0, L]
+(10)
+We use a domain lengthL= 32πto generate chaotic behavior.
+Dataset Generation.The training dataset consists of six trajectories simulated for500seconds,
+with snapshots saved every1second at a spatial resolution of512points. The validation set contains two
+trajectories with the same discretization. All trajectories were initialized with random conditions.
+Model Architecture.We construct two models based on DeepONet backbones, one with the added
+projection layer discussed in Section 4.2 and one vanilla model without. For both models, the DeepONet
+branch network consists of three convolutional layers of output dimension 32, 64, 128, and two fully connected
+layers, each with 256 neurons. The trunk network consists of four fully connected layers, each with 256
+neurons.
+Additional Results.To further validate our approach, we provide a detailed comparison of the learned
+dynamics. Figure 7 visualizes the learned energy function behavior and Fourier spectrum of the predicted
+trajectories, while Figure 6 examines the statistical distribution constructed by the predicted trajectories.
+Both figures confirm that our projected model (ECO) remains bounded and accurately captures the invariant
+statistics of the true system.
+10.0
+ 7.5
+ 5.0
+ 2.5
+ 0.0 2.5 5.0 7.5 10.0
+w
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30Probability density
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (Without Projection)
+(a) Physical State Probability Distribution
+60
+ 40
+ 20
+ 0 20 40 60
+PCA Component 1
+60
+40
+20
+0
+20
+40
+60
+PCA Component 2
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (Without Projection) (b) PCA Projection of Attractor
+Figure 6:KS: State-space and statistical distribution analysis.(a) The probability distribution of
+the physical state variable for our projected model closely matches the ground truth, while the unconstrained
+model’s distribution is nearly flat due to its divergence. (b) Trajectories projected onto the first two PCA
+modes confirm that ECO’s predictions correctly sample the attractor’s geometry and the learned invariant
+ellipsoid (red) provides a tight outer-estimate of the true attractor.
+15
+0 250 500 750 1000 1250 1500 1750 2000
+Time (s)
+107
+1012
+1017
+1022
+1027
+1032
+1037
+V
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (Without Projection)
+(a) Energy blowup (Unconstrained DeepONet)
+0 250 500 750 1000 1250 1500 1750 2000
+Time (s)
+103
+104
+105
+V
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (Without Projection) (b) Bounded energy in our approach (ECO)
+0 10 20 30 40 50
+Wavenumber
+104
+109
+1014
+1019
+1024
+1029
+1034
+Energy
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (Without Projection)
+(c) Spectrum blowup (Unconstrained DeepONet)
+0 10 20 30 40 50
+Wavenumber
+101
+102
+103
+104
+Energy
+Ground Truth
+ECO (DeepONet + Projection) (d) Accurate spectrum (ECO)
+Figure 7:KS: Energy and Fourier spectrum comparison.The top row shows the learned energyV(w)
+over time, with the unconstrained model energy growing unbounded in a zoomed-out plot (a), while our
+model remains bounded and produces the same energy level as the ground truth (b). The bottom row shows
+the Fourier power spectrum, the instability of the baseline (c) versus the accurate spectrum reconstruction
+of our model with projection (d).
+C.3 Navier–Stokes
+Governing Equations.The 2D Navier–Stokes equations in vorticity form with Kolmogorov forcing are
+given by:
+wt =−u· ∇w+ 1
+Re∇2w−ncos(ny),(t, x, y)∈[0,∞)×[0,2π]×[0,2π]
+w(0, x, y) =w0(x, y),(x, y)∈[0,2π]×[0,2π]
+(11)
+We use a wave number of the forcing functionn= 4and a Reynolds number ofRe= 40.
+Dataset Generation.The training dataset consists of 160 trajectories, each simulated for 500 seconds
+with snapshots saved every 1 second. Each snapshot has a spatial resolution of 64×64. The validation set
+contains 40 trajectories with the same discretization.
+Model Architecture.The DeepONet backbone consists of a branch network with four convolutional
+layers (output dimensions 64, 128, 256, 512) and two fully connected layers (1024 neurons each). The trunk
+network consists of five fully connected layers (1024 neurons each).
+Additional Results.To further validate our approach, we provide a detailed comparison of the learned
+dynamics. The results confirm that our projected model (ECO) remains bounded and accurately captures
+the invariant statistics of the true system, in contrast to the unconstrained baseline.
+16
+Figure 8 shows that while the unconstrained model’s energy and Fourier spectrum blow up, ECO’s
+predictions remain bounded and track the ground truth. This stability allows our model to learn the correct
+underlying statistics while the unconstrained model produces a sparse distribution, as shown in Figure 9.
+The probability distribution of the predicted state matches the true dynamics, and the trajectories correctly
+sample the attractor’s geometry within the learned invariant ellipsoid. Finally, qualitative comparisons in
+Figure 10 show that ECOreproduces the correct large-scale spatial structures induced by the system’s forcing.
+0 2000 4000 6000 8000 10000
+Sample
+105
+107
+109
+1011
+1013
+1015
+1017
+1019
+V
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (No Projection)
+c
+(a) Energy blowup (Unconstrained)
+0 2000 4000 6000 8000 10000
+Sample
+104
+105
+106
+V
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (No Projection)
+c (b) Bounded energy (ECO)
+0 5 10 15 20 25 30
+wave number
+104
+107
+1010
+1013
+1016
+1019
+energy
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (No Projection)
+(c) Spectrum blowup (Unconstrained)
+0 5 10 15 20 25 30
+wave number
+103
+104
+105
+106
+107
+energy
+Ground Truth
+ECO (DeepONet + Projection) (d) Accurate spectrum (ECO)
+Figure 8:NS: Energy and Fourier spectrum comparison.The top row shows the learned energy over
+time, with the unconstrained model blowing up (a) while our model remains bounded (b). The bottom row
+shows the energy spectrum, highlighting the instability of the baseline (c) versus the accuracy of our model
+(d).
+D Future Work
+Future work could explore more expressive non-quadratic energy functionals, potentially even parameterized
+by another neural network, and extend the projection framework to enforce other nonlinear physical con-
+straints. Investigating the computational scaling of this approach to even larger-scale and realistic systems
+also remains a promising direction for building reliable and physically consistent dynamics emulators.
+17
+15
+ 10
+ 5
+ 0 5 10 15
+Vorticity
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25Density
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (No Projection)
+(a) State Probability Distribution
+200
+ 150
+ 100
+ 50
+ 0 50 100 150 200
+Component 1
+200
+150
+100
+50
+0
+50
+100
+150
+200
+Component 2
+Ground Truth
+ECO (DeepONet + Projection)
+DeepONet (No Projection) (b) PCA Projection of Attractor
+Figure 9:NS: State-space and statistical distribution analysis.(a) The probability distribution of
+the state variable for our projected model matches the ground truth. (b) Trajectories projected onto the
+first two PCA modes confirm that ECO’s predictions correctly sample the attractor’s geometry within the
+learned invariant ellipsoid (red).
+0 20 40 60
+0
+10
+20
+30
+40
+50
+60
+Ground Truth
+0 20 40 60
+0
+10
+20
+30
+40
+50
+60
+DeepONet (No Projection)
+0 20 40 60
+0
+10
+20
+30
+40
+50
+60
+ECO (DeepONet + Projection)
+Figure 10:NS: Spatial correlation of the ground-truth and predicted trajectories averaged in
+time.The ground-truth and predicted dynamics show patterns consistent with the sinusoidal forcing with
+frequency 4.
+18

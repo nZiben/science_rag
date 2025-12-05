@@ -1,0 +1,719 @@
+LGDC: Latent Graph Diffusion
+via Spectrum-Preserving Coarsening
+Nagham Osman∗
+University College London
+London, UK
+nagham.osman.21@ucl.ac.uk
+Keyue Jiang∗
+University College London
+London, UK
+Davide Buffelli
+MediaTek Research
+London, UK
+Xiaowen Dong
+University of Oxford
+Oxford, UK
+Laura Toni
+University College London
+London, UK
+Abstract
+Graph generation is a critical task across scientific domains. Existing methods
+fall broadly into two categories: autoregressive models, which iteratively expand
+graphs, and one-shot models, such as diffusion, which generate the full graph at
+once. In this work, we provide an analysis of these two paradigms and reveal
+a key trade-off: autoregressive models stand out in capturing fine-grained local
+structures, such as degree and clustering properties, whereas one-shot models excel
+at modeling global patterns, such as spectral distributions. Building on this, we
+propose LGDC (latent graph diffusion via spectrum-preserving coarsening), a
+hybrid framework that combines strengths of both approaches. LGDC employs
+a spectrum-preserving coarsening-decoarsening to bidirectionally map between
+graphs and a latent space, where diffusion efficiently generates latent graphs before
+expansion restores detail. This design captures both local and global properties
+with improved efficiency. Empirically, LGDC matches autoregressive models on
+locally structured datasets (Tree) and diffusion models on globally structured ones
+(Planar, Community-20), validating the benefits of hybrid generation.
+1 Introduction
+Graph generation underpins applications in drug discovery, molecular design, and social networks.
+Most approaches fall into two classes: (i)autoregressive models, which construct graphs through
+iterative local expansion, and (ii)one-shot models, which fix the graph size and generate the full
+structure in a single pass.
+Early work on graph generation largely followed the autoregressive paradigm. GraphRNN You
+et al. [2018] pioneered this direction by modeling node interactions as a sequence of connection
+events. Advances in sequential modeling, particularly transformers, led to the emergence of a
+family of autoregressive graph generators, including GRAN [Liao et al., 2019], BiGG [Dai et al.,
+2020a], and GraphGen [Goyal et al., 2020a]. The most advanced system in this line of research is
+HSpectre [Bergmeister et al., 2024], which frames generation as an iterative expansion process that
+grows a subgraph into a full graph; although architecturally distinct, each prediction step remains a
+local expansion, keeping it within the autoregressive family.
+More recently, one-shot generative models [Jo et al., 2022, Haefeli et al., 2022a, Vignac et al., 2023]
+have gained prominence. Key approaches include diffusion models [Niu et al., 2020, Vignac et al.,
+∗Core contributors
+NeurIPS 2025 New Perspectives in Advancing Graph Machine Learning Workshop
+arXiv:2512.01190v1  [cs.LG]  1 Dec 2025
+2023, Haefeli et al., 2022b, Xu et al., 2024, Siraudin et al., 2024] and flow-based models [Eijkelboom
+et al., 2024, Qin et al., 2024, Hou et al., 2024, Jiang et al., 2025], which generate entire graphs
+in a single shot, unlike autoregressive expansion. These models learn progressive transformations
+between a reference distribution and the data distribution by parameterizing the reverse denoising
+process with a neural network to enable sampling.
+While both autoregressive and one-shot approaches have achieved considerable success in graph
+generation, a systematic understanding of their principles and trade-offs remains limited. This
+motivates the central question of this work:
+How do autoregressive and one-shot models compare, and can we combine their strengths?
+We hypothesize a trade-off between the two paradigms: autoregressive models, which generate graphs
+through sequential local expansions, excel at fine-grained local dependencies (e.g., parent–child links
+in Tree graphs) but often lose long-range coherence. Conversely, one-shot models learn holistic
+transformations of the adjacency structure, capturing global patterns, such as community structure
+or planarity, though often at the expense of local detail. This intuition guides our evaluation on
+datasets that stress different aspects: Tree graphs emphasize local attachment rules, while Planar
+and SBM graphs stress global organization. This intuition guides our evaluation on datasets that
+stress different aspects: Tree graphs emphasize local attachment rules, while Planar and SBM graphs
+stress global organization. This intuition is supported by Table 1, which summarizes training dataset
+characteristics across local and global metrics. Tree graphs are dominated by local dependencies,
+reflected in their stable local statistics and minimal global variation, whereas Planar and SBM
+graphs exhibit pronounced global organization in spectral and connectivity metrics, aligning with our
+hypothesis of local–global structural contrast. As shown in Table 2, autoregressive models perform
+best on Tree graphs, while one-shot models dominate on Planar and SBM graphs, confirming this
+trade-off.
+Table 1: Training Dataset Statistics across local and global metrics.
+Local Metrics Global Metrics
+Metric Tree Planar SBM Metric Tree Planar SBM
+Degree 0.0002 0.0000 0.0003 Spectre 0.0091 0.0076 0.0060
+Orbit 0.0000 0.0001 0.0310 Components 0.0000 0.0000 0.0004
+Motif 0.0000 0.0007 0.0346 Edge Conn. 0.0000 0.0039 0.0205
+Clustering 0.0000 0.0165 0.0331 ASPL 0.0065 0.0000 0.0009
+Diameter 0.0241 0.0002 0.0001
+Table 2: Graph Generation Comparison. Autoregression models v.s. One-Shot generation. For a
+fair comparison, we disabled the training designs that are unrelated to the fundamental generation
+path mechanism, such as the target guidance DeFoG and the predictor-corrector in Cometh. Details
+regarding the evaluation metrics can be found in Section 3.1.
+Planar Tree SBM
+Model Class V .U.N.↑A.Ratio↓V .U.N.↑A.Ratio↓V .U.N.↑A.Ratio↓
+Train set — 100 1.0 100 1.0 85.9 1.0
+BiGG [Dai et al., 2020b] Autoregressive 5.0 16.0 75.0 5.2 10.0 11.9
+GraphGen [Goyal et al., 2020b] Autoregressive 7.5 210.3 95.0 33.2 5.0 48.8
+HSpectre [Bergmeister et al., 2024] Autoregression 62.5 2.9 82.5 2.1 45.0 10.2
+GruM [Jo et al., 2024] One-shot 74.4±5.153.2±0.4/ / 73.5±6.72.6±0.6
+Cometh [Siraudin et al., 2024] One-shot 75.5± 7.373.0± 5.669.5± 3.61.40± 0.465.5±4.54.7±0.6
+DeFoG [Qin et al., 2024] One-shot 77.5±8.373.5±1.773.1±11.41.50±0.385.0±7.13.7±0.9
+Motivated by this complementarity, we propose a hybrid framework,latent graph diffusion via
+spectrum-preserving coarsening (LGDC)2. The intuition is as follows: one-shot diffusion captures
+global structure, but can be expensive on the original graph and may blur fine-grained connectivity.
+We instead run diffusion on a coarsened latent graph for efficient global modeling. To ensure
+global faithfulness, we adopt spectrum-preserving coarsening under restricted spectral similarity,
+which keeps the principal Laplacian eigenvalues and eigenspaces of the coarse and original graphs
+2In this work, ‘latent space’ refers to the coarsened graph domain, not a Euclidean embedding.
+2
+Time 𝑡 Time 𝑡+1
+Local 
+Expansion
+(a) Graph generation with local expansion. The color
+represents the child nodes expanded from a same an-
+cestral node.
+Time 𝑡 Time 𝑡+1
+Graph 
+Denoise
+(b) Graph Generation with iterative denoising. The
+number of nodes are fixed, where every individual
+node and edge have the possibility to change.
+Figure 1: Two categories of graph generation methods.
+close [Loukas and Vandergheynst, 2018], allowing coarse eigenvectors to substitute for the originals,
+yielding a compact yet globally coherent surrogate. A single autoregressive-inspired expansion-and-
+refinement step during decoding then restores local connectivity. While Table 2 does not directly
+evaluate our hybrid, it illustrates the motivating local–global trade-off: diffusion supplies global
+coherence, while autoregressive refinement sharpens local structure.
+Concretely, LGDC follows a two-stage framework: a diffusion model first samples a small fixed-size
+latent graph Gc, which is then expanded back to a graph G in the original space via a decoarsening
+model. Training leverages graph–coarsened graph pairs(G,G c) from spectrum-preserving coarsening,
+enabling joint optimization of the latent diffusion modelp θ(Gc)and expansion modelp ϕ(G | Gc).
+Our contributions are summarized as follows:
+• We propose LGDC, a unified graph generation framework combining spectrum-preserving
+coarsening, latent diffusion, and a single expansion–refinement step for scalable generation.
+• LGDC captures both local (e.g., neighborhoods) and global (e.g., spectral) structures in
+one generative process. Empirically, it achieves results comparable to diffusion models
+on globally structured datasets (Planar, Community-20) and to autoregressive models on
+locally structured ones (Tree), demonstrating LGDC’s strong balance between fine-grained
+accuracy and global coherence while maintaining high sample validity and diversity.
+• LGDC achieves high efficiency and lower computational complexity compared to pure
+diffusion or autoregressive models (e.g., HSpectre). For graph size n, latent size nc, and
+sampling steps T, its complexity isO(n2+T n2
+c) versus O(T n2) for one-shot andO(T n2/3)
+for autoregressive generation assuming a same architecture for backbone models.
+2 Methodology
+In this section, we introduceLGDC, a hybrid graph generation model that first samples a graph in the
+latent space and expands it back to the original space. An overview is shown in Fig. 2 and Eq. 1.
+G
+coarsen(3)
+− − − − − − → Gc
+diffuse/denoise(9)–(8)
+− − − − − − − − − − − − →ˆGc
+one-shot expand/refine(10),(11)
+− − − − − − − − − − − − − − − − − →ˆG.(1)
+The subsequent sections present the core components of our approach: Subsection 2.1 introduces the
+problem formulation, Subsection 2.2 details the spectrum-preserving graph coarsening module, Sub-
+section 2.3 describes the latent-space diffusion process, Subsection 2.4 outlines the parameterization
+of the expansion model, and Subsection 2.5 summarizes the sampling pipeline of the framework.
+2.1 Problem Formulation
+We start by formalizing the problem. Let G= (X,A) denote a graph with n nodes, node features
+X∈R n×d, and edge types encoded in A∈ {0,1}n×n. The graph generation problem aims to
+approximate the data distribution p(G) and sample novel graphs from it. Instead of modeling p(G)
+directly in the original space, we introduce a coarsened latent graph representation Gc = (Xc,Ac) of
+fixed sizen c ≪n. The generative process is parameterized by neural networks and expressed as:
+p(G) =E pθ(Gc)pϕ(G | Gc),(2)
+3
+Figure 2: The architecture of LGDC framework (Latent Graph Diffusion via Coarsening)
+where pθ(Gc) defines a distribution over latent graphs, and pϕ(G | Gc) maps them back to the original
+space.
+2.2 Spectrum-Preserving Graph Coarsening
+Our approach leverages latent diffusion to model a graph’s global structure by operating on coarsened
+graphs that preserve key global properties of the original. We adopt spectrum-preserving coarsening
+under restricted spectral similarity [Loukas and Vandergheynst, 2018], which guarantees that the
+principal Laplacian eigenvalues and eigenspaces of the coarse and original graphs remain close.
+Since these spectral quantities encode fundamental topological characteristics such as connectivity,
+community structure, and planarity, the resulting coarse graph serves as a compact yet globally
+faithful surrogate [Bergmeister et al., 2024].
+Formally, given a graph G with Laplacian L=D−A and a projection matrix C∈ {0,1}nc×n that
+maps each fine node to a coarse one, the coarsened graphG c = (Xc,Ac)is defined as
+Xc =C X,A c =D c −L c,withL c =C LC ⊤.(3)
+The coarse graph is spectrallyϵ-approximate to the original if
+(1−ϵ) Tr(X ⊤LX)≤Tr(X ⊤
+c LcXc)≤(1 +ϵ) Tr(X ⊤LX).(4)
+This restricted similarity criterion ensures the coarse graph preserves the spectral energy of the
+original, enabling it to mimic global structural patterns. To satisfy this condition, we adopt the REC
+algorithm [Loukas and Vandergheynst, 2018], a non-learning coarsening method in Algorithm 1.
+2.3 Discrete Diffusion in the Latent Space
+After coarsening the graphs, we lean on a discrete diffusion similar to Vignac et al. [2023] for
+parameterizing pθ(Gc). Specifically, our goal is to build a diffusion model that transforms the samples
+from an easy-to-sample source distribution, GT
+c ∼p T (Gc), to samples from the target distribution,
+G0
+c ∼p(G c). This is done through defining an iterative sampling process, where
+pθ(G0
+c ) =
+Z
+G[1:T−1]
+c
+p(G0
+c | G1
+c )·. . . p(Gt−1
+c | Gt
+c)·. . . p(GT−1
+c | GT
+c )p(GT
+c )dG[1:T−1]
+c (5)
+where we denote dG[1:T−1]
+c ≜dG T−1
+c , . . . dG1
+c . Thus, the model design translates to fitting a transition
+model, pθ(Gt−1
+c | Gt
+c). To this end, we follow the permutation-equivariant graph transformer of Vignac
+et al. [2023] and decompose the transition model as,
+pθ(Gt−1
+c | Gt
+c) =p θ(Xt−1
+c | Gt
+c)·p θ(At−1
+c | Gt
+c)(6)
+withp θ(Xt−1
+c | Gt
+c) =
+X
+X0c
+p
+ 
+Xt−1
+c |X 0
+c ,X t
+c
+
+pθ(X0
+c | Gt
+c),(7)
+andp θ(A(t−1)
+c | G(t)
+c ) =
+X
+A0c
+p
+ 
+At−1
+c |A 0
+c,At
+c
+
+pθ(A0
+c | Gt
+c).(8)
+4
+where we parameterize the joint reconstruction probability by factorizing the node and edge predic-
+tions: pθ(G0
+c | Gt
+c) =p θ(X0
+c | Gt
+c)·p θ(A0
+c | Gt
+c). The model is trained to reconstruct the original
+graph G0
+c from its noisy version Gt
+c. We follow Vignac et al. [2023] and construct the noisy graph
+iteratively perturbing the clean graph through,
+p(Gt
+c | Gt−1
+c ) =
+ 
+Xt−1Qt
+X, Et−1Qt
+E
+
+,such thatp(G (t)
+c | G0
+c ) =
+ 
+X Q(1:t)
+X , E Q(1:t)
+E
+
+,(9)
+where per–step transitions are defined by Q(t)
+X ∈[0,1] a×a and Q(t)
+E ∈[0,1] b×b,which we refer
+to Vignac et al. [2023] for a detailed introduction.
+Training objective.The parameters θ are optimized to reconstruct the clean graph G0
+c from its
+noisy counterpart Gt
+c at any timestep t. This is achieved by minimizing the combined cross-entropy
+loss for both node feature and adjacency matrix reconstruction.
+2.4 Expansion and Refinement
+To reconstruct a full-resolution graph in a single decoding pass, we adopt theexpansion–refinement
+formalism of Bergmeister et al. [2024]. Let v∈N nc denote thenode expansion vector, where vi
+specifies how many fine nodes are generated from each coarse nodeiinG c, such that Pnc
+i=1 vi =n.
+Lete∈ {0,1}|˜E| be anedge-selection maskover a set of candidate edges ˜E.
+Expansion.The expansion operator ˜G= Expand(G c;v) replicates each coarse node i into vi fine
+nodes. Candidate edges are then constructed in two groups: (i)intra-cluster edges, connecting fine
+nodes that originate from the same coarse node (modeling local substructure within a cluster); and (ii)
+inter-cluster edges, connecting nodes that originate from different coarse nodes i and j whenever
+(i, j)is an edge in the coarse graph Gc. In other words, inter-cluster connectivity is inferred from
+the coarse-level adjacency, serving as a structural scaffold for generating fine-level links between
+clusters. This process yields a dense candidate edge set ˜Eused in the subsequent refinement step.
+Refinement.The refinement step then applies the binary mask e to prune edges and form the final
+reconstructed graph ˆG:
+Gc
+v
+− − →˜G
+e
+− − →ˆG.(10)
+Hence,e k = 1indicates that thek-th candidate edge in ˜Eis retained in ˆG.
+Parameterization and Training.Since G is uniquely determined by (v,e) , the conditional model
+is factorized as:
+pϕ(G | Gc) =p ϕ(v,e| Gc) =p ϕ(v| Gc)p ϕ(e|Expand(G c;v),G c).(11)
+The supervision pairs (v⋆,e⋆) are obtained by inverting one spectrum-preserving coarsening step.
+Model parameters ϕ are optimized to maximize the reconstruction likelihood (or equivalently the
+ELBO) following Bergmeister et al. [2024], applied here to a single coarse-to-fine transition.
+2.5 Sampling Pipeline
+At test time, LGDC generates in two stages: (i) Latent diffusion starting from the prior at step T, we
+apply the DiGress-style reverse transitions (Eqs. 9–8) to obtain a sampled latent graph ˆGc, and (ii)
+One–shot decoding where we decode in a single coarse to fine pass by drawing (v,e)∼p ϕ(· |ˆGc)
+via Eq. 11 and applying Eq. 10 to produce ˆG. Unlike Bergmeister et al. [2024], which uses multiple
+expansion–refinement cycles (e.g., 1→3→8→···→n ), LGDC performs a single coarse to fine
+inversion fromn c tonat training and testing that significantly reduce the computation complexity.
+End-to-end Complexity.LGDC’s inference cost decomposes into (i) latent denoising on Gc, which
+is O(T n2
+c), and (ii) one-shot expand/refine, which is O(n2) in the dense worst case. Thus the overall
+complexity isO
+ 
+n2 +T n2
+c
+
+. The sampling complexity calculation is in Appendix A.
+5
+Table 3: Graph Generation Results. We compare the most advanced autoregressive and one-shot
+methods and disable target guidance for fair comparison. The A.Ratio. result on Planar excludes Orbit
+ratios. The HSepctre results are taken from Bergmeister et al. [2024] with one round of expansion.
+Planar Tree Community-20
+Model Class V .U.N.↑A.Ratio↓V .U.N.↑A.Ratio↓Deg.↓Clus.↓Orb.↓
+HSpectre [Bergmeister et al., 2024] Autoregression 62.52.9082.5 2.10 / / /
+DeFoG Qin et al. [2024] One-shot 77.5±8.374.07 73.1±11.41.500.071 0.115 0.037
+LGDC (Ours) Hybrid82.5±2.73.0686.0±2.01.700.037 0.027 0.007
+3 Experimental Results
+3.1 Datasets and Evaluation Protocol
+Datasets.We evaluate LGDC on three synthetic benchmarks that probe complementary structural
+regimes: (i)Treegraphs [Bergmeister et al., 2024], which are deterministic and acyclic, testing local
+structural fidelity; (ii)Planargraphs [Martinkus et al., 2022], which impose global planarity while
+still requiring consistent local layouts; and (iii)Community-20graphs [Vignac et al., 2023], a small
+SBM dataset with connected clusters, challenging models to capture global community structure.
+Setup.We fix the coarsening ratio to approximately nc ≈n/5 to balance fidelity and cost under a
+fixed compute budget. This ensures the latent graph remains large enough to preserve global structure
+while reducing the quadratic cost of diffusion in that space. Concretely, we set M= 16 for Tree and
+Planar, andM= 4for Community-20. A broader sweep of coarsening ratios is left to future work.
+Evaluation.We assess generated graphs on sample quality and structural fidelity. Table 3 reports
+validity, uniqueness, and novelty (V .U.N.), and the average ratio (A. Ratio), summarizing deviations
+of standard statistics from the reference distribution. To probe fidelity in detail, Table 4 separates
+localmetrics (degree, clustering, orbit/motif),globalmetrics (spectral distance, connectivity, di-
+ameter/ASPL), andcross-scalewavelet statistics based on Laplacian eigen-decomposition, which
+combine both aspects. For compactness, we also report Local and Global Ratios, normalizing
+deviations against reference sets.
+3.2 Performance and Complexity Analysis
+Generation Performance.The results in Table 3 show that LGDC achieves the strongest perfor-
+mance on the locally-focused Tree dataset, reaching a V .U.N. score of 86.0 that surpasses even the
+specialized autoregressive HSpectre. On the globally oriented Planar and Community-20 graphs,
+LGDC also delivers competitive results: it improves V .U.N. on Planar to 82.5, outperforming both
+HSpectre and DeFoG, and attains consistently low discrepancy scores on Community-20 across statis-
+tics. These outcomes highlight LGDC’s strength as a hybrid model that unifies the complementary
+advantages of autoregressive and one-shot paradigms across both local and global generation tasks.
+Generation Complexity.Standard one-shot graph generative models require O(T n2) FLOPs,
+while autoregressive methods average O(T n2/3). In contrast, LGDC operates much more efficiently,
+requiring only O
+ 
+n2 +T n2
+c
+
+FLOPs, when nc ≪n (see Appendix A.2). Since T typically exceeds n
+in graph generation tasks, the savings are substantial, and with small compression ratio nc/n, LGDC
+achieves significant computational gains over both paradigms.
+Capturing Local and Global Patterns.Table 4 provides a quantitative analysis of LGDC’s perfor-
+mance before and after the expansion step. Each subtable corresponds to one dataset, while the two
+columns (Diffusionvs.Expansion) represent the coarsened latent graphs ( Gc) and the reconstructed
+full graphs ( ˆG), respectively. Metrics are grouped intoLocal,Global, andLocal+Globalcategories.
+Local metrics (Degree, Clustering, Motif/Orbit) measure fine-grained connectivity; global metrics
+(Spectral distance, Edge Connectivity, Components, Diameter, ASPL) reflect large-scale structure;
+and joint metrics (Wavelet distance and V .U.N.) assess multi-scale consistency between both levels.
+Numerically, theLocalmetrics in all datasets show clear improvement after expansion, for instance,
+degree and motif errors typically decrease by one order of magnitude (e.g., from 0.0016 to 0.0006
+6
+or 0.0697 to 0.0079), confirming that the refinement step successfully restores node-level structure
+and motif statistics. TheGlobalmetrics remain of the same scale before and after expansion,
+with small variations in spectral or diameter scores (e.g., spectral distance changes from 0.0085
+to 0.0078 or 0.0126 to 0.0090), showing that the overall topological organization learned in the
+latent space is largely preserved. Meanwhile, theWaveletmetric, which combines both local and
+global information, typically decreases after expansion (e.g.,0.0078→0.0041 or 0.0089→0.0063 ),
+indicating improved multi-scale coherence in the reconstructed graphs. V .U.N. scores also remain
+high (above80in all cases), verifying that sample validity and diversity are retained.
+Overall, these numerical patterns demonstrate that the latent diffusion step captures coherent global
+structure, while the expansion–refinement step recovers fine-scale connectivity without sacrificing
+global consistency. The complementary trends across all metric groups confirm LGDC’s ability
+to produce graphs that are simultaneously globally organized and locally accurate within a single
+decoding stage.
+Table 4: Evaluation of LGDC across datasets. “Diffusion” refers to graphs in the coarsened latent
+space, and “Expansion” shows the same metrics after decoding to the original size.
+(a) Tree
+Metric Diffusion Expansion
+Local
+Degree 0.0005±0.00030.0002±0.0002
+Orbit 0.0001±0.00000.0000±0.0000
+Clustering 0.0000±0.00000.0000±0.0000
+L. Ratio 4.22±3.110.86±0.52
+Global
+Spectre 0.0085±0.00120.0078±0.0009
+Components 0.0003±0.00020.0088±0.0053
+Diameter 0.0249±0.01200.0789±0.0202
+G. Ratio 1.79±0.632.21±0.31
+Local + Global
+Wavelet 0.0078±0.00040.0041±0.0003
+VUN 97.5±1.5886.0±2.0
+(b) Planar
+Metric Diffusion Expansion
+Local
+Degree 0.0016±0.00050.0006±0.0001
+Clustering 0.0553±0.00200.0509±0.0133
+Motif 0.0697±0.01310.0079±0.0030
+L. Ratio 4.81±1.5219.88±3.51
+Global
+Spectre 0.0126±0.00210.0090±0.0011
+Edge Conn. 0.0162±0.00360.0099±0.0030
+Diameter 0.0047±0.00460.0106±0.0086
+G. Ratio 9.03±6.8119.46±7.34
+Local + Global
+Wavelet 0.0089±0.00080.0063±0.0005
+VUN 100.0±0.082.5±2.74
+(c) Community-20
+Metric Diffusion Expansion
+Local
+Degree 0.0060±0.00300.0369±0.0028
+Clustering 0.0322±0.01930.0266±0.0023
+Motif 0.0030±0.00120.0317±0.0059
+L. Ratio 0.45±0.241.92±0.69
+Global
+Spectre 0.0457±0.01750.1431±0.0084
+Components 0.0021±0.00160.0029±0.0017
+ASPL 0.0022±0.00200.0014±0.0012
+G. Ratio 0.53±0.321.18±0.14
+Local + Global
+Wavelet 0.0410±0.01660.1175±0.0061
+VUN — —
+4 Conclusion
+We presentedLGDC, a hybrid graph generator that combines spectrum-preserving coarsening with
+latent discrete diffusion and a single expansion–refinement step. By design, this approach unifies the
+complementary strengths of one-shot and autoregressive paradigms: diffusion in a compact latent
+space imposes global organization at low cost, while local-expansion based decoding restores fine
+local structure. Empirically, LGDC achieves strong V .U.N. and competitive discrepancy scores with
+an end-to-end sampling complexity ofO(n2+Tn 2
+c), offering practical efficiency. Nonetheless, several
+limitations remain. The one-shot expand–refine decoding can be error-prone: small inaccuracies in
+the edge mask e may propagate when the candidate edge set ˜E is large, occasionally disturbing coarse-
+level consistency. Although latent diffusion is efficient, the expansion step still scales asO(n2) in the
+dense case, making very large graphs challenging to handle. The model’s performance also depends
+on the chosen coarsening procedure and compression ratio nc/n, as different projection matrices can
+yield variable cluster structures and reconstruction difficulty. Finally, the current refinement does
+not explicitly enforce global constraints such as planarity or connectivity, and our experiments focus
+on synthetic benchmarks rather than large, real-world graphs. Future work will explore iterative or
+uncertainty-aware refinement to mitigate decoding errors, sparse or structured expansion to improve
+scalability, and adaptive or learned spectrum-preserving coarsening for greater robustness. Extending
+LGDC to richer node and edge attributes and larger heterogeneous graphs offers a promising path
+toward scalable, structure-aware generative modeling across domains.
+References
+Jiaxuan You, Rex Ying, Xiang Ren, William L. Hamilton, and Jure Leskovec. Graphrnn: Generating
+realistic graphs with deep auto-regressive models. InICML, volume 80 ofProceedings of Machine
+Learning Research, pages 5694–5703. PMLR, 2018.
+7
+Renjie Liao, Yujia Li, Yang Song, Shenlong Wang, William L. Hamilton, David Duvenaud, Raquel
+Urtasun, and Richard Zemel.Efficient graph generation with graph recurrent attention networks.
+Curran Associates Inc., Red Hook, NY , USA, 2019.
+Hanjun Dai, Azade Nazi, Yujia Li, Bo Dai, and Dale Schuurmans. Scalable deep generative modeling
+for sparse graphs. InICML, volume 119 ofProceedings of Machine Learning Research, pages
+2302–2312. PMLR, 2020a.
+Nikhil Goyal, Harsh Vardhan Jain, and Sayan Ranu. Graphgen: A scalable approach to domain-
+agnostic labeled graph generation. InWWW, pages 1253–1263. ACM / IW3C2, 2020a.
+Andreas Bergmeister, Karolis Martinkus, Nathanaël Perraudin, and Roger Wattenhofer. Efficient and
+scalable graph generation through iterative local expansion. InICLR. OpenReview.net, 2024.
+Jaehyeong Jo, Seul Lee, and Sung Ju Hwang. Score-based generative modeling of graphs via the
+system of stochastic differential equations. InICML, volume 162 ofProceedings of Machine
+Learning Research, pages 10362–10383. PMLR, 2022.
+Kilian Konstantin Haefeli, Karolis Martinkus, Nathanaël Perraudin, and Roger Wattenhofer. Diffusion
+models for graphs benefit from discrete state spaces.CoRR, abs/2210.01549, 2022a.
+Clément Vignac, Igor Krawczuk, Antoine Siraudin, Bohan Wang, V olkan Cevher, and Pascal Frossard.
+Digress: Discrete denoising diffusion for graph generation. InICLR. OpenReview.net, 2023.
+Chenhao Niu, Yang Song, Jiaming Song, Shengjia Zhao, Aditya Grover, and Stefano Ermon. Permu-
+tation invariant graph generation via score-based generative modeling. InAISTATS, volume 108 of
+Proceedings of Machine Learning Research, pages 4474–4484. PMLR, 2020.
+Kilian Konstantin Haefeli, Karolis Martinkus, Nathanaël Perraudin, and Roger Wattenhofer. Diffusion
+models for graphs benefit from discrete state spaces. InThe First Learning on Graphs Conference,
+2022b. URLhttps://openreview.net/forum?id=CtsKBwhTMKg.
+Zhe Xu, Ruizhong Qiu, Yuzhong Chen, Huiyuan Chen, Xiran Fan, Menghai Pan, Zhichen Zeng, Ma-
+hashweta Das, and Hanghang Tong. Discrete-state continuous-time diffusion for graph generation.
+arXiv preprint arXiv:2405.11416, 2024.
+Antoine Siraudin, Fragkiskos D. Malliaros, and Christopher Morris. Cometh: A continuous-time
+discrete-state graph diffusion model, 2024. URLhttps://arxiv.org/abs/2406.06449.
+Floor Eijkelboom, Grigory Bartosh, Christian Andersson Naesseth, Max Welling, and Jan-Willem
+van de Meent. Variational flow matching for graph generation. InNeurIPS, 2024.
+Yiming Qin, Manuel Madeira, Dorina Thanou, and Pascal Frossard. Defog: Discrete flow matching
+for graph generation.CoRR, abs/2410.04263, 2024.
+Xiaoyang Hou, Tian Zhu, Milong Ren, Dongbo Bu, Xin Gao, Chunming Zhang, and Shiwei
+Sun. Improving molecular graph generation with flow matching and optimal transport.CoRR,
+abs/2411.05676, 2024.
+Keyue Jiang, Jiahao Cui, Xiaowen Dong, and Laura Toni. Bures-wasserstein flow matching for
+graph generation. InICML 2025 Generative AI and Biology (GenBio) Workshop, 2025. URL
+https://openreview.net/forum?id=qjAkn9mW4C.
+Hanjun Dai, Azade Nazi, Yujia Li, Bo Dai, and Dale Schuurmans. Scalable deep generative modeling
+for sparse graphs. InICML, volume 119 ofProceedings of Machine Learning Research, pages
+2302–2312. PMLR, 2020b.
+Nikhil Goyal, Harsh Vardhan Jain, and Sayan Ranu. Graphgen: A scalable approach to domain-
+agnostic labeled graph generation. InWWW, pages 1253–1263. ACM / IW3C2, 2020b.
+Jaehyeong Jo, Dongki Kim, and Sung Ju Hwang. Graph generation with diffusion mixture. InICML.
+OpenReview.net, 2024.
+8
+Andreas Loukas and Pierre Vandergheynst. Spectrally approximating large graphs with smaller
+graphs. InICML, volume 80 ofProceedings of Machine Learning Research, pages 3243–3252.
+PMLR, 2018.
+Karolis Martinkus, Andreas Loukas, Nathanaël Perraudin, and Roger Wattenhofer. Spectre: Spec-
+tral conditioning helps to overcome the expressivity limits of one-shot graph generators. In
+Proceedingsof the 39th International Conferenceon Machine Learning, 2022.
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-
+resolution image synthesis with latent diffusion models. InCVPR, pages 10674–10685. IEEE,
+2022.
+Arash Vahdat, Karsten Kreis, and Jan Kautz. Score-based generative modeling in latent space. In
+NeurIPS, pages 11287–11302, 2021.
+Yinglong Guo, Dongmian Zou, and Gilad Lerman. An unpooling layer for graph generation. In
+AISTATS, volume 206 ofProceedings of Machine Learning Research, pages 3179–3209. PMLR,
+2023.
+Truong Son Hy and Risi Kondor. Multiresolution equivariant graph variational autoencoder.Mach.
+Learn. Sci. Technol., 4(1):15031, 2023.
+Zhitao Ying, Jiaxuan You, Christopher Morris, Xiang Ren, William L. Hamilton, and Jure Leskovec.
+Hierarchical graph representation learning with differentiable pooling. InNeurIPS, pages 4805–
+4815, 2018.
+Ling Yang, Zhilin Huang, Zhilong Zhang, Zhongyi Liu, Shenda Hong, Wentao Zhang, Wenming Yang,
+Bin Cui, and Luxia Zhang. Graphusion: Latent diffusion for graph generation.IEEE Transactions
+on Knowledge and Data Engineering, pages 1–12, 2024. doi: 10.1109/TKDE.2024.3389783.
+Cai Zhou, Xiyuan Wang, and Muhan Zhang. Latent graph diffusion: A unified framework for
+generation and prediction on graphs.CoRR, abs/2402.02518, 2024.
+9
+A Complexity Comparison
+A.1 Scalability in Graph Generation and the Computational Complexity Issue
+Even though both autoregressive and one-shot models have achieve satisfactory results in graph
+generation, the scalability has long been a problem due to the heavy computation budget. In this
+section, we will illustrate the computational complexity of both families of graph generation methods.
+The time complexity, consisting ofTraining ComplexityandInference Complexity, is related to the
+number of the floating point operations (FLOPs) (e.g. plus/multiplication) in the forward-propagation
+and back-propagation (where the gradient is calculated). The inference complexity consists of making
+predictions through the model in each step. The space complexity mainly concerns the memory usage
+of a model (RAM or GPU memory). The complexity of time and space is highly intertwined and is
+measured through the model architecture. As a brief solution, calculating each step of propagation
+with a specific model architecture is good enough for measuring the complexity.
+The computational complexity of one-shot diffusion/flow models.The cost mainly comes from
+the fact that one-shot graph generation models uses a dense representation of graphs for computation,
+which results in a quadratic complexity w.r.t #nodes (n) and #dimension (d). The complexity of
+one-shot graph generation models, including Digress Vignac et al. [2023], DeFogQin et al. [2024]
+and BWFlowJiang et al. [2025], are generally similar as the recent development of this family of
+models mainly focusing on accelerating the sampling and reducing the training cost. The sampling
+steps T is a parameter that we cannot easily quantify. Though we assume it to be fixed here for
+simplicity but we also wish to emphasize its importance in graph generation.
+Linear Q, K, V: )(*⋅,*)
+Outer Prod, K, V: )(**,)
+FiLM: )(**,)
+Q K V
+X
+Outer Prod/Scale
+FiLM
+E
+Sftmx X
+Lin
+E’ X’
+Lin
+Lin
+Linear Trans: )(**⋅,*)
+Linear Q, K, V: )(*⋅,*)Linear Trans: )(**⋅,*)
+Edge wiseNodewise
+Figure 3: The time complexity of One-shot graph generation. Given the number of nodesn, dimension
+size d, number of layers L, and number of samples S, the overall model complexity for training is
+given as O(S·L·(n 2 ·d2 +n2 ·d+n·d 2)). The inference complexity O(T·L·(n 2 ·d2 +n2 ·d+n·d 2))
+for a single sample. The leading term isn 2 ·d 2. which comes from the edge-wise prediction.
+We consider the graph transformer Vignac et al. [2023] as the backbone model, which has a model
+architecture that is shown in 3 (simplified by removing all the conditional generation component).
+DiGress handles graphs with categorical node and edge attributes, represented by the spaces X and
+E, respectively, with cardinalities a and b. We use xi to denote the attribute of node i and xi ∈ Ra
+to denote its one-hot encoding. These encodings are organized in a matrix X∈ Rn×a where n
+is the number of nodes. A tensor E∈R n×n×b groups the one-hot encoding rij of each edge,
+treating the absence of edge as a particular edge type. Each step of diffusion can be thought to be a
+joint node regression and link prediction process, where one would reverse the noising process of
+q(Et,Xt |E t−1,Xt−1), as pθ(Et−1,Xt−1 |E t,Xt). The forward path progressively corrupts the
+data points and formalizes a sequence, namely(X 0, . . . ,XT )and(E 0, . . . ,ET ).
+In the reverse path, a backbone model parameterized by θ is used to learn the process, where we
+denote as pθ :X × E → X × E. As an example, the continuous graph generation models require
+sample n2, which yields a complexity of O(n2T). The discrete graph generation algorithm asks
+for a transition matrix that is capable of modeling a transition space of Rn2
+× Rn2
+. Omitting the
+embedding size, the complexity isO(n 2).
+10
+The computational complexity of auto-regressive models.Assuming the backbone model to be
+the same graph generation, a single step of autoregressive computation follows a similar pipeline.
+However, the difference comes from the fact that each expansion steps the graph transformer operates
+on graphs with different size. We consider T step expansion and each step expands (n−1)/T nodes.
+Omitting the hidden dimension and number of layers, we now aim to calculate
+S= 1 2 +
+
+1 + n−1
+T
+2
++
+
+1 + 2· n−1
+T
+2
++···+n 2.
+Let d= n−1
+T ., we simplify toS= PT
+t=0
+ 
+1 +td
+2
+.. Expanding, we get (1 +td)2 = 1 + 2td+t 2d2,
+so
+S=
+TX
+t=0
+ 
+1 + 2td+t 2d2
+=
+TX
+t=0
+1 + 2d
+TX
+t=0
+t+d 2
+TX
+t=0
+j2
+= T+ 1
+6T
+
+6T n+ (2T+ 1)(n−1) 2
+
+.
+Thus, the complexity isO( Tn2
+3 ).
+A.2 The computational complexity of latent graph generation
+In the image generation task, a solution to generation is latent diffusion Rombach et al. [2022], Vahdat
+et al. [2021], where one first compares a high-resolution image into a low-rank latent space, and then
+diffuses over the latent space to achieve efficient sampling.
+For this scenario, lets consider first compressing the graph into a latent space, with size nc, we then
+operates on the latent space forT/2step of generation, which yieldsO(T/2·L·(n 2
+cd2))inference
+complexity. We then expand with one-step graph generation, which again hasO(T/2·L·(n 2
+cd2))
+FLOPs as the model only need to output the node expansion operator. Then, the edge predictor, which
+is a sparse graph neural network that takes in the expanded graph, which has worst O(L·(n 2d2))
+complexity. Thus, omitting the embedding size and layer complexity, the total computation complexity
+is O(n2 +T n2
+c). Comparing to the full one-shot graph genertaion model (O(T n2)) and autoregressive
+model(O(T n2/3)), the latent graph generation model has a significant gain in the computational
+efficiency as long as nc
+n is small sufficiently.
+B Related Work
+Hierarchical structures for graph generation have been explored in several prior works Guo et al.
+[2023], Hy and Kondor [2023], Bergmeister et al. [2024]. Hy and Kondor [2023] proposed a hierar-
+chical V AE that progressively reduces graph size fromNt to Nt+1 through soft cluster assignments,
+similar to DiffPool Ying et al. [2018]. While effective for capturing multiscale structure, this ap-
+proach assumes a fixed number of nodes per layer, is computationally expensive, and lacks theoretical
+guarantees on information preservation. On the other hand, Bergmeister et al. [2024] interpret the
+forward process of diffusion as graph coarsening and the reverse process as graph expansion. Their
+method iteratively adds and removes nodes and edges, bridging between a singleton graph and the
+full target distribution.
+To the best of our knowledge, only two works explicitly consider latent graph diffusion Yang et al.
+[2024], Zhou et al. [2024]. These frameworks apply diffusion in a latent space but do not compress
+graphs by reducing the number of nodes (from n to nc with n≫n c). Instead, they embed graphs
+into a Euclidean vector space, which limits scalability and prevents fully leveraging the efficiency
+benefits of latent diffusion. In contrast, our model combines spectrum-preserving graph coarsening
+with latent diffusion in the non-Euclidean space of graphs and a single expansion–refinement stage.
+This design enables efficient sampling in a substantially smaller space while maintaining a balance
+between global structural organization and high-fidelity local reconstruction.
+C Randomized edge contraction (REC) algorithm
+We introduce the REC algorithm in 1.
+11
+Algorithm 1:Randomized Edge Contraction (REC)
+Input:GraphG= (X,A), iteration limitT.
+Output:Coarsened graphG c = (Xc,Ac).
+C ← E, whereEis the edge set whereAij ̸= 0;
+Gc ←G;
+Φ← P
+eij∈E Aij;
+t←0;
+pnull ←0;
+while|C|>0andt < Tdo
+t←t+ 1;
+Sample an outcome fromC ∪ {null}with probabilitiespij =A ij/Φandp null;
+ifan edgee ij ∈ Cwas sampledthen
+Gc ←contract(G c, eij);// as in Eq. (2)
+LetN ij be the set of edges incident to nodesiorj;
+C ← C \ Nij ;// Remove neighbors
+pnull ←p null + P
+epq∈Nij ppq;
+end
+end
+returnG c;
+D Visualizations
+12
+(a) Comm20 (Noise)
+ (b) Comm20 (Coarsened)
+ (c) Comm20 (Expanded)
+(d) Tree (Noise)
+ (e) Tree (Coarsened)
+ (f) Tree (Expanded)
+(g) Planar (Noise)
+ (h) Planar (Coarsened)
+ (i) Planar (Expanded)
+Figure 4: Visualization of graph generation stages across three datasets. Rows correspond to datasets
+(Comm20, Tree, Planar), and columns correspond to stages (Noise, Coarsened, Expanded).
+13

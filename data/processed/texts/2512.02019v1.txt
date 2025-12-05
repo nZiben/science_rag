@@ -1,0 +1,1620 @@
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Sebastian Sanokowski1 Kaustubh Patil2,3 Alois Knoll1
+1Technical University Munich, Chair of Robotics, Artificial Intelligence and Embedded Systems
+2Technical University Munich, Practical Project Student Exchange Program
+3MIT World Peace University
+Abstract
+Diffusion models have achieved remarkable success in data-driven learning and in sampling from complex,
+unnormalized target distributions. Building on this progress, we reinterpret Maximum Entropy Reinforcement
+Learning (MaxEntRL) as a diffusion model-based sampling problem. We tackle this problem by minimizing
+the reverse Kullback-Leibler (KL) divergence between the diffusion policy and the optimal policy distribution
+using a tractable upper bound. By applying the policy gradient theorem to this objective, we derive a modified
+surrogate objective for MaxEntRL that incorporates diffusion dynamics in a principled way. This leads to
+simple diffusion-based variants of Soft Actor-Critic (SAC), Proximal Policy Optimization (PPO) and Wasserstein
+Policy Optimization (WPO), termed DiffSAC, DiffPPO and DiffWPO. All of these methods require only minor
+implementation changes to their base algorithm. We find that on standard continuous control benchmarks,
+DiffSAC, DiffPPO and DiffWPO achieve better returns and higher sample efficiency than SAC and PPO.
+1. Introduction
+Diffusion models (Song et al., 2021a; Sohl-Dickstein et al., 2015; Ho et al., 2020) have rapidly emerged as one of the most
+powerful tools for generative modeling, achieving state-of-the-art performance across image, video, and trajectory synthesis
+(Rombach et al., 2022; Ho et al., 2022; Chi et al., 2025). Beyond generative AI, recent work has begun applying diffusion
+samplers tosampling from unnormalized target distributions.
+In this setting, one aims to sample from a distribution of the form
+π(x) = exp(−αE(x))
+Z whereZ=
+Z
+RN
+exp(−αE(x))dx
+where x∈R N , E(x) is an energy function and α= 1
+T where T>0 is the temperature. Only the unnormalized density
+˜π(x) := exp(−αE(x))is evaluatable, while exact sampling and the computation of the normalizing constant (partition
+function) Z is intractable. Importantly, there is no available data from this distribution. Diffusion samplers provide an
+expressive solution by transporting noise samples toward high-density regions ofπvia a learned reverse diffusion process.
+These approaches have been explored in both the continuous domain (Zhang & Chen, 2022; Berner et al., 2022; Vargas
+et al., 2023; 2024; Richter & Berner, 2024) and the discrete domain (Sanokowski et al., 2024; 2025a), demonstrating strong
+performance on challenging sampling problems.
+In the context of reinforcement learning, diffusion models are particularly appealing because they can naturally represent
+complex, multimodal action distributions, which are often encountered in high-dimensional reinforcement learning problems.
+Even when the optimal action distribution is unimodal, diffusion models provide a flexible mechanism to capture non-
+Gaussian shapes, such as heavy-tailed or Laplace-like distributions, allowing for more expressive and accurate policy
+representations than standard Gaussian approximations. Thus, diffusion models might be a promising approach to improve
+exploration, robustness, and ultimately performance on challenging RL environments.
+. Correspondence to: Sebastian Sanokowski<sebastian.sanokowski[at]tum.de>.
+Preprint. December 2, 2025.
+1
+arXiv:2512.02019v1  [cs.LG]  1 Dec 2025
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Reinforcement learning naturally fits the unnormalized-sampling paradigm. A long line of work has shown that RL can
+be formulated as probabilistic inference (Ziebart, 2010; Kappen et al., 2012; Todorov, 2008; Levine, 2018) and thus RL
+corresponds to sampling from an unnormalized distribution whose partition function is intractable—precisely the regime
+where diffusion samplers excel.
+Our approach:In this work, we extend the sampling perspective to maximum entropy reinforcement learning (MaxEntRL)
+to diffusion models (see Sec. 2 and Sec. 3). Specifically, we introduce three diffusion-augmented RL algorithms:DiffPPO,
+DiffSAC, andDiffWPO. Each algorithm arises from a shared reverse-KL formulation and is obtained by augmenting an
+existing RL algorithm with a diffusion policy that samples actions through a learned reverse diffusion process. Concretely,
+DiffSACis a diffusion extension of Soft Actor-Critic (SAC) (Haarnoja et al., 2018),DiffPPOextends Proximal Policy
+Optimization (PPO) (Schulman et al., 2017), andDiffWPOis a diffusion-based variant of Maximum Entropy Wasserstein
+Policy Optimization (WPO) (Pfau et al., 2025). This framework can also be viewed as a generalization of Sanokowski et al.
+(2025a), who train diffusion models using RL, whereas here RL itself is performedthroughdiffusion.
+Diffusion models have recently been applied to MaxEntRL, but existing methods face limitations. Many rely on forward-KL
+objectives (Dong et al., 2025; Ma et al., 2025) with importance weighting, which introduces bias, high variance, and
+mode-coveringbehavior misaligned with the Reinforcement Learning goals. Our DiffSAC method avoids possibly memory-
+intensive backpropagation through the whole diffusion chain, unlike DiME (Celik et al., 2025). Meanwhile, our DiffPPO
+method generalizes DPPO (Ren et al., 2025) to arbitrary temperatures and a broader family of reverse-KL objectives,
+reducing to DPPO exactly whenT= 0. For further discussion, see Sec. 5.
+In summary, by formulating RL as sampling from a reward-dependent Boltzmann distribution and by using the data
+processing inequality, we derive a tractable upper bound on the reverse KL divergence between a diffusion policy and the
+target distribution (see Sec. 3). This yields a clean theoretical connection between diffusion models and MaxEntRL, which
+we coinDiffusion-based Maximum Entropy Reinforcement Learning(DMERL) and leads naturally to the DiffPPO, DiffSAC,
+and DiffWPO algorithms with minimal implementation overhead by a change of the corresponding MDP, the surrogate
+objective, and the value function (see Sec. 3.1).
+Our main contributions are as follows:
+• We establish in Sec. 2.4 a novel mathematical connection between the off-policy Maximum Entropy RL surrogate loss
+(e.g., used inSAC) and the Log-Variance (also known as Trajectory Balance) loss (Richter et al., 2020; Malkin et al.,
+2022a).
+• In Sec. 2.5 we derive and propose a Maximum Entropy formulation of the recently introduced Wasserstein Policy
+Optimization (WPO) (Pfau et al., 2025).
+• We introduce a unified, diffusion-based framework for RL derived from reverse KL minimization in Sec. 3, which
+generalizes and significantly simplifies prior diffusion-based RL approaches.
+• Building on this unified framework, we introduce and instantiate three novel, practical algorithms:DiffPPO,DiffSAC,
+andDiffWPO. These methods are easily implementable, requiring only minor modifications to standard libraries such
+as Stable-Baselines3 (Raffin et al., 2021).
+• Preliminary results in Sec. 4 demonstrate that our diffusion-based policies achieve substantially improved sample effi-
+ciency and superior average returns compared to their vanilla counterparts on standard continuous-control benchmarks.
+2. Problem Description
+Reinforcement learning (RL) can be interpreted as an inference or sampling problem, where the objective is to generate
+trajectories that maximize cumulative rewards. Let
+τ= (s 0, a0, s1, a1, . . . , aT , sT+1 )
+denote a trajectory generated under transition dynamics p(st+1 |s t, at) and initial-state distribution p(s0), with reward
+functionR env(st, at).
+Here, st ∈ Sdenotes the state at time t, at ∈ A=RN denotes the action at time t, and T is the finite time horizon of the
+trajectory.
+2
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Instead of directly maximizing expected rewards, we define anunnormalized target distributionover action sequences a0:T :
+eπ(a0:T ) =
+Z
+s0:T+1
+TY
+k=0
+p(sk+1 |s k, ak)π(a k |s k)p(s 0)ds 0:T+1 ,
+where π(ak |s k)∝exp(α Renv(sk, ak)), and α= 1
+T >0 , where T is the temperature. This defines areward-weighted
+trajectory distribution, where trajectories with higher cumulative rewards receive exponentially more probability mass. The
+normalized target distribution is
+π(a0:T ) = eπ(a0:T )
+Z , Z=
+Z
+eπ(a0:T )da 0:T .
+The learned policyq θ(a0:T )serves as avariational approximationto this target, defined by
+qθ(a0:T ) =
+Z
+s0:T+1
+TY
+k=0
+p(sk+1 |s k, ak)q θ(ak |s k)p(s 0)ds 0:T+1 .
+Both qθ(a0:T ) and eπ(a0:T ) are intractable due to integration over state states st and thus directly minimizing any f-
+divergence (Csisz´ar, 1967) between Df (qθ(a0:T )||π(a 0:T )) is not a valid option. To overcome this, an tractable upper
+bound on the f-divergence between trajectory distributions using thedata processing inequalitycan be used:
+Df (qθ(a0:T )||π(a 0:T ))≤D f (qθ(a0:T , s0:T+1 )||π(a 0:T , s0:T+1 )).(1)
+where
+qθ(a0:T , s0:T+1 ) =
+TY
+k=0
+p(sk+1 |s k, ak)q θ(ak |s k)p(s 0)andp(a 0:T , s0:T+1 ) =
+TY
+k=0
+p(sk+1 |s k, ak)π(a k |s k)p(s 0).
+Importantly, the data processing inequality ensures that the divergence between the joint state-action distributions provides
+an upper bound on the divergence defined over actions alone. Optimizing the upper bound, therefore, constrains the original
+objective. While it does not guarantee that a decrease in the upper bound leads to a strict decrease in the left-hand side,
+a reduction of the upper bound tightens the gap between the two divergences. The left-hand side is provably minimized
+only when the optimization drives the right-hand side down to the point where the inequality becomes tight. In this way,
+minimizing the tractable bound optimizes the variational policy qθ(a0:T ) to approximate the target distribution π(a0:T ),
+even though both cannot be evaluated in a tractable way.
+2.1. Reinforcement Learning as Reverse Kullback–Leibler Divergence Minimization
+Choosingf= KLyields thereverse Kullback–Leibler divergenceobjective which can be simplified to (see App. A.1):
+DT
+KL
+ 
+qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 )
+
+=
+TX
+t=0
+Est,at∼qθ(at,st)
+
+Tlogq θ(at |s t)−R env(st, at)
+
++C,(2)
+where C is a constant independent of θ and qθ(at, st) =q θ(at|st)qθ(st). In the following, we will often write st, at ∼q θ,
+which means that first st is sampled from qθ(st) by unrolling the policy through the MDP and followed by sampling at
+fromq θ(at|st).
+Next we define DT
+KL :=TD KL and use it as a loss in order to make it evaluatable at T= 0 . In contrast to the original
+formulation, Eq. 2 is tractable and memory efficient gradient-based optimization is enabled by applying thepolicy gradient
+theorem(Sutton & Barto, 2018) (see App. A):
+∇θDT
+KL
+ 
+qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 )
+
+=
+TX
+t=0
+Est,at∼qθ
+h 
+Tlogq θ(at |s t)−Q qθ (st, at)
+
+∇θ logq θ(at |s t)
+i
+,
+whereQ qθ (st, at) =R env(st, at) +V(s t+1)andV(s t) =E at∼qθ(at|st)
+
+Qqθ (st, at)− Tlogqθ(at|st)
+
+.
+3
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+By applying thelog-derivative trick in reverse, we can express the same objective as a surrogate loss that is more convenient
+to optimize in practice (see App. A.3):
+LRL(θ) =T
+TX
+t=0
+Est∼qθ∗
+h
+DKL
+
+qθ(at |s t)
+ exp(α Qqθ∗ (st, at))
+Z
+i
+, (3)
+where the ∗ in θ∗ denotes the application of a stop grad operation, which means that gradients are not propagated through
+these terms. In practice, the outer summation over time t= 0, . . . , Tdoes not need to be evaluated exhaustively at every
+optimization step. Instead, it can be approximated viaMonte Carlo integrationby randomly sampling a subset of time steps.
+This yields an unbiased estimator of the full objective while avoiding backpropagation through all T steps, thereby reducing
+computational cost. Concretely, we can estimate the surrogate loss as
+bL(θ)≈ T
+|U|
+X
+t∈U
+Est∼qθ∗
+h
+L(θ, st)
+i
+,whereL MaxEntRL(θ, st) :=TD KL
+
+qθ(at |s t)
+ exp(α Qqθ∗ (st, at))
+Z
+
+andUdenotes a minibatch of|U|uniformly sampled time indices.
+This surrogate loss recovers the structure used as a basis inSoft Actor-Critic (SAC)(Haarnoja et al., 2018) andProximal
+Policy Optimization (PPO)(Schulman et al., 2017), and corresponds to the well-knownMaximum Entropy Reinforcement
+Learning(MaxEntRL) objective, in which the expected reward is augmented with the policy entropy to encourage exploration
+and robustness.
+2.2. Proximal Policy Optimization (PPO)
+Proximal Policy Optimization (PPO) can be derived by applying the log-derivative trick to a surrogate objective combined
+with importance weighting. Importance sampling is required because PPO does not learn a state–action value function Qθ
+directly; thus, returns or rewards Renv(st, at) can only be evaluated at state–action pairs observed under the behavior policy.
+The resulting surrogate objective can be written as
+L(θ, st) = E
+at∼qθold (at|st)
+h qθ(at|st)
+qθold (at|st)
+
+Tlogq θ(at|st)−Q qθold (st, at)
+i
++C
+whereq θold denotes the behavior policy used to collect trajectories.
+The PPO objective, however, additionally uses a clipping strategy, where the objective is then given by:
+LPPO(θ, st) =−E at∼qθold (at|st)
+h
+min
+
+rt(θ) ˆAt,clip(r t(θ),1−ϵ,1 +ϵ) ˆAt
+i
+,
+where rt(θ) = qθ(at|st)
+qθold (at|st) are importance weights, ˆAt is an estimate of the advantage function, and ϵ is the clipping
+parameter. The advantage function At quantifies how much better taking action at in state st is compared to the expected
+value of the policy from that state and is defined as At =Q θold (st, at)−V θold (st)− Tlogqθ(at|st) where the subtraction
+ofV θold (st)reduces the variance of the gradient estimates while leaving the average gradient unchanged.
+Compared to the original surrogate loss derived from reverse-KL minimization, PPO samples states st from qθold (st) rather
+than from the current variational distribution qθ(st). Importantly, for the first gradient step, the gradient of the PPO objective
+coincides exactly with the gradient of the original surrogate loss. For subsequent steps, the gradient begins to deviate, but
+the clipping mechanism in PPO ensures that this deviation remains controlled and does not become excessively large.
+2.3. Soft Actor-Critic (SAC)
+SAC instead learns a Q-function Qqθ∗
+ϕ (st, at) with parameters ϕ and can therefore leverage thereparameterization trickto
+compute gradients through sampled actions:
+at =f θ(ξt;s t), ξ t ∼ N(0, I),(4)
+4
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+allowing the usage of the identity:
+∇θLSAC(θ, st) =∇ θEst∼B,at∼qθ [Tlogq θ(at|st)−Q qθ∗
+ϕ (st, at)](5)
+=E st∼B,ξt∼N(0,I)
+
+T ∇θ logq θ(fθ(ξt;s t)|st)− ∇θQqθ∗
+ϕ (st, fθ(ξt;s t))
+
+.(6)
+SAC deviates from the surrogate reverse-KL loss as the expectation is takenoff-policyover samples from areplay buffer B
+rather than from the current variational distribution q∗
+θ. This allows for more efficient reuse of past experience and improves
+sample efficiency, while still optimizing the MaxEntRL objectiveLMaxEntRL(θ, st).
+2.4. Connection between the Log Variance Loss and Off-Policy Surrogate Objectives
+In App. B we prove that the surrogate objective in Eq. 3 can also be derived from theLog Variance (LV) loss(Richter &
+Berner, 2024), also known as theTrajectory Balanceloss in the context of GFlowNets (Malkin et al., 2022a), defined for an
+off-policy sampling distributionωas
+Dω
+LV (qθ(a0:T , s0:T+1 )∥π(a0:T , s0:T+1 )) = 1
+2 E(a0:T ,s0:T+1 )∼ω
+h
+log qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 ) −b ω
+θ
+2i
+,
+where bω
+θ =E (a0:T ,s0:T+1 ,)∼ω[log qθ(a0:T ,s0:T+1 )
+π(a0:T ,s0:T+1 ) ]. Under the assumption that ω is absolutely continuous with respect to π
+and qθ, the LV loss is only zero if and only if logq θ(a0:T , s0:T+1 ) = logπ(a 0:T , s0:T+1 ). Under this assumption, ω may be
+anydistribution over trajectories, such as from on-policy samples or from the replay buffer. Furthermore, the on-policy LV
+loss yields exactly the same gradient as the rKL loss when π does not contain learnable parameters (Richter et al., 2020;
+Malkin et al., 2022b; Sanokowski et al., 2025b).
+We prove that by setting ω(st, at) =q θ∗(at |s t)B(s t), i.e. for any time step t states are sampled from any off-policy
+distribution but the actionsa t are sampled on-policy, the LV gradient takes a policy-gradient-like form (see App. B):
+∇θDω
+LV =
+TX
+t=0
+E(at,st)∼(qθ∗,B)
+h 
+logq θ(at |s t) +
+
+αQω,qθ∗
+(st, at)−V ω,qθ∗
+(st)
+
+∇θ logq θ(at |s t)
+i
+,(7)
+where Qω,qθ∗ (st, at) =R env(st, at) +V ω,qθ∗ (st+1) and V ω,qθ∗ (st) =E at∼ω(at|st)
+
+Qω,qθ∗ (st, at)− Tlogqθ∗(at|st)
+
+.
+Since the actions are sampled from qθ∗(at |s t), we can again apply thereverse log-derivative trick(see App. A.3) to Eq. 7,
+which yields exactly the off-policy surrogate objective used inSAC.
+LOff−Policy
+MaxEntRL(θ) =T
+TX
+t=0
+Est∼B
+h
+DKL
+
+qθ(at |s t)
+ exp(α QB,qθ∗ (st, at))
+Z
+i
+. (8)
+Two important caveats follow. First, the LV loss is not anf-divergence (Malkin et al., 2022b), and itdoes notgenerally
+satisfy the data-processing inequality (Sanokowski et al., 2025b); unlike the reverse-KL bound in Eq. 1, there is no
+information-theoretic guarantee that minimizing Dω
+LV upper-bounds a trajectory-level divergence over marginalized action
+sequences. This makes the LV objective less principled from an information-theoretic perspective. Second,PPOcan be
+interpreted within the same framework at first order: the initial PPO update coincides with the reverse-KL surrogate gradient,
+while later updates deviate because PPO samples states from ω=q θold instead of from qθ∗. The PPO clipping mechanism
+explicitly constrains this deviation, keeping the effective update close to the reverse-KL policy-gradient direction.
+2.5. Maximum Entropy Wasserstein Policy Optimization
+Starting from the reverse–KL surrogate objective in Eq. 3, we may interpret this quantity as a functional over action
+distributions and therefore apply Wasserstein gradient flow-based updates to the policy (Benamou & Brenier, 2000;
+Neklyudov et al., 2023). In contrast to the reward-only functional considered in (Pfau et al., 2025), the reverse–KL objective
+introduces the additional entropy-dependent term logq θ(at |s t) inside the flow, leading to a slightly different velocity field
+and hence a modified parametric projection.
+Using the functional derivative derived in App. C, projecting the Wasserstein flow onto the parameter space yields the update
+θτ+1 =θ τ +ηF −1
+θθ Est∼qθ∗(st), at∼qθ(at|st)[∇at(Qqθ∗
+(st, at)− Tlogqθ∗(at |s t))∇θ∇at logq θ(at |s t)],(9)
+5
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+where Fθθ is the Fisher information matrix arising from the KL projection, η is the learning rate, and τ is the gradient
+update iteration step. For practical implementation, we follow (Pfau et al., 2025) in replace the Fisher matrix using the
+following gradient transformations
+∇µ →σ 2∇µ,∇ σ → 1
+2 σ2∇σ,
+yielding a simple preconditioner suitable for RL problems. We can also write donw a corresponding surrogate loss for WPO,
+which can be written as:
+LWPO(θ, st) =E at∼qθ∗(at|st)
+h
+∇at
+ 
+Tlogq θ∗(at |s t)−Q qθ∗
+(st, at)
+
+∇at logq θ(at |s t)
+i
+. (10)
+Importantly, the Fisher information matrix Fθθ or its approximations must be applied after computing the gradient of Eq. 10
+to perform the natural-gradient preconditioning.
+2.6. Diffusion Samplers
+We now introduce the diffusion process used to model the policy distributionqθ(a(0)) with the aim of approximating an
+intractable target distributionπ(a (0)). For clarity, we drop the state-dependence and assume diagonal Gaussian noise.
+Continuous-Time Formulation.Diffusion samplers define a stochastic differential equation (SDE) that gradually perturbs
+a target distribution into stationary distribution, along with a corresponding reverse process that aims to reconstruct it. For
+the variance-preserving (VP) SDE (Song et al., 2021b), the forward process is
+da(k) =− 1
+2 β(k)a (k) dk+ν
+p
+β(k)dW k, k∈[0,1],(11)
+where β(k)>0 is a noise schedule and Wk a standard Wiener process. Starting from k= 0 , this forward process diffuses
+the target distribution into a simple Gaussian priorq(a (K)) =N(0, ν)atk= 1. The corresponding reverse-time SDE is
+da(k) =
+h
+− 1
+2 β(k)a (k) −ν 2β(k)∇ a(k) logq k(a(k))
+i
+dk+ν
+p
+β(k)d ¯Wk,(12)
+where ¯Ws denotes a reverse Wiener process.
+Discrete-Time Approximation.Applying Euler–Maruyama integration with step size ∆k (from k= 1 to k= 0 ) gives
+the discrete updates.
+Theforward diffusionstep froma (k−1) toa (k) is
+a(k) = (1− 1
+2 βk∆k)a (k−1) +ν
+p
+βk∆k εk, ε k ∼ N(0, I),
+so that
+p(a(k) |a (k−1)) =N
+
+(1− 1
+2 βk∆k)a (k−1), βk∆k ν
+
+.
+Thereverse diffusionstep, parameterized byθ, is
+a(k−1) = (1 + 1
+2 βk∆k)a (k) +ν 2 βk∆k sθ(a(k), k) +ν
+p
+βk∆k εk,
+with
+qθ(a(k−1) |a (k)) =N
+
+(1 + 1
+2 βk∆k)a (k) +β k∆k sθ(a(k), k), βk∆k ν
+
+,
+wheres θ(a(k), k)approximates the unknown score function∇a(k) logq k(a(k)).
+6
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Intractability of the Marginal.The marginal of the learned model is obtained by integrating out all intermediate diffusion
+variables:
+qθ(a(0)) =
+Z KY
+k=1
+qθ(a(k−1) |a (k))p(a (K))da (1:K).
+This integral is, in general, intractable and consequently, the reverse-KL divergence DKL(qθ(a(0))∥π(a (0))) cannot be
+directly used as a loss function. However, by thedata processing inequality, we can upper bound it via the joint divergence:
+DKL
+ 
+qθ(a(0))∥π(a (0))
+
+≤D KL
+ 
+qθ(a(0:K))∥π(a (0:K))
+
+,
+which is tractable as
+qθ(a(0:K)) =
+KY
+k=1
+qθ(a(k−1) |a (k))q(a (K))andπ(a (0:K)) =
+KY
+k=1
+π(a(k) |a (k−1))π(a (0)).
+As explained in Sec. 2, by optimizing the right-hand side, we implicitly optimize the left-hand side of the equation.
+3. Method
+When applying diffusion policies in RL, optimizing the right-hand side of Eq. 1 is intractable as the marginal qθ(at |s t)
+cannot be easily evaluated when the policy is parameterized by a diffusion model. Therefore, similarly to Sec. 2.6, we
+apply the data-processing inequality once again to Eq. 1 by including the joint probability of the whole reverse and forward
+diffusion processes overa 0:K
+t . This yields
+DKL
+ 
+qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 )
+
+≤D KL
+ 
+qθ(a0:K
+0:T , s0:T+1 )
+π(a0:K
+0:T , s0:T+1 )
+
+,(13)
+whereq θ(a0:K
+t |s t)andπ(a 0:K
+t |s t)denote the joint distributions
+qθ(a0:K
+0:T , s0:T+1 ) =
+TY
+t=0
+p(st+1 |s t, a0
+t )q θ(a0:K
+t |s t)p(s 0)andπ(a 0:K
+0:T , s0:T+1 ) =
+TY
+t=0
+p(st+1 |s t, a0
+t )π(a 0:K
+t |s t)p(s 0).
+KL decomposition:The KL divergence between the joint diffusion policy qθ and the reference trajectory distribution π
+decomposes over timetand diffusion indexkas
+DT
+KL
+ 
+qθ(a0:K
+0:T , s0:T+1 )
+π(a0:K
+0:T , s0:T+1 )
+
+=
+TX
+t=0
+KX
+k=1
+Est, ak
+t , ak−1
+t ∼qθ
+"
+Tlog qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+−R env(st, a0
+t )1 {k=0}
+#
++C,
+(14)
+where1 {k=0} is the indicator function andCcollects all terms independent ofθ.
+We prove in App. D that when taking the derivative of Eq. 14 the policy gradient theorem still holds and thus the KL
+objective can also be rewritten as a surrogate loss forDiffusion-based Maximum Entropy Reinforcement Learning:
+LDiffRL(θ,˜s˜t) =T
+TX
+t=0
+KX
+k=1
+Eak
+t ∼qθ∗
+
+DKL
+ 
+qθ(· |˜s˜t)
+ π(ak
+t | ·, st)exp
+ 
+α Qqθ∗
+Diff(˜s˜t,·)
+
+Z(˜s˜t)
+!
+. (15)
+Where the corresponding Q- and value functions are
+Qqθ∗
+Diff(˜s˜t, ak−1
+t ) = ˜RDiff(ak−1
+t ,˜s˜t) +V Diff(˜s˜t+1),
+VDiff(˜s˜t) =E ak−1
+t ∼qθ∗(·|ak
+t ,st)
+h
+Qqθ∗
+Diff(˜s˜t, ak−1
+t )− Tlog qθ∗(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+i
+,(16)
+˜s˜t = ˜s˜t(t,k) = (st, ak
+t , k)and ˜RDiff is defined in Eq. 17 (see Sec. 3.1). Importantly, the value function includes the log ratio
+between forward and reverse diffusion transition probabilities.
+7
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+3.1. Diffusion-Based Maximum Entropy Reinforcement Learning MDP
+We can formulate the resulting Diffusion-based Maximum Entropy MDP by flattening the original time steps (t= 0, . . . , T)
+and the reverse diffusion steps (k=K, . . . ,0) into a single augmented time index (˜t):
+˜t(t, k) =t(K+ 1) + (K−k),˜s ˜t(t,k) = (st, ak
+t , k),˜a ˜t(t,k) =a k
+t .
+The reward is defined such that only the actual environment action (k= 0) receives the environment reward:
+˜RDiff(˜s˜t(t,k),˜a˜t(t,k)) =
+(
+0, k >0,
+Renv(st, a0
+t ), k= 0. (17)
+The augmented MDP transition kernel is
+p(˜s˜t+1 |˜s˜t,˜a˜t) =
+
+
+
+δ
+
+˜s˜t+1 = (st, ak−1
+t , k−1)
+
+, k >0,
+p(st+1 |s t, a0
+t )⊗q prior(aK
+t+1)⊗δ(k−K), k= 0
+This formulation explicitly captures the reverse diffusion steps as intermediate MDP states. For (k >0), the MDP moves
+to the next lower diffusion step (k−1 ) while keeping the environment state (st) fixed. When ( k= 0 ), the environment
+transitions forward to (st+1) and the next diffusion chain starts with (aK
+t+1) sampled from the prior, effectively resetting the
+diffusion step index to (K). This ensures that the augmented MDP correctly integrates both the environment dynamics and
+the diffusion-based policy structure. This MDP is the same as in DPPO (Ren et al., 2025), however, unlike in DPPO the
+definition of the value function is different (see Eq. 16). Thus, our formulation matches the DPPO formulation at T= 0 and
+is otherwise different.
+3.2. Diffusion-based Maximum Entropy Wasserstein Policy Optimization
+We extend diffusion-based policies toWasserstein Policy Optimization (WPO)(Pfau et al., 2025), which can be derived
+by projecting the Wasserstein Gradient Flow of the surrogate loss in Eq. 15 via the reverse-KL into parameter space (see
+App. C). Thus we obtain the following surrogate objective forDiffWPO:
+LWPO(θ,˜s˜t) =E at∼qθ∗(ak−1
+t |ak
+t ,st)
+h
+∇ak−1
+t
+
+Tlog qθ∗(ak−1
+t |ak
+t , st)
+π(ak
+t |ak−1
+t , st)
+−Q qθ∗
+Diff(˜s˜t, ak−1
+t )
+
+∇ak−1
+t
+logq θ(ak−1
+t |ak
+t , st)
+i
+,
+(18)
+where the gradient of this loss should be scaled afterwards using the inverse Fisher Matrix or its approximations as in Pfau
+et al. (2025). For additional implementation details, see App. E.3.
+4. Experiments
+In this section, we evaluate the proposed diffusion-augmented RL algorithms (DiffPPO,DiffSAC,DiffWPO) on a suite of
+standard continuous control benchmarks. First, we present some ablation studies and then we compare our method against
+vanilla counterparts (PPO, SAC) to measure sample efficiency, stability, and final performance.
+4.1. Ablation Studies
+Methods improves with increasing amount of Diffusion Steps:We evaluate how the performance of DiffPPO, DiffWPO,
+and DiffSAC scales with the number of diffusion steps. These experiments are conducted with thevariance-preserving (VP)
+SDEwith prior variance ν= 2.2 and a linear noise schedule βk ranging from 3 to 0.05. A sweep is performed over three
+learning rates to get the best configuration in each setting. Additional hyperparameters are detailed in Appendix F.3. Figure 1
+presents the results, where each diffusion-based RL algorithm is assessed using three distinct diffusion step configurations.
+Performance metrics are averaged across four independent seeds. Our findings indicate that increasing the number of
+diffusion steps enhances the efficiency of all methods, reducing the number of environment interactions required while
+simultaneously improving overall return.
+8
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Figure 1.Effect of varying the number of diffusion steps K on the Humanoid-v4 environment for DiffPPO, DiffSAC and DiffWPO. The
+average and standard deviation are taken over four seeds.
+4.2. Main Results
+Figure 2 compares DiffPPO, DiffSAC, and DiffWPO against respective baselines, PPO and SAC, on the Humanoid,
+Humanoid-Run, and Humanoid-Standup benchmarks. Across all three tasks, diffusion-augmented policies exhibit con-
+sistently higher sample efficiency and achieve a higher average return. In particular, our experiments show that DiffPPO
+substantially increases sample efficiency in terms of environment interactions compared to PPO, enabling the agent to
+achieve higher returns with fewer base-environment interactions. Likewise, DiffSAC not only improves sample efficiency
+relative to SAC but also achieves a higher overall average return, demonstrating the benefit of integrating diffusion-based
+structure into off-policy training. Additionally, our results show that DiffWPO performs similarly to DiffSAC. Overall,
+these evaluations show that our proposed methods—DiffPPO, DiffSAC, and DiffWPO—achieve strong performance across
+challenging humanoid control tasks.
+(a)Walker2d-v4
+ (b)Humanoid-run-v4
+ (c)Humanoid-v4
+Figure 2.Performance comparison of diffusion-augmented RL algorithms and their vanilla counterparts. Curves are averaged over four
+independent seeds; shaded areas denote standard deviation.
+5. Related Work
+Diffusion Models in Reinforcement Learning:Diffusion models have recently been explored in RL to represent complex
+action distributions. Other works often optimize forward-KL objectives (Dong et al., 2025; Ma et al., 2025) by replacing
+the reverse KL divergence in Eq. 3 with a forward KL divergence. However, the forward KL requires samples from the
+target distribution, which are not available, and thus neural importance sampling is used to address this challenge. However,
+this introduces bias, high variance, andmode-coveringbehavior, which is undesirable in RL because sampling suboptimal
+actions should be entirely avoided. DiME (Celik et al., 2025) integrates diffusion models with SAC, but in contrast to our
+method, does not evaluate a Q-function at each diffusion step. Their objective is based on applying the Data Processing
+Inequality directly on the surrogate loss in Eq. 3. Their method requires backpropagation through the entire diffusion chain
+for every environment action, which is memory-intensive for a large number of diffusion steps T. Furthermore, within
+the computation of the maximum entropy value function as in Sec. 2.1, they rely on estimatinglogq θ(at|st)using a lower
+bound. In contrast to this, our Diffusion-based RL approaches train the diffusion model itself using RL, as in (Sanokowski
+et al., 2025a), thus allowing for more memory-efficient training. DPPO (Ren et al., 2025) corresponds to a special case of
+DiffPPO whenT= 0. Our DiffPPO formulation generalizes this method to arbitrary temperatures.
+9
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+6. Conclusion
+In this work, we introduced a principled framework for generalizing reinforcement learning to diffusion-based policies,
+which we nameDiffusion-based Maximum Entropy Reinforcement Learning (DMERL). This unified approach, derived
+from reverse KL minimization, generalizes and simplifies prior diffusion-based RL methodologies.
+We further make key theoretical findings: first, establishing a direct equivalence by showing that the off-policy Maximum
+Entropy RL surrogate loss (e.g., used in SAC) can be derived from the log-variance (trajectory balance) loss (Richter et al.,
+2020; Malkin et al., 2022a); and second, deriving a Maximum Entropy formulation of the recently proposed Wasserstein
+Policy Optimization (WPO) (Pfau et al., 2025).
+Building on our DMERL framework, we proposed three novel diffusion-augmented algorithms:DiffPPO,DiffSAC, and
+DiffWPO. These methods are practical and easily implementable, requiring only minor modifications to standard libraries,
+such as Stable-Baselines3 (Raffin et al., 2021). We demonstrated that they achieve strong performance on challenging
+continuous-control benchmarks, substantially improving both sample efficiency and final average returns compared to their
+respective base algorithms (SAC and PPO). Our ablation studies show that performance improves as the number of diffusion
+steps increases.
+While we show that DMERL methods already achieve promising results, their performance could be further enhanced by
+incorporating architectural and algorithmic improvements such as using the Bro Architecture (Nauman et al., 2024), CrossQ
+learning in the critic (Bhatt et al., 2019), and Distributional RL (Bellemare et al., 2017) as used in DiMES (Celik et al., 2025).
+Finally, we note that our current implementation is not optimized for maximum efficiency, as diffusion environment steps
+are executed through the SubprocVecEnv in Stable Baselines 3. This design choice introduces avoidable overhead as the
+intermediate diffusion MDP steps can, in principle, be vectorized, which would make the overall algorithm substantially
+more efficient.
+Looking ahead, there are several promising directions for future work. First, our framework could be extended to use
+diffusion bridge samplersfor policy parametrization (Vargas et al., 2024; Richter & Berner, 2024; Sanokowski et al., 2025b)
+for more efficient trajectory-level modeling. Second, this framework can in principle also be applied to discrete state and
+action spaces, particularly where the number of possible actions is very large, making direct sampling intractable. Examples
+of this include combinatorial optimization tasks such as those explored in NeuralCO (Karalias & Loukas, 2020). Notably,
+our framework offers a more general approach than some existing methods, such as those in (Sanokowski et al., 2025a), by
+inherently allowing for probabilistic transition environment states. Finally, such a diffusion-based RL framework in discrete
+state spaces can be applied to many other settings, such as reinforcement learning from human feedback (RLHF) (Ouyang
+et al., 2022) for Diffusion Language Models (DiffusionLLMs) (Nie et al., 2025), supporting memory-efficient RLHF-based
+finetuning.
+Impact Statement
+Diffusion-based reinforcement learning has the potential to improve decision-making systems in real-world applications
+where sample efficiency and safe exploration are critical. By enabling policies that can model complex, multimodal action
+distributions, our framework could lead to more adaptive and reliable robotics, autonomous systems, and other AI agents
+that interact with dynamic environments.
+At the same time, as with all powerful generative and decision-making models, there are societal risks. More capable RL
+agents could be misused in autonomous systems for harmful purposes or inadvertently reinforce biased or unsafe behaviors
+if trained inappropriately. Careful evaluation, robust safety constraints, and ethical deployment practices are essential to
+ensure these technologies benefit society responsibly.
+Acknowledgements
+This work utilized high-performance computing resources, which were indispensable for training and evaluating our
+diffusion-based reinforcement learning models. We gratefully acknowledge the extensive support and computational access
+provided by the EUROHPC Joint Undertaking. We would like to specifically thank the VEGA supercomputing facility for
+providing a reliable computing environment and a generous allocation of GPU hours. The Karolina cluster was essential for
+accelerating our experimentation and enabling the large-scale batch rollouts and ablation studies. Furthermore, we extend
+our thanks to the team operating Meluxina for their technical support and allowing us to run long-horizon experiments under
+10
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+demanding memory and compute conditions. The results presented in this work would not have been possible without the
+computational power and infrastructure reliability provided by these institutions.
+Author Contributions:S.S. developed the theory, implemented the algorithm, and conducted the primary experiments. K.P
+assisted with experiments. A.K provided funding support.
+11
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+References
+Bellemare, M. G., Dabney, W., and Munos, R. A distributional perspective on reinforcement learning. InInternational
+conference on machine learning, pp. 449–458. PMLR, 2017.
+Benamou, J.-D. and Brenier, Y . A computational fluid mechanics solution to the monge-kantorovich mass transfer problem.
+Numerische Mathematik, 84(3):375–393, 2000.
+Berner, J., Richter, L., and Ullrich, K. An optimal control perspective on diffusion-based generative modeling.arXiv
+preprint arXiv:2211.01364, 2022.
+Bhatt, A., Palenicek, D., Belousov, B., Argus, M., Amiranashvili, A., Brox, T., and Peters, J. Crossq: Batch normalization in
+deep reinforcement learning for greater sample efficiency and simplicity.arXiv preprint arXiv:1902.05605, 2019.
+Celik, O., Li, Z., Blessing, D., Li, G., Palenicek, D., Peters, J., Chalvatzaki, G., and Neumann, G. Dime: Diffusion-based
+maximum entropy reinforcement learning.arXiv preprint arXiv:2502.02316, 2025.
+Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y ., Burchfiel, B., Tedrake, R., and Song, S. Diffusion policy: Visuomotor
+policy learning via action diffusion.The International Journal of Robotics Research, 44(10-11):1684–1704, 2025.
+Csisz´ar, I. On information-type measure of difference of probability distributions and indirect observations.Studia Sci.
+Math. Hungar., 2:299–318, 1967.
+Dong, X., Cheng, J., and Zhang, X. S. Maximum entropy reinforcement learning with diffusion policy.arXiv preprint
+arXiv:2502.11612, 2025.
+Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft actor-critic: Off-policy maximum entropy deep reinforcement
+learning with a stochastic actor. InInternational conference on machine learning, pp. 1861–1870. Pmlr, 2018.
+Hibat-Allah, M., Inack, E. M., Wiersema, R., Melko, R. G., and Carrasquilla, J. Variational neural annealing.Nat.
+Mach. Intell., 3(11):952–961, 2021. doi: 10.1038/s42256-021-00401-3. URL https://doi.org/10.1038/
+s42256-021-00401-3.
+Ho, J., Jain, A., and Abbeel, P. Denoising diffusion probabilistic models. InAdvances in Neural Informa-
+tion Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020,
+December 6-12, 2020, virtual, 2020. URL https://proceedings.neurips.cc/paper/2020/hash/
+4c5bcfec8584af0d967f1ab10179ca4b-Abstract.html.
+Ho, J., Salimans, T., Gritsenko, A., Chan, W., Norouzi, M., and Fleet, D. J. Video diffusion models.Advances in neural
+information processing systems, 35:8633–8646, 2022.
+Kappen, H. J., G´omez, V ., and Opper, M. Optimal control as a graphical model inference problem.Machine learning, 87(2):
+159–182, 2012.
+Karalias, N. and Loukas, A. Erdos goes neural: an unsupervised learning framework for combinatorial optimization on
+graphs. InAdvances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing
+Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual, 2020. URLhttps://proceedings.neurips.cc/
+paper/2020/hash/49f85a9ed090b20c8bed85a5923c669f-Abstract.html.
+Levine, S. Reinforcement learning and control as probabilistic inference: Tutorial and review.arXiv preprint
+arXiv:1805.00909, 2018.
+Ma, H., Nabati, O., Rosenberg, A., Dai, B., Lang, O., Szpektor, I., Boutilier, C., Li, N., Mannor, S., Shani, L., et al.
+Reinforcement learning with discrete diffusion policies for combinatorial action spaces.arXiv preprint arXiv:2509.22963,
+2025.
+Malkin, N., Jain, M., Bengio, E., Sun, C., and Bengio, Y . Trajectory balance: Improved credit assignment in gflownets.
+Advances in Neural Information Processing Systems, 35:5955–5967, 2022a.
+Malkin, N., Lahlou, S., Deleu, T., Ji, X., Hu, E., Everett, K., Zhang, D., and Bengio, Y . Gflownets and variational inference.
+arXiv preprint arXiv:2210.00580, 2022b.
+12
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Nauman, M., Ostaszewski, M., Jankowski, K., Miło´s, P., and Cygan, M. Bigger, regularized, optimistic: scaling for compute
+and sample efficient continuous control.Advances in neural information processing systems, 37:113038–113071, 2024.
+Neklyudov, K., Nys, J., Thiede, L., Carrasquilla, J., Liu, Q., Welling, M., and Makhzani, A. Wasserstein quantum monte
+carlo: a novel approach for solving the quantum many-body schr ¨odinger equation.Advances in Neural Information
+Processing Systems, 36:63461–63482, 2023.
+Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., Zhou, J., Lin, Y ., Wen, J.-R., and Li, C. Large language diffusion models.
+arXiv preprint arXiv:2502.09992, 2025.
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A.,
+et al. Training language models to follow instructions with human feedback.Advances in neural information processing
+systems, 35:27730–27744, 2022.
+Pfau, D., Davies, I., Borsa, D. L., Ara´ujo, J. G. M., Tracey, B. D., and van Hasselt, H. Wasserstein policy optimization. In
+Forty-second International Conference on Machine Learning, 2025. URL https://openreview.net/forum?
+id=oAKe7MG9GM.
+Raffin, A., Hill, A., Gleave, A., Kanervisto, A., Ernestus, M., and Dormann, N. Stable-baselines3: Reliable reinforcement
+learning implementations.Journal of Machine Learning Research, 22(268):1–8, 2021. URL http://jmlr.org/
+papers/v22/20-1364.html.
+Ren, A. Z., Lidard, J., Ankile, L. L., Simeonov, A., Agrawal, P., Majumdar, A., Burchfiel, B., Dai, H., and Simchowitz, M.
+Diffusion policy policy optimization. InThe Thirteenth International Conference on Learning Representations, 2025.
+URLhttps://openreview.net/forum?id=mEpqHvbD2h.
+Richter, L. and Berner, J. Improved sampling via learned diffusions. InInternational Conference on Learning Representa-
+tions, 2024. URLhttps://openreview.net/forum?id=fmPpbbPjQb.
+Richter, L., Boustati, A., N¨usken, N., Ruiz, F., and Akyildiz, O. D. Vargrad: a low-variance gradient estimator for variational
+inference.Advances in Neural Information Processing Systems, 33:13481–13492, 2020.
+Rombach, R., Blattmann, A., Lorenz, D., Esser, P., and Ommer, B. High-resolution image synthesis with latent diffusion
+models. InProceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp. 10684–10695,
+2022.
+Sanokowski, S., Berghammer, W., Hochreiter, S., and Lehner, S. Variational annealing on graphs for
+combinatorial optimization. InAdvances in Neural Information Processing Systems 36: Annual Con-
+ference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, De-
+cember 10 - 16, 2023, 2023. URL http://papers.nips.cc/paper_files/paper/2023/hash/
+c9c54ac0dd5e942b99b2b51c297544fd-Abstract-Conference.html.
+Sanokowski, S., Hochreiter, S., and Lehner, S. A diffusion model framework for unsupervised neural combinatorial
+optimization. InProceedings of the 41st International Conference on Machine Learning, volume 235 ofProceedings
+of Machine Learning Research, pp. 43346–43367. PMLR, 21–27 Jul 2024. URL https://proceedings.mlr.
+press/v235/sanokowski24a.html.
+Sanokowski, S., Berghammer, W., Ennemoser, M., Wang, H. P., Hochreiter, S., and Lehner, S. Scalable discrete diffusion
+samplers: Combinatorial optimization and statistical physics. InThe Thirteenth International Conference on Learning
+Representations, 2025a. URLhttps://openreview.net/forum?id=peNgxpbdxB.
+Sanokowski, S., Gruber, L., Bartmann, C., Hochreiter, S., and Lehner, S. Rethinking losses for diffusion bridge samplers.
+arXiv preprint arXiv:2506.10982, 2025b.
+Schulman, J., Levine, S., Abbeel, P., Jordan, M., and Moritz, P. Trust region policy optimization. InInternational conference
+on machine learning, pp. 1889–1897. PMLR, 2015.
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms.CoRR,
+abs/1707.06347, 2017. URLhttp://arxiv.org/abs/1707.06347.
+13
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Sohl-Dickstein, J., Weiss, E. A., Maheswaranathan, N., and Ganguli, S. Deep unsupervised learning using nonequilibrium
+thermodynamics. InProceedings of the 32nd International Conference on Machine Learning, ICML 2015, Lille, France,
+6-11 July 2015, volume 37 ofJMLR Workshop and Conference Proceedings, pp. 2256–2265. JMLR.org, 2015. URL
+http://proceedings.mlr.press/v37/sohl-dickstein15.html.
+Song, Y ., Durkan, C., Murray, I., and Ermon, S. Maximum likelihood training of score-based diffusion models.Advances in
+neural information processing systems, 34:1415–1428, 2021a.
+Song, Y ., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. Score-based generative modeling through
+stochastic differential equations. In9th International Conference on Learning Representations, ICLR 2021, Virtual Event,
+Austria, May 3-7, 2021. OpenReview.net, 2021b. URL https://openreview.net/forum?id=PxTIG12RRHS.
+Sun, H., Guha, E. K., and Dai, H. Annealed training for combinatorial optimization on graphs. InOPT 2022: Opti-
+mization for Machine Learning (NeurIPS 2022 Workshop), 2022. URL https://openreview.net/forum?id=
+fo3b0XjTkU.
+Sutton, R. S. and Barto, A. G.Reinforcement Learning: An Introduction. The MIT Press, second edition, 2018. URL
+http://incompleteideas.net/book/the-book-2nd.html.
+Todorov, E. General duality between optimal control and estimation. In2008 47th IEEE conference on decision and control,
+pp. 4286–4292. IEEE, 2008.
+Vargas, F., Grathwohl, W., and Doucet, A. Denoising diffusion samplers.arXiv preprint arXiv:2302.13834, 2023.
+Vargas, F., Padhy, S., Blessing, D., and N¨usken, N. Transport meets variational inference: Controlled monte carlo diffusions.
+InThe Twelfth International Conference on Learning Representations, 2024.
+Zhang, Q. and Chen, Y . Path integral sampler: A stochastic control approach for sampling. InProceedings of the
+International Conference on Learning Representations (ICLR), 2022. URL https://openreview.net/forum?
+id=_uCb2ynRu7Y.
+Ziebart, B. D.Modeling purposeful adaptive behavior with the principle of maximum causal entropy. Carnegie Mellon
+University, 2010.
+14
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+A. Reverse Log-Derivative Trick and Derivation of the Surrogate KL Objective
+In this appendix, we provide the complete derivation from the trajectory-level KL divergence
+DKL
+ 
+qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 )
+
+to the per-state surrogate KL objective used in maximum-entropy reinforcement learning. We first show how the environment
+dynamics cancel, then explain why the policy gradient theorem applies, and finally show how the reverse log-derivative trick
+leads to a tractable surrogate loss.
+A.1. Trajectory Distributions and Cancellation of Dynamics
+Recall the trajectory distributions:
+qθ(a0:T , s0:T+1 ) =
+TY
+k=0
+p(sk+1 |s k, ak)q θ(ak |s k)p(s 0),
+π(a0:T , s0:T+1 ) =
+TY
+k=0
+p(sk+1 |s k, ak)π(a k |s k)p(s 0).
+Both distributions contain the same environment dynamics and initial state distribution. Inside log probability ratios
+log qθ(a0:T ,s0:T )
+π(a0:T ,s0:T ) within the KL divergence we have,
+logp(s k+1 |s k, ak)−logp(s k+1 |s k, ak) = 0,logp(s 0)−logp(s 0) = 0,
+so these terms cancel exactly. Thus the trajectory-level KL reduces to a sum of per-timestep policy KL terms:
+logq θ(a0:T , s0:T )−logπ(a 0:T , s0:T ) =
+TX
+t=0
+ 
+logq θ(at |s t)−logπ(a t |s t)
+
+.
+withlogπ(a t |s t) =R env(at, st) +C t leading withC:= PT
+t=0 Ct to
+DT
+KL
+ 
+qθ(a0:T , s0:T )
+π(a0:T , s0:T )
+
+=
+TX
+t=0
+Est,at∼qθ(at,st)
+
+Tlogq θ(at |s t)−R env(st, at)
+
++C.
+A.2. Why the Policy Gradient Theorem Applies
+We begin with the reverse–KL objective
+DKL(qθ ∥π) =E qθ
+" TX
+t=0
+ 
+logq θ(at |s t)−logπ(a t |s t)
+
+#
+.
+To express this in the standard RL framework, we rewrite it as the expectation of a sum ofmodified rewards. Define
+˜r(st, at) :=R env(st, at)− Tlogqθ(at |s t), ˜R(τ) =
+TX
+t=0
+˜r(st, at).
+The key identity
+Eat∼qθ [∇θ logq θ(at |s t)] = 0
+implies that terms of the form f(at, st)∇θ logq θ(at |s t) behave, for gradient purposes, exactly as if f were independent of
+θ. Thus, the reward dependence of −Tlogq θ(at |s t) on θ does not introduce any additional terms in the gradient, and we
+can treat˜r(st, at)as a valid reward function for the purpose of applying the policy gradient theorem.
+15
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Hence, the KL-based objective is equivalent (up to a sign) to the standard RL objective
+J(θ) =E τ∼qθ
+" TX
+t=0
+˜r(st, at)
+#
+,withJ(θ) =−D KL(qθ∥π).
+Since J(θ) is now the expected cumulative reward under policy qθ, the policy gradient theorem (Sutton & Barto, 2018)
+applies directly:
+∇θDKL(qθ∥π) =
+TX
+t=0
+Est,at∼qθ [−˜r(st, at)∇θ logq θ(at |s t)].
+Substituting˜r(st, at) =R env(st, at)− Tlogqθ(at |s t)yields the expression stated in the main text.
+A.3. Reverse Log-Derivative Trick
+Define the unnormalized Boltzmann policy:
+π(a|s)∝exp(βQ qθ (s, a)).
+The KL divergence
+DKL
+ 
+qθ(at|st)∥π(a t|st)
+
+has gradient
+∇θDT
+KL =E qθ [(Tlogq θ(at|st)−Q qθ (st, at))∇θ logq θ(at|st)],
+which proves the identity.
+The target distribution π(a|s) depends on θ through the critic Qqθ . When applying the reverse log-derivative trick, the
+gradient must only act on theexplicitdependence of the KL term on qθ. To make the gradient match the true KL gradient,
+we musttreat the inside of the Boltzmann distribution as a constantwith respect toθ:
+Qqθ (s, a)−→Q qθ∗
+(s, a),
+whereθ ∗ indicates a stop-gradient.
+This is not a heuristic modification: The stop-gradient arises directly from applying the log-derivative trick in reverse,
+ensuring that the gradient of the surrogate KL exactly matches the gradient of the original trajectory KL for the current
+iterate.
+The resulting surrogate loss is
+L(θ) =T
+TX
+t=0
+Est∼qθ∗
+
+DKL
+
+qθ(at|st)
+
+exp(βQqθ∗ (st, at))
+Z(st)
+
+. (19)
+This surrogate objective satisfies the following property:
+The gradient of the surrogate loss equals the gradient of the original trajectory KL exactly at the current iterate θ=θ ∗.
+After the first update, the gradients of the surrogate and true objectives deviate. This mirrors the behavior of most modern
+RL algorithms—including PPO or TRPO (Schulman et al., 2015), which optimize surrogate objectives that are locally exact
+but globally approximate. This approximation is crucial for computational tractability and is a necessary design choice.
+B. Policy-gradient style derivation for the Log Variance loss
+Notation and assumptions
+Consider finite-horizon trajectories written explicitly as
+(a0:T , s0:T+1 )≡(s 0, a0, s1, a1, . . . , sT , aT , sT+1 ).
+16
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Let ρ(s0) be the initial state distribution, qθ(at |s t) the parametric policy (the object we differentiate), and p(st+1 |s t, at)
+the Markov environment dynamics. The reference trajectory distribution π is fixed and independent of θ. We will often
+assume compatible factorizations forq θ andπ, namely
+qθ(a0:T , s0:T+1 ) =ρ(s 0)
+TY
+t=0
+qθ(at |s t)p(s t+1 |s t, at),
+π(a0:T , s0:T+1 ) =ρ(s 0)
+TY
+t=0
+π(at |s t)p(s t+1 |s t, at),
+but the key requirement is only that π does not depend on θ. Let ω denote an arbitrary (possibly off-policy) distribution over
+full trajectories(a 0:T , s0:T+1 ). We assumeωis fixed (does not depend onθ).
+Define the per-trajectory log-ratio
+ℓθ(a0:T , s0:T+1 ) := log qθ(a0:T , s0:T+1 )
+π(a0:T , s0:T+1 ) =
+TX
+t=0
+log qθ(at |s t)
+π(at |s t)
+The LV loss is defined under the sampling distributionωas:
+Dω
+LV (qθ∥π) = 1
+2 E(a0:T ,s0:T+1 )∼ω
+
+(ℓθ(a0:T , s0:T+1 )−b ω
+θ )2
+,
+with the baseline
+bω
+θ :=E (a0:T ,s0:T+1 )∼ω
+
+ℓθ(a0:T , s0:T+1 )
+
+.
+Thus, the gradient is given by:
+∇θDω
+LV = 1
+2 ∇θEω
+
+(ℓθ −b ω
+θ )2
+=E ω
+h
+(ℓθ −b ω
+θ )
+ 
+∇θℓθ − ∇θbω
+θ
+i
+=E ω
+
+(ℓθ −b ω
+θ )∇θℓθ
+
+−E ω[ℓθ −b ω
+θ ]Eω[∇θℓθ].
+By definitionE ω[ℓθ −b ω
+θ ] = 0, so the second term vanishes. Thus we have the compact unbiased form
+∇θDω
+LV =E (a0:T ,s0:T+1 )∼ω
+
+(ℓθ(a0:T , s0:T+1 )−b ω
+θ )∇θℓθ(a0:T , s0:T+1 )
+
+.
+Becauseπis fixed and the dynamicspandρare independent ofθ,
+∇θℓθ(a0:T , s0:T+1 ) =∇ θ logq θ(a0:T , s0:T+1 ) =
+TX
+t=0
+∇θ logq θ(at |s t).
+Substituting into the boxed expression and interchanging sums and expectation yields
+∇θDω
+LV =E (a0:T ,s0:T+1 )∼ω
+"
+ 
+ℓθ(a0:T , s0:T+1 )−b ω
+θ
+T−1X
+t=0
+∇θ logq θ(at |s t)
+#
+=
+T−1X
+t=0
+E(a0:T ,s0:T+1 )∼ω
+h
+∇θ logq θ(at |s t)
+ 
+ℓθ(a0:T , s0:T+1 )−b ω
+θ
+i
+.
+We can now split the total log-ratioℓθ and the baselineb ω
+θ into ”Past” (indices0tot−1) and ”Future” (indicesttoT).
+ℓθ(a0:T , s0:T+1 ) =
+t−1X
+i=0
+log qθ(ai |s i)
+π(ai |s i) +
+TX
+i=t
+log qθ(ai |s i)
+π(ai |s i) :=ℓ θ(a0:t−1, s0:t−1) +ℓ θ(at:T , st:T+1 )
+bω
+θ =b ω
+0:t−1 +b ω
+t:T :=E (a0:t,s0:t)∼ω
+
+ℓθ(a0:t−1, s0:t−1)
+
++E (at:T ,st:T+1 )∼ω(·|st)ω(st)
+
+ℓθ(at:T , st:T+1 )
+
+17
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Substitute this into the gradient expression for a single time stept:
+E(a0:T ,s0:T+1 )∼ω
+h
+∇θ logq θ(at |s t)
+
+(ℓθ(a0:t−1, s0:t−1)−b ω
+0:t−1) + (ℓθ(at:T , st:T+1 )−b ω
+t:T )
+i
+.
+Integrating over(a 0:t−1, s0:t−1)then yields:
+E(at:T ,st:T+1 )∼ω(·|st)ω(st)
+h
+∇θ logq θ(at |s t)
+
+(bω
+0:t−1 −b ω
+0:t−1) + (ℓθ(at:T , st:T+1 )−b ω
+t:T
+i
+(20)
+=E (at:T ,st:T+1 )∼ω(·|st)ω(st)
+h
+∇θ logq θ(at |s t)
+
+(ℓθ(at:T , st:T+1 )−b ω
+t:T
+
+(21)
+With the past terms cancelled, we are left only with the future components:
+∇θDω
+LV =
+TX
+t=0
+E(at:T ,st:T+1 )∼ω(·|st)ω(st)
+h
+∇θ logq θ(at |s t)
+ 
+(ℓθ(at:T , st:T+1 )−b ω
+t:T
+i
+.
+Conditioning on (at, st) and defining Qω,qθ∗
+ℓ (at, st) = logπ(a t |s t)−E (at+1:T ,st+1:T+1 )∼ω[(ℓθ(at+1:T , st+1:T+1 )] =
+Renv(st, at)−b ω
+t+1:T . By defining V ω,qθ∗
+t :=E st+1∼ω(st+1)[V ω,qθ∗ (st+1)] =−b ω
+t+1:T (st+1) and remember that
+logπ(a t |s t) =R env(st, at)we arrive at:
+T ∇θDω
+LV =
+TX
+t=0
+E(at,st)∼ω
+h
+∇θ logq θ(at |s t)
+
+Tlogq θ(at |s t)−
+
+Qω
+ℓ (at, st)−V ω,qθ∗
+t
+i
+.
+where:
+Qω,qθ∗
+(st, at) =R env(st, at) +V ω,qθ∗
+(st+1),
+V ω,qθ∗
+(st) =E at∼ω(at|st)
+h
+Qω,qθ∗
+(st, at)− Tlogq θ∗(at |s t)
+i
+.
+When ω(st, at) =B(s t)q θ∗(at |s t), i.e. at every step t sampling actions at is done on policy, any baseline can be used
+and we can pull the expectation inV ω,qθ∗
+t =E st+1∼ω(st+1)[V ω,qθ∗ (st+1)]out and arrive at:
+T ∇θDω
+LV =
+TX
+t=0
+EE(at,st)∼(qθ∗,B)
+h
+∇θ logq θ(at |s t)
+
+Tlogq θ(at |s t)−
+
+Qω
+ℓ (at, st)−V ω,qθ∗
+(st)
+i
+.
+C. Derivation of Maximum Entropy Wasserstein Policy Optimization
+Functional derivative.Expanding the KL gives (up to a constant independent ofq)
+L(q, s) =
+Z
+q(a|s)
+ 
+logq(a|s)−αQ qθ∗
+(s, a)
+
+da+const.
+Hence the functional derivative w.r.t. the densityqis
+δL(q, s)
+δq (s, a) = logq(a|s)−αQ qθ∗
+(s, a) +const. (22)
+The additive constant (including logZ(s) and the +1 from δ
+R
+qlogq/δq ) does not affect spatial gradients in a and can
+therefore be dropped for the flow.
+Wasserstein gradient flow (descent).We seek the steepest descent of Js in the 2-Wasserstein metric; the corresponding
+Wasserstein gradient flow (continuity equation form) is
+∂qθ(a|s)
+∂t =−∇ a·
+
+qθ(a|s)∇ a
+δL(q, s)
+δq (s, a)
+
+=−∇ a·
+
+qθ(a|s)∇ a
+ 
+logq θ(a|s)−αQ qθ∗
+(s, a)
+
+.(23)
+For compactness define the velocity field
+v(a) :=∇ a
+ 
+logq θ(a|s)−αQ qθ∗
+(s, a)
+
+.
+18
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+C.1. Projection of Wasserstein Flows onto a Parametric Policy Family
+To convert the Wasserstein gradient flow in Eq.(23) into a practical update for a parametric policy qθ(a|s) , we project
+the induced flow onto the space of densities representable byθ. Concretely, we choose the parameter perturbation∆θthat
+minimizes the KL divergence between the infinitesimally flowed density and the perturbed parametric density:
+∆θ= arg min
+δθ
+DKL
+h
+qθ
+ qθ + ∂qθ
+∂t dt− ∇θqθ δθ
+i
+.
+Locally, the KL can be approximated by a quadratic form defined by the Fisher information blocks:
+DKL ≈
+ dt
+−∆θ
+T 
+Ftt FT
+tθ
+Ftθ Fθθ
+ dt
+−∆θ
+
+,
+Ftt =E qθ [(∂t logq θ)2],F tθ =E qθ [∂t logq θ ∇θ logq θ],F θθ =E qθ [∇θ logq θ ∇θ logq T
+θ ].
+Minimizing this quadratic form gives the optimal parameter update
+∆θ=F −1
+θθ Ftθ,
+where the mixed block Ftθ captures the correlation between the flow in action space and the parametric gradients. For the
+reverse–KL functional,F tθ reduces to
+Ftθ =E a∼qθ
+
+∇θ∇a logq θ(a|s)∇ a(logq θ(a|s)−αQ qθ∗
+(s, a))
+
+,
+which leads directly to the Maximum Entropy WPO update in Eq. (9).
+Projection to parameter space.As explained in (Neklyudov et al., 2023; Pfau et al., 2025) the induced flow can be
+projected on the parametric familyqθ by minimizing the local KL between the flowed density and the parametric perturbation.
+The mixed Fisher block is
+Ftθ =
+Z
+∇θ logq θ(a|s) ∂qθ(a|s)
+∂t da.(24)
+Insert the flow from Eq. 23:
+Ftθ =−
+Z
+∇θ logq θ(a|s)∇ a·
+ 
+qθ(a|s)v(a)
+
+da.
+Expand the divergence and apply integration by parts. Using∇ a·(qv) =q∇ a·v+v·∇ aqwe obtain
+Ftθ =−
+Z
+∇θ logq θ
+
+qθ∇a·v+v·∇ aqθ
+
+da
+=−
+Z
+∇θqθ ∇a·v da−
+Z
+∇θ logq θ v·∇aqθ da.(25)
+For the first integral we apply the divergence theorem (integration by parts):
+−
+Z
+∇θqθ(a|s)∇ a·v(a)da=−
+Z
+∂Ω
+ 
+∇θqθ(a|s)v(a)
+
+·n(a)dS(a) +
+Z
+∇a
+ 
+∇θqθ(a|s)
+
+·v(a)da,(26)
+where Ω =R n is the action space and the surface integral is the boundary term. Under the standard regularity / tail-decay
+assumptions for parametric policies (e.g. Gaussian tails, or other densities for which ∇θqθ vanishes sufficiently fast at
+|a| → ∞) the surface integral vanishes. With the boundary term dropped we continue:
+Thus we arrive at:
+Ftθ =
+Z
+∇a
+ 
+∇θqθ
+
+·v da−
+Z
+∇θ logq θ v· ∇aqθ da.
+19
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+Using the identities
+∇aqθ =q θ ∇a logq θ,∇ θqθ =q θ ∇θ logq θ,
+we expand the first integrand:
+∇a(∇θqθ) =∇ a
+ 
+qθ∇θ logq θ
+
+= (∇aqθ)∇θ logq θ +q θ ∇a∇θ logq θ.
+Thus Z
+∇a(∇θqθ)·v da=
+Z h
+(∇aqθ) (∇θ logq θ ·v) +q θ (∇a∇θ logq θ ·v)
+i
+da.
+Hence the terms including(∇ aqθ) (∇θ logq θ ·v)cancel and we arrive at:
+Ftθ =
+Z
+qθ(a|s) (∇ a∇θ logq θ(a|s)·v(a))da.
+Divide byq θ and write the integral as an expectation:
+Ftθ =E a∼qθ(·|s)[∇θ∇a logq θ(a|s)·v(a)].
+Usingv(a) =∇ a(logq θ(a|s)−αQ qθ∗ (s, a)), we obtain
+Ftθ =E a∼qθ(·|s)
+
+∇θ∇a logq θ(a|s)∇ a
+ 
+logq θ(a|s)−αQ qθ∗
+(s, a)
+
+.
+Final Update Formula:LetF θθ denote the Fisher information matrix
+Fθθ =E a∼qθ(·|s)
+
+∇θ logq θ ∇θ logq ⊤
+θ
+
+.
+Thus the parameter increment
+∆θ=F −1
+θθ Ftθ.
+is given by:
+θt+1 =θ t +ηF −1
+θθ Es∼qθ∗, a∼qθ
+h
+∇θ∇a logq θ(a|s)∇ a
+ 
+αQqθ∗
+(s, a)− Tlogqθ∗(a|s)
+i
+. (27)
+Where we have included the outer scaling T and averaging over states sampled from qθ∗ (the stop-gradient sampling
+distribution).
+Practical approximations.Equation (27) requires the mixed derivative ∇θ∇a logq θ and a (possibly large) Fisher
+matrix inverse F−1
+θθ . In practice we (as in (Pfau et al., 2025)) approximate expectations with samples, and use tractable
+approximations to F−1
+θθ (diagonal, block diagonal, K-FAC, or other). The heuristic scaling used in (Pfau et al., 2025) (e.g.
+scaling of ∇µ and ∇σ when backpropagating through a Gaussian policy) can be applied unchanged here. After these
+approximations the update reduces to the working form shown in the main text.
+D. Policy Gradient Theorem for Diffusion Policies
+To rewrite the KL objective in Eq. 14 in a form suitable for the direct application of the policy-gradient theorem, we
+introduce a modified reward that absorbs both the diffusion-consistency terms and, atk= 0, the environment reward:
+˜RMaxEntDiff(ak−1
+t , ak
+t , st) :=
+
+
+
+−Tlog qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+ifk >0,
+Renv(st, a0
+t )− Tlog qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+ifk= 0.
+(28)
+20
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+The reverse-diffusion distributionπ(a k
+t |a k−1
+t , st)does not depend onθ. Furthermore, for anyq θ we have the identity
+Ea∼qθ [∇θ logq θ(a)] = 0.
+Therefore the termlogq θ(ak−1
+t |a k
+t , st)that appears inside the modified reward may be replaced by
+logq θ∗(ak−1
+t |a k
+t , st),
+where θ∗ indicates astop–gradient(i.e., treated as a constant). Under this convention the reward ˜RMaxEntDiff is independent
+of the policy parametersθ.
+Consequently, the KL objective can be written as an expectation of a parameter-independent per-step reward. Thus
+˜RMaxEntDiff is a valid reinforcement-learning reward signal, and the classical policy-gradient theorem applies directly
+without further modification or justification.
+D.1. Resulting policy gradient
+Applying the policy-gradient theorem to the parameter-independent reward ˜RMaxEntDiff, we obtain
+∇θDT
+KL =E qθ
+" TX
+t=0
+KX
+k=1
+˜RMaxEntDiff(ak−1
+t , ak
+t , st)∇θ logq θ(ak
+t |a k+1
+t , st)
+#
+.(29)
+Introducing the diffusion value and advantage functions defined in the main text, this can equivalently be written in advantage
+form:
+∇θDT
+KL =E qθ
+
+X
+t,k
+
+Tlog qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+−R env(st, a0
+t )1 {k=0}
+
+∇θ logq θ(ak
+t |a k+1
+t , st)
+
+.
+D.2. Reverse Log-Derivative Trick and Diffusion Surrogate Loss
+We now derive the surrogate loss used in Eq. 15.
+Consider the KL divergence
+DKL
+ 
+qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st) exp
+ 
+α Qqθ
+Diff(ak−1
+t , ak
+t , st)
+
+=E qθ
+"
+log qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+−α Qqθ
+Diff(ak−1
+t , ak
+t , st)
+#
++C,
+whereZ(s t)is the normalizing partition function (independent ofθ).
+Differentiating w.r.t.θand applying the log-derivative trick gives
+∇θDKL =E qθ
+" 
+log qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+−α Qqθ
+Diff(ak−1
+t , ak
+t , st)
+!
+∇θ logq θ(ak−1
+t |a k
+t , st)
+#
+.(30)
+This identity, applied at each diffusion index k and each timestep t, yields the surrogate loss expression in Eq. 15 of the
+main text:
+DT
+KL =T
+X
+t,k
+Eqθ
+
+DKL
+
+qθ(· |ak
+t , st)
+π(ak
+t | ·, st)exp(αQqθ
+Diff(st,·))
+Z(st, ak
+t )
+
++C.
+This completes the derivation.
+E. Implementation Details
+E.1. DiffPPO
+Our Diffusion PPO implementation follows the standard PPO algorithm but operates on the maximum entropy diffusion
+objective introduced in Section 3. Specifically, instead of learning directly from the environment reward Renv(st, at),
+21
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+we use themaximum entropy diffusion reward ˜RMaxEntDiff as defined in Eq. 28. During rollout, we therefore treat each
+reverse-diffusion step k as part of an augmented trajectory, and importantly, since the diffusion log ratios are already
+incorporated in the reward, we do not use these log ratios within the value function.
+The MDP is augmented following Section 3.1, but DiffPPO incorporates the diffusion terms directly into the reward
+rather than absorbing them into the value function. Thus, the PPO advantage estimator and clipped surrogate loss remain
+unchanged; the only modification is that the reward at each step is replaced with ˜RMaxEntDiff. Apart from this, reward
+reshaping and the diffusion rollout procedure, all optimization steps follow the Stable Baselines3 PPO implementation.
+In DiffPPO, we apply variational annealing (Hibat-Allah et al., 2021; Sun et al., 2022; Sanokowski et al., 2023) by
+exponentially reducing the temperature from an initial value Tstart down to T= 0 . We set Tstart = k
+dim(A) and found that
+k= [0.1,0.3] is a well performing range for this hyperparameter. During training, the temperature is halved every 10% of
+the total training steps.
+E.2. DiffSAC
+Diffusion Soft Actor-Critic is implemented on top of the Stable Baselines3 SAC codebase, but replaces both the underlying
+MDP and the value-learning objective. As described in Section 3.1, we convert each environment step into a sequence of K
+diffusion-index transitions over the augmented state ˜s˜t(t,k) = (st, ak
+t , k). The external reward remains unchanged and is
+assigned only at diffusion indexk= 0, following the definition of ˜RDiff in Section 3.1.
+Crucially, DiffSAC uses theDiffusion value functionandDiffusion Q-functiondefined in Section 3.1, which include the
+additional log-ratio term
+−Tlog qθ(ak−1
+t |a k
+t , st)
+π(ak
+t |a k−1
+t , st)
+.
+The actor updates are performed by minimizing Eq. 15 and the target updates use VDiff (see Eq. 16) instead of the value
+function as defined in Sec. 2.1. For automatic temperature tuning as in (Haarnoja et al., 2018), we follow (Celik et al., 2025)
+and use a lower bound of the entropy to control the temperature.
+The entropy lower boundH lower ≤H(π(a t|st))is given
+Hlower =E a0:K
+t ∼qθ
+h KX
+k=1
+π(ak
+t |ak−1
+t , st)
+qθ(ak−1
+t |ak
+t , st)
+−logq(a (K)
+t , st)
+i
+.(31)
+For DiffWPO and DiffSAC we observed that for your configuration of the diffusion noise schedule, setting the target Entropy
+value to−10 dim(A)yielded good results.
+E.3. DiffWPO
+The Diffusion Wasserstein Policy Optimization algorithm is implemented by modifying DiffSAC by replacing the Loss
+function in Eq. 15 by Eq. 18. Thus, in our experiments, DiffWPO is also an off-policy algorithm.
+F. Experimental Details
+F.1. Control Environments
+F.2. Humanoid Environment Configuration
+TheHumanoid-run-v4environment was instantiated with the following reward parameters. We set:
+forward reward weight= 5.0,ctrl cost weight= 0.005,healthy reward= 10.0.
+The increased forward–reward weight emphasizes sustained forward velocity. The higher control–cost weight penalizes
+excessive torque usage, promoting smoother and more energy-efficient movements. The elevated healthy–reward value
+strengthens the incentive to maintain an upright posture. These adjustments together create a reward structure that prioritizes
+stable, efficient running behavior.
+22
+A Diffusion Model Framework for Maximum Entropy Reinforcement Learning
+F.3. Hyperparameters
+For each experiment in Sec. 4, we run a hyperparameter sweep over three learning rates. For SAC and PPO, we additionally
+run a grid search over two values ofγand for PPO also over the entropy coefficient.
+F.4. Diffusion Hyperparameters
+The integration of diffusion samplers into reinforcement learning introduces a new set of hyperparameters, including:
+• thediffusion schedule,
+• theinitial SDE noise level(β max),
+• thefinal SDE noise level(β min),
+• thenumber of diffusion steps(K), where we consistently set∆t= 1
+K .
+For all diffusion-based methods, we define γ= 0.9991 (1/K) to eliminate the need for hyperparameter tuning in this context.
+Additionally, we fix the GAE-λ parameter in DiffPPO at 0.95, reserving a detailed investigation of its impact for future
+research.
+In DiffPPO, we scale the number of update steps per environment collection step by a factor of K. The implications of
+this adjustment, as well as the potential need to increase the number of collection steps in PPO with K, remain topics for
+future exploration. Increasing K reduces the frequency of original environment observations in the buffer, and its broader
+effects—such as on the clipping parameter—have yet to be examined.
+F.5. Score Network Initialization
+The neural network parameterizing the score function sθ(a(k), k)is initialized such that at the start of training, the model
+reproduces the prior distributionp(a K) =N(0, νI).
+F.6. Details on Action Generation:
+For all experiments, actions are sampled in RN space. The final action applied to the environment is obtained by scaling the
+last diffusion step through a tanh function to match the environment’s action bounds. In principle, simple clipping of the
+unbounded action values to the valid action range could also be applied as an alternative to thetanhsquashing function.
+23

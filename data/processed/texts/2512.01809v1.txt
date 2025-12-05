@@ -1,0 +1,2738 @@
+Much Ado About Noising: Dispelling the Myths of
+Generative Robotic Control
+Chaoyi Pana,$ Giri Anantharamana Nai-Chieh Huanga Claire Jina Daniel Pfrommerb
+Chenyang Yuanc Frank Permenterc Guannan Qua,† Nicholas Boffia,† Guanya Shia,†
+Max Simchowitza,†
+$Project lead. †Equal advising.
+aCarnegie Mellon University bMassachusetts Institute of Technology cToyota Research Institute
+C 1 .  D i s t r i b u t i o n a l
+L e a r n i n gH y p o t h e s i s F i n d i n g
+C 2 .  S t o c h a s t i c i t y
+I n j e c t i o n
+C 3 .  S u p e r v i s e d
+I t e r a t i v e  C o m p u t e
+T a x o n o m y  o f  G C P sW h y  G C P s  a r e  b e t t e r A  M i n i m a l  P o l i c y  t h a t  
+M a t c h e s  F l o w
+R e l a t i v e
+S u c c e s s  R a t e
+R e g r e s s i o n
+R e g r e s s i o n
+S F *
+S F *
+R R
+R R
+G M M
+A C T B E T
+F l o w
+F l o w
+M I P *
+M I P *
+0 . 7 4 0 . 7 4 0 . 7 3
+1 . 0 2 1 . 0 0
+C 2  +   > >  C 3 C 1
+p i x e l - b a s e d
+m u l t i - m o d a l
+e x p r e s s i v i t y
+r e p r e s e n t a t i o n  l e a r n i n g
+
+t r a i n i n g  s t a b i l i t y
+
+m a n i f o l d  l e a r n i n g
+ c o n t r o l
+
+ d a t a
+
+b e t t e r   
+
+Figure 1:Left:After careful ablation on each component over 28 common behavior cloning benchmarks with diverse
+input modalities (state, pixel, point cloud and language), architectures (with both raw and pre-trained models, likeπ0)
+and tasks (standard single-task benchmarks and multi-task benchmark likeLIBERO), we refute a number of popularly
+held misconceptions about whygenerative control policies(GCPs) outperform regression policies (RCP) on these
+tasks.Center:We identify that the most important factor contributing to GCP success is a combination ofstochastic
+injection(C2) andsupervised iterative computation(C3). Surprisingly , distribution learning (C1) is the least important
+factor, due to the absence of learned multi-modality (Section 3.2).Right:The average relative success rate to flow of
+7 most challenging tasks. We propose a simple two-stepminimal iterative policy(MIP) whose performance matches
+that of flow-based GCPs.
+a{chaoyip, giria, naichieh, clairej, gqu, nboffi, gshi, msimchow}@andrew.cmu.edu
+bdpfrom@mit.edu
+c{chenyang.yuan,frank.permenter}tri.global
+Website:https://simchowitzlabpublic.github.io/much-ado-about-noising-project/
+Code:https://github.com/simchowitzlabpublic/much-ado-about-noising
+Documentation:https://simchowitzlabpublic.github.io/much-ado-about-noising/
+Abstract
+Generative models, like flows and diffusions, have recently emerged as popular and efficacious
+policy parameterizations in robotics. There has been much speculation as to the factors underlying
+their successes, ranging from capturing multi-modal action distribution to expressing more complex
+1
+arXiv:2512.01809v1  [cs.RO]  1 Dec 2025
+behaviors. In this work, we perform a comprehensive evaluation of popular generative control poli-
+cies (GCPs) on common behavior cloning (BC) benchmarks. We find that GCPsdo notowe their
+success to their ability to capture multi-modality or to express more complex observation-to-action
+mappings. Instead, we find that their advantage stems fromiterative computation, as long as in-
+termediate steps are supervised during training and this supervision is paired with a suitable level
+ofstochasticity. As a validation of our findings, we show that a minimal iterative policy (MIP), a
+lightweight two-step regression-based policy , essentially matches the performance of flow GCPs, and
+often outperforms distilled shortcut models. Our results suggest that the distribution-fitting compo-
+nent of GCPs is less salient than commonly believed, and point toward new design spaces focusing
+solely on control performance.
+1 Introduction
+Long-horizon, dexterous manipulation tasks such as furniture assembly , food preparation, and manu-
+facturing have been a holy grail in robotics. Recent large robot action models (Team et al., 2025; Black
+et al., 2024; Kim et al., 2024) have made substantial breakthroughs towards these goals by imitating
+expert demonstrations of diverse qualities. We provide a more comprehensive review of related work
+in Section 6, but highlight here a key trend: while supervised learning from demonstration, also known
+asbehavior cloning(BC), has been applied across domains for decades (Pomerleau, 1988), its recent
+success in robotic manipulation has coincided with the adoption of what we termgenerative control
+policies(GCPs): robotic control policies that use generative modeling architectures, such as diffusion
+models, flow models, and autoregressive transformers, as parameterizations of the mapping from ob-
+servation to action. Given the seemingly transformative nature of GCPs for robot learning, there has
+been much speculation about the origin of their superior performance relative to policies trained with
+a regression loss, henceforthregression control policies(RCPs). GCPs, by modeling conditional dis-
+tributions over actions, are uniquely suited to the multi-task pretraining paradigm popular in today’s
+large robotic models. However, a number of hypotheses regarding the superiority of GCPs pertain even
+in thesingle tasksetting (Chi et al., 2023; Reuss et al., 2023):
+H1. Better performance on pixel-based control
+H2. Capturing multi-modality in the training data
+H3. Greater expressivity due to iterative computation of the observation-to-action mapping
+H4. Representation learning due to stochastic data augmentation
+H5. Improved training stability and scalability
+In this work, we systematically investigate these hypotheses to understand the mechanism by which
+GCPs have attained superior performance over RCPs. We aim to answer:
+Is therereallya benefit to using GCPs for behavior cloning, or are their claimed successes
+...much ado about noising?
+The gap between generative modeling and generative control.The objective for generative
+modeling in text and image domains is fundamentally different from the goal in a control task. In the
+former, one aims to generate high-quality anddiversesamples from the original data distribution. In the
+latter, it suffices to selectanyaction that leads to better downstream performance. Whereas much of
+2
+the generative modeling literature has focused on the distribution of thegenerated variable(Lee et al.,
+2023), we aim to understand if it is necessary to reproduce the expert data distribution—for example by
+capturing any multi-modality—to attain strong control performance. If not, is most salient to capture
+about theconditioning relationshipmappingo→a?
+1.1 Contributions.
+This paper adopts careful experimental methodology to rigorously test the key design components (Sec-
+tion 4) that contribute to the observed success of GCPs, and to account for the key mechanisms by which
+they contribute to improved performance in behavior cloning (Section 5). We restrict our study to flow-
+based GCPs, given their popularity and adoption in industry (Black et al., 2024; Physical Intelligence
+et al., 2025; NVIDIA et al., 2025).
+We begin by first identifying which factorsdo notcontribute to the advantage of GCPs over RCPs.
+Contribution 1(Neither multi-modality nor policy expressivity account for GCPs’ success, Sec-
+tion 3). Through careful benchmarking, we show that RCPs with appropriate architectures are highly
+competitive on both state- and image-based (H1) robot learning benchmarks as well as vision-language-
+action (VLA) model finetuning (Section 3.1). Performance gaps only arise on certain tasks requiring
+high precision. However, we show that neither multi-modality (H2, Section 3.2) nor the ability to ex-
+press more complex functions via multiple integration steps (H3, Section 3.3) satisfactorily accounts
+for this phenomenon. In fact, GCPs do not even provide greater trajectory diversity compared to RCPs
+(Section G).
+Essential to this finding is controlling for architecture: to our knowledge, we are the first work
+to carefully benchmark expressive architectures popularized for Diffusion (Chi et al., 2023; Dasari
+et al., 2024) as regression policies. To determine what contributes to GCPs performance on these high-
+precision tasks (beyond architectural optimization), we parse the design space of generative control
+policies into three components, depicted in Figure 1 (left).
+Contribution 2(Exposing the design space of GCPs, Section 4). We introduce a novel taxonomy that
+parses the three essential design components of GCPs:
+C1.Distributional Learning: matching a conditional distribution of actions given observations.
+C2.Stochasticity Injection: injecting noise during training to improve the learning dynamics.
+C3.Supervised Iterative Computation: generating output with multiple steps, each of which receives
+supervision during training.
+With this taxonomy in hand, Section 4.1 introduces a family of algorithms, each of which lies along
+a spectrum between GCPs and RCPs by exhibiting different combinations of the above components.
+While we find that neither C2 nor C3 in isolation improve over regression, we find their combination
+yields a policy whose performance is competitive with flow, leading to our next contribution.
+Contribution 3(MIP: the power of C2+C3, Sections 4.1 and 4.2). As an algorithmic ablation that only
+combines C2+C3, we devise aminimal iterative policy(MIP), which invokes only two iterations, one-
+step of stochasticity during training, and deterministic inference. Despite its simplicity ,MIPessentially
+matches the performance of flow-based GCPs across state-, pixel- and 3D point-cloud-based BC tasks,
+exposing that the combination of C2+C3 is responsible for the observed success of GCPs. In addition, we
+find thatMIPoften outperforms shortcut/few-step policies(Section 4.3). This confirms our findings
+3
+that distributional learning (which few-step policies, but notMIP, achieve) is not needed in robotic
+control.
+As described in Section 4.3,MIPis substantively distinct from flow-map-based models (Boffi et al.,
+2025a,b), including consistency models (Song et al., 2023; Kim et al., 2023) and their extensions (Geng
+et al., 2025; Frans et al., 2024), in that the latter do satisfy C1, and require training over a continuum
+of noise levels.
+Contribution 4(Attributing the benefits of C2+C3, Section 5). We identify that a property we term
+manifold adherencecaptures the inductive bias of GCPs andMIPrelative to RCPs, even in the absence
+of lower validation loss. We explain how this property is a useful proxy for closed-loop performance
+in control tasks. Finally , we expose how C3, through iterative computation, encourages manifold ad-
+herence, but only if stochasticity during training (C2) is present to mitigate compounding errors across
+iteration steps (as described in Section 5.2).
+Manifold adherence in Section 5.1 measures the generated action’s plausibility given out of distri-
+bution observations, where only off-manifold component is evaluated rather than the distance to the
+neighbors (Pari et al., 2021). Note that manifold adherence reflects a favorable inductive bias during
+learning, rather than brute expressivity of more complex behavior (H3). Moreover, C2 provides more
+of a supporting role to C3, rather than enhancing data-augmentation in its own right (H4). In addition,
+we find that C2+C3 also enhance scaling behavior (H5), likely due to better model utilization through
+decoupling across iterations. Finally , we identify that the subtle interplay between architecture choice,
+policy parameterization and task can affect performance by an even greater magnitude than the choice
+of policy parametrization (Section 5.3).
+Takeaway.In robotic applications, our findings suggest that the distributional formulation of GCPs
+— sampling from adistributionof actions given observations — is the least important facet that con-
+tributes to their success. Rather, our work highlights that C2+C3 offer an exciting and under-explored
+sandbox for future algorithm design in continuous control and beyond.
+2 Preliminaries
+We consider a continuous control setting with observationso∈Oand actionsa∈AwhereOis the
+observation space andAis the action space. We learn a policyπ:O→∆(A)from observations to
+(distributions over) actions to maximize the probability of successJ(π)on a given task, which we refer
+to as “performance.” This can be formulated as maximizing reward in an Markov Decision Process,
+which for completeness we formalize in Section K.1. We consider the performance of policies learned
+via BC—that is, supervised learning from a distribution of (observation, actions pairs) drawn from a
+training distributionp train. We now describe two popular classes of control policies, and their respective
+training objectives. In applications, the actionsaare often a short-open loop sequence of actions, or
+action-chunks, which have been shown to work more effectively for complex tasks with end-effector
+position commands (Zhao et al., 2023b). See Section 6 for an unabridged related work.
+Regression Control Policies (RCPs).A historically common policy choice for BC is regression
+control policies (RCPs) (Pomerleau, 1988; Bain & Sammut, 1995; Ross et al., 2011; Osa et al., 2018),
+given by a deterministic mapπ:O→A. In applications, it is parameterized by a neural networkπ θ
+4
+and trained so as to minimize theL 2-loss on training data:
+πθ ≈arg min
+θ
+E∥πθ(o)−a∥2,(o,a)∼p train. (2.1)
+Generative Control Policies (GCPs).Generative control policies (GCPs) parameterize adistribution
+of actionsagiven an observationo. This is often accomplished in practice by representing the policyπ θ
+with a generative model such as a diffusion (Chi et al., 2023), flow (Zhang et al., 2024), or tokenized
+autoregressive transformer (Shafiullah et al., 2022). Given their popularity , we focus on flow-based
+GCPs (flow-GCPs). A flow-GCP learns a conditional flow field (Lipman et al., 2023; Chisari et al., 2024;
+Nguyen et al., 2025; Albergo & Vanden-Eijnden, 2022; Heitz et al., 2023; Liu et al., 2022)b:[0, 1]×
+A×O→Aby minimizing the objective
+bθ ≈arg min
+θ
+E∥bt (It |o)− ˙It ∥2,t∼Unif([0, 1]),z∼N(0,I), (2.2)
+where again(o,a)∼p train,I t =ta+ (1−t)zis the stochastic interpolant between the training actiona
+and noise variablez, and where ˙It =a−zis the time derivative ofI t . We note that this is a special case
+of the stochastic interpolant framework (Albergo & Vanden-Eijnden, 2022; Albergo et al., 2023, 2024),
+which permits a larger menu of design decisions. A flow model then predicts an action by integrating
+a flow. In the limit of infinite discretization steps, this amounts to samplinga∼π θ(·|o)by sampling
+z∼N(0,I), and then settinga=a 1, where{a t }t∈[0,1] solves the ODE:
+d
+dt at =b t (at |o)with initial conditiona 0 =z. (2.3)
+In practical implementation, sampling is conducted via discretized Euler integration (see Section K.2
+for details). This yields a policya=π θ(z,o)which is a deterministic function of the initial noisezand
+the observationo. All experiments, unless otherwise stated, perform 9 integration steps. We reiterate
+that other GCPs, e.g. based on diffusion models and autoregressive transformers, have been studied
+elsewhere. We choose to focus on flow models due to their state-of-the-art performance (Chi et al.,
+2023; Chisari et al., 2024; Zhang et al., 2024) and deployment in industry (Black et al., 2024; Physical
+Intelligence et al., 2025; NVIDIA et al., 2025).
+Multi-Modality in Robot Learning.Past work has conjectured that for salient robotic control
+tasks,p train(a|o)exhibitmulti-modality, i.e. the conditional distribution ofagivenohas multiple
+modes (Shafiullah et al., 2022; Zhao et al., 2023b; Florence et al., 2022). This motivated the earliest
+use of GCPs (Chi et al., 2023) (H2). Section 3.2 calls into question the extent to which GCPs do in fact
+learn multi-modal distributions ofa|oon popular benchmarks, including those claimed to highlight
+multimodality as a core challenge.
+3 Multi-modality and expressivity do not explain GCPs’ performance
+This section demonstrates that neither advantages on pixel-based control (H1), nor multi-modality (H2),
+nor improved expressivity (H3) fully account for the GCPs performance relative to RCPs. Instead, our
+analysis indicates that the advantage of GCPs islargely due to architectural innovationsfound in
+GCPs—specifically , the adoption of powerful models like Transformers and UNets, along with the use of
+action chunking techniques. Sections F and G addresses other hypotheses, such ask-nearest neighbor
+approximation and the behavior diversity .
+5
+S q u a r e  ( M H ,  S t a t e ) S q u a r e  ( P H ,  S t a t e )
+P u s h  T  ( S t a t e )
+L i f t  ( M H ,  S t a t e ) L i f t  ( P H ,  S t a t e ) K i t c h e n  ( S t a t e ) C a n  ( P H ,  S t a t e ) C a n  ( M H ,  S t a t e )
+T r a n s p o r t  ( P H ,  I m a g e )
+P u s h  T  ( I m a g e )
+L i f t  ( P H ,  I m a g e ) C a n  ( P H ,  I m a g e ) C a n  ( M H ,  I m a g e ) L i f t  ( M H ,  I m a g e )
+S q u a r e  ( P H ,  I m a g e ) S q u a r e  ( M H ,  I m a g e )
+T r a n s p o r t  ( M H ,  I m a g e )
+S t i c k - P u s h  ( 3 D ) A d r o i t  D o o r  ( 3 D )
+A d r o i t  H a m m e r  ( 3 D )
+A s s e m b l y  ( 3 D )
+D i s a s s e m b l e  ( 3 D ) A d r i o t  P e n  ( 3 D )
+T o o l  H a n g  ( P H ,  S t a t e ) T r a n s p o r t  ( P H ,  S t a t e ) T r a n s p o r t  ( M H ,  S t a t e ) T o o l  H a n g  ( P H ,  I m a g e )
+0 . 0
+0 . 5
+1 . 0
+B e s t
+R e l a t i v e
+S u c c e s s
+R e g r e s s i o n
+F l o w
+L I B E R O  1 0  ( V L A )
+L I B E R O  O b j e c t  ( V L A )
+L I B E R O  G o a l  ( V L A )
+L I B E R O  S p a t i a l  ( V L A )
+Figure 2:Relative performance of RCPs compared to GCPs across common benchmarks.For single-task benchmarks,
+we implementChi-Transformer,Sudeep-DiTandChi-UNet. For each architecture, we average performance of the best
+training checkpoint across three seeds. For multi-task benchmarks, we useπ 0 as base policy and finetune it on fullLIBERO
+benchmark (130 tasks). We then report the performance of the best-performing architecture, chosen individually for both
+RCPs and GCPs. For Flow, we always do 9 step Euler integrations, where its performance plateaued. For readability , RCPs
+success rates are plotted relative to flow, with flow normalized to performance of 1 per task. Tasks are grouped by observation
+modality , and ordered by relative RCPs performance. Red dashed line indicates threshold at which RCP attains<95% success
+of GCPs.Note that RP andFlowperform comparably on most Image, 3D-based and VLA-based multi-task benchmarks.
+3.1 When controlled for architecture, GCPs only outperform on few tasks
+We first isolate the tasks in which GCPs exhibit stronger performance by comparing across 28 popular
+BC benchmarks including multi-task benchmarks likeLIBERO(detailed in Section B.1), encompass-
+ing diverse data quality , modalities (state,point clouds,imageandlanguage), and domains (e.g.,
+MetaWorld,Robomimic,Adroit,D4RL,Meta-World,LIBERO). Crucially , we implement RCPs using
+theexact same architecturesas their corresponding flow models by simply setting the noise level and
+initial noise to zero:z=0,t=0, and study three widely-used architectures (Chi-Transformer,
+Sudeep-DiT,Chi-UNetas well as pre-trained VLA models likeπ 0 (Black et al., 2024); detailed in Sec-
+tion B.2). This architectural alignment enables RCPs to benefit from the sophisticated network designs
+typically reserved for GCPs, ensuring a truly fair comparison.
+Under controlled comparison, we find that GCPs and RCPs achieve parity across the vast major-
+ity of state-based, image-based, and VLA-based BC benchmarks. Performance gaps emerge only on a
+small subset of tasks requiringhigh precision(e.g. precise insertion tasks). We report best-case results
+in Fig. 2 and comprehensive ablations (including worst-case architectures and loss variants) in Sec-
+tion B.4.
+Our evaluation yields three key insights:
+•Rare Benefit of GCPs:GCPs outperform RCPs by>5% on only a handful of tasks.
+•Modality Independence:Contrary to popular belief, observation modality doesnotcorrelate with
+GCP advantage.
+•Architectural Dominance:Architecture choice dictates performance far more than the generative
+vs. regression distinction.
+We posit that the perceived superiority of GCPs in prior work was confounded by architectural asym-
+metry . To our knowledge, this is the first study to benchmarkSudeep-DiT,Chi-UNet, andπ 0 back-
+bones as regression policies. In Section 5.3, we demonstrate that when equipped with these modern
+backbones—or even tunedMLPbaselines—RCPs are highly competitive. Furthermore, we find that hy-
+perparameters such asaction-chunkinghorizon (Zhao et al., 2023a; Chi et al., 2023; Zhang et al.,
+6
+2025) exert a greater influence on success rate than the choice of objective function (Section F .1).
+Design decisions like architecture and action-chunking have a significant and consistent
+impact on control performance. In contrast, the choice between GCPs and RCPs is largely
+negligible outside of high-precision regimes.
+3.2 GCPs’ performance does not arise from multi-modality
+Earlier literature suggested that capturing multi-modality , as defined in Section 2, was precisely the
+root of the observed performance benefits of GCPs (Chi et al., 2023; Reuss et al., 2023). However,
+examining Fig. 2, we see that many tasks which have been understood to be multimodal (e.g.,Push-
+T) do not show substantial performance gaps between RCPs and GCPs. On the other hand, RCPs and
+GCPs differ only on tasks that demand high precision (e.g.Tool-Hang,Transport). In this section,
+we provide additional evidence thatmultimodality is not the main factor responsible for witnessed
+performance advantages of GCPs.
+( a ) P u s h  T
+ ( b ) K i t c h e n
+ ( c ) T o o l  H a n g
+0 . 0
+0 . 5
+1 . 0
+Q
+Figure 3:A. Visualized action dis-
+tribution with Q values.Distinct
+modes arenotobserved in planned ac-
+tions even at symmetric and ambiguous
+states. (KitchenandTool-Hang, t-
+SNE visualization.) InPush-T, we all
+trajectories goes to one side. For the
+rest, there is no clear clustering of ac-
+tions or Q.
+Taskz≡0 N(0,I)Meanz
+Push-T0.97 0.97 0.95
+Kitchen0.99 0.99 0.97
+Tool-Hang0.78 0.80 0.76
+Table 1:B. Performance comparison
+of different sampling strategies. We
+compare samplingz=0,z∼N(0,I),
+and mean over 64z (i) ∼N(0,I). Differ-
+ent sampling strategies show minor per-
+formance difference, indicating absence
+of distinct action modes.
+DatasetFlow Reg.
+Original 0.78 0.58
+Deterministic 0.72 0.64
+Table 2:C. GCPs outperforms RCPs
+with deterministic experts.Policy av-
+erage success rate over 3 architectures,
+3 seeds and 3 architectures given differ-
+ent dataset: one from original human
+demonstration and another collected by
+rolling out a flow policy in deterministic
+mode starting from zero noise.
+Evidence A: GCPs exhibit unstructured action distributions.For fixed observations, we draw
+multiple action samples by denoising from different initial latents and visualize the resulting action
+set with their Q valuesQ(a,o). We deliberately choosesymmetry-criticalorhigh-ambiguitystates to
+maximizepotential multi-modality: (a)Push-Tat the symmetry axis of the T-shape, where taking the left
+or right path is equivalent, (b)Kitchenfrom an initial state with multiple first-subtask choices, and (c)
+Tool-Hangat the insertion pre-contact pose where human demonstrators pause for varying durations.
+In (a-c) we observesingleclusters rather than distinct modes (high-dimensional actions visualized with
+t-SNE); see Fig. 3. Moreover, adherence to action cluster means do not correlate with performance: We
+color-code actions by Q-value, i.e. Monte-Carlo-estimated rewards-to-go (Section D.1). Highest returns
+are distributed evenly across samples.
+Evidence B: Taking mean actions does not meaningfully degrade GCPs’ performance.We eval-
+uate flow policy’s performance with three sampling strategies: zero noisea=π(z=0,o), stochastic
+samplinga=π(z,o),z∼N(0,I), andmean action a=E z∼N(0,I) [π(z,o)](via Monte Carlo approxima-
+tion). If the learned distribution were strongly multi-modal, or if their distributions lied on a manifold
+7
+whosecurvaturewas crucial to task success, the conditional mean wouldcollapsemodes and severely
+degrade performance. However, Table 1 shows that replacing stochastic sampling with the mean action
+only slightly affects performance, indicating absence of distinct action modes.
+Evidence C: GCPs outperform RCPs on certain tasks even with deterministic experts.To fully
+remove any residual multi-modality , we recollect the dataset with trained flow policy evaluated in de-
+terministic mode (z=0) detailed in Section D.2. The new dataset is fully deterministic because action
+labels are provided by a deterministic policy evaluated in a deterministic environment. While the gap in
+performance between GCPs and RCPs shrinks somewhat, we still find that GCPs still outperforms RCPs,
+as in Table 2, suggesting that capturing some “hidden” stochasticity or multimodality in the data does
+not suffice to explain the gap between the two.
+Collectively , (A)–(C) indicate that the commonly cited explanation—“GCPs win because
+demonstrations are multi-modal”—does not hold for most studied behavior cloning bench-
+marks.
+Multi-modality and data coverage.The absence of observed multimodality is likely attributable
+to the large observation dimension of tasks relative to total number of demonstrations. That is, we
+rarely see two “conflicting” actions for nearby observation vectors (note: to grid a space of dimension
+drequires 2 d points). Some degree of “hidden” multi-modality may still be present, as indicated by the
+slight narrowing of the performance gap in Table 2. Still, our central claim is that multi-modality is
+notsufficientto explain the full difference in performance. Understanding to what extent multimodality
+appears in the multi-task setting is an exciting direction for future research.
+3.3 Limitations of the expressivity of GCPs in the absence of multimodality
+An alternative to learning explicit multimodality is to represent rapid transition between actions as
+( b . 2 )  p o l i c y  l e a r n s  
+m u l t i - m o d a l i t y
+( a )  t r a i n i n g  w /  d e n s e / m u l t i - m o d a l  d a t a
+( b . 3 )  p o l i c y  l e a r n s
+h i g h - L i p s c h i t z
+G C P s  P r e d i c t i o nD e m o n s t r a t i o n s
+( b )  t r a i n i n g  w /  s p a r s e / u n i - m o d a l  d a t a
+( a . 1 )  d e n s e
+d e m o n s t r a t i o n s
+( a . 2 )  p o l i c y  l e a r n s
+m u l t i - m o d a l  b e h a v i o r
+( b . 1 )  s p a r s e
+d e m o n s t r a t i o n s
+R C P s  P r e d i c t i o n
+Figure 4:GCP behavior given different types of data.(a) Given true multi-modal data (a.1), where expert have two
+behaviors at the same state, GCPs can learn both modes while RCP collapse to the middle (a.2). (b) In reality , the data is often
+sparse given high-dimensional space. Given the sparse data (b.1), GCPs have two possible behaviors: (b.2) still learn both
+modes given close-by states, (b.3) learn a high-Lipschitz policy to quickly switch between modes. In our experiments, we find
+that bothGCPs and RCPslearn (b.3) in high-dimensional tasks (Section 3.2). In this regime, Theorem 1 then suggests that,
+from a pure expressivity perspective, GCPs have a limited advantage over RCPs.
+the observation changes. This is depicted in Figure 4, where data that appears multi-modal can be fit
+8
+with a policy that has a high Lipschitz constant, i.e. in which∇oπ(a|o)is large. This reflects a broader
+principle in control that we need only capture the mapping from observation to a single effective action,
+rather than reproduce the distribution over all possible actions.
+One may still conjecture that GCPs more easily higher-Lipschitz policies by leveraging iterative com-
+putation, as compared to RCPs. This is because deeper networks can express larger-Lipschitz functions
+more easily (Telgarsky, 2016), and many have equated the multi-step computation in flow-based gen-
+erative models to depth (Chen et al., 2018). Step-by-step generation is known to drastically increase
+expressivity in other domains as well, such as autoregressive language models (Li et al., 2024),
+However, flow-based generative models use their multi-step computation to express complex distri-
+butions over thegenerated variable(Ho et al., 2020; Song et al., 2021a; Zhang & Chen, 2022; Nichol &
+Dhariwal, 2021). It is less clear if the iteration computation assists with represent complexobservation-
+to-actionmappings. Thus, we ask:
+Does the iterative computation in GCPs aid in learning more complex observation-to-action
+mappings, even if the learned action distributions for a fixed observation are themselves are
+relatively simple (i.e. unimodal)?
+1
+ 0 1
+x
+1.0
+0.5
+0.0
+0.5
+1.0
+y
+Ground Truth y = sin(1
+x )
+1
+ 0 1
+x
+1.0
+0.5
+0.0
+0.5
+1.0
+Regression
+1
+ 0 1
+x
+1.0
+0.5
+0.0
+0.5
+1.0
+Flow (z = 0)
+1
+ 0 1
+x
+1.0
+0.5
+0.0
+0.5
+1.0
+Flow (z (0, 1))
+1
+ 0 1
+x
+1.0
+0.5
+0.0
+0.5
+1.0
+MIP
+Figure 5:The Myth of Superior Expressivity: Fitting High-Frequency Functions.We evaluate GCPs, RCPs, and minimal
+iterative policy (MIP, Section 4) on fitting the high-Lipschitz functiony=sin(1/x)(N=1024, 4-layer MLP). Contrary to the
+belief that iterative evaluation yields sharper function approximation, both GCPs and RCPs fail to capture the high-frequency
+structure given limited network capacity . While RCPs succumb to spectral bias by averaging the oscillations, GCPs merely trade
+this averaging for stochastic variance. Crucially , when initial noise is fixed (x 0 =0), the Flow policy collapses to the exact
+same mean-seeking behavior as regression. Only when averaged over initial noise variance to we start to see a tradeoff from
+epistemic uncertainty to aleatoric variance. This demonstrates that GCPs do not inherently bypass the spectral limitations of
+the underlying backbone to achieve greater Lipschitz expressivity .
+We now provide evidence that suggests “no.” We show that in the absence of multi-modality (as
+shown in Section 3.2), GCPs cannot express more complex mappings from the conditioning variableoto
+the generated variableathan RCPs can. We begin by considering a ground-truth conditional flow field
+b⋆
+t (o|a). Letπ ⋆
+θ(z,o)represent the exactly integratedb ⋆ from initial noiseztoa. Given the absence
+of multi-modality (Section 3.2), we assume that the distribution ofa|oisκ-log-concave (Section H),
+satisfied by many classical unimodal distributions. We prove that the Lipschitz constant ofπ⋆
+θ(z,o)with
+respect too, a measure of the expressivity of theo→amapping, is bounded by that ofb ⋆
+t :
+Theorem 1(Informal).Let∥·∥denote either the matrix operator or Frobenius norm, and suppose that
+the distribution of a|o isκ-log-concave. Moreover, suppose that the flow field b ⋆
+t (a|o)is L-Lipschitz:
+∥∇o b⋆
+t (a|o)∥≤L. Then, with infinite integration steps, we have the bound
+∥∇oπ⋆
+θ(z,o)∥≤L·
+p
+1+κ−1. (3.1)
+See Section H for a formal statement and proof, adopting a careful argument from Daniels (2025).
+A classical example of a log concave distribution isa|o∼N(µ(o), 1
+κ); as long as the variance 1/κis
+9
+boundedabove(even in the limit of a Dirac measure), there is at most a constant-multiplicative factor
+increase in the Lipschitz constant. When training a flow,b⋆
+t (a|o)is approximated by the neural network.
+Thus, in the prototypical unimodal example ofκ-log-concave distributions, GCPs are not arbitrarily more
+expressive than RCPs. In fewer words:more integration steps (i.e. more iterative computation),
+even infinitely many, need not enable greater expressivity of high Lipschitzo→amappings.
+MethodPush-T Kitchen Tool-Hang
+State Image State State Image
+Regression0.90 0.55 14.07 1.71 1.65
+Flow0.45 0.20 12.43 1.41 1.37
+Table 3:Policy Lipschitz constant comparison.Lipschitz
+constant is averaged over 100 states.
+To verify our theoretical prediction, we quan-
+tify learned policies’ Lipchitz constants with a
+zeroth-order proxy: starting from dataset statesst
+with observationo t , we inject small Gaussian per-
+turbations in the executed action to reach afeasi-
+blenearby states (i)
+t+1 with observationo (i)
+t+1 , then
+measure input–output sensitivity via finite differ-
+ences of the policy around the perturbed states
+(full algorithm and per-architecture results in Section C). This construction (i) avoids reliance on noisy
+higher-order gradients in complex architectures, and (ii) keeps evaluations on feasible observation to
+prevent conflating expressivity with model error on dynamically infeasible states. As predicted by our
+theory , GCPs are not strictly more expressive than RCPs as shown in Table 3. On the contrary , RCPs show
+increased Lipschitz constants off the manifold of training data, ruling out the assumption that GCPs win
+due to expressing policies with greater sensitivity to the input variable. We note that our methodology ,
+which perturbs actions rather than states, is compatible pixel observations. To summarize:
+In the absence of multimodality , GCPs do not enjoy an advantage over RCPs in expressing
+high Lipschitz behavior, such as rapid transitions between action modes.
+3.4 GCPs and RCPs Exhibit Comparable Behavior Diversity
+We conclude by rebutting a commonly believed hypothesis is that GCPs can express more diverse be-
+haviors than RCPs by capturing the full distribution of expert actions (Shafiullah et al., 2022). 1 We
+evalute different variants of GCPs and RCPs on FRANKA-KITCHEN, where the expert shows multiple task
+completion orders. As demonstrated in Fig. 6, GCPs with both stochastic and deterministic sampling
+show similar task completion order diversity . Deterministic policies like regression andMIP(to be intro-
+duced in Section 4) also demonstrate similar task completion order diversity . This indicates that, given
+sparse expert demonstrations, both GCPs and RCP learns high-Lipschitz policies to switch between dif-
+ferent modes given different observations (corresponding to (b.2) case in Figure 4). RCPs and GCPs are
+equally good at learning such behaviors (??), which explain why we see similar performance for both
+policy parametrizations, even on seemingly multi-modal tasks like FRANKA-KITCHEN.
+4 Minimal Iterative Policy (MIP): Isolating the Source of GCPs’ Success
+In this section, we introduce a number of intermediates between RCPs and GCPs that isolate which
+design decisions contribute to the latter’s superior performance. This leads to a Minimal Iterative Policy
+(MIP), which matches GCPs performance, thereby identifying the source of GCPs’ success.
+We begin with a taxonomy of the three key algorithmic components (Figure 7) present in GCPs.
+1Note that the expert might be stochastic but unimodal, so the findings in this section do not directly follow form those in
+Section 3.2.
+10
+L S - S C - B B - M W
+T B - M W - H C - B B
+T B - K - S C - B B
+T B - L S - B B - M W
+M W - H C - S C - B B
+T B - M W - S C - B B
+M W - H C - B B - K
+L S - H C - B B - K
+M W - K - S C - B B
+L S - K - S C - B B
+T B - L S - M W - B B
+H C - L S - B B - K
+L S - M W - K - S C
+L S - M W - B B - S C
+H C - T B - L S - M W
+H C - T B - M W - K
+H C - M W - B B - S C
+T B - L S - B B - K
+H C - T B - M W - B B
+H C - M W - B B - K
+L S - S C - M W - K
+B B - L S - T B - M W
+B B - L S - K - H C
+L S - T B - H C - M W
+B B - L S - S C - M W
+B B - L S - T B - K
+B B - S C - H C - M W
+B B - K - H C - M W
+T B - H C - M W - K
+B B - T B - H C - M W
+L S - K - B B - H C
+L S - M W - B B - T B
+L S - S C - B B - M W
+M W - L S - H C - T B
+S C - B B - H C - M W
+S C - K - B B - T B
+M W - K - H C - T B
+L S - K - B B - T B
+L S - S C - K - B B
+K - L S - H C - M W
+T a s k  C o m p l e t i o n  O r d e r
+0
+2 0
+4 0
+6 0
+8 0
+1 0 0
+1 2 0C o u n t
+K i t c h e n  T a s k  C o m p l e t i o n  b y  M e t h o d  ( T o p  1 0  T a s k  O r d e r s  p e r  M e t h o d )
+R e g r e s s i o n F l o w  ( S t o c h a s t i c ) F l o w  ( D e t e r m i n i s t i c ) M I P
+Figure 6:Task completion order in Kitchen environment with different methods.We plot the count of different task
+completion orders for different methods to evaluate the diversity of the policies. The x-axis shows the task completion order,
+where each sub-task is represented by its initials. For each run, we collect 1000 trajectories with the same seed shared by all
+methods. For flow, we evaluate both stochastic and deterministic modes.
+Component 1.Distributional learningdenotes training a model to fit a conditional distributiona∼
+πθ(o)of actions given observations, as opposed to deterministic predictions (i.e.,a=π θ(o)). 2
+Component 2.Stochasticity injectiondenotes the injection of additional stochastic inputs into the
+neural network during training time (e.g., the variablezin Eq. (2.2)).
+Component 3.Supervised Iterative Computation (SIC)denotes the iterative refinement of predictions
+by feeding the previous outputs into the same network again during inference, and providingsupervision
+signalsat every step of the generation procedure at training time. For example, in flow GCPs, we
+integrate a supervised flow fieldb t (at |o)over time to get the final actiona, and thatb t receives an
+independent supervisory signal for eachtat training time (Eq. (2.2)).
+R e g r e s s i o n
+S F * R R
+G M M
+A C T B E T
+F l o w
+M I P *
+C 1 .  D i s t r i b u t i o n a l  L e a r n i n g
+C 2 .  S t o c h a s t i c i t y  I n j e c t i o n
+C 3 .  S u p e r v i s e d  I t e r a t i v e  C o m p u t e
+. . .. . .
+N o i s e  z
+A c t i o n  a
+O b s  o
+I n j e c t
+S u p e r v i s e
+N o i s e  z
+Figure 7: Taxonomy of GCPs.We elucidate 3 key design components of GCPs: distributional learning (fitting a
+distribution), stochasticity injection (injecting noise during training), and supervised iterative computation (mul-
+tiple generation steps, each with its own supervised learning loss). To ablate different design components, we
+introduce Straight Flow (SF, Eq. (4.2)), Residual Regression (RR, Eq. (A.2)) and Minimal Iterative Policy (MIP,
+Eq. (4.4)), which are variants of flow that only exhibit Component 2 and Component 3, respectively .
+2Note that Component 1 refers totraininga model to fit a conditional distribution, not necessarily to the sampling. For ex-
+11
+From here, Section 4.1 proposes algorithmic variants which ablate these components: two novel
+variants we call minimal iterative policy (MIP, Components 2 and 3) and straight-flow (SF, Compo-
+nent 2 only), as well as a residual regression baseline (RR, Component 3 only). We evaluate the perfor-
+mance of different variants on challenging tasks in Section 4.2, finding thatMIPexhibits virtually the
+sameperformance asFlowacross tasks, whereasSFmatches the performance ofRegressionandRR
+exhibits even worse performance. This establishes that Components 2 and 3: SIC, when combined with
+stochasticity injection, drive performance. Finally , we contrastMIPwith other popular step policies (
+Section 4.3).
+4.1MIP: a minimal intermediate between RCPs and GCPs
+We introduce a range of policies which lie along the spectrum between RCP and flow-based GCPs via
+varying combinations of Components 2 and 3, culminating in the Minimal Iterative Policy (MIP). These
+policies do not satisfy Component 1, because Sections 3.2 and G suggests that this is not needed. In
+particular, we consider networksπθ(o,I t ,t)that predictactions, not velocities, and given observations
+o, time indicest, and interpolantsI t corresponding to noising actions. We state all networks below of
+L2 minimization, but our findings remain consistent when minimizingL 1 error instead (Section F .2).
+Regression as Single-Step Denoising.We begin by expression a regression policies (RCPs) as
+solving a single-step denoising problem, obtained by minimizing theL 2 prediction error of the action
+given observation and null action interpolant:
+πRCP
+θ ≈arg min
+θ
+E
+
+∥(πθ(o,I 0 =0,t=0)−a∥ 2
+. (4.1)
+where(o,a)∼p train,z∼N(0,I).In the limit of infinity data, RCPs predict the conditional mean ofa|o
+by mapping any noisezto the same actionagiveno. 3
+Straight Flow(SF, ours). Next we introduce Straightflow (SF), which adds only stochasticity injec-
+tion Component 2 to RCPs. This is achieved by setting the interpolantI 0 to be Gaussian:
+πSF
+θ ≈arg min
+θ
+E∥πθ(o,I 0 =z,t=0)−a∥ 2, (4.2)
+where(o,a)∼p train,z∼N(0,I). Inference is performed in a single step, by settinga=π SF
+θ (o,z,t=0).
+Equivalently ,SFcan be viewed as a flow model in which the flow field is constrained to be straight.
+Like RCPs, the optimalSFpolicy is the conditional mean ofa|o. The only difference between
+the two is injection of stochastic inputzduring training. Our experiments withSFprecisely isolate
+this effect—for example, determining if the additional stochasticity during training improves learning
+dynamics, or behaves like data augmentation. LikeMIPbelow, we setI 0 =0 at inference time, as
+stochasticity at inference time has little effect on policy performance.
+Two-Step Denoising.As a next step towards GCPs, we now consider atwo-step denoising(TSD)
+policy . As discussed in Section 4.3, this parametrization is superficially similar to, but substantively
+different than, popular flow-map/consistency/shortcut models (Boffi et al., 2025b).TSDperforms two
+steps of denoising, one from zero, and a second from a fixed indext ⋆=.9:
+πTSD
+θ ≈arg min
+θ
+E
+
+∥(πθ(o,I 0 =z,t=0)−(t ⋆)−1It⋆)∥2 +∥(πθ(o,I t⋆,t ⋆)−a)∥2
+. (4.3)
+ample, trainingb θ via flow model but conducting deterministic inference withΦθ,eul (z=0|o)is still considered distributional
+learning.
+3Note that in our comparisons between RCP and GCP (Section 3) in, we use the Eq. (4.1) to implement RCPs on GCP
+architectures.
+12
+where(o,a)∼p train,z∼N(0,I), andI t =ta+ (1−t)zis the same interpolant used in flow models, and
+wheret ⋆=.9 is fixed. The normalization byt ⋆ in Eq. (4.3) comes from the identityt ⋆a=E z[It⋆]. We
+then sample ˆaTSD
+0 ←πθ(o,z, 0)and ˆaTSD ←πθ(o,t ⋆ˆaTSD
+0 + (1−t ⋆)z,t ⋆).
+Minimal Iterative Policy.We find thatπ TSD performs equivalently to a minimal policy which only
+adds training noise in the second step and has no stochasticity at inference time, which we call the
+minimal iterative policy.
+Minimal Iterative Policy (MIP; ours)
+Minimal Iterative Policy (MIP), representing Components 2 and 3, is trained via
+πMIP
+θ ≈arg min
+θ
+E(∥(πθ(o,I 0 =0,t=0)−a)∥ 2 +∥(πθ(o,I t⋆,t ⋆)−a)∥2), (4.4)
+where(o,a)∼p train,z∼N(0,I),t ⋆:=.9. At inference time, we compute:
+ˆaMIP
+0 ←πMIP
+θ (o, 0,t=0), ˆaMIP ←πMIP
+θ (o,t ⋆ˆaMIP
+0 ,t ⋆). (4.5)
+Minimal iterative policy provides aminimalimplementation that still exhibits competitive perfor-
+mance with flow. Starting, withTSDand replace(t ⋆)−1It⋆ in the first term of the loss in Eq. (4.3) with its
+expectationa= (t ⋆)−1E[It⋆]. We set the initial noiseI 0 =0 to be zero, so thatzonly contributes to the
+second training loss. Finally , we sample withz=0 to isolate the effect of adding stochasticity at training
+time, without stochasticity at inference time (as suggested by Table 1). Since we provide supervision for
+both first stepπMIP
+θ (o,I 0 =0,t=0)and second stepπ MIP
+θ (o,I 0 =I t⋆,t=t ⋆)with ground truth action
+a,MIPalso exemplifies SIC in its simplest form. We compareMIPto Shorctu Models in Section 4.3.
+Additional methods.
+Finally , we study residual regression (RR), which replacesI t⋆ in Eq. (4.4) with its expectation over
+z:E[I t⋆] =t⋆a. This preserves SIC (Component 3) yet removes stochasticity injection. Full details are
+provided in Section A.
+To summarize, minimal iterative policy (MIP), straight-flow (SF) and residual regression (RR) rep-
+resent all combinations of Components 2 and 3 without exhibiting Component 1.
+4.2 Components 2 and 3 drive performance:MIPmatchesFlow
+Tool Hang (PH, S.)Transport (PH, S.)Transport (MH, S.)
+Push T (S.)Kitchen (S.)
+Tool Hang (PH, I.)Transport (PH, I.)
+0.0
+0.5
+1.0
+Average
+Relative
+Success
+Tool Hang (PH, S.)Transport (PH, S.)Transport (MH, S.)
+Push T (S.)Kitchen (S.)
+Tool Hang (PH, I.)Transport (PH, I.)
+0.0
+0.5
+1.0
+Best
+Relative
+Success
+Regression Straight Flow Residual Regression MIP Flow
+Figure 8:Performance comparison betweenMIPand its variants on single-task benchmarks.Average relative success
+rate on worst architecture and the best relative success rate on optimal architecture are reported. “S”: state; “I”: image.
+Based on the design space parsing in Section 4, we are able to systematically ablate different design
+components’ contribution to the final performance in Fig. 8 and Table 4. Our evaluation shows that
+13
+Method LIBERO Object LIBERO Goal LIBERO Spatial LIBERO 10
+RCP (ℓ2 loss) 92.6 94.6 97.2 78.0
+RCP (ℓ1 loss) 95.2 88.0 95.8 62.4
+Flow 97.495.0 95.8 81.6
+MIP 95.895.2 97.6 82.2
+Table 4: Performance comparison on multi-taskLIBERObenchmark.We report the success rate of the check-
+point trained with 50k gradient steps of finetuningπ 0 on the fullLIBEROdataset. We implementMIPwith
+t∗=0.9 and integrate flow with 10 steps. For regression, we train with bothℓ 2 andℓ1 loss as suggested in (Kim
+et al., 2024).
+either stochasticity injection (Component 2, exhibit bySF) or supervised iterative computation (Com-
+ponent 3, exhibited byRR) in isolation do not match the success of GCPs.MIP, being the only method
+which combinessupervisediterative computation and stochasticity injection, achieves success on par
+with flow. Thus we conclude: the performance of GCPs comes from combining stochastic injection and
+iterative computation. Distributional training appears to be the least important factor.
+Remark 4.1. Section A.3 exhibits two further variants which preserve Components 2 and 3: one that
+does not supervise intermediate steps, and a second which does not condition a time stept⋆. The latter
+does not enable network to learn separate functions across time steps. Both perform even worse than
+regression, confirming the importance of supervision of intermediate steps and decoupling network
+behavior across time steps.
+4.3MIPcompares favorably to shortcut policies
+MIPis superficially similar to Shortcut Models (Boffi et al., 2025a,b; Song et al., 2023; Geng et al., 2025),
+as both perform inferences in few-steps. Shortcut models correctly learn target distributions (i.e. satisfy
+Component 1) by integrating a flow field. On the other hand,MIPare trained to predict the conditional
+mean of the interpolant, which is not a valid objective for distribution fitting. The performance ofMIP
+supports our overall theme that, in robotic control applications, faithfully capturing the full conditional
+distribution over actions is not needed for control performance.
+Method Transport Tool-Hang
+mh ph
+Flow 0.52/0.40 0.80/0.730.84/0.70
+MIP 0.62/0.460.80/0.690.92/0.88
+CTM 0.57/0.320.90/0.58 0.56/0.26
+Table 5: Performance comparison betweenMIPand
+shortcut policies.Report best/average performance
+across 5 checkpoints with 3 random seeds. Task is state-
+based. ForCTM, we report the performance with 2 inte-
+gration steps, which is the same asMIP. Note thatMIP
+is always best or near-best on average-over-seed perfor-
+mance, whereas CTM’s average performance struggles.
+While being competitive with flow models
+performance-wise,MIPtakes less integration
+steps (number of function evaluations (NFEs)=
+2) compared to flow models (NFEs=9). To fur-
+ther validate the computation efficiency ofMIP,
+we compare it with consistency models which ac-
+celerate the sampling process of flow by distill-
+ing the learned flow into a shortcut model (Song
+et al., 2023; Boffi et al., 2025a; Frans et al., 2024;
+Geng et al., 2025). We benchmarkMIPagainst
+consistency trajectory model (CTM) (Kim et al.,
+2023), where latter is trained in two-stage man-
+ner. Thus, CTM requires twice as many training
+time compared toMIP. As shown in Table 5,MIP
+matches, and often outperforms CTM on most challenging tasks since CTM exhibits certain level of per-
+14
+formance degradation compared to the teacher flow models. This again highlights that the fact that
+distributional learning is not necessary condition for GCPs performance and bypassing it offers compu-
+tation efficiency at training and inference time. We further compareMIPwith other few-step methods
+like Lagrangian map distillation (LMD) (Boffi et al., 2025a) and present full results in Section B.8.
+5 Inductive Bias, not Expressivity, ExplainsMIP’s Performance
+5.1 Manifold adherence, not reconstruction, drives performance
+Dataset MetricRegression SF RR MIP Flow
+Original
+Off-manifoldL 2 0.058 0.061 0.057 0.043 0.032
+Off-manifoldL 1 0.072 0.073 0.071 0.057 0.046
+ValidationL 2 0.073 0.071 0.062 0.069 0.074
+ValidationL 1 0.110 0.106 0.124 0.104 0.116
+Deterministic
+Off-manifoldL 2 0.067 0.063 0.062 0.054 0.042
+Off-manifoldL 1 0.082 0.078 0.077 0.063 0.051
+ValidationL 2 0.290 0.234 0.224 0.195 0.217
+ValidationL 1 0.336 0.374 0.386 0.331 0.356
+Table 6:Comparison of different methods on manifold adherence and
+reconstruction error.Results are averaged across 3 different architectures
+and 32 states on state-basedTool-Hang. ValidationL 2/L1 norm is evalu-
+ated on validation set from expert trajectories. Off-manifoldL 2/L1 norm is
+evaluated on out-of-distribution states.
+MIP, and the absence of multimodal-
+ity , suggest a better ability to approx-
+imate the expert more accurately on
+training data. We test this by evalu-
+ating theL 2-error, i.e., reconstruction
+error, on validation set. Surprisingly ,
+we find thatMIP,Flow, and RCP ex-
+hibit thesamevalidation loss; hence
+validation loss does predict their rela-
+tive performance. Section E.1 reveals
+that validation loss doesn’t correlate
+with performance across other axes of
+variation. Indeed, policy performance
+requires taking good actions ono.o.d.
+statesunder compounding error at deployment time (Simchowitz et al., 2025).
+1 0 . 0
+7 . 5
+5 . 0
+E x p e r t  M a n i f o l d
+I t e r a t i o n  1
+I t e r a t i o n  2
+I t e r a t i o n  3
+Figure 9:Manifold adherence il-
+lustration.Sampled trajectories in
+Push-Ttasks from flow model with
+different NFEs.
+Thus, we study a proxy which reflects performance in o.o.d. sit-
+uations. We perturb expert trajectories in dataset as described in
+Section C.1, and evalute a novel metric that we call theoff-manifold
+norm. Informally , this measures the projection error of a predicted ac-
+tionaonto the space spanned by expert actions at neighboring states;
+see Section E.2 a for formal definition. Our metric assesses the quality
+of actions under simulated compounding error. Table 6 reports bothL2
+validation loss and off-manifoldL 2 norm for different methods: while
+all methods achieve low validation loss, onlyMIPandFloware able
+to achieve low off-manifoldL 2 norm, indicating their better manifold
+adherence. AsSFdoes not exhibit the same benefit, we conclude that
+supervised iterative computation facilitates projection onto the mani-
+fold of expert actions by refining the prediction across sequential steps.
+Figure 9 provides additional illustraion of manifold hypothesis: with
+more iterations, flow model samples more plausible trajectories, which
+goes to the side of T-shape object rather than colliding right into it. Sec-
+tion J provides additional confirmation of this hypothesis on comprehensive toy experiments: GCPs are
+no better than RCP at fitting high frequency functions, but exhibit lower on-manifold error, suitably
+defined.
+Why manifold adherence matters for control.We conjecture that, for high-precision tasks, the
+sensitivity to errors is not homogeneous across error directions in action space. Our findings present
+15
+preliminary evidence that some form an “on-manifold inductive bias” directly aligns with minimizing
+error along relevant directions, yet is permissive to error in directions of lesser consequence. We think
+that rigorously establishing this hypothesis is an exicting direction for future work.
+No known mechanism accounts for greater manifold adherence in GCPs vs. RCPs.There is a
+growing body of literature that shows that, if training data are supported on a given low dimensional
+manifoldM, then generative models learn to project ontoM(Boffi et al., 2024; Permenter & Yuan,
+2024). However, to our knowledge, there is no work that explains why this inductive bias would be
+strongerthan what would be achieved with a well-trained regression model. Specifically , ifo|alies in
+some (local) manifold, regression too should learn to project onto it.
+One might conjecture that the iterative computation provides many changes to predict an action
+that “stick” to the action manifold. However, such a mechanism would require that once an on-manifold
+action is predicted, subsequent predictions do not nudge the prediction off-manifold. In Section I, we
+show that simple arguments based on implicit regularization in linear models do not suffice to explain
+this hypothesis, at least forMIP. Much like the usefulness of manifold adherence for control described
+above, the mechanism behind manifold adherence remains a mystery for future study .
+5.2 Stochasticity stabilizes iterative computation
+I d e a l  G C P  g e n e r a t i o n
+G C P  u p d a t e s  d u r i n g  t r a i n i n g
+I m p l i c i t  c o r r e c t i o n  d u e  t o  
+s t o c h a s t i c i t y  i n j e c t i o n
+Figure 10:Stochasticity Stabi-
+lizes Iteration.Noise injection
+broadens the generation path into a
+“tube.” This creates provides super-
+vision when the imperfectly trained
+GCP goes off-distribution , ensuring
+robust iterative computation.
+We recall from Figure 8 thatSFmatches regression, whilstRRunder-
+performs regression. This suggests that sequential action generation is
+highly brittle in the absence of stochasticity (Permenter & Yuan, 2024).
+Our findings support the hypothesis that stochasticity injection serves
+to provide “coverage” of the generative process as illustrated in Fig-
+ure 10. Note that this is different from task MDP-level augmentation
+like image augmentation or exploratory data collection since the aug-
+mentation happens in iterative generative process. Specifically , we can
+think of learning to perform two-stage action generation as an “inter-
+nal” behavior cloning problem (Ren et al., 2024) under the dynamics
+induced by the generative process. Injecting stochasticity amounts to
+enhancing coverage of the action ˆa0 in the first step ofMIP, thus en-
+able iterative improvement with more NFEs (Section B.7). Its benefits
+are analogous to trajectory noising effective in other behavior cloning
+applications (Laskey et al., 2017; Block et al., 2023, 2024; Simchowitz
+et al., 2025; Zhang et al., 2025). Similar benefits are found in the im-
+proved sensitivity analysis of diffusion relative to flows (Albergo et al.,
+2024).
+5.3 Architecture remains essential for scaling
+While all methods do scale, regression, enjoys stronger relative performance at the smallest model sizes
+but scales more poorly than flow andMIPwith increased model capacity (Fig. 11). We conjecture that
+supervised iterative computation can better utilize larger models, both by introducing more supervision
+steps at training, and by providing more parameters to represent different computations at successive
+generation steps. Nevertheless,architecture designplays an incredibly significant role. To showcase
+its importance, we ablate the performance of different method’s average performance across both the
+16
+3 architectures above, and the more traditionalMLPandRNNarchitectures, implemented with mod-
+ern best practices including FiLM conditioning (Perez et al., 2018), and skip-connections (He et al.,
+2016)/LayerNorm (Ba et al., 2016) where appropriate (details in Section B.2). As demonstrated in
+Fig. 11, the combination of training method and architecture design has a strong yet somewhat erratic
+effect on both GCPs and RCP performance. InTool-Hang, RCP achieves the best performance with an
+MLParchitecture. InTransport,MLPwith flow can even outperform more expressive architectures like
+Chi-Transformer. The coupling between training and architecture choice highlights the importance
+of controlling architecture design when comparing across methods.
+Sudeep-DiT
+Chi-TFMChi-UNet
+MLP RNN
+Architecture
+0.00
+0.25
+0.50
+0.75Average Success
+Transport (PH, State)
+Sudeep-DiT
+Chi-TFMChi-UNet
+MLP RNN
+Architecture
+0.00
+0.25
+0.50
+0.75
+Tool Hang (PH, State)
+0.3 1.2 5 20 80
+Model Size (M)
+0.0
+0.2
+0.4
+0.6
+Transport (PH, State)
+0.3 1.2 5 20 80
+Model Size (M)
+0.0
+0.2
+0.4
+0.6
+Tool Hang (PH, State)
+Regression MIP Flow
+Figure 11:Architecture and model size ablation.Success rate are averaged across 3 seeds and 5 checkpoints onTool-Hang
+andTransporttasks. Left 2 plots: architecture ablation. Right 2 plots: Model size ablation. While all methods performance
+scales with model size, regression can outperform flow andMIPwith smaller capacity ., highlighting the importance of aligning
+the model capacity when comparing different methods.
+6 Related Work
+Robotic Behavior Cloning.Behavior cloning (BC), also known as learning from demonstrations
+(LfD), has become a popular paradigm to enable robots to conduct complex, diverse and long-horizon
+manipulation tasks by learning from expert demonstrations (Argall et al., 2009; Zhu & Hu, 2018; Zhao
+et al., 2023b; Chi et al., 2024; Lin et al., 2024). In parallel, “robot foundation models” scale BC with
+internet-pretrained vision-language transformer-based backbones (Brohan et al., 2022; Zitkovich et al.,
+2023; O’Neill et al., 2024) and large-scale teleoperation datasets (Kim et al., 2024; Team et al., 2024).
+More recently , to better model continuous actions, generative models like diffusion and flow have been
+adopted to replace the tokenization method in transformers to achieve more expressive policies (NVIDIA
+et al., 2025; Black et al., 2024; Physical Intelligence et al., 2025; Liu et al., 2024). This work focuses
+on the generative modeling part of the behavior cloning pipeline, ablating the key design choices that
+lead to the success of generative control policies.
+Generative Modeling.The recent success of behavior cloning policies is built upon a rapid evolu-
+tion of generative modeling techniques, starting from tokenization methods (Brown et al., 2020; Chen
+et al., 2021; Pertsch et al., 2025) and adversarial methods (Brock et al., 2019; Goodfellow et al., 2020;
+Ho & Ermon, 2016). Later, probabilistic generative models with iterative computation like diffusion
+models (Ho et al., 2020; Song et al., 2021b; Lu et al., 2025; Song et al., 2022; Nichol & Dhariwal, 2021;
+Karras et al., 2022) became a popular choice for generative modeling thanks to their better training
+stability and sampling quality . Flow models (Lipman et al., 2023; Albergo & Vanden-Eijnden, 2022; Liu
+et al., 2022) and consistency/shortcut models (Song et al., 2023; Song & Dhariwal, 2023; Meng et al.,
+17
+2023; Boffi et al., 2025a; Geng et al., 2025) were later developed to achieve faster sampling while main-
+taining the expressivity of diffusion models. Though there have been extensive studies on probabilistic
+generative modeling’s effectiveness in image and text generation (Lee et al., 2023; Chen et al., 2023),
+its mechanism in control, especially the key design choices, are still opaque in decision making.
+Generative Control Policies.To model diverse and complex behaviors, GCPs parameterize the
+relationship between observations and actions as a distribution rather than a deterministic function.
+Early works use transformers with tokenizers (Chen et al., 2021; Shafiullah et al., 2022), energy func-
+tions (Florence et al., 2022; Dasari et al., 2024) and VAEs (Zhao et al., 2023b) to parameterize the
+distribution. Diffusion models (Reuss et al., 2023; Chi et al., 2023; Ke et al., 2024; Dong et al., 2024;
+Janner et al., 2022; Yang et al., 2024) were introduced for their better expressivity of complex and
+multi-modal behaviors, followed by flow-based (Zhang et al., 2024; Black et al., 2024; Physical Intelli-
+gence et al., 2025) and flow-map/consistency-model/shortcut-model-based acceleration methods (Hu
+et al., 2024; Prasad et al., 2024; Sheng et al., 2025).
+Theoretical Literature on GCPs.Block et al. (2024) established that GCPs can imitate arbitrary
+expert distributions. Given our findings on the absence of multi-modality , a more closely related theo-
+retical findings is that of Simchowitz et al. (2025), which elucidates how GCPs can circumvent certain
+worst-case compounding error phenomena in continuous-control imitation learning. Though the pro-
+posed mechanism is different, that finding is conceptually similar to our own: GCPs benefits arise from
+their favorable out-of-distribution properties, rather than raw expressivity of fitting in-distribution ex-
+pert behavior.
+6.1 Previous Works’ Connection with GCP’s Taxonomy.
+We classify GCPs into three components: distributional learning, stochasticity injection, and supervised
+iterative computation. Starting from regression, it has none of the three components. To model a more
+complex distribution, Gaussian Mixture Model (GMM) (Zhu & Hu, 2018) was used to parameterize the
+distribution, trained with cross entropy loss. To make the network be able to represent more complex
+distirbutions, prior to diffusion, non-parametric method like VAEs (Zhao et al., 2023b) was used to
+parameterize the distribution, trained with reconstruction loss. During the training, a latent variables
+is predicted to predict the style the motion by mapping it from a noisez. Another line of work try to
+improve the policy expressivity by introducing iterative compute, like implicit behavior cloning (Flo-
+rence et al., 2022; Dasari et al., 2024) and behavior transformer (Shafiullah et al., 2022). In IBC, the
+idea is to allow the network predict the energy function of the action rather the action itself. Compared
+to diffusion, the major difference is that they do not explicitly injecting noise during training and no
+intermediate supervision is provided for the intermediate results. Similarly , in behavior transformer, a
+two step policy is introduced to first predict the policy class and then refine it with another network to
+achieve higher precision control. Lastly , flow-based GCPs (Zhang et al., 2024; Black et al., 2024; Phys-
+ical Intelligence et al., 2025), which holds all the three components and demonstrate state-of-the-art
+performance on popular benchmarks. In this paper, we look into a new combination that haven’t been
+explored before, which is the combination of stochasticity injection and supervised iterative computa-
+tion.
+18
+7 Discussion
+Our comprehensive evaluation reveals a fundamental divergence between the objectives of generative
+modeling in vision or text and those in robotic control. We demonstrate that for control, fitting the exact
+data distribution (C1) is secondary; rather, the inductive bias of manifold adherence—facilitated by
+stochastic iterative computation (C2+C3)—is paramount. This insight not only demystifies the success
+of GCPs but also enables the design of streamlined architectures likeMIP.
+Theoretical Gaps.While we empirically identify manifold adherence as a proxy for closed-loop
+performance, a theoretical framework explaining why stochastic supervision with MSE loss induces
+this behavior remains elusive. Developing this theoretical grounding is a critical next step to replace
+exhaustive empirical benchmarking with principled policy design.
+Broader Applications.Finally , our analysis focuses on behavior cloning. It remains an open ques-
+tion whether the benefits of the C2+C3 paradigm persist in other settings, such as RL-finetuning, large-
+scale pretraining, or long-horizon planning. Future work should explore whether the "myths" of gener-
+ative control hold true in these broader domains.
+Acknowledgements
+MS and GA acknowledge a TRI University 2.0 Fellow and Google Robotics Research Award. MS and CP
+thank Muhummad (Mahi) Shuffiulah for his insightful feedback, and thank MS also thanks Aviral Kumar,
+Sarvesh Patil, and Andrej Risteski for their thoughtful suggestions. GS holds concurrent appointments
+as an Assistant Professor at Carnegie Mellon University and as an Amazon Scholar. This paper describes
+work performed at Carnegie Mellon University and is not associated with Amazon.
+References
+Michael S. Albergo and Eric Vanden-Eijnden. Building normalizing flows with stochastic interpolants.
+arXiv preprint arXiv:2209.15571, 2022.
+Michael S. Albergo, Nicholas M. Boffi, and Eric Vanden-Eijnden. Stochastic interpolants: A unifying
+framework for flows and diffusions.arXiv preprint arXiv:2303.08797, 2023.
+Michael Samuel Albergo, Mark Goldstein, Nicholas Matthew Boffi, Rajesh Ranganath, and Eric Vanden-
+Eijnden. Stochastic interpolants with data-dependent couplings. InProceedings of the 41st Interna-
+tional Conference on Machine Learning, 2024.
+Brenna D. Argall, Sonia Chernova, Manuela Veloso, and Brett Browning. A survey of robot learning
+from demonstration.Robotics and Autonomous Systems, 2009.
+Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.arXiv preprint
+arXiv:1607.06450, 2016.
+Michael Bain and Claude Sammut. A framework for behavioural cloning.Machine Intelligence, 1995.
+Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy
+Groom, Karol Hausman, Brian Ichter, et al.π0: A vision-language-action flow model for general robot
+control.arXiv preprint arXiv:2410.24164, 2024.
+19
+Adam Block, Dylan J Foster, Akshay Krishnamurthy , Max Simchowitz, and Cyril Zhang. Butterfly
+effects of sgd noise: Error amplification in behavior cloning and autoregression.arXiv preprint
+arXiv:2310.11428, 2023.
+Adam Block, Ali Jadbabaie, Daniel Pfrommer, Max Simchowitz, and Russ Tedrake. Provable guarantees
+for generative behavior cloning: Bridging low-level stability and high-level behavior.Advances in
+Neural Information Processing Systems, 2024.
+Nicholas M Boffi, Arthur Jacot, Stephen Tu, and Ingvar Ziemann. Shallow diffusion networks provably
+learn hidden low-dimensional structure.arXiv preprint arXiv:2410.11275, 2024.
+Nicholas M. Boffi, Michael S. Albergo, and Eric Vanden-Eijnden. Flow map matching with stochastic
+interpolants: A mathematical framework for consistency models.arXiv preprint arXiv:2406.07507,
+2025a.
+Nicholas M. Boffi, Michael S. Albergo, and Eric Vanden-Eijnden. How to build a consistency model:
+Learning flow maps via self-distillation.arXiv preprint arXiv:2505.18825, 2025b.
+Andrew Brock, Jeff Donahue, and Karen Simonyan. Large Scale GAN Training for High Fidelity Natural
+Image Synthesis.arXiv preprint arXiv:1809.11096, 2019.
+Anthony Brohan, Noah Brown, Justice Carbajal, Yevgen Chebotar, Joseph Dabis, Chelsea Finn,
+Keerthana Gopalakrishnan, Karol Hausman, Alex Herzog, Jasmine Hsu, et al. Rt-1: Robotics trans-
+former for real-world control at scale.arXiv preprint arXiv:2212.06817, 2022.
+Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry , Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss,
+Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu,
+Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray , Benjamin
+Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario
+Amodei. Language models are few-shot learners.arXiv preprint arXiv:2005.14165, 2020.
+Remi Cadene, Simon Alibert, Alexander Soare, Quentin Gallouedec, Adil Zouitine, Steven Palma, Pepijn
+Kooijmans, Michel Aractingi, Mustafa Shukor, Dana Aubakirova, Martino Russi, Francesco Capuano,
+Caroline Pascal, Jade Choghari, Jess Moss, and Thomas Wolf. Lerobot: State-of-the-art machine
+learning for real-world robotics in pytorch.https://github.com/huggingface/lerobot, 2024.
+Lili Chen, Kevin Lu, Aravind Rajeswaran, Kimin Lee, Aditya Grover, Michael Laskin, Pieter Abbeel,
+Aravind Srinivas, and Igor Mordatch. Decision transformer: Reinforcement learning via sequence
+modeling.arXiv preprint arXiv:2106.01345, 2021.
+Ricky TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential
+equations.Advances in neural information processing systems, 2018.
+Sitan Chen, Sinho Chewi, Jerry Li, Yuanzhi Li, Adil Salim, and Anru R. Zhang. Sampling is as easy
+as learning the score: Theory for diffusion models with minimal data assumptions.arXiv preprint
+arXiv:2209.11215, 2023.
+Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau, Benjamin Burchfiel, and Shuran Song.
+Diffusion policy: Visuomotor policy learning via action diffusion.arXiv preprint arXiv:2303.04137,
+2023.
+20
+Cheng Chi, Zhenjia Xu, Chuer Pan, Eric Cousineau, Benjamin Burchfiel, Siyuan Feng, Russ Tedrake,
+and Shuran Song. Universal manipulation interface: In-the-wild robot teaching without in-the-wild
+robots.arXiv preprint arXiv:2402.10329, 2024.
+Eugenio Chisari, Nick Heppert, Max Argus, Tim Welschehold, Thomas Brox, and Abhinav Valada. Learn-
+ing robotic manipulation policies from point clouds with conditional flow matching. InConference on
+Robot Learning (CoRL), 2024.
+Max Daniels. On the contractivity of stochastic interpolation flow.arXiv preprint arXiv:2504.10653,
+2025.
+Sudeep Dasari, Oier Mees, Sebastian Zhao, Mohan Kumar Srirama, and Sergey Levine. The ingredients
+for robotic diffusion transformers.arXiv preprint arXiv:2410.10088, 2024.
+Zibin Dong, Yifu Yuan, Jianye Hao, Fei Ni, Yi Ma, Pengyi Li, and Yan Zheng. CleanDiffuser: An easy-to-
+use modularized library for diffusion models in decision making.arXiv preprint arXiv:2406.09509,
+2024.
+Pete Florence, Corey Lynch, Andy Zeng, Oscar A Ramirez, Ayzaan Wahid, Laura Downs, Adrian Wong,
+Johnny Lee, Igor Mordatch, and Jonathan Tompson. Implicit behavioral cloning. InConference on
+robot learning. PMLR, 2022.
+Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut models.
+arXiv preprint arXiv:2410.12557, 2024.
+Zhengyang Geng, Mingyang Deng, Xingjian Bai, J. Zico Kolter, and Kaiming He. Mean flows for one-step
+generative modeling.arXiv preprint arXiv:2505.13447, 2025.
+Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley , Sherjil Ozair, Aaron
+Courville, and Yoshua Bengio. Generative adversarial networks.Communications of the ACM, 2020.
+Chengyang He, Xu Liu, Gadiel Sznaier Camps, Guillaume Sartoretti, and Mac Schwager. Demysti-
+fying diffusion policies: Action memorization and simple lookup table alternatives.arXiv preprint
+arXiv:2505.05787, 2025.
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition.
+InProceedings of the IEEE conference on computer vision and pattern recognition, 2016.
+Eric Heitz, Laurent Belcour, and Thomas Chambon. Iterativeα-(de) blending: A minimalist determin-
+istic diffusion model. InACM SIGGRAPH 2023 Conference Proceedings, pp. 1–8, 2023.
+Jonathan Ho and Stefano Ermon. Generative adversarial imitation learning.Advances in neural infor-
+mation processing systems, 2016.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. InAdvances in
+Neural Information Processing Systems, 2020.
+Xixi Hu, Qiang Liu, Xingchao Liu, and Bo Liu. Adaflow: Imitation learning with variance-adaptive
+flow-based policies.Advances in Neural Information Processing Systems, 2024.
+21
+Michael Janner, Yilun Du, Joshua B Tenenbaum, and Sergey Levine. Planning with diffusion for flexible
+behavior synthesis.arXiv preprint arXiv:2205.09991, 2022.
+Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based
+generative models.Advances in neural information processing systems, 2022.
+Tsung-Wei Ke, Nikolaos Gkanatsios, and Katerina Fragkiadaki. 3D diffuser actor: Policy diffusion with
+3d scene representations.arXiv preprint arXiv:2402.10885, 2024.
+Dongjun Kim, Chieh-Hsin Lai, Wei-Hsiang Liao, Naoki Murata, Yuhta Takida, Toshimitsu Uesaka, Yutong
+He, Yuki Mitsufuji, and Stefano Ermon. Consistency trajectory models: Learning probability flow ode
+trajectory of diffusion.arXiv preprint arXiv:2310.02279, 2023.
+Moo Jin Kim, Karl Pertsch, Siddharth Karamcheti, Ted Xiao, Ashwin Balakrishna, Suraj Nair, Rafael
+Rafailov, Ethan Foster, Grace Lam, Pannag Sanketi, et al. OpenVLA: An open-source vision-language-
+action model.arXiv preprint arXiv:2406.09246, 2024.
+Michael Laskey , Jonathan Lee, Roy Fox, Anca Dragan, and Ken Goldberg. Dart: Noise injection for
+robust imitation learning. InConference on robot learning. PMLR, 2017.
+Holden Lee, Jianfeng Lu, and Yixin Tan. Convergence of score-based generative modeling for general
+data distributions. InInternational Conference on Algorithmic Learning Theory. PMLR, 2023.
+Zhiyuan Li, Hong Liu, Denny Zhou, and Tengyu Ma. Chain of thought empowers transformers to solve
+inherently serial problems.arXiv preprint arXiv:2402.12875, 2024.
+Fanqi Lin, Yingdong Hu, Pingyue Sheng, Chuan Wen, Jiacheng You, and Yang Gao. Data scaling laws in
+imitation learning for robotic manipulation.arXiv preprint arXiv:2410.18647, 2024.
+Yaron Lipman, Ricky T . Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for
+generative modeling. InInternational Conference on Learning Representations (ICLR), 2023.
+Songming Liu, Lingxuan Wu, Bangguo Li, Hengkai Tan, Huayu Chen, Zhengyi Wang, Ke Xu, Hang Su,
+and Jun Zhu. RDT-1B: A diffusion foundation model for bimanual manipulation.arXiv preprint
+arXiv:2410.07864, 2024.
+Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer
+data with rectified flow.arXiv preprint arXiv:2209.03003, 2022.
+Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. DPM-Solver++: Fast solver
+for guided sampling of diffusion probabilistic models.Machine Intelligence Research, 2025.
+Ajay Mandlekar, Danfei Xu, Josiah Wong, Soroush Nasiriany , Chen Wang, Rohun Kulkarni, Li Fei-Fei,
+Silvio Savarese, Yuke Zhu, and Roberto Martín-Martín. What matters in learning from offline human
+demonstrations for robot manipulation. InConference on Robot Learning (CoRL), 2021.
+Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik Kingma, Stefano Ermon, Jonathan Ho, and Tim
+Salimans. On distillation of guided diffusion models. InProceedings of the IEEE/CVF conference on
+computer vision and pattern recognition, 2023.
+22
+Khang Nguyen et al. Flowmp: Learning motion fields for robot planning with conditional flow matching.
+arXiv preprint arXiv:2503.06135, 2025.
+Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models. In
+International conference on machine learning. PMLR, 2021.
+NVIDIA, Johan Bjorck, Fernando Castaneda, N Cherniadev, X Da, R Ding, L Fan, Y Fang, D Fox, F Hu,
+S Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots.arXiv preprint
+arXiv:2503.14734, 2025.
+Takayuki Osa, Joni Pajarinen, Gerhard Neumann, J Andrew Bagnell, Pieter Abbeel, Jan Peters, et al. An
+algorithmic perspective on imitation learning.Foundations and Trends in Robotics, 2018.
+Abby O’Neill, Abdul Rehman, Abhiram Maddukuri, Abhishek Gupta, Abhishek Padalkar, Abraham Lee,
+Acorn Pooley , Agrim Gupta, Ajay Mandlekar, Ajinkya Jain, et al. Open x-embodiment: Robotic learn-
+ing datasets and rt-x models: Open x-embodiment collaboration 0. In2024 IEEE International Con-
+ference on Robotics and Automation (ICRA). IEEE, 2024.
+Jyothish Pari, Nur Muhammad Shafiullah, Sridhar Pandian Arunachalam, and Lerrel Pinto. The sur-
+prising effectiveness of representation learning for visual imitation.arXiv preprint arXiv:2112.01511,
+2021.
+Ethan Perez, Florian Strub, Harm De Vries, Vincent Dumoulin, and Aaron Courville. Film: Visual rea-
+soning with a general conditioning layer. InProceedings of the AAAI conference on artificial intelligence,
+2018.
+Frank Permenter and Chenyang Yuan. Interpreting and improving diffusion models from an optimization
+perspective.arXiv preprint arXiv:2306.04848, 2024.
+Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea
+Finn, and Sergey Levine. FAST: Efficient Action Tokenization for Vision-Language-Action Models.
+arXiv preprint arXiv:2501.09747, 2025.
+Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess,
+et al.π 0.5: A Vision-Language-Action Model with Open-World Generalization.arXiv preprint
+arXiv:2504.16054, 2025.
+Dean A. Pomerleau. Alvinn: An autonomous land vehicle in a neural network. InAdvances in Neural
+Information Processing Systems, 1988.
+Aaditya Prasad, Kevin Lin, Jimmy Wu, Linqi Zhou, and Jeannette Bohg. Consistency Policy: Accelerated
+Visuomotor Policies via Consistency Distillation.arXiv preprint arXiv:2405.07503, 2024.
+Allen Z Ren, Justin Lidard, Lars L Ankile, Anthony Simeonov, Pulkit Agrawal, Anirudha Majumdar,
+Benjamin Burchfiel, Hongkai Dai, and Max Simchowitz. Diffusion policy policy optimization.arXiv
+preprint arXiv:2409.00588, 2024.
+Moritz Reuss, Maximilian Xiling Li, Xiaogang Jia, and Rudolf Lioutikov. Goal-conditioned imitation
+learning using score-based diffusion policies. InProceedings of Robotics: Science and Systems (RSS),
+2023.
+23
+Stéphane Ross, Geoffrey Gordon, and Drew Bagnell. A reduction of imitation learning and structured
+prediction to no-regret online learning. InProceedings of the fourteenth international conference on
+artificial intelligence and statistics. JMLR Workshop and Conference Proceedings, 2011.
+Nur Muhammad Shafiullah, Zichen Cui, Ariuntuya Arty Altanzaya, and Lerrel Pinto. Behavior trans-
+formers: Cloningkmodes with one stone.Advances in neural information processing systems, 2022.
+Juyi Sheng, Ziyi Wang, Peiming Li, and Mengyuan Liu. MP1: Meanflow tames policy learning in 1-step
+for robotic manipulation.arXiv preprint arXiv:2507.10543, 2025.
+Max Simchowitz, Daniel Pfrommer, and Ali Jadbabaie. The pitfalls of imitation learning when actions
+are continuous.arXiv preprint arXiv:2503.09722, 2025.
+Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. InInternational
+Conference on Learning Representations, 2021a.
+Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising Diffusion Implicit Models.arXiv preprint
+arXiv:2010.02502, 2022.
+Yang Song and Prafulla Dhariwal. Improved Techniques for Training Consistency Models.arXiv preprint
+arXiv:2310.14189, 2023.
+Yang Song, Jascha Sohl-Dickstein, Diederik P . Kingma, Abhishek Kumar, Stefano Ermon, and Ben
+Poole. Score-Based Generative Modeling through Stochastic Differential Equations.arXiv preprint
+arXiv:2011.13456, 2021b.
+Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models.arXiv preprint
+arXiv:2303.01469, 2023.
+Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari,
+Joey Hejna, Tobias Kreiman, Charles Xu, Jianlan Luo, You Liang Tan, Lawrence Yunliang Chen, Pannag
+Sanketi, Quan Vuong, Ted Xiao, Dorsa Sadigh, Chelsea Finn, and Sergey Levine. Octo: An open-source
+generalist robot policy .arXiv preprint arXiv:2405.12213, 2024.
+TRI LBM Team, Jose Barreiros, Andrew Beaulieu, Aditya Bhat, Rick Cory , Eric Cousineau, Hongkai Dai,
+et al. A Careful Examination of Large Behavior Models for Multitask Dexterous Manipulation.arXiv
+preprint arXiv:2507.05331, 2025.
+Matus Telgarsky . Benefits of depth in neural networks. InConference on learning theory, pp. 1517–1539.
+PMLR, 2016.
+Jingyun Yang, Zi-ang Cao, Congyue Deng, Rika Antonova, Shuran Song, and Jeannette Bohg. Equi-
+Bot: Sim(3)-equivariant diffusion policy for generalizable and data efficient learning.arXiv preprint
+arXiv:2407.01479, 2024.
+Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3D diffu-
+sion policy: Generalizable visuomotor policy learning via simple 3d representations.arXiv preprint
+arXiv:2403.03954, 2024.
+24
+Qinglun Zhang, Zhen Liu, Haoqiang Fan, Guanghui Liu, Bing Zeng, and Shuaicheng Liu. Flowpolicy:
+Enabling fast and robust 3d flow-based policy via consistency flow matching for robot manipulation.
+arXiv preprint arXiv:2412.04987, 2024.
+Qinsheng Zhang and Yongxin Chen. Fast sampling of diffusion models with exponential integrator.arXiv
+preprint arXiv:2204.13902, 2022.
+Thomas T . Zhang, Daniel Pfrommer, Chaoyi Pan, Nikolai Matni, and Max Simchowitz. Action chunking
+and exploratory data collection yield exponential improvements in behavior cloning for continuous
+control.arXiv preprint arXiv:2507.09061, 2025.
+Tony Z Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manip-
+ulation with low-cost hardware.arXiv preprint arXiv:2304.13705, 2023a.
+Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manip-
+ulation with low-cost hardware.arXiv preprint arXiv:2304.13705, 2023b.
+Zuyuan Zhu and Huosheng Hu. Robot learning from demonstration in robotic assembly: A survey .
+Robotics, 2018.
+Brianna Zitkovich, Tianhe Yu, Sichun Xu, Peng Xu, Ted Xiao, Fei Xia, Jialin Wu, Paul Wohlhart, Stefan
+Welker, Ayzaan Wahid, et al. Rt-2: Vision-language-action models transfer web knowledge to robotic
+control. InConference on Robot Learning. PMLR, 2023.
+25
+Contents
+1 Introduction 2
+1.1 Contributions. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+2 Preliminaries 4
+3 Multi-modality and expressivity do not explain GCPs’ performance 5
+3.1 When controlled for architecture, GCPs only outperform on few tasks . . . . . . . . . . . . 6
+3.2 GCPs’ performance does not arise from multi-modality . . . . . . . . . . . . . . . . . . . . . 7
+3.3 Limitations of the expressivity of GCPs in the absence of multimodality . . . . . . . . . . . 8
+3.4 GCPs and RCPs Exhibit Comparable Behavior Diversity . . . . . . . . . . . . . . . . . . . . 10
+4 Minimal Iterative Policy (MIP): Isolating the Source of GCPs’ Success 10
+4.1MIP: a minimal intermediate between RCPs and GCPs . . . . . . . . . . . . . . . . . . . . . 12
+4.2 Components 2 and 3 drive performance:MIPmatchesFlow. . . . . . . . . . . . . . . . . 13
+4.3MIPcompares favorably to shortcut policies . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+5 Inductive Bias, not Expressivity, ExplainsMIP’s Performance 15
+5.1 Manifold adherence, not reconstruction, drives performance . . . . . . . . . . . . . . . . . 15
+5.2 Stochasticity stabilizes iterative computation . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+5.3 Architecture remains essential for scaling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+6 Related Work 17
+6.1 Previous Works’ Connection with GCP’s Taxonomy . . . . . . . . . . . . . . . . . . . . . . . . 18
+7 Discussion 19
+A Additional Policy Parametrizations 28
+A.1 Full Abalation ofMIPVariants . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+A.2 Additional Noise Injection Methods . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+A.3 Experiment Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+B Control Experiments 29
+B.1 Task Settings . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+B.2 Architecture Design . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+B.3 Finetuningπ 0 onLIBERO. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+B.4 Full Results for Flow and Regression Comparison . . . . . . . . . . . . . . . . . . . . . . . . 33
+B.5 Dataset Quality Ablation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+B.6 Full Results forMIPand its variants . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+B.7 Different Method’s Performance with Different Number of Function Evaluations . . . . . 34
+B.8 ComparingMIPwith Consistency Models . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+C Lipschitz Constant Study Details 36
+C.1 Lipschitz Evluation Method . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+C.2 Full Lipschitz Evaluation Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 37
+26
+D Multi-Modality Study Details 38
+D.1 Q Function Estimation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 38
+D.2 Deterministic Dataset Generation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 39
+E Manifold Adherence Study Details 40
+E.1 Validation Loss Is Not a Good Proxy for Policy Performance . . . . . . . . . . . . . . . . . . 40
+E.2 Manifold Adherence Evaluation Method . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 40
+F Nearest Neighbor Hypothesis Study 40
+F .1 Action Chunk Size Study . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 41
+F .2 Loss Norm Type Ablation Study . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 42
+G Diversity of GCPs and RCPs 43
+H Theoretical analysis of GCP’s expressivity 43
+H.1 Formal statement of Theorem 1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 43
+H.2 Supporting lemmas . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+H.3 Proof of Theorem 2 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47
+I Regularization does not account for manifold adherence 47
+I.1 Ridge regression for observation-to-action mapping (penalty onB) . . . . . . . . . . . . . 48
+I.2 Ridge regression for action-to-action mapping (penalty onC) . . . . . . . . . . . . . . . . . 50
+I.3 Two-pass linear surrogate ofMIP. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 50
+J Toy experiments: Testing the function approximation capabilities of regression and flow
+models 51
+J.1 Overview . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 51
+J.2 Evaluation Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 51
+J.3 Key Findings . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+J.4 Training Loss Considerations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+J.5 Architectural Observations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+J.6 Implications for Method Selection . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+J.7 Experimental Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 52
+K Appendix for Section 2 53
+K.1 Markov Decision Processes Configuration . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 53
+K.2 Integrated Flow Prediction . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 53
+27
+A Additional Policy Parametrizations
+This section further elaborates the design space ofMIPin stochasticity injection, iterative computation
+and intermediate supervision.
+A.1 Full Abalation ofMIPVariants
+This section formally describes the training process of allMIPwith different stochasticity injection and
+supervised iterative computation design.
+Residual Regression (RR)removes all stochasticity in training and the training objective is:
+πRR
+θ ≈arg min
+θ
+E(o,a)∼p train,z∼N(0,I) (A.1)
+ 
+∥(πθ(o,I 0 =0,t=0)−t ⋆a)∥2 +∥(πθ(o, sg(πθ(o,I 0 =0,t=0)),t ⋆)−a)∥2
+. (A.2)
+Two-Step Denoising (TSD)The training objective is:
+πTSD
+θ ≈arg min
+θ
+E(o,a)∼p train,z∼N(0,I)
+ 
+∥(πθ(o,I 0,t=0)−t ⋆a)∥2 +∥(πθ(o, sg(πθ(o,I 0,t=0)) + (1−t ⋆)z,t ⋆)−a)∥2
+.
+whereI 0 =z. Compared toMIP,TSDadds stochasticity to both first step training.
+MIPwith Data Augmentation (MIP-Dagger)To understand the importance of decoupling for en-
+abling iterative computation, we propose an additional variant ofMIPthat lies betweenMIPandRR,
+where the two steps are partially coupled. Since the training method of second iteration is similar to
+data augmentation, we call this variantMIP-Dagger:
+πMIP-Dagger
+θ ≈arg min
+θ
+E
+(o,a)∼p train,z∼N(0,I)
+(∥(πθ(o,I 0 =0,t=0)−t ⋆a)∥2 +∥(πθ(o,t ⋆sg(πθ(o,I 0 =0,t=0)) + (1−t ⋆)z,t ⋆)−a)∥2),
+where the major difference compared toMIPis the second step takes in the interpolant between
+first step output and noise rather than the action and noise.
+MIPwithout intermediate supervision (MIP-NoSupervision)To understand the effect of interme-
+diate supervision on iterative computation, we propose one variant ofMIPthat removes the supervi-
+sion of intermediate computation steps while preserving stochasticity injection at training time, named
+MIP-NoSupervision:
+πMIP-NoSupervision
+θ ≈arg min
+θ
+E
+(o,a)∼p train,z∼N(0,I)
+(∥(πθ(o,t ⋆sg(πθ(o,I 0 =0,t=0)) + (1−t ⋆)z,t ⋆)−a)∥2),
+where the first step’s output is unsupervised.
+28
+MIPwithouttconditioningBy removingtconditioning inMIP, it degenerates toSF. Here we present
+the multi-step integration process for straight flow when action distribution is Dirac delta. The integrator
+fromstotis:
+at = t−s
+1−s πθ(o,s·a s) +1−t
+1−s as
+A.2 Additional Noise Injection Methods
+WhileMIPonly injects noise to action, we also explore the possibility of injecting noise to observation.
+We propose two variants ofMIP:MIP-ObsandMIP-Dagger-Obs. InMIP-Obs, we perturb the first
+step’s observation with noisez, while the second step’s training is the same as the originalMIPwith
+decoupled training. InMIP-Dagger-Obs, we perturb the first step’s observation with noisez, and
+the second step’s training is conditioned on the first step’s output, making it similar to Dagger. Major
+differnce compared to the original MIP: perturb the first step’s observation. In both variants, we fixed
+t∗ =0.9 and all observation perturbation happens at observation embedding space with normalized
+features.
+πMIP-OBS
+θ ≈arg min
+θ
+E
+(o+(1−t ∗)z,a)∼p train
+z∼N(0,I)
+
+∥(πθ(o+ (1−t ∗)z,I 0 =0,t=0)−t ∗a)∥2
++∥(πθ(o,I t∗,t ∗)−a)∥2
+
+πMIP-DAGGER-OBS
+θ ≈arg min
+θ
+E
+(o,a)∼p train
+z∼N(0,I)
+
+∥(πθ(o+ (1−t ∗)z,I 0 =0,t=0)−t ∗a)∥2
++∥(πθ(o,t ∗stopgrad(πθ(o+ (1−t ∗)z,I 0 =0,t=0)) +1−t ∗)z,t ∗)−a)∥2
+
+We find that perturbing observations introduces data conflicts and degrades performance (Table 7).
+In a two-step model, selecting noise levels that prevent observation overlap becomes challenging and
+brittle, leading to training instability across architectures.
+A.3 Experiment Results
+We benchmark all methods on theTool-Hangtask, given it is the one with the largest gap between
+RCP and GCPs. From Table 8, we can see that the important part is to add stochasticity injection be-
+tween two iterations, and intermediate supervision is also important to realize the potential of iterative
+computation.
+B Control Experiments
+B.1 Task Settings
+This section introduces all the tasks presented in the main paper. To reach a sound conclusion, use
+common benchmarks appears in previous works:
+29
+Architecture Method (L2) Transport(ph)Tool-Hang(ph)
+Chi-Transformer Regression 0.50/0.45 0.50/0.37
+Chi-Transformer MIP 0.79/0.69 0.92/0.85
+Chi-Transformer MIP-Dagger-Obs 0.00/0.00 0.00/0.00
+Chi-Transformer MIP-Obs 0.61/0.46 0.13/0.08
+Chi-Transformer Flow 0.81/0.71 0.89/0.75
+Sudeep-DiT Regression 0.65/0.54 0.31/0.25
+Sudeep-DiT MIP 0.80/0.69 0.80/0.72
+Sudeep-DiT MIP-Dagger-Obs 0.00/0.00 0.00/0.00
+Sudeep-DiT MIP-Obs 0.00/0.00 0.00/0.00
+Sudeep-DiT Flow 0.79/0.65 0.73/0.61
+Chi-UNet Regression 0.66/0.59 0.73/0.59
+Chi-UNet MIP 0.81/0.72 0.82/0.71
+Chi-UNet MIP-Dagger-Obs 0.00/0.00 0.00/0.00
+Chi-UNet MIP-Obs 0.00/0.00 0.00/0.00
+Chi-UNet Flow 0.83/0.75 0.87/0.73
+Table 7:Performance comparison of different methods with observation perturbation on state-based tasks. For
+each methods and architecture, we report the average and best performance across 5 checkpoints with 3 random
+seeds.
+RobomimicRobomimic (Mandlekar et al., 2021) is a large-scale robotic manipulation benchmark de-
+signed to study imitation learning and offline reinforcement learning. It contains five manipulation
+tasks (Lift,Can,Square,Transport,Tool-Hang) withproficient human (PH)teleoperated demon-
+strations, and for four of them, additionalmixed proficient/non-proficient human (MH)demonstration
+datasets are provided (9 variants in total). We report results on bothstate-basedandimage-basedob-
+servations, since these two modalities pose distinct challenges. Among the tasks,Tool-Hangrequires
+extremely precise end-effector positioning and fine-grained contact control, whileTransportdemands
+high-dimensional control and coordination over extended horizons.
+Push-T Push-T(Florence et al., 2022) is adapted from the Implicit Behavior Cloning (IBC). The task
+involves pushing a T-shaped block to a fixed target location using a circular end-effector. Randomized
+initializations of both the block and the end-effector introduce significant variability . The task is contact-
+rich and requires modeling complex object dynamics for precise block placement. Two observation
+variants are considered: (i) raw RGB image observations and (ii) state-based observations containing
+object pose and end-effector position.
+KitchenThe FrankaKitchenenvironment is designed to test the ability of IL and offline RL methods
+to perform long-horizon, multi-task manipulation. It includes 7 interactive objects, with human demon-
+stration data consisting of 566 sequences, each completing 4 sub-tasks in arbitrary order (e.g., opening
+a cabinet, turning a knob). Success is measured by completing as many of the demonstrated sub-tasks
+as possible, regardless of order. This setup explicitly introduces both short-horizon and long-horizon
+multimodality , requiring policies to generalize across compositional tasks.
+30
+Method NFEs Success Rate
+TSD2 0.80
+MIP2 0.80
+MIP-NoSupervision2 0.42
+MIP-Dagger2 0.64
+RR2 0.54
+SF1 0.54
+SF3 0.55
+SF9 0.52
+Table 8:Success rates across differentMIPvariants andRRonTool-Hangtask over 5 checkpoints across 3
+architectures.
+MetaWorld MetaWorldis a large-scale suite of diverse manipulation tasks built in MuJoCo, where
+agents must perform challenging object interactions using a robotic gripper. We adopt the 3D obser-
+vation setting using point cloud representations, ported from the DP3 framework (Ze et al., 2024), to
+better evaluate geometric reasoning and spatial generalization. Tasks in MetaWorld are categorized into
+different difficulty levels, with benchmarks testing few-shot adaptation and multi-task transfer learning.
+Adroit Adroitis a suite of dexterous manipulation tasks featuring a 24-DoF anthropomorphic robotic
+hand. Tasks include pen rotation, door opening, and object relocation, all of which demand precise,
+coordinated multi-finger control. Following DP3 (Ze et al., 2024), we use point cloud observations
+to capture fine-grained 3D object-hand interactions. Policies are trained using VRL3, highlighting the
+challenges of high-dimensional control and sim-to-real transfer in dexterous manipulation.
+LIBERO LIBEROis a common multi-task benchmark to evaluate VLA’s generalization ability . It is
+composed of 130 tasks and can be categorized into multiple categories, including object, goal, spatial,
+and 10-task. The 10-task is long horizon and considered the most challenging to solve.
+B.2 Architecture Design
+We study four policy backbones—Chi-Transformer,Sudeep-DiT,Chi-UNet,RNN, andMLP—under
+a common training recipe and data interface. Unless otherwise specified,all models are capacity-matched
+to∼20M parametersto enable fair comparison.
+Chi-UNetis adopted from Diffusion Policy (Chi et al., 2023) which built on top of 1D temporal U-
+Net (Janner et al., 2022) with FiLM conditioning (Perez et al., 2018) on observationoand flow timet.
+Chi-UNethas a strong inductive bias for the temporal structure of the action and tends to smooth out
+the action.
+Chi-Transformerfollows the time–series diffusion transformer from Diffusion Policy (Chi et al.,
+2023), where the noisy action tokensa t form the input sequence and apositional embeddingof the flow
+timetis prepended as the first token; observationsoare mapped by a shared MLP into an observation-
+embedding sequence that conditions the decoder stack. Compared toChi-UNet,Chi-Transformer
+31
+uses token-wise self-attention over the whole action sequence, thus can model less-smooth and more
+complex actions.
+Sudeep-DiTis a DiT-style (Diffusion Transformer) conditional noise network specialized for policies
+adopted from DiT-Policy (Dasari et al., 2024): observationoare first encoded into observation vectors;
+the flow timetis embedded viapositional embedding; an encoder–decoder transformer then fuses these
+with initial noisezto predict next action. The key ingredient ofSudeep-DiTis replacing standard cross-
+attention withadaLN-Zeroblocks—adaptive LayerNorm modulation using the mean encoder embedding
+and the time embedding, with zero-initialized output-scale projections—stabilizing diffusion training at
+scale. Compared toChi-Transformer,Sudeep-DiThas adaLN-based conditioning (instead of vanilla
+cross-attention) and an explicit encoder-decoder split, yielding better training stability .
+RNNTheRNNbackbone processes sequences with a stacked LSTM/GRU. For each action time step in the
+chunk, the input vector concatenates: the current noised actionat , a time embedding fort, and a obser-
+vation embedding foro. The RNN outputs are fed to a MLP head with LayerNorm+ApproxGELU+Dropout
+blocks before output the action with final linear head. All linear and recurrent weights useorthogonal
+initialization(biases zero), and RNN layer dropout is applied when depth>1.
+MLPTheMLPbackbone flattens the action and observation, appending the time embedding. Each mlp
+block has LayerNorm, ApproxGELU and Dropout blocks with residual connection andorthogonalweight
+initialization throughout. Each block output is then modulated with FiLM conditioning.
+DP3built on top ofChi-UNetwith extra 3d perception encoder. We use the exact same architecture
+as 3D diffusion policy (Ze et al., 2024).
+Model hyperparametersIn the main experiments, we align the model capacity to 20M parameters
+for default if not specified, with detailed hyperparameters report in Table 9.
+Backbone Heads Layers Embedding dim Dropout
+Sudeep-DiT8 8 256 0.1
+Chi-UNet– – 256 –
+Chi-Transformer4 8 – 0.1
+RNN– 8 512 0.1
+MLP– 8 512 –
+Table 9:Model hyperparameters.
+B.3 Finetuningπ 0 onLIBERO
+Forπ0 finetuning experiments, we uselerobotframework (Cadene et al., 2024) to finetuneπ 0 on
+LIBERO. Our flow-based finetuning experiments match their reported results. To finetuneπ 0 to re-
+gression policy , we use the same architecture but set the initial noise always to zero and let the model
+directly predict the action. To finetuneπ0 toMIP, we use the same practice where we modify the time
+steptto be uniformly sample from{0,t ∗}uniformly and set the initial noise to zero. We train all policies
+until convergence with 50k gradient steps on 1 node with 8 H100 GPUs.
+32
+B.4 Full Results for Flow and Regression Comparison
+In the paper, we only present the aggregated results across 3 architectures. Figure 12 present the full
+results across all architectures with different training methods.
+Transport (MH, Image)
+Disassemble (3D)Stick-Push (3D)
+Adroit Hammer (3D)
+Lift (MH, State)
+Push T (Image)Assembly (3D)
+Square (MH, Image)
+Lift (PH, State)Can (PH, Image)Lift (PH, Image)Can (PH, State)Lift (MH, Image)Adriot Pen (3D)Can (MH, State)
+Square (PH, State)
+Adroit Door (3D)
+Square (PH, Image)
+Kitchen (State)
+Transport (PH, Image)
+Push T (State)Can (MH, Image)
+Square (MH, State)
+Transport (PH, State)Tool Hang (PH, State)Transport (MH, State)Tool Hang (PH, Image)
+0.0
+0.5
+1.0
+Average
+Relative
+Success
+Regression
+Flow
+Figure 12: Relative performance of RCP compared to GCP across common benchmarks (worst-case archi-
+tecture).For each task, we implementChi-Transformer,Sudeep-DiTandChi-UNet. For each architecture,
+we average performance of the last 5 training checkpoints across three seeds. We then report the performance
+of the worst-performing architecture, chosen individually for both RCP and GCP , to demonstrate method robust-
+ness. ForFlow, we always do 9 step Euler integrations, where its performance plateaued. For readability , RCP
+success rates are plotted relative to flow, with flow normalized to performance of 1 per task. Tasks are grouped
+by observation modality , and ordered by relative RCP performance. Red dashed line indicates threshold at which
+RCP attains<95% success of GCP .
+To further rule out the effect of training method, we also compare different methods’ performance
+withℓ1, which is observed to be superior for regression policy (Kim et al., 2024). We also benchmark
+the performance of flow model andMIPwithℓ 1 loss to understand the effect of loss function on the
+performance of GCPs. Table 10 shows the performance comparison of different methods withℓ 1 and
+ℓ2 loss, where we find thatℓ 1 loss generally outperformsℓ 2 loss, especially for regression policy . We
+attribute the superior performance ofℓ 1 loss to the fact that it can capture the expert behavior better
+by learning the medium instead of the mean of the action. However, even withℓ1 loss, we still observe
+that Regression<MIP≈Flow, highlighting the importance of the stochasticity injection and iterative
+computation is independent of the loss function.
+B.5 Dataset Quality Ablation
+GCPs are believed to handle data with diverse quality better. To test that assumption, we manually
+corrupt the expert dataset and inject stochactity and multi-modality in to the dataset. In Table 11, we
+compare 4 different datasets (3 of them collected by ourselves). In the collected dataset, we manually
+inject noise to the policy and add delay the policy from time to time to introduce multi-modality that is
+common in the real world.
+B.6 Full Results forMIPand its variants
+ForKitchen, the task has multiple stages. In the main results, we only report the performance of
+the last stage since it is the most challenging one. Table 15 shows the performance comparison across
+different design choices onKitchentask.
+33
+Architecture Method Transport (ph) Tool Hang (ph)
+Sudeep-DiT Regressionℓ 1 0.72/0.64 0.76/0.65
+Sudeep-DiT Regressionℓ 2 0.50/0.45 0.50/0.37
+Sudeep-DiT MIPℓ 1 0.81/0.73 0.91/0.84
+Sudeep-DiT MIPℓ 2 0.79/0.69 0.92/0.85
+Sudeep-DiT Flowℓ 1 0.83/0.76 0.93/0.84
+Sudeep-DiT Flowℓ 2 0.81/0.71 0.89/0.75
+Chi-Transformer Regressionℓ 1 0.67/0.57 0.44/0.33
+Chi-Transformer Regressionℓ 2 0.65/0.54 0.31/0.25
+Chi-Transformer MIPℓ 1 0.80/0.68 0.85/0.77
+Chi-Transformer MIPℓ 2 0.80/0.69 0.80/0.72
+Chi-Transformer Flowℓ 1 0.77/0.69 0.81/0.71
+Chi-Transformer Flowℓ 2 0.79/0.65 0.73/0.61
+Chi-UNet Regressionℓ 1 0.84/0.71 0.71/0.55
+Chi-UNet Regressionℓ 2 0.66/0.59 0.73/0.59
+Chi-UNet MIPℓ 1 0.85/0.68 0.76/0.67
+Chi-UNet MIPℓ 2 0.81/0.72 0.82/0.71
+Chi-UNet Flowℓ 1 0.85/0.69 0.87/0.71
+Chi-UNet Flowℓ 2 0.83/0.75 0.87/0.73
+Table 10:Comparison ofℓ 1 vsℓ2 norm across different methods and architectures. Report average/best perfor-
+mance across 5 checkpoints with 3 random seeds.
+Architecture Method NFEs Delayed & Noisy Policy Delayed Policy Zero-Flow Proficient Human
+(Worst Quality) (Mixed Quality) (Better Quality) (Good Quality)
+Chi-UNet Regression1 0.70/0.63 0.80/0.72 0.76/0.65 0.76/0.62
+Chi-UNet SF1 0.70/0.62 0.82/0.76 0.84/0.77 0.62/0.38
+Chi-UNet MIP2 0.80/0.72 0.82/0.61 0.74/0.64 0.80/0.68
+Chi-UNet Flow9 0.76/0.68 0.74/0.50 0.76/0.54 0.84/0.70
+Chi-Transformer Regression1 0.38/0.22 0.40/0.31 0.42/0.26 0.50/0.24
+Chi-Transformer SF1 0.46/0.35 0.68/0.50 0.56/0.41 0.62/0.48
+Chi-Transformer MIP2 0.56/0.49 0.70/0.54 0.64/0.56 0.72/0.68
+Chi-Transformer Flow9 0.56/0.34 0.54/0.48 0.62/0.49 0.68/0.54
+Sudeep-DiT Regression1 0.42/0.29 0.36/0.28 0.42/0.32 0.30/0.19
+Sudeep-DiT SF1 0.66/0.41 0.60/0.54 0.72/0.57 0.68/0.50
+Sudeep-DiT MIP2 0.66/0.56 0.74/0.58 0.70/0.61 0.86/0.78
+Sudeep-DiT Flow9 0.56/0.45 0.66/0.58 0.72/0.65 0.78/0.68
+Table 11:Performance comparison across different methods and data quality levels. We evaluate on the task
+Tool-Hangwith state observations using 10M parameter networks. Success rates are reported as averages over
+5 checkpoints across 3 seeds.
+B.7 Different Method’s Performance with Different Number of Function Evaluations
+We also provide detailed evaluation on different method’s scaling behavior given different amount of
+online computation budgets. Table 16 highlights that onlyMIPandFlowbenefit from iterative compu-
+tate.
+34
+Architecture Method Lift Can Square Transport Tool-Hang Push-T Kitchen
+mh ph mh ph mh ph mh ph
+Sudeep-DiTFlow 1.00/0.991.00/1.00 1.00/0.941.00/1.00 0.88/0.751.00/0.94 0.40/0.27 0.80/0.70 0.86/0.751.00/1.000.98/0.96Sudeep-DiTRegression 1.00/0.991.00/1.000.92/0.901.00/0.98 0.72/0.53 0.94/0.86 0.12/0.06 0.50/0.44 0.52/0.391.00/1.000.98/0.92Sudeep-DiTStraight Flow1.00/0.981.00/1.000.96/0.901.00/0.99 0.72/0.66 0.96/0.93 0.20/0.14 0.56/0.48 0.70/0.591.00/1.000.96/0.91Sudeep-DiTMIP 1.00/0.991.00/1.000.98/0.951.00/1.000.90/0.81 0.98/0.940.44/0.38 0.76/0.680.92/0.88 1.00/1.00 1.00/0.97Chi-TransformerFlow 1.00/1.00 1.00/1.00 1.00/0.931.00/0.98 0.78/0.74 0.96/0.89 0.44/0.340.88/0.64 0.68/0.541.00/1.00 1.00/0.96Chi-TransformerRegression1.00/0.991.00/0.99 0.98/0.921.00/0.96 0.74/0.61 0.92/0.85 0.28/0.20 0.68/0.51 0.40/0.361.00/1.000.98/0.91Chi-TransformerStraight Flow1.00/0.991.00/1.000.98/0.921.00/0.99 0.68/0.58 0.96/0.89 0.24/0.16 0.62/0.54 0.60/0.551.00/1.000.96/0.92Chi-TransformerMIP 1.00/1.00 1.00/1.000.96/0.951.00/1.00 0.86/0.73 0.96/0.89 0.42/0.37 0.80/0.68 0.76/0.691.00/1.000.98/0.96Chi-UNetFlow 1.00/1.00 1.00/1.00 1.00/0.981.00/1.000.90/0.78 0.98/0.94 0.52/0.40 0.80/0.730.84/0.701.00/1.00 1.00/0.97Chi-UNetRegression 1.00/1.00 1.00/1.00 1.00/0.961.00/0.990.94/0.82 1.00/0.91 0.22/0.16 0.64/0.55 0.68/0.641.00/1.000.92/0.88Chi-UNetStraight Flow 1.00/1.001.00/1.00 1.00/0.921.00/0.990.94/0.79 0.98/0.90 0.22/0.15 0.64/0.52 0.50/0.001.00/1.000.86/0.79Chi-UNetMIP 1.00/1.00 1.00/1.00 1.00/0.98 1.00/0.99 0.92/0.811.00/0.94 0.62/0.460.80/0.69 0.80/0.641.00/1.00 1.00/0.96
+Table 12:Performance comparison of Flow and Regression methods across differentstate-basedrobotic ma-
+nipulation tasks. For each task, we report the best checkpoint performance/averaged performance over last 5
+checkpoints. Each experiment is run with 3 seeds and we report the average performance across all seeds.
+Architecture Method Lift Can Square Transport Tool Hang PushT
+mh ph mh ph mh ph mh ph
+DiT Flow 1.00/1.00 1.00/1.00 0.96/0.941.00/0.99 0.82/0.76 0.96/0.94 0.32/0.20 0.84/0.830.78/0.571.00/1.00
+DiT Regression 1.00/0.991.00/1.000.92/0.811.00/1.000.74/0.67 0.94/0.84 0.14/0.08 0.74/0.56 0.28/0.181.00/1.00
+DiT Straight Flow 1.00/0.991.00/0.99 0.98/0.951.00/0.98 0.82/0.721.00/0.93 0.26/0.19 0.86/0.83 0.46/0.401.00/1.00
+DiT MIP 1.00/0.991.00/1.00 1.00/0.961.00/0.98 0.90/0.831.00/0.92 0.50/0.31 0.90/0.84 0.76/0.66 1.00/1.00
+Transformer Flow 1.00/0.991.00/1.00 0.98/0.921.00/0.96 0.70/0.66 0.98/0.93 0.24/0.22 0.80/0.77 0.54/0.401.00/1.00
+Transformer Regression1.00/0.981.00/0.981.00/0.941.00/0.96 0.76/0.70 0.98/0.90 0.40/0.27 0.94/0.87 0.44/0.361.00/1.00
+Transformer Straight Flow1.00/1.00 1.00/1.00 1.00/0.951.00/0.98 0.90/0.78 0.98/0.940.32/0.25 0.86/0.70 0.36/0.281.00/1.00
+Transformer MIP 1.00/0.981.00/1.00 0.96/0.911.00/0.98 0.72/0.21 0.90/0.04 0.18/0.06 0.86/0.69 0.60/0.481.00/1.00
+UNet Flow 1.00/1.00 1.00/1.00 1.00/0.97 1.00/0.98 0.90/0.79 0.96/0.90 0.24/0.16 0.78/0.61 0.48/0.371.00/1.00
+UNet Regression 1.00/0.961.00/0.99 0.84/0.70 0.98/0.87 0.74/0.66 0.94/0.86 0.18/0.10 0.66/0.64 0.30/0.231.00/1.00
+UNet Straight Flow 1.00/0.941.00/0.99 0.98/0.931.00/0.96 0.72/0.68 0.92/0.62 0.00/0.00 0.50/0.22 0.06/0.021.00/1.00
+UNet MIP 1.00/1.00 1.00/1.00 1.00/0.951.00/0.980.92/0.840.96/0.910.52/0.37 0.96/0.910.56/0.501.00/1.00
+Table 13:Performance comparison of Flow and Regression methods across differentimage-basedrobotic ma-
+nipulation tasks. For each task, we report the best checkpoint performance/averaged performance over last 5
+checkpoints. Each experiment is run with 3 seeds and we report the average performance across all seeds.
+Architecture Method Adroit MetaWorld
+Hammer Door Pen Stick-Push Assembly Disassemble
+DP3 Flow 0.96±0.020.60±0.06 0.54±0.11 0.92±0.040.98±0.030.72±0.14
+Regression 0.97±0.040.52±0.16 0.47±0.08 0.95±0.06 0.98±0.03 0.78±0.08
+Table 14:Performance comparison of Flow and Regression methods using DP3 architecture across differentpoint-
+cloud-basedrobotic manipulation tasks. For each task, we report the best checkpoint performance/averaged
+performance over last 5 checkpoints. Each experiment is run with 3 seeds and we report the average performance
+across all seeds.
+B.8 ComparingMIPwith Consistency Models
+GivenMIPtakes less integration steps compared to flow model, we compare it with consistency models
+which accelerate the sampling process of flow by distilling the learned flow into a shortcut model.
+The major difference betweenMIPand consistency models is that the latter do satisfy C1, and require
+training over a continuum of noise levels. On the other hand,MIPis trained to predict the conditional
+mean of the interpolant, and thus, doesn’t need extra distillation stage. As shown in Table 17, We
+benchmarksMIPto common consistency model training methods including consistency trajectory model
+(CTM) (Kim et al., 2023) and Lagrangian map distillation (LMD) (Boffi et al., 2025a), where LMD only
+works forChi-UNetdue to its dependency on jacobian matrix computation. The benchmarking results
+indicates that, given best architecture,MIPoutperforms consistency models. In terms of training time,
+MIPonly takes half of the time compared to CTM, where LMD training takes even longer due to jacobian
+35
+Architecture Method P1 P2 P3 P4
+Chi-UNet
+Flow1.0 1.0 1.0 0.98
+MIP1.0 1.0 1.0 0.94
+Regression0.98 0.94 0.94 0.86
+Chi-Transformer
+Flow1.0 1.0 1.0 1.0
+MIP1.00 0.98 0.98 0.96
+Regression1.0 1.0 0.98 0.94
+Sudeep-DiT
+Flow 1.0 1.0 1.0 0.98
+MIP1.00 1.00 1.00 0.98
+Regression1.0 0.98 0.96 0.88
+Table 15: Performance comparison across different design choices on kitchen task.Kitchen task has multiple
+stages and we report the success rate of finishingntasks in the table. For the performance reported in the main
+paper and previous tables, we report the success rate of finishing 4 tasks.
+MethodReg. SF RR MIP Flow
+NFEs1 1 3 9 1 2 1 2 1 3 9
+S.R.0.46 0.54 0.55 0.52 0.31 0.33 0.50 0.74 0.32 0.55 0.66
+Table 16: Comparison of methods and their corresponding number of function evaluations (NFEs).Eval-
+uated on state-basedTool-Hangtask overChi-UNet. Average success rate is reported across 3 seeds and 5
+checkpoints.
+matrix computation.
+Architecture Method Transport Tool Hang
+mh ph
+Sudeep-DiTFlow 0.40/0.27 0.80/0.70 0.86/0.75
+Sudeep-DiTMIP 0.44/0.38 0.76/0.680.92/0.88
+Chi-TransformerCTM 0.57/0.320.90/0.58 0.56/0.26
+Chi-TransformerFlow 0.44/0.34 0.88/0.64 0.68/0.54
+Chi-TransformerMIP 0.42/0.37 0.80/0.68 0.76/0.69
+Chi-UNetCTM 0.40/0.32 0.72/0.63 0.46/0.37
+Chi-UNetFlow 0.52/0.40 0.80/0.730.84/0.70
+Chi-UNetLMD 0.44/0.32 0.76/0.68 0.74/0.52
+Chi-UNetMIP 0.62/0.460.80/0.69 0.80/0.64
+Table 17:Benchmark results across different architectures and methods on state-based tasks on consistency
+models andMIP. Report average/best performance across 5 checkpoints with 3 random seeds. Both LMD and
+CTM integrate 2 steps, which is the same asMIP.
+C Lipschitz Constant Study Details
+C.1 Lipschitz Evluation Method
+We note that not all inputsoare dynamically feasible, and our dataset lies only on a narrow manifold
+of the observation space. Therefore, we must carefully evaluate the Lipschitz constant on the feasible
+observation space to avoid conflating model expressivity with errors arising from infeasible states. To
+ensure feasibility , instead of directly perturbing the state, we perturb the action and then roll it out in
+36
+the environment. This guarantees that both the perturbed state and the resulting observation remain
+feasible.
+In practice, we identify states that exhibit the highest ambiguity of actions in the dataset, referred
+to ascritical states. For each critical state, we inject Gaussian noiseη∼N(0,ε 2I)into the normalized
+action, unnormalize it, and then roll it out. We select 100 critical states from the dataset. For each state,
+we perturb the corresponding expert actionawith 64 independent Gaussian samples.
+Letodenote the next nominal observation after applying the nominal actiona. After rolling out
+the perturbed actions, we obtain perturbed observationso (1), . . . ,o(Nperturb). The policy then predicts
+the perturbed actionsa (i) =π(o (i) ). To ensure comparability across different states and tasks, we
+evaluate the Lipschitz constant with respect to normalized observations¯o= o−µo
+σo
+and normalized actions
+¯a= a−µa
+σa
+. Finally , the Lipschitz constant is estimated using a zeroth-order approximation:
+L≈max
+i
+∥¯a(i) −¯a∥2
+∥η∥2
+. (C.1)
+Full version of above process is stated in Algorithm 1.
+Algorithm 1Lipschitz Constant Estimation via Action Perturbation
+Require:DatasetD, policyπ, noise scaleε, number of critical statesN s=100, number of perturbations
+Np=64
+Ensure:Estimated Lipschitz constantL
+1:S←identifyN s critical states fromD▷Select states with highest action ambiguity
+2:for allcritical states∈Sdo
+3:(a,o)←expert action and nominal next observation fors▷Get ground truth
+action-observation pair
+4:( ¯a, ¯o)←normalize(a,o)using dataset statistics▷Ensure comparability across states/tasks
+5:fori=1 toN p do
+6:η∼N(0,ε 2I)▷Sample Gaussian perturbation
+7:a pert ←unnormalize( ¯a+η)▷Create perturbed action in original scale
+8:o (i) ←rollout(a pert)in environment▷Execute perturbed action to get feasible state
+9: ¯o(i) ←normalize(o (i) )▷Normalize perturbed observation
+10:a (i) ←π(o (i) )▷Get policy prediction on perturbed state
+11: ¯a(i) ←normalize(a (i) )▷Normalize predicted action
+12:r i ←∥¯a(i) −¯a∥2
+∥η∥2
+▷Compute finite difference approximation
+13:L s ←max i ri ▷Local Lipschitz constant for states
+14:L← 1
+Ns
+PNs
+s=1 Ls ▷Average across all critical states
+15:returnL
+C.2 Full Lipschitz Evaluation Results
+In the main text, we only report the average Lipschitz constant on critical states across 3 architectures.
+Here, we report the full Lipschitz constant evaluation reuslt in Table 18 with different architectures and
+tasks.
+37
+Task Architecture Method Lipschitz Constant (Policy)
+Push-T(State)
+Chi-UNet Regression0.85±0.58
+Flow0.31±0.01
+Sudeep-DiT Regression0.52±0.11
+Flow0.22±0.02
+Chi-Transformer Regression1.33±1.14
+Flow0.82±0.26
+Kitchen(State)
+Chi-UNet Regression13.47±2.80
+Flow13.31±4.13
+Sudeep-DiT Regression15.37±3.69
+Flow12.54±5.09
+Chi-Transformer Regression13.37±4.00
+Flow11.44±4.10
+Tool-Hang(PH, State)Chi-UNet Regression1.63±0.79
+Flow1.53±1.01
+Sudeep-DiT Regression1.86±0.81
+Flow1.34±0.97
+Chi-Transformer Regression1.76±1.02
+Flow1.40±0.99
+Table 18: Detailed: Per-architecture policy Lipschitz.
+D Multi-Modality Study Details
+D.1 Q Function Estimation
+To rule out the possibility of hidden multi-modality , we also plot Q functions for each action to see
+if there is any clear clustering pattern ofQw.r.t. different actions in t-SNE visualization. Since we
+only have access to expert actions rather than their policy , we estimate the Q function by Monte Carlo
+sampling with the learned flow policy . The detailed procedure is as follows:
+Starting from one “critical state”, we first sampleNactions
+a(i) =Φ(o,z (i) ,s=0,t=1),i=1, . . . ,N,z (i) ∼N(0,I).
+For each sampled actiona (i) , we execute one environment step to obtain the next observationo ′(i) and
+immediate rewardr(o,a (i) ). Then, starting fromo ′(i) , we rollout the learned policy forN MC episodes
+until termination (horizonH), and average the cumulative returns to obtain an estimate of the contin-
+uation value. Thus, the Q-value for actiona (i) is approximated as:
+QΦ(a(i) ,o) =r(o,a (i) ) + 1
+NMC
+NMCX
+j=1
+HX
+t=1
+r
+ 
+o(j)
+t ,a (j)
+t
+
+. (D.1)
+We set the discount factorγ=1.0 since rewards are sparse and triggered only at task completion. The
+reward forTool-HangandKitchenis defined by thefinalsuccess signal (withKitchen’s success
+requiring all 4 subtasks to be completed). The reward forPush-Tis defined byfinalcoverage.
+38
+Algorithm 2Q Function Estimation via Monte Carlo Sampling
+Require:DatasetD, flow policyΦ, reward functionr, number of critical statesN s=100, number of
+action samplesN, Monte Carlo samplesN MC
+Ensure:For each stateo, pairs{(a (i) ,Q Φ(a(i) ,o))}N
+i=1
+1:S←identifyN s critical states fromD▷Select states with highest action ambiguity
+2:for allcritical states∈Sdo
+3:o←observation for states
+4:fori=1 toNdo▷Sample actions and compute Q estimates
+5:z (i) ∼N(0,I)
+6:a (i) ←Φ(o,z (i) ,s=0,t=1)
+7:Execute(o,a (i) )in env→obtaino ′(i) ,r (i) =r(o,a (i) )
+8:forj=1 toN MC do▷Monte Carlo rollouts fromo ′(i)
+9:RolloutΦfromo ′(i) until horizonHto get cumulative returnR (i)
+j
+10:Q Φ(a(i) ,o)←r (i) + 1
+NMC
+PNMC
+j=1 R(i)
+j
+11:Store{(a (i) ,Q Φ(a(i) ,o))}N
+i=1 for states
+The procedure above explicitly computes Q-values by rolling out trajectories separately for each
+sampled action.
+D.2 Deterministic Dataset Generation
+To generate a deterministic dataset that completely eliminates any potential multi-modality , we follow
+a systematic process:
+First, we train a flow expert policyΦon the original dataset. Then, we collect a new dataset by
+rolling out this expert policy from different initial states (using different random seeds than those used
+during testing). Crucially , during rollout, we always evaluate the flow policy deterministically by setting
+the initial noise to zero:z=0. This ensures that the policy produces deterministic actions given any
+observation, completely removing any stochasticity from the action generation process.
+During data collection, we discard all failed trajectories to maintain the same success rate as the
+original dataset. We continue collecting until we reach the target number of trajectoriesN traj.
+39
+Algorithm 3Deterministic Dataset Generation
+Require:Trained flow policyΦ, target number of trajectoriesN traj, maximum episode stepsT max
+Ensure:Deterministic datasetD det
+1:Ddet ←;
+2:n collected ←0
+3:whilen collected <N traj do
+4:Reset environment with new random seed
+5:o 0 ←initial observation
+6:τ←[(o 0,·)]▷Initialize trajectory
+7:fort=0 toT max −1do
+8:a t ←Φ(z=0,o t ,s=0,t=1)▷Deterministic action
+9:o t+1 ,r t , done←env.step(a t )
+10:τ←τ∪[(o t ,a t )]
+11:ifdonethen
+12:break
+13:iftrajectoryτis successfulthen
+14:D det ←Ddet ∪{τ}
+15:n collected ←n collected +1
+16:returnD det
+E Manifold Adherence Study Details
+E.1 Validation Loss Is Not a Good Proxy for Policy Performance
+To investigate whether validation loss serves as a reliable proxy for policy performance, we examine
+its relationship with success rates onTool-Hangacross different architectures given different training
+methods. Evidence that validation loss is poorly correlated with success rate can be seen by comparing
+flow policies with varying numbers of function evaluations (NFEs) and their corresponding validation
+losses. Table 19 demonstrates that increasing NFEs does not reduce validation loss, yet policy perfor-
+mance consistently improves. We hypothesize that higher NFEs introduce stronger inductive bias and
+regularization, which projects actions back onto the data manifold, thereby enhancing generalization.
+E.2 Manifold Adherence Evaluation Method
+To evaluate the manifold adherence, we compute the projection error of a predicted actionaonto
+the space spanned by expert actions at neighboring states. Concretely , given a state, we compute its
+ℓ2 distance to all states in the training set. Then, we pickknearest neighbor states and gather their
+corresponding actionsA= [a (0),a (1), . . . ,a(k)]. Lastly , we compute projection error by projectingato
+the column space ofA:∥a−P A(a)∥2 =min c ∥a−Ac∥2.
+F Nearest Neighbor Hypothesis Study
+Another popular hypothesis is that GCPs are learning a lookup table of observation-to-action map-
+pings (Pari et al., 2021; He et al., 2025). This might be true for relatively simple tasks that do not
+40
+Architecture Method NFEs Average Success RateL 2 Validation Loss
+Chi-UNet
+Regression1 0.54 0.063
+Flow1 0.36 0.053
+Flow3 0.44 0.052
+Flow9 0.58 0.053
+Chi-Transformer
+Regression1 0.18 0.084
+Flow1 0.06 0.093
+Flow3 0.72 0.092
+Flow9 0.68 0.089
+Sudeep-DiT
+Regression1 0.20 0.063
+Flow1 0.62 0.082
+Flow3 0.76 0.080
+Flow9 0.76 0.080
+Table 19:Comparison of validation loss and success rate across different architectures and methods on state-
+basedTool-Hang. The results show that validation loss is not a reliable proxy for policy performance.
+require high precision and complex generalization, such asCan. However, for tasks that require higher
+precision and more contact, such asTool-Hang, the nearest-neighbor/lookup-table assumption is in-
+sufficient to explain the success of GCPs. We evaluate the performance of a nearest-neighbor policy
+(VINN (Pari et al., 2021)) on state-basedTool-Hangand find that it achieves a success rate of only 12%
+as shown in Table 20. This is significantly lower than both flow and regression methods, indicating that
+the action manifold is not linearly spanned by the expert actions. Nevertheless, nearest-neighbor can
+still serve as a proxy for the expert action manifold, as it captures the general trend of actions—even
+though linear combinations of actions in the dataset cannot directly produce the correct action, the
+expert action manifold should not be too distant. Therefore, in this paper, we use nearest-neighbor as
+a proxy for the linearized expert action manifold rather than directly computing the distance between
+expert actions in the validation set and predicted actions.
+Action Chunk Size Success Rate (%)
+1 0
+8 4
+16 12
+32 2
+Table 20:Performance of k-nearest neighbor policy on state-basedTool-Hangtask. Using the same method as
+VINN with softmax over k=5 nearest neighbors.
+F .1 Action Chunk Size Study
+Another equivalent important factor is the action chunk size. Fig. 13 highlights the importance of action
+chunk size, where regression with larger action chunk can outperform flow with smaller action chunk
+size. Our ablation also indicates thatMIPoutperforms flow with smaller action chunk size and matches
+the performance of flow with larger action chunk size.
+41
+1 2 4 8 1 6
+A c t i o n  C h u n k  S i z e
+0 . 0
+0 . 1
+0 . 2
+0 . 3
+0 . 4
+0 . 5
+0 . 6
+0 . 7
+S u c c e s s  R a t e
+T r a n s p o r t  ( P H ,  S t a t e )
+R e g r e s s i o n M I P F l o w
+1 2 4 8 1 6
+A c t i o n  C h u n k  S i z e
+0 . 0
+0 . 1
+0 . 2
+0 . 3
+0 . 4
+0 . 5
+0 . 6
+0 . 7
+0 . 8
+T o o l  H a n g  ( P H ,  S t a t e )
+Figure 13:Action chunk size ablation.Success rate are averaged across 3 seeds, 3 architectures and 5 checkpoints on
+Tool-HangandTransporttasks. Prediction horizon is set to powers of 2 to make sure it is compatible withChi-UNet
+Architecture.
+F .2 Loss Norm Type Ablation Study
+Previous work (Kim et al., 2024) shows thatℓ 1 loss is superior toℓ2 loss for regression policy . To test
+this hypothesis, we ablate the loss norm type and compare the performance of different methods with
+ℓ1 andℓ2 loss.??shows the performance comparison of different methods withℓ 1 andℓ2 loss, where
+we find thatℓ1 loss generally outperformsℓ2 loss, especially for regression policy . However, even with
+ℓ1 loss, we still observe that Regression<MIP≈Flow, highlighting the importance of the stochasticity
+injection and iterative computation is independent of the loss function.
+Architecture Method Transport (ph) Tool Hang (ph)
+DiT Regression L1 0.72/0.64 0.76/0.65
+DiT Regression L2 0.50/0.45 0.50/0.37
+DiT MIP L1 0.81/0.73 0.91/0.84
+DiT MIP L2 0.79/0.69 0.92/0.85
+DiT Flow L1 0.83/0.76 0.93/0.84
+DiT Flow L2 0.81/0.71 0.89/0.75
+Transformer Regression L1 0.67/0.57 0.44/0.33
+Transformer Regression L2 0.65/0.54 0.31/0.25
+Transformer MIP L1 0.80/0.68 0.85/0.77
+Transformer MIP L2 0.80/0.69 0.80/0.72
+Transformer Flow L1 0.77/0.69 0.81/0.71
+Transformer Flow L2 0.79/0.65 0.73/0.61
+UNet Regression L1 0.84/0.71 0.71/0.55
+UNet Regression L2 0.66/0.59 0.73/0.59
+UNet MIP L1 0.85/0.68 0.76/0.67
+UNet MIP L2 0.81/0.72 0.82/0.71
+UNet Flow L1 0.85/0.69 0.87/0.71
+UNet Flow L2 0.83/0.75 0.87/0.73
+Table 21:Comparison of L1 vs L2 norm across different methods and architectures. Report average/best perfor-
+mance across 5 checkpoints with 3 random seeds.
+42
+G Diversity of GCPs and RCPs
+A commonly believed hypothesis is that GCPs can express more diverse behaviors than RCPs by capturing
+the full distribution of expert actions (Shafiullah et al., 2022). We evalute different variants of GCPs and
+RCPs on FRANKA-KITCHEN, where the expert shows multiple task completion orders. As demonstrated
+in Fig. 6, GCPs with both stochastic and deterministic sampling show similar task completion order di-
+versity . Deterministic policies like regression andMIP(to be introduced in Section 4) also demonstrate
+similar task completion order diversity . This indicates that, given sparse expert demonstrations, both
+GCPs and RCP learns high-Lipschitz policies to switch between different modes given different obser-
+vations (corresponding to (b.2) case in Figure 4). RCPs and GCPs are equally good at learning such
+behaviors (??), which explain why we see similar performance for both policy parametrizations, even
+on seemingly multi-modal tasks like FRANKA-KITCHEN.
+L S - S C - B B - M W
+T B - M W - H C - B B
+T B - K - S C - B B
+T B - L S - B B - M W
+M W - H C - S C - B B
+T B - M W - S C - B B
+M W - H C - B B - K
+L S - H C - B B - K
+M W - K - S C - B B
+L S - K - S C - B B
+T B - L S - M W - B B
+H C - L S - B B - K
+L S - M W - K - S C
+L S - M W - B B - S C
+H C - T B - L S - M W
+H C - T B - M W - K
+H C - M W - B B - S C
+T B - L S - B B - K
+H C - T B - M W - B B
+H C - M W - B B - K
+L S - S C - M W - K
+B B - L S - T B - M W
+B B - L S - K - H C
+L S - T B - H C - M W
+B B - L S - S C - M W
+B B - L S - T B - K
+B B - S C - H C - M W
+B B - K - H C - M W
+T B - H C - M W - K
+B B - T B - H C - M W
+L S - K - B B - H C
+L S - M W - B B - T B
+L S - S C - B B - M W
+M W - L S - H C - T B
+S C - B B - H C - M W
+S C - K - B B - T B
+M W - K - H C - T B
+L S - K - B B - T B
+L S - S C - K - B B
+K - L S - H C - M W
+T a s k  C o m p l e t i o n  O r d e r
+0
+2 0
+4 0
+6 0
+8 0
+1 0 0
+1 2 0C o u n t
+K i t c h e n  T a s k  C o m p l e t i o n  b y  M e t h o d  ( T o p  1 0  T a s k  O r d e r s  p e r  M e t h o d )
+R e g r e s s i o n F l o w  ( S t o c h a s t i c ) F l o w  ( D e t e r m i n i s t i c ) M I P
+Figure 14:Task completion order in Kitchen environment with different methods.We plot the count of different task
+completion orders for different methods to evaluate the diversity of the policies. The x-axis shows the task completion order,
+where each sub-task is represented by its initials. For each run, we collect 1000 trajectories with the same seed shared by all
+methods. For flow, we evaluate both stochastic and deterministic modes.
+H Theoretical analysis of GCP’s expressivity
+H.1 Formal statement of Theorem 1
+In this section, we introduce the notation and definition required for the subsequent proofs and provide
+the formal statement of Theorem 1 from the main text. Throughout, let∥·∥ ◦denote any matrix norm
+satisfying the property∥X 1X2∥◦≤∥X 1∥op∥X2∥◦. In contrast to the notation used in the main text, we
+defineΦ s,t (a,o)as the solution at timetof the ODE:
+d
+dt at =b ⋆
+t (at |o), with initial conditiona s =a. (H.1)
+Note thatΦ 0,1(a0 =z,o)coincides with the definition ofπ ⋆
+θ(z,o)in the main text. Next, we define
+the notion ofκ-log-concavity.
+Definition H.1(κ-log-concavity). A distribution with densityρ=e −V(x) is said to beκ-log-concaveif
+V∈C 2(Rd )and its Hessian satisfies∇ 2V(x)≽κIfor allx∈R d and someκ>0.
+43
+With this notation in place, we now state the formal version of Theorem 1.
+Theorem 2.Suppose that
+b⋆
+t =E[ ˙It |I t ,o],where I t = (1−t)a 0 +ta 1,a 0 ∼N(0,I),a 1 ∼ρ1, (H.2)
+whereρ1 isκ-log-concave. Then, we have
+∥∇oΦ0,t (a0,o)∥◦≤
+Z t
+0
+vtκ(1−t) 2 +t 2
+κ(1−s) 2 +s 2 ·∥∇o b⋆
+s (as |o)∥◦ds. (H.3)
+In particular, for t=1we obtain
+∥∇oΦ0,1(a0,o)∥◦≤
+p
+1+κ−1
+Z 1
+0
+∥∇o b⋆
+s (as |o)∥◦ds. (H.4)
+Remark H.1. Theorem 1 follows immediately from the fact that both the operator and the Frobenius
+norms satisfy∥X 1X2∥◦≤∥X 1∥op∥X2∥◦together with the inequality Eq. (H.4).
+H.2 Supporting lemmas
+We state the supporting lemmas for proving Theorem 2 below and provide their proofs immediately for
+completeness. As a first step, we analyze the dynamical system satisfied by∇oΦs,t (a,o).
+Lemma H.1.Define a t :=Φ 0,t (a0,o)where a 0 is the initial condition, and define the matrices
+Mt :=∇oΦ0,t (a0,o),A t := (∇a b⋆
+t )(at |o),E t := (∇o b⋆
+t )(at |o)(H.5)
+Then,
+d
+dt Mt =A t Mt +E t ,M 0 =0 (H.6)
+Proof.SinceΦ 0,0(a0,o) =a 0,M 0 =0. Moreover,
+d
+dt ∇oΦ0,t (a0,o) =∇o
+d
+dt Φ0,t (a0,o) =∇o(b⋆
+t (Φ0,t (a0,o)|o))(H.7)
+= (∇a b⋆
+t )(at |o)·∇ oΦ0,t (a0,o) + (∇o b⋆
+t )(at |o)(H.8)
+Note that, from the previous lemma, we may introduceΛ s,t as the solution to the matrix ODE
+d
+dt Λs,t =A t Λs,t ,Λ s,s =I. (H.9)
+Moreover, it follows that
+Λs,t =∇aΦs,t (as,o). (H.10)
+We are now ready to state the relation betweenM t andΛ s,t .
+44
+Lemma H.2.
+Mt =
+Z t
+0
+Λs,t Esds. (H.11)
+Proof.Using d
+dt Λ−1
+0,t =−Λ −1
+0,t At and we consider the time derivative ofΛ −1
+0,t Mt :
+d
+dt (Λ−1
+0,t Mt ) = (d
+dt Λ−1
+0,t )Mt +Λ −1
+0,t ( d
+dt Mt )(H.12)
+=−Λ −1
+0,t At Mt +Λ −1
+0,t At Mt +Λ −1
+0,t Et (H.13)
+=Λ −1
+0,t Et . (H.14)
+Note thatΛ 0,t is invertible by uniqueness of the ODE solution in Eq. (H.9). Integrating both sides with
+respect totgives
+Λ−1
+0,t Mt =
+Z t
+0
+Λ−1
+0,s Esds. (H.15)
+Hence, we have
+Mt =Λ 0,t
+Z t
+0
+Λ−1
+0,s Esds. (H.16)
+Note thatΛ −1
+0,s =Λ s,0 andΛ 0,t ·Λ s,0 =Λ s,t , we obtain
+Mt =
+Z t
+0
+Λs,t Esds. (H.17)
+An immediate application of the triangle inequality and the property of∥·∥ ◦yields
+∥Mt ∥◦≤
+Z t
+0
+∥Λs,t ∥op∥Es∥◦ds. (H.18)
+Moreover,∥Λs,t ∥op admits the bound:
+Lemma H.3.
+∥Λs,t ∥op ≤exp
+Z t
+s
+∥As′∥opds′
+
+. (H.19)
+Proof.Definef ω(s,t) =Λ s,t ω. We have
+d
+dt ∥f ω(s,t)∥2 = 1
+∥f ω(s,t)∥2
+fω(s,t) ⊤ d
+dt fω(s,t)(H.20)
+= 1
+∥f ω(s,t)∥2
+ω⊤Λ⊤
+s,t At Λs,t ω(H.21)
+≤∥A t ∥op∥f ω(s,t)∥2. (H.22)
+45
+By Gronwall’s theorem and∥f ω(s,s)∥2 =∥ω∥2, we obtain
+∥f ω(s,t)∥2 ≤∥ω∥2 exp(
+Z t
+s
+∥As′∥opds′). (H.23)
+To bound exp
+Rt
+s ∥As′∥opds′
+
+, we use the following result from (Daniels, 2025), included here for
+completeness.
+Theorem 3(Restated; Theorem 6 in (Daniels, 2025)).Supposeµ 0 ∼N(0,I)andµ 1 is aκ-log-concave
+distribution withκ>0. Define
+It =αt X0 +βt X1,X 0 ∼µ0,X 1 ∼µ1, (H.24)
+and let vt (x)denote the corresponding flow field. Then,
+∇x vt (x)≼ καt ˙αt +βt ˙βt
+κα2
+t +β2
+t
+I. (H.25)
+With the result, we can bound exp
+Rt
+s ∥As′∥opds′
+
+as follows.
+Lemma H.4.
+b⋆
+t =E[ ˙It |I t ,o],where I t = (1−t)a 0 +ta 1,a 0 ∼N(0,I),a 1 ∼ρ1, (H.26)
+whereρ1 isκ-log-concave. Then, we have
+Z t
+s
+∥∇x b⋆
+s′(as′ |o)∥opds′≤log
+vtκ(1−t) 2 +t 2
+κ(1−s) 2 +s 2 (H.27)
+Proof.By leveraging Theorem 3 for each conditiono, we have
+∇a b⋆
+s′(as′ |o)≼ καs′ ˙αs′ +βs′ ˙βs′
+κα2
+s′ +β2
+s′
+I, (H.28)
+then we have
+∥∇a b⋆
+s′(as′ |o)∥op ≤καs′ ˙αs′ +βs′ ˙βs′
+κα2
+s′ +β2
+s′
+. (H.29)
+Integrating both sides, we obtain
+Z t
+s
+∥∇a b⋆
+s′(as′ |o)∥opds′≤
+Z t
+s
+καs′ ˙αs′ +βs′ ˙β′
+s
+κα2
+s′ +β2
+s′
+ds′ (H.30)
+= 1
+2 log(κα2
+s′ +β2
+s′)
+
+t
+s
+(H.31)
+=log
+vutκα2
+t +β2
+t
+κα2
+s +β2
+s
+. (H.32)
+46
+By substituteαt =1−tandβ t =t, we have
+Z t
+s
+∥∇a b⋆
+s′(as′ |o)∥opds′≤log
+vtκ(1−t) 2 +t 2
+κ(1−s) 2 +s 2 . (H.33)
+With the preceding components in place, we now establish Theorem 2.
+H.3 Proof of Theorem 2
+By combining Eq. (H.18), Lemma H.3, and Lemma H.4, we have
+∥∇oΦ0,t (a0,o)∥◦≤
+Z t
+0
+vtκ(1−t) 2 +t 2
+κ(1−s) 2 +s 2 ·∥∇o b⋆
+s (as |o)∥◦ds. (H.34)
+Fort=1, the functions7→κ(1−s) 2 +s 2 attains its minimum ats= κ
+κ+1 . Applying Holder’s inequality
+then yields
+∥∇oΦ0,1(a0,o)∥◦≤
+Z 1
+0
+vt 1
+κ(1−s) 2 +s 2 ·∥∇o b⋆
+s (as |o)∥◦ds(H.35)
+≤max
+s∈[0,1]
+vt 1
+κ(1−s) 2 +s 2
+
+·
+Z 1
+0
+∥∇o b⋆
+s (as |o)∥◦ds(H.36)
+=
+p
+1+κ−1
+Z 1
+0
+∥∇o b⋆
+s (as |o)∥◦ds. (H.37)
+I Regularization does not account for manifold adherence
+In this section, we analyze a linear, population-level surrogate forMIPto test whetherimplicit regu-
+larization, instantiated via ridge regression and a two-stepMIP-like iteration, can explain the observed
+manifold adherence. We mimic the two passes ofMIPwith two ridge-regularized linear regressions: (i)
+a regression where the ridge penalty is applied to the observation-to-action map, and (ii) a regression
+where the ridge penalty is applied to the action-to-action map. We then compose the two fitted maps to
+obtain the two-stage inference used byMIP. As shown below, it instead yields smooth spectral shrinkage
+and does not make the manifold absorbing.
+Throughout we work in expectation (population covariances), so that conclusions reflect model
+structure rather than finite-sample effects. We assume independence ofo,z, and the additive noiseη,
+and that the inverses we write exist (otherwise interpret as pseudoinverses on the relevant supports).
+Setup.Observationso∈R d and actionsa∈R d follow the linear model
+a=Θ ∗o+η,η∼N(0,Σ η=η2I),
+withη⊥o. Letz∼N(0,Σ z)be an auxiliary signal, independent of(o,a,η), and definew:=c 1a+c 2z.
+We consider linear predictors ˆa=Bo+Cwwith ridge regularization applied either toB(Section I.1) or
+toC(Section I.2). This reflects the use of both the observationo, and the actiona, in prediction.
+47
+I.1 Ridge regression for observation-to-action mapping (penalty onB)
+We solve
+min
+B,C
+E
+Bo+Cw−a
+2
++λ∥B∥2
+F .
+Define
+X:=
+o
+w
+
+,Ψ:=
+
+B C
+
+,
+and, at the population level, the second-moment blocks
+Σ11 :=E[o ⊗2] =Σo,
+Σ12 :=E[ow ⊤] =E[o(c1a+c 2z)⊤] =c1ΣoΘ∗⊤,
+Σ21 :=Σ ⊤
+12,
+Σ22 :=E[w ⊗2] =c2
+1(Θ∗ΣoΘ∗⊤+Σ η) +c2
+2Σz.
+Σa1 :=E[ao ⊤] =Θ∗Σo,
+Σa2 :=E[aw ⊤] =c1(Θ∗ΣoΘ∗⊤+Σ η),
+where, for any vectorx, we writex ⊗2 :=x x ⊤.
+The objective can be written in trace form as
+L=E[(a−ΨX) ⊤(a−ΨX)] +λ∥B∥ 2
+F
+=tr(E[(a−ΨX)(a−ΨX) ⊤]) +λtr(BB⊤)
+Dropping terms that are constant in(B,C), let
+ΣX :=E[X X ⊤] =
+Σ11 Σ12
+Σ21 Σ22
+
+,Σ aX :=E[aX ⊤] =
+
+Σa1 Σa2
+
+.
+Then
+L=−2 tr(ΨΣ ⊤
+aX ) +tr(ΨΣX Ψ⊤) +λtr(BB ⊤).
+Differentiating gives
+∇BL=−2Σ a1 +2BΣ 11 +2CΣ 21 +λ2B,
+∇C L=−2Σ a2 +2BΣ 12 +2CΣ 22.
+Setting the gradients to zero yields the normal equations:
+B(Σ11 +λI) +CΣ21 =Σ a1
+BΣ12 +CΣ 22 =Σ a2.
+Solving the linear system (e.g., by block elimination) yields
+B= (Σa1Σ−1
+21 Σ22 −Σ a2)| {z }
+(i)
+[(Σ11 +λI)Σ −1
+21 Σ22 −Σ 12]−1
+| {z }
+(ii)
+,
+C= [Σa1 −B(Σ 11 +λI)]Σ −1
+21 .
+48
+UsingΣ 21 =c 1Θ∗Σo, we haveΣ −1
+21 = 1
+c1
+(Θ∗Σo)−1. For (i),
+(i)=Σ a1Σ−1
+21 Σ22 −Σ a2
+=Θ ∗Σo
+1
+c1
+(Θ∗Σo)−1[c2
+1(Θ∗ΣoΘ∗⊤+Σ η) +c2
+2Σz]−c 1(Θ∗ΣoΘ∗⊤+Σ η)
+=c 1(Θ∗ΣoΘ∗⊤+Σ η) +
+c2
+2
+c1
+Σz −c 1(Θ∗ΣoΘ∗⊤+Σ η)
+=
+c2
+2
+c1
+Σz.
+For (ii),
+(ii)= [(Σ11 +λI)Σ −1
+21 Σ22 −Σ 12]−1
+= [(Σo +λI) 1
+c1
+(Θ∗Σo)−1[c2
+1(Θ∗ΣoΘ∗⊤+Σ η) +c2
+2Σz]−c 1Σo(Θ∗)⊤]−1
+= [(Σo +λI)[c 1Θ∗⊤+c 1(Θ∗Σo)−1Ση+
+c2
+2
+c1
+(Θ∗Σo)−1Σz]−c 1Σo(Θ∗)⊤]−1
+= [λc1(Θ∗)⊤+ (Σo +λI)(c 1(Θ∗Σo)−1Ση+
+c2
+2
+c1
+(Θ∗Σo)−1Σz)]−1
+Isotropic specialization.TakeΣ o =I,Σ η=η2I,Σ z =I, andΘ ∗=diag(s i). Then
+(i)=
+c2
+2
+c1
+I,
+(ii)= [λc1(Θ∗)⊤+ (1+λ)c1η2(Θ∗)−1 + (1+λ)
+c2
+2
+c1
+(Θ∗)−1]−1
+=diag
+
+[λc1si +
+(1+λ)(c 1η2 +
+c2
+2
+c1
+)
+si
+]−1
+
+
+=diag
+
+c1si
+λc2
+1s2
+i + (1+λ)(c2
+1η2 +c 2
+2)
+
+Hence, we obtain
+B=diag
+ c2
+2si
+λc2
+1s2
+i + (1+λ)(c2
+1η2 +c 2
+2)
+
+,C=diag
+
+1
+c1
+
+1−
+(1+λ)c 2
+2
+λc2
+1s2
+i + (1+λ)(c2
+1η2 +c 2
+2)
+
+.
+Define the shrinkage factor for thei-th singular direction byρ i :=B ii /si. Then,
+ρi =
+c2
+2
+λc2
+1s2
+i + (1+λ)(c2
+1η2 +c 2
+2)
+. (I.1)
+Key implications:
+•Ridge onB(λ>0) makes shrinkages i-dependent.From (I.1), the factor decreases withsi (because
+the denominator hasλc 2
+1s2
+i ). Solargersingular directions are shrunkmorewhenλ>0.
+49
+•If no ridge (λ=0).B=diag(
+c2
+2 si
+c2
+1 η2+c2
+2
+): shrinkage is constant acrossi.
+•If no ridge and no noise (λ=0,η=0).B=Θ ∗—no shrinkage (recovers the standard solution).
+•If no auxiliaryz-signal (c 2 =0).B=0.
+I.2 Ridge regression for action-to-action mapping (penalty onC)
+We now solve
+min
+B,C
+;E
+Bo+Cw−a
+2
++λ∥C∥2
+F .
+The normal equations become
+BΣ11 +CΣ 21 =Σ a1
+BΣ12 +C(Σ 22 +λI) =Σa2.
+Solving gives the closed-form estimators:
+B= (Σa1 −CΣ 21)Σ−1
+11 ,
+C= (Σa2 −Σ a1Σ−1
+11 Σ12)| {z }
+(i)
+(Σ22 +λI−Σ 21Σ−1
+11 Σ12)−1
+| {z }
+(ii)
+.
+In the isotropic specializationΣ o =I,Ση=η 2I,Σ z =I,Θ ∗=diag(s i), one obtains
+B=diag
+ (c2
+2 +λ)s i
+c2
+1η2 +c 2
+2 +λ
+
+,C= c1η2
+c2
+1η2 +c 2
+2 +λ
+I.
+I.3 Two-pass linear surrogate ofMIP
+Let(B 1,C 1)denote the solution of Section I.1 with ridgeλ 1 onB, and(B 2,C 2)denote the solution of
+§I.2 with ridgeλ2 onC. To mimic theMIPtwo-pass inference rule in (4.5), we consider
+ˆa0 ←B 1o, ˆa←B 2o+c 1C2 ˆa0.
+We obtain
+ˆa←(B 2 +c 1C2B1| {z }
+=:ˆΦ
+)o.
+Note thatc 1 serves as the analogue oft ⋆ from the main text. From Sections I.1 and I.2 we then obtain
+ˆΦ= (B2 +c 1C2B1)
+=diag
+ (c2
+2 +λ2)si
+c2
+1η2 +c 2
+2 +λ2
++c 1
+c1η2
+c2
+1η2 +c 2
+2 +λ2
+c2
+2si
+λ1c2
+1s2
+i + (1+λ1)(c2
+1η2 +c 2
+2)
+
+=diag
+
+si
+c2
+1η2 +c 2
+2 +λ2
+
+c2
+2 +λ2 +
+c2
+1η2c2
+2
+λ1c2
+1s2
+i + (1+λ1)(c2
+1η2 +c 2
+2)
+
+. (I.2)
+50
+Moreover, the shrink factor will be
+ˆΦii
+si
+= 1
+c2
+1η2 +c 2
+2 +λ2
+
+c2
+2 +λ2 +
+c2
+1η2c2
+2
+λ1c2
+1s2
+i + (1+λ1)(c2
+1η2 +c 2
+2)
+
+. (I.3)
+Key implications:
+•If no ridge on B (λ 1 =0).Nos i-dependent shrinkage.
+•If no noise (η=0).Just same as the regular case: ˆΦ=Θ ∗.
+•Signal-to-noise effect.The quantity in (I.2) rises withs i and falls withη, mildly favoring signal over
+noise by damping noisy directions.
+Why this composition is a plausible proxy.The first stage applies a ridge penalty to the observation-
+to-action parametersBand predicts an interpolant action from observations alone, as in thet=0,z=0
+pass ofMIP. We use ridge here as a canonical proxy for implicit regularization in the linear setting. The
+first stage applies a ridge penalty to the action-to-action parametersC. It takes the interpolant action
+input (neart=1) together withoand produces the final output. Composing the two yields the operator
+ˆΦin (I.2), which is the linear analogue of the two-pass prediction of (4.5).
+Why shrinkage does not yield manifold adherence.The operator in (I.2) acts as a spectral shrinker:
+because the factors in (I.3) decrease withs i (forλ1 >0), it attenuates the dominant directions more
+than the weak ones—contrary to a projection onto a manifold, which would preserve principal directions
+and damp small and noisy modes. Since these factors lie in(0, 1]and vary smoothly withs i,η, and
+λ1,λ2, the map lacks any projection-like behavior: once a point is off-manifold, it is neither returned
+to nor retained on any low-dimensional subspace. Thus, implicit regularization alone, even with the
+two-pass composition ofMIP, cannot account for the observed manifold adherence.
+J Toy experiments: Testing the function approximation capabilities of
+regression and flow models
+J.1 Overview
+This appendix summarizes an empirical comparison of training paradigms (regression, flow matching,
+straight flow, MIP) for function approximation with geometric constraints across three tasks: scalar re-
+construction, high-dimensional projection with subspace constraints, and Lie algebra rotations. Exper-
+iments operate in low-data regimes (50 training samples) using concatenation and FiLM architectures,
+with results averaged across multiple random seeds.
+J.2 Evaluation Metrics
+Reconstruction:L1 and L2 errors measure point-wise approximation quality between predictions ˆf(c)
+and targetsf(c).
+Projection:Three metrics assess geometric constraints in piecewise-constant projection structure:
+subspace diagonalquantifies predictions outside correct subspaceP i for intervali,off-diagonaltests
+cross-interval generalization with mismatched projections, andboundarymeasures smoothness at in-
+terval transitions using combined adjacent subspace projections. All metrics use normalized form∥(I−
+P) ˆf∥/∥ˆf∥.
+51
+Lie Algebra:Cosine similaritymeasures angular alignment between predicted and true rotation
+directions.Projection metricquantifies normalized perpendicular error relative to the rotation axis span.
+J.3 Key Findings
+Task-Dependent Performance:Regression-based approaches achieve lowest L2 reconstruction error
+(0.003197±0.000525 with L2 loss and FiLM), consistently outperforming flow-based methods on
+point-wise approximation tasks.
+Flow Methods Excel at Projections:Flow-based training demonstrates superior geometric con-
+straint satisfaction. Straight flow (flow matching without time conditioning) achieves best boundary
+projection (0.009769±0.001630) and Lie algebra projection metrics (0.063612±0.000952), indicat-
+ing beneficial geometric biases from learning probability transport.
+MIP Competitive Performance:MIP combines direct regression with denoising regularization,
+achieving near-optimal reconstruction while maintaining reasonable geometric constraint satisfaction
+across tasks.
+J.4 Training Loss Considerations
+Results focus on L2-trained models, providing mathematically grounded objectives for both regression
+and flow paradigms. While alternative loss functions were evaluated empirically , flow-based L1 training
+lacks principled derivation as conditional flow matching is naturally defined for squared error.
+J.5 Architectural Observations
+Both concatenation and FiLM architectures demonstrated competitive performance with no consistent
+dominance. FiLM showed marginal advantages on certain geometric metrics for flow-based methods,
+suggesting affine feature modulation may better capture conditional dependencies in probability trans-
+port.
+J.6 Implications for Method Selection
+• Tasks prioritizing point-wise reconstruction: regression-based training with L2 loss offers superior
+accuracy and computational efficiency .
+• Tasks requiring geometric constraint satisfaction: flow-based training provides significant advan-
+tages despite increased evaluation cost.
+• Straight flow’s success suggests time conditioning may be unnecessary , enabling simpler models
+with competitive performance.
+J.7 Experimental Details
+Study encompasses 540 runs: 5 modes (regression, flow, straight flow, MIP , MIP one-step) × 2 losses × 2
+architectures × 3 tasks × 3 seeds. Configuration: 256 hidden dimensions, 3 layers, ReLU, batch size 32,
+50k epochs, Adam with lr=0.001. Evaluation: 100k test samples; flow methods use Euler integration
+with 9 ODE steps.
+Full Report:https://example.com/neural-manifold-reportCode:https://example.
+com/code-repository
+52
+K Appendix for Section 2
+K.1 Markov Decision Processes Configuration
+We consider a Markov Decision ProcessM= (S,A,R,P,P 0)4 with the state spaceS, the action space
+A, the rewardR(s,a) 5 obtained by taking actionain states, the transition dynamicsP:S ×A →
+∆(S), and the initial-state distributionP 0 ∈∆(S). To formulate the success rate (i.e., performance)
+in this setting, we define the reward function as:
+R(s,a) =
+¨
+1, if the task is successful under(s,a),
+0, otherwise. (K.1)
+Under this definition of rewards, the expected return of a policyπisJ(π) =E[
+P
+t R(st ,a t )], which
+reduces toP[success underπ]. Hence,J(π)exactly equals the success rate of policyπ.
+K.2 Integrated Flow Prediction
+For completeness, we provide the flow ODE as
+d
+dt at =b t (at |o)starting froma 0 =z. (K.2)
+The associated integrated flow prediction is given by
+Φθ(z|o) =z+
+Z 1
+0
+bt (at |o)dt. (K.3)
+In practice, to approximate the ODE solution for sampling, we employ the following discretized Euler
+integration.
+Definition K.1(Discretized Euler Integration). We discretize the time interval[0, 1]toNsteps with step
+sizeh=1/N. The iterates are then updated according to
+ak+1 =a k +h bhk(ak |o),k=0, 1, . . . ,N−1. (K.4)
+The final iteratea N serves as the Euler approximationΦ θ,eul (z|o). We also refer toNas theNumber of
+Function Evaluations (NFEs).
+4For simplicity , we consider the MDP case in this context by identifying the state with the observation defined in 2. More
+generally , one may consider a Partially Observable Markov Decision Process (POMDP), where the agent receives observation
+oemitted by an underlying latent states.
+5For ease of exposition, we use the same notation for rewards defined on random variables and their distributions.
+53

@@ -1,0 +1,1716 @@
+High-dimensional Mean-Field Games
+by Particle-based Flow Matching
+Jiajia Yu1, Junghwan Lee2, Yao Xie2, and Xiuyuan Cheng1
+1Department of Mathematics, Duke University
+2H. Milton Stewart School of Industrial and Systems Engineering, Georgia Institute of Technology.
+Abstract
+Mean-field games (MFGs) study the Nash equilibrium of systems with a continuum of interacting
+agents, which can be formulated as the fixed-point of optimal control problems. They provide a uni-
+fied framework for a variety of applications, including optimal transport (OT) and generative models.
+Despite their broad applicability, solving high-dimensional MFGs remains a significant challenge due to
+fundamental computational and analytical obstacles. In this work, we propose a particle-based deep Flow
+Matching (FM) method to tackle high-dimensional MFG computation. In each iteration of our proximal
+fixed-point scheme, particles are updated using first-order information, and a flow neural network is
+trained to match the velocity of the sample trajectories in a simulation-free manner. Theoretically, in
+the optimal control setting, we prove that our scheme converges to a stationary point sublinearly, and
+upgrade to linear (exponential) convergence under additional convexity assumptions. Our proof uses FM
+to induce an Eulerian coordinate (density-based) from a Lagrangian one (particle-based), and this also
+leads to certain equivalence results between the two formulations for MFGs when the Eulerian solution
+is sufficiently regular. Our method demonstrates promising performance on non-potential MFGs and
+high-dimensional OT problems cast as MFGs through a relaxed terminal-cost formulation.
+1 Introduction
+Mean-field games (MFGs) [29, 24] study the Nash Equilibria in games involving a continuum of indistin-
+guishable, non-cooperative players. In an MFG, individual cost is affected by the aggregate behavior of the
+populationρdue to interaction effects. Given the collective behavior of the population, every player seeks
+an optimal strategy ˆvthat minimizes their individual cost. However, as players update their strategies to ˆv,
+the overall population distribution also evolves to ˆρinduced by ˆv. A mean-field Nash equilibrium (MFNE)
+in this context is a state where the strategy chosen by each player is optimal with respect to the population,
+and the population itself is consistent with these strategies.
+Mathematically, such an equilibrium can be formulated as the fixed point of an optimal control problem
+Argmin(˜ρ,˜v)∈C(ρ,v) J(˜ρ,˜v;ρ), where the costJas a functional of the players’ strategy ˜vand individual
+distribution ˜ρ(induced by ˜v) also involves an external population distributionρ. The equilibrium is then
+defined as
+(ˆρ,ˆv)∈Argmin
+(˜ρ,˜v)∈C(ρ,v)
+J(˜ρ,˜v;ρ), ρ= ˆρ, (1)
+that is, when the optimal control solution ˆρand the populationρcoincide. We refer to (ˆρ,ˆv) as the best
+response toρ. The constraint setC (ρ,v) essentially poses a continuity equation (CE), that is, ˜ρsatisfies the
+CE associated with ˜v. The specifics ofC (ρ,v) andJwill be given in the subsequent sections. In this paper,
+we focus on MFGs with deterministic dynamics, i.e., the agents’ evolution is determined solely by their initial
+positions and controls, without any stochastic noise. These are also referred to as first-order MFGs, as the
+PDE defining the constraint setC (ρ,v) is of first order.
+Thanks to the mean-field approximation, MFGs provide a more tractable framework for analyzing systems
+of a large number of interacting agents. Since their introduction, MFGs have found applications across
+various domains, including economics [5, 11], social sciences [31], and engineering [15]. More recently, MFGs
+1
+arXiv:2512.01172v1  [stat.ML]  1 Dec 2025
+have attracted growing attention due to their emerging connections with topics in machine learning, such
+as optimal transport [7], normalizing flows [23, 50], deep neural network training [45], and reinforcement
+learning [38, 5]. Motivated by applications, there is a growing interest in tackling the computation of MFGs,
+especially in high-dimensional space.
+Solving MFGs encompasses and generalizes several key problems. In the costJ(˜ρ,˜v;ρ), when the terms
+involvingρare the first variation of some potential functionals, the MFG problem (1) admits a variational
+formulation (Proposition 2.1). This class of problems is commonly referred to as potential MFGs or mean-
+field control (MFC) in the literature. On the other hand, when the costJ(˜ρ,˜v;ρ) is independent ofρ, the
+individual has no interactions with the population and the MFG problem (1) reduces to an individual optimal
+control (OC) problem. Notably, the dynamic optimal transport problem [7], with a terminal constraint
+relaxed to Kullback–Leibler (KL) divergence, can be formulated as an MFG. This formulation in high
+dimensions is an important model for normalizing flows in generative modeling [23, 47].
+Despite substantial recent efforts, solving high-dimensional MFGs remains challenging. Among others,
+one difficulty is due to their inherent fixed-point structure. In game theory, it is known that a na¨ ıve
+fixed-point iterationρ (ℓ+1) = ˆρ(ℓ) may not converge. A widely used alternative isfictitious play[10]
+ρ(ℓ+1) := (1−α ℓ)ρ(ℓ) +α ℓ ˆρ(ℓ), which converges for suitableα ℓ ∈(0,1] under certain assumptions [49]
+and has close connections to the generalized Frank-Wolfe algorithm [30]. Despite its theoretical appeal,
+directly implementing fictitious play in high-dimensional settings becomes impractical because computing
+the exact best response is expensive. Nevertheless, it suggests that even when the objective changes at each
+step, moving toward the best response of the current step eventually leads to an MFNE.
+In this work, we propose an iterative neural method for high-dimensional MFGs that, at each step,
+jointly updates particle trajectories in Lagrangian coordinates and trains a Flow-Matching (FM) network
+to parameterize the velocity field. Specifically, we propose a proximal best response scheme motivated by
+fictitious play. Our approach limits the search to a local neighborhood around the current state instead
+of seeking a global best response and averaging at each iteration as done in classical fictitious play. To
+implement this scheme, we introduce a concurrent particle and FM update. In each iteration, we first
+update a set of particles directly using the gradient-based information. Next, we train a neural flow model
+vθ to match the velocity of the updated particle trajectories via a mean-squared loss as in FM [2, 33, 35].
+While our setting differs from the original setup of FM, where the endpoint distributions are given (accessed
+via finite samples) and the goal is to interpolate to the target distribution from a source distribution, the FM
+step in our method has the effect of disentangling the sampled particle trajectories and ensuring that the
+marginal sample distributions are preserved (see Figure 1). Theoretically, we prove the convergence rate of
+the proposed algorithm, and the property of FM to preserve marginal distribution is used in our analysis. In
+practice, the FM step allowsvθ to be trained over batches of sampled trajectories and accelerates convergence.
+We summarize our contribution as follows:
+1. We propose a proximal fixed-point scheme that consists of a particle optimization step and a Flow
+Matching step concurrently in each iteration to solve high-dimensional MFGs. In particular, our
+scheme can solve potential MFG (including the optimal control setting) as well as general MFG by
+leveraging the fictitious play approach.
+2. Theoretically, we prove that the particle-based proximal fixed-point scheme converges sublinearly and
+linearly with additional convexity assumptions. Our convergence rates hold in the optimal control
+setting, while some intermediate results apply to general MFGs. In particular, our proof uses a “tra-
+jectory disentangling” property of the flow matching, which also allows us to obtain certain equivalence
+between the Lagrangian (particle-based) and Eulerian (density-based) formulations, assuming that the
+Eulerian solution is sufficiently regular.
+3. We apply the proposed algorithm to simulated and image datasets, including a non-potential MFG
+and the image-to-image translation task formulated as a relaxed OT problem as an MFG.
+1.1 Related works
+Fictitious play in solving MFGsFictitious play, first introduced in [8, 9], is a classical algorithm in
+game theory. Leveraging PDE analysis, [10] applied the strategy to MFG and proved convergence for MFC,
+2
+4
+ 3
+ 2
+ 1
+ 0 1 2 3 4
+4
+3
+2
+1
+0
+1
+2
+3
+4
+0
+1
+2
+3 4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+Optimized Particles
+P Q
+4
+ 3
+ 2
+ 1
+ 0 1 2 3 4
+4
+3
+2
+1
+0
+1
+2
+3
+4
+0
+1
+2
+3 4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+Velocity Fields
+P Q
+training epoch: 1
+(a)
+4
+ 3
+ 2
+ 1
+ 0 1 2 3 4
+4
+3
+2
+1
+0
+1
+2
+3
+4
+0
+1
+2
+3 4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+Optimized Particles
+P Q
+4
+ 3
+ 2
+ 1
+ 0 1 2 3 4
+4
+3
+2
+1
+0
+1
+2
+3
+4
+0
+1
+2
+3 4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+Velocity Fields
+P Q
+training epoch: 20 (b)
+Figure 1: Illustration of the trajectory disentangle effect by Flow Matching (FM). (a) and (b) show the
+sample trajectories at the beginning of training and after 20 epochs of training, respectively, where “optimized
+particles” stands for trajectories after a particle update, and “velocity field” shows trajectories resampled
+from a learned velocity field by FM, see Algorithm 1. Theoretically, we prove that FM disentangles the
+trajectories and reduces the dynamic cost, while leaving the interaction and terminal costs unchanged.
+namely the class of MFG with variational formulation. The fictitious play is related to the generalized
+Frank–Wolfe algorithm, as pointed out in [30], and the work furtherly used this connection to accelerate the
+algorithm and also proved a faster convergence rate in the MFC setting. These results were extended to
+general MFGs in the recent work of [49], which obtained similar acceleration without relying on a variational
+structure. Computation-wise, the implementations in [30, 49] are based on the PDE formulation, and
+specifically, via the optimality conditions of the optimization problem in (1), which results the coupled
+system of Hamilton–Jacobi–Bellman and Fokker–Planck equations. The algorithms therein utilize mesh-
+based solvers, which achieve numerical accuracy in low-dimensional settings but encounter challenges in
+scaling to high dimensions.
+Besides PDE-based implementations, other works exploited the connection between MFGs and rein-
+forcement learning (RL) [40, 20], and used RL techniques to implement fictitious play. These RL methods
+typically assume a finite or discrete state space, such as a graph, and may not be efficiently applied to contin-
+uous spaces likeR d. For example, if one adopts a mesh-based discretization, then the algorithm would still
+face the curse of dimensionality whendis large. We note that most of these works consider an infinite time
+horizon, in which case the problem can be reduced to finding a time-invariant equilibrium. In contrast, the
+finite-horizon case requires solving a dynamic problem that evolves over time and thus is a more challenging
+problem. In this work, we focus on the finite time horizon rescaled to [0,1].
+Flow-based methods and simulation-free methodsTo avoid discretizing the state space, recent works
+use neural networks to represent the trajectories of particles and define the objective directly in terms of
+network parameters. For example, [43, 51, 6] parameterize the value function with a neural network; the
+particle trajectories are then induced by the value function via ODEs. [23] uses discrete normalizing flows to
+model particle transitions between time steps. A common limitation of these methods is that they assume a
+variational formulation of MFGs, which only exists in special cases (e.g., potential MFGs or MFC). Even in
+those cases, the objective depends nonlinearly on the population distributionρ, which is coupled with the
+velocity fieldvthrough a PDE constraint. As a result, training requires backpropagating through PDE or
+ODE solvers, which is computationally expensive.
+Simulation-free methods avoid solving PDEs or ODEs during the forward process of a neural network,
+and therefore simplify backpropagation and lead to significantly lower computational cost. These methods
+have recently been developed for stochastic optimal control (SOC), where the cost functionsFandGare
+independent of the population distributionρ, and the dynamics include stochastic noise. [22] derive analytical
+gradient expressions that avoid simulation and do not decouple the distribution from the control. Other
+works [16, 17] use a decoupling approach, training the flow through control matching or adjoint equations.
+In comparison, our method addresses the first-order MFGs, which is a broad class of problems, and in
+particular, allowsF,Gto depend onρ. Conceptually, our approach leverages the Lagrangian coordinates
+3
+formulation of MFGs and trains the flow velocity field by directly matching to sample velocities.
+Deep network methods for MFGsBeyond the works mentioned above, several other deep learning
+approaches have been developed for solving MFGs. [32, 19] formulate the problem as a minimax optimization
+and alternate updates between two variables to find a saddle point. [13, 52, 18] adapt actor-critic methods
+from reinforcement learning to the MFG setting. [14] uses the PDE formulation of MFGs and designs two
+neural network modules to force the HJB and FP together. Our approach adopts flow matching techniques
+in modern deep generative models, and we demonstrate the efficiency of our method on high-dimensional
+image data.
+1.2 Notations
+We summarize the notations in Table 2 (Appendix A). A hat ˆ·denotes best response quantities. Let
+P2(Rd) be the space of Borel probability measures with finite second moments. We use both theL 2 and
+Wasserstein-2 (W2) metrics onP 2(Rd), specifying which is used when needed. Forµ∈ P 2(Rd), we define
+L2(µ) as the Hilbert space of vector fieldsξ:R d →R d with
+R
+∥ξ(x)∥2dµ(x)<∞, inner product⟨ξ, η⟩ µ :=R
+ξ(x)·η(x)dµ(x), and the induced norm∥·∥ µ. Similarly,L 2(µ⊗[0,1]) denotes time-dependent vector fields
+ξ:R d ×[0,1]→R d with
+R1
+0 ∥ξt∥2
+µdt <∞, inner product⟨ξ, η⟩ µ⊗[0,1] :=
+R1
+0 ⟨ξt, ηt⟩µdtand induced norm
+∥ · ∥µ⊗[0,1].
+The symbolρmay denote a static distribution inP 2(Rd) or a time-dependent mapping [0,1]→ P2(Rd),
+withρ t denoting the distribution at timet. Similar conventions apply tovandX, which may refer to
+functionsR d →R d or time-dependent mapsR d ×[0,1]→R d. Constraint sets are denoted byC ·, where the
+subscript indicates the constrained variable. Objective functionals are denoted byJ. For instance,J(˜ρ,˜v;ρ)
+evaluates the cost of a distribution-velocity flow under a fixed reference flowρ, andJ(X;ρ) evaluates the
+cost of a characteristic map under a fixed reference flowρ.
+2 Preliminaries
+In this section, we begin by reviewing the Eulerian and Lagrangian formulations of flow dynamics and their
+relations. We then review the formulation of mean-field games (MFGs), along with two important special
+cases: potential MFGs or mean-field control problems, and optimal control problems. Finally, we summarize
+the fictitious play algorithm and its convergence.
+2.1 Eulerian and Lagrangian coordinates
+Let [0,1] be the time interval andµ∈ Pr
+2 (Rd) be a fixed initial distribution that has density, whereP r
+2 (Rd) =
+P2(Rd)∩AC(R d). In MFGs, the distribution evolution ˜ρis induced by a control flow ˜vvia the continuity
+equation. We restrict our focus to distribution-control pairs (˜ρ,˜v) in the constraint set
+C(ρ,v) :=
+
+(˜ρ,˜v) :∂t ˜ρ+∇ ·(˜ρ˜v) = 0,˜ρ(·,0) =µ,˜ρ∈Cρ,˜vt ∈L 2(˜ρt)
+	
+.(2)
+HereC ρ =AC 2(0,1; (P2(Rd), W2)) is the set of absolutely continuous curves in Wasserstein space (Defini-
+tion B.1 in the appendix). According to [4, Thm. 8.3.1], for anyρ∈C ρ, there exists a Borel vector fieldv
+such thatv t ∈L 2(ρt) and the pair (ρt, vt) satisfies the continuity equation in the sense of distributions. From
+a fluid dynamics perspective,v(x, t) describes the motion of fluid by observing the change at a fixed spatial
+location over time and is known as theEuleriancoordinate. It is analogous to monitoring the population
+density at a fixed statexover time. Due to its reliance on a fixed spatial grid or mesh, Eulerian simulation
+becomes impractical in high dimensions.
+Alternatively, one may adopt a particle-based perspective by consideringX∈C X :=H 1(0,1;L 2(µ)).
+Here,X(x,·) : [0,1]→R d represents the trajectory of an individual agent starting from positionxwith
+X(x,0) =x. For any a.e.t, the weak derivative∂ t ˜X(·, t) exists and is inL 2(µ). When all particles evolve
+under the same velocity field, the Eulerian and Lagrangian descriptions are linked by the ordinary differential
+equation:
+∂tX(x, t) =v(X(x, t), t).(3)
+4
+andXis known as theLagrangiancoordinates.
+LetC (X,v) be the constraint set where the ODE is satisfied forµ-a.e.xand a.e.t:
+( ˜X,˜v)∈C (X,v) :=
+n
+( ˜X,˜v) :∂t ˜X(x, t) = ˜v(˜X(x, t), t),˜X(x,0) =x, ˜X∈C X
+o
+.(4)
+Notice that forX∈C X, the trajectories may intersect, and there may not existvsuch that (X, v)∈C (X,v).
+In Section 4, we show that by flow matching, there exist (ρ, v)∈C (ρ,v) such thatvtakes average on
+intersecting points andρ t = (Xt)#µ. On the other hand, given (ρ, v)∈C (ρ,v), the ODE solutionXtovmay
+not always exist and may not be unique if it exists. LetC v be the set of functionsv:R d ×[0,1]→R d that
+are bounded and Lipschitz continuous inxon every compact setB⊂R d. Then, by a standard existence
+and uniqueness theorem for ODEs (see, for example, [4, Lemma 8.1.4]), there exists a unique solutionX
+such that (X, v)∈C (X,v) and (Xt)#µ=ρ t.
+In the studies of dynamic OT and application to optimal control, a useful extension of the classical ODE
+flow is via measures on the path space (Superposition Principle [3, 4]), which, e.g., allows branching of
+trajectories that follow the velocity fieldvin a weaker sense [34, 12]. In this paper, we will parametrize the
+velocity fieldvby a neural network, which in practice usually gives a regularv. Thus, we focus on whenv
+is regular, and specifically when the solution to MFG (1) hasv∈C v.
+2.2 Mean-field games
+Given a population distribution evolutionρ∈C ρ, the individual cost of adopting strategy (˜ρ,˜v) depends on
+ρ. Precisely, letF, G:P 2(Rd)×R d →Rbe operators acting on the population measure. Forρ t ∈ P2(Rd),
+F[ρt] :R d →Ris a function onR d. It assigns an interaction costF[ρ t](x) to the individual at positionxat
+timetgiven the population distributionρ t. The total individual cost in response toρis defined by
+J(˜ρ,˜v;ρ) :=
+Z 1
+0
+Z 1
+2∥˜v(x, t)∥2 +F[ρ t](x)
+
+d˜ρt(x)dt+
+Z
+G[ρ1](x)d˜ρ1(x).(5)
+A pair (ˆρ,ˆv) that minimizesJ(˜ρ,˜v;ρ) over (˜ρ,˜v)∈C(ρ,v) is called the best response toρ. The objective in
+an MFG is to solve (1) to find an MFNE, which is a triple (ˆρ,ˆv;ρ) such that the individual best response
+is consistent with the population, i.e., ˆρ=ρ. In the objective (5), we refer toFas the interaction coupling
+andGas the terminal coupling, whereF[ρ t] andG[ρ 1] represent the interaction cost and terminal cost,
+respectively. The couplingsF, Gare typically either local, of the formF[ρ](x) =f(p(x)) withf:R ≥0 →R
+andpbeing the density ofρ, or nonlocal of formF[ρ](x) = (K x ∗ρ)(x) withK x being the kernel atx.
+When the couplingsF, GareL 2 first variations of functionalsF,GonP 2(Rd), (5) takes the form as
+J(˜ρ,˜v;ρ) :=
+Z 1
+0
+Z 1
+2∥˜v(x, t)∥2 +DF[ρ t](x)
+
+d˜ρt(x)dt+
+Z
+DG[ρ1](x)d˜ρ1(x),(6)
+and the formal definition of the derivativesDF,DGcan be found in the appendix (Definition B.2). In
+this case, the MFG problem (1) is associated to a variational form [29, 1]. We summarize the result in the
+following proposition, and include a proof in Appendix C.1 for completeness.
+Proposition 2.1.LetF:P 2(Rd)→R∪ {+∞}andG:P 2(Rd)→R d ∪ {+∞}be proper and consider the
+following optimization problem:
+inf
+(ρ,v)∈C(ρ,v)
+J(ρ, v) :=
+Z 1
+0
+Z 1
+2∥v(x, t)∥2dρt(x)dt+
+Z 1
+0
+F(ρt)dt+G(ρ 1), (7)
+IfF,Ghave first variationsF, G:P 2(Rd)×R d →R∪ {+∞}underL 2 metric, and(ˆρ,ˆv)∈C (ρ,v) is the
+minimizer to(7), then(ˆρ,ˆv)solves the fixed-point problem(1). If, in addition,F,Gare convex inρunder
+L2 metric, then(ˆρ,ˆv)is the minimizer to(7)if and only if(ˆρ,ˆv)solves the fixed-point problem(1).
+The key for the proposition to hold is that, up to the change of variables (ρ, m) = (ρ, ρv), the continuity
+constraint becomes linear and the dynamic cost becomes convex. With this change of variable, it becomes
+5
+straightforward that the fixed-point formulation (1) is equivalent to the first-order optimality condition of
+the variational problem (7).
+The variational problem (7) is referred to as a potential MFG or mean-field control (MFC) problem.F
+andGare referred to as interaction (potential) cost and terminal (potential) cost. The variational struc-
+ture facilitates the usage of many optimization algorithms and connects the MFG (1) to several important
+optimization problems.
+For example, when the interaction cost is removed and the terminal cost is a Kullback–Leibler (KL)
+divergence, the MFC (7) reduces to a normalizing flow with optimal transport regularization, which is widely
+used in generative modeling [39, 23]. Furthermore, since the KL divergence is convex, solving the MFG (1)
+is sufficient to solve the regularized normalizing flow (7). In the case of zero interaction cost and general
+terminal costsG, the MFC (7) recovers the Jordan–Kinderlehrer–Otto (JKO) scheme [26] for Wasserstein
+gradient flows, which has applications in both generative modeling [46] and solving high-dimensional kinetic
+equations [25].
+WhenFandGare functions onR d and independent ofρ, the game is potential withF(ρ) =
+R
+F(x)dρ(x)
+andG(ρ) =
+R
+G(x)dρ(x) linear inρ, and both (1) and (7) reduce to a single player optimal control (OC)
+problem. The costsFandGbeing linear inρmakes it convenient to approximate them with expectations.
+2.3 Fictitious play
+Fictitious play is a classical algorithm in game theory, first introduced in [9] and later adapted to MFGs
+in [10]. The update rule is given by:
+
+
+
+(ˆρ(ℓ),ˆv(ℓ))∈Argmin
+(˜ρ,˜v)∈C(ρ,v)
+J(˜ρ,˜v;ρ(ℓ)),
+ρ(ℓ+1) = (1−α ℓ)ρ(ℓ) +α ℓ ˆρ(ℓ).
+(8)
+Whenα ℓ = 1, the update becomes a fixed-point iteration, which is shown to potentially diverge [49, Sec. 5.1].
+For potential MFGs, [10] proved the convergence using a diminishing weightα ℓ = 1
+ℓ . Further, [30] showed
+that fictitious play is equivalent to the generalized Frank-Wolfe algorithm for potential MFGs, and proved
+a convergence rate ofO(ℓ −p) forα ℓ = p
+ℓ+p (withp >0). More recently, [49] extended the same convergence
+rate to general (non-potential) MFGs and highlighted that the best choice of the weightα ℓ depends on the
+local convexity of the dynamic cost.
+3 Method
+We first reformulate the MFG problem (1) in Lagrangian coordinates and express the objective as an ex-
+pectation. We then propose a proximal fixed-point algorithm that alternates between updating the particles
+Xand the velocity fieldv. Our method utilizes optimization over sample particle trajectories, namely
+“particle-based”, which is more scalable to high-dimensional spaces.
+3.1 Reformulation in Lagrangian coordinates
+Consider characteristic mapsX:R d ×[0,1]→R d in the setC X. For ˜X∈C X, ˜X(x,·) denotes the trajectory
+of a sample particle starting fromx. For a givenρ∈C ρ, define the individual control objective in MFG as
+J( ˜X;ρ) :=E x∼µ
+Z 1
+0
+1
+2∥∂t ˜X(x, t)∥2 +F[ρ t]( ˜X(x, t))
+
+dt+G[ρ 1]( ˜X(x,1))
+
+,(9)
+and population objective in potential MFG as
+J( ˜X) :=E x∼µ
+Z 1
+0
+1
+2∥∂t ˜X(x, t)∥2dt
+
++
+Z 1
+0
+F(( ˜Xt)#µ)dt+G(( ˜X1)#µ).(10)
+Using the Lagrangian coordinates, the MFG (1) can be formulated as
+ˆX∈Argmin
+˜X∈CX
+J( ˜X;ρ), ρ t = ˆρt := ( ˆXt)#µ.(11)
+6
+Similarly, the potential MFG (7) becomes
+min
+˜X∈CX
+J( ˜X).(12)
+Notice that in the reformulation, we only require ˜X∈C X, that is, each trajectory itself is a differentiable
+curve, but among each other the trajectories may intersect. In other words, for general ˜X∈C X, there may
+not exist a flow ˜vsuch that ( ˜X,˜v)∈C (X,v). In section 4, we will resolve this issue using Flow Matching
+(FM): FM will provide a velocity field ˜vsuch that the marginal density ˜ρof ˜Xsatisfies the continuity
+equation associated with ˜v. In addition, this pair (˜ρ,˜v) will preserve or lower the objectiveJcompared to
+the objective on ˜X(Lemma 4.1). This result will further allow us to establish certain equivalence between
+the Eulerian and Lagrangian problems under regularity conditions.
+3.2 Particle optimization and neural flow matching
+A direct adaptation of fictitious play to the Lagrangian formulation (11) suggests computing the best response
+ˆX(ℓ) toρ (ℓ) and then update byX (ℓ+1) = (1−α ℓ)X(ℓ) +α ℓ ˆX(ℓ) andρ (ℓ+1)
+t = (X(ℓ+1)
+t )#µ. However, solving
+for the best response can be computationally expensive. Moreover, when the step sizeα ℓ is small, an accurate
+best response is often unnecessary, as the effect of any approximation error is scaled down byα ℓ.
+By definition, the best response provides a descent direction for the current objectiveJ(·;ρ (ℓ)). A key
+observation from fictitious play is that convergence to a fixed point is possible as long as each update yields
+a small improvement relative to the current objective, even though the objective itself changes at each
+iteration. Motivated by this, we search for the proximal best response at each iteration and propose a
+proximal fixed-point scheme. Specifically, givenv (ℓ), we pick a step sizeα ℓ and do the following three steps:
+1. Resample and cost computation: solve forX (ℓ) andρ (ℓ) and computeF[ρ (ℓ)
+t ], G[ρ(ℓ)
+1 ], where
+(X(ℓ), v(ℓ))∈C (X,v),(ρ (ℓ), v(ℓ))∈C (ρ,v).(13)
+2. Particle update: updateXby proximal descent:
+X(ℓ+1/2) = argmin
+X∈CX
+J(X;ρ (ℓ)) + 1
+2αℓ
+
+∥X−X (ℓ)∥2
+µ⊗[0,1] +∥X 1 −X (ℓ)
+1 ∥2
+µ
+
+. (14)
+3. Flow matching update: updatevby regression
+v(ℓ+1) := argmin
+v
+Z 1
+0
+Z v(X(ℓ+1/2)(x, t), t)−∂tX(ℓ+1/2)(x, t)
+
+2
+dµ(x)dt(15)
+In Lemmas 4.4 and 4.5, we prove that both the particle update 14 and the flow matching update 15 are
+well-defined. WhenX (ℓ) is not a stationary point, the particle update yields a decrease in the objective
+function. More importantly, ifX (ℓ+1/2) is not induced by a velocity fieldv, then the subsequent flow
+matching and resampling steps also result in a decay of the objective. Based on this observation, we perform
+the flow matching update less frequently in practice, as it contributes to improvement primarily when particle
+trajectories intersect.
+4 Theory
+We begin by noting that the original problem is posed in the Eulerian formulation (1), while our algo-
+rithm operates in the Lagrangian formulation (11). In this section, we first derive a certain equivalence
+between the two formulations in Theorem 4.3. In Section 4.2, we analyze the convergence of the proposed
+scheme (13)(14)(15), proving its descent property under for general MFGs and its convergence rates in the
+optimal control setting.
+7
+4.1 Equivalence between Eulerian and Lagrangian formulations
+To prove Theorem 4.3, we first relate ˜X∈C X to a corresponding pair (˜ρ,˜v)∈C (ρ,v) and compare their
+associated costs. Lemma 4.1 shows that for any ˜X∈C X, there is a unique pair (˜ρ,˜v)∈C (ρ,v) obtained by
+flow matching. In addition, the cost of ˜Xis bounded below by the cost of (˜ρ,˜v). In the other direction,
+Lemma 4.2 establishes that the equality holds when ˜Xis induced by a velocity field ˜v∈C v. These two
+lemmas will also be used in the convergence analysis in Section 4.2, and specifically, to prove Lemma 4.5.
+The proofs of Lemmas 4.1 and 4.2 are given in Appendices C.2 and C.3, respectively.
+Lemma 4.1.Let ˜X∈C X and set˜ρ t := ( ˜Xt)#µ,˜v= argmin v
+R1
+0
+R
+∥v( ˜X(x, t), t)−∂t ˜X(x, t)∥2dµ(x)dt.
+Then,˜ρ∈C ρ,(˜ρ,˜v)∈C(ρ,v), andJ(˜ρ,˜v;ρ)≤ J(˜X;ρ)for anyρ∈C ρ.
+Lemma 4.2.If(˜ρ,˜v)∈C (ρ,v) and˜v∈C v, then there exists ˜X∈C X satisfying( ˜X,˜v)∈C X,v and for any
+ρ∈C ρ,J( ˜X;ρ) =J(˜ρ,˜v;ρ).
+As a direct result of Lemmas 4.1 and 4.2, the following theorem shows the relationship between Eulerian
+coordinates and the Lagrangian coordinates. Specifically, under certain regularity conditions, we show that
+for general MFGs, an Eulerian solution induces a Lagrangian solution; For potential MFGs, the optimal value
+of the Eulerian and Lagrangian formulation coincides, and a Lagrangian solution also induces an Eulerian
+solution by flow matching. The proof is in Appendix C.4.
+Theorem 4.3.(i) Suppose(ρ ∗, v∗)is a solution to the MFG(1)andv ∗ ∈C v, thenv ∗ induces characteristics
+X∗ ∈C X that is a solution to(11).
+(ii) Suppose the potential MFG(7)admits a solution(ρ ∗, v∗)withv ∗ ∈C v. Thenv ∗ induces character-
+isticsX ∗ ∈C X that is a solution to(12)andJ(X ∗) =J(ρ ∗, v∗) =:J ∗. In addition, for any otherX∈C X
+that is also a solution to(12), let(ρ, v)be the flow-matched Eulerian representation ofXas in Lemma 4.1,
+then(ρ, v)is a solution to(7), and in this caseJ(X) =J(ρ, v) =J ∗.
+For control problems, the equivalence between the Lagrangian and Eulerian formulations has been pre-
+viously studied in [12] by considering distributions on path space, and their Lagrangian formulation is in a
+weak sense. In contrast, our framework is motivated by neural network methodology, and we focus our the-
+ory on classical ODE flows where trajectories fromµ-a.e.xare well-defined, which is possible when assuming
+the MFG solution has a regularv ∗.
+4.2 Convergence rate of the proximal fixed-point scheme
+In our scheme, the particle update (14) reduces the total cost; The flow-matching update (15) and resam-
+pling (13) regularize the trajectories to reduce the dynamic cost while keeping the interaction and terminal
+costs unchanged. As a result, the three steps together yield a decay in the objective value, as stated in the
+following two lemmas. Proofs are provided in Appendix C.5 and C.6.
+Lemma 4.4.Assume thatF[ρ (ℓ)
+t ], G[ρ(ℓ)
+1 ]are proper andL-smooth inR d for anyt∈[0,1]. Then for any
+0< αℓ < 1
+L , the update scheme(14)admits a unique solutionX (ℓ+1/2) ∈C X and
+J(X (ℓ+1/2);ρ (ℓ))≤ J(X(ℓ);ρ (ℓ))− 1
+2αℓ
+
+∥X(ℓ+1/2) −X (ℓ)∥2
+µ⊗[0,1] +∥X (ℓ+1/2)
+1 −X (ℓ)
+1 ∥2
+µ
+
+.(16)
+Lemma 4.5.IfX (ℓ+1/2) ∈C X, setρ (ℓ+1)
+t := (X (ℓ+1/2)
+t )#µ. Then,ρ (ℓ+1) ∈C ρ and there existsv (ℓ+1)
+solves(15)andv (ℓ+1)
+t is unique upto aρ t-zero measure set. In addition, ifv (ℓ+1) ∈C v, then there exist
+X(ℓ+1) ∈C X such that(X (ℓ+1), v(ℓ+1))∈C (X,v), and for all suchX (ℓ+1),J(X (ℓ+1);ρ)≤ J(X(ℓ+1/2);ρ).
+For general MFGs, establishing how the descent property leads to convergence to a fixed point is nontrivial
+and remains an open question for future investigation. In this paper, we show that the proposed scheme
+achieves a sublinear convergence rate for optimal control problems (that is, whereF, Gare independent ofρ)
+and a linear convergence rate whenF, Gare additionally strongly convex onR d. The result is stated below,
+and the proof is in Appendix C.7.
+8
+Algorithm 1:Particle-based Flow-Matching for Mean-Field Games
+Input:initial distributionµ, interaction costF, terminal costGand initial velocityv θ;
+Parameter:total outer loopK;
+for particle update: particle batch sizen 1, number of particle updatesL 1;
+for flow matching: particle batch sizen 2, number of velocity network updatesL 2;
+1fork= 1,2,···, Kdo
+2Resample: sample{X i,t0 }n
+i=1 ∼i.i.d µ, and compute trajectories{X i,tj }m
+j=1 viav θ fori= 1,···, n;
+3forl= 1,2,···, Ldo
+4Cost estimation: compute costsF[ρ tj ], G[ρtm] and their (sub)gradients (see Exs. 5.1, 5.2);
+5Particle update: update{X i,tj,,1≤j≤m} i by (19) with batch sizen 1 forL 1 steps;
+6end
+7Flow matching: update parametersθof the velocity networkv θ to match empirical trajectories
+of{X i,tj , j≤m}n
+i=1 with batch sizen 2 forL 2 steps of Adam with the training loss (20);
+8end
+Output:parameterized velocity fieldv θ.
+Theorem 4.6.Let the sequenceX (ℓ), v(ℓ) generated by update scheme(13)(14)(15)with0< α ℓ =α < 1
+L ,
+and assumev (ℓ) ∈C v for allℓ. IfF, Gare independent ofρand are proper andL-smooth functions inR d,
+andJ(X)≥ J for anyX∈C X, thenX (ℓ) satisfies
+min
+ℓ≤K
+n
+∥X(ℓ+1/2) −X (ℓ)∥2
+µ⊗[0,1] +∥X (ℓ+1/2)
+1 −X (ℓ)
+1 ∥2
+µ
+o
+≤ 2α(J(X (0))− J)
+K ,(17)
+If in addition,FandGareλ-convex(λ >0), and there exist a solution(X ∗, ρ∗)to(11), then the sequence
+X(ℓ) generated by update scheme(14)andX (ℓ) =X (ℓ+1/2) with0< α ℓ =α < 1
+L satisfies
+∥X(ℓ) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ)
+1 −X ∗
+1 ∥2
+µ ≤ 1
+(1 + 2λα)ℓ
+
+∥X(0) −X ∗∥2
+µ⊗[0,1] +∥X (0)
+1 −X ∗
+1 ∥2
+µ
+
+.(18)
+5 Algorithm
+We provide the implementation details of the method proposed in Section 3. In practice, we parametrize
+the velocity fieldvby a neural networkv θ. SinceX(x,·) is the trajectory starting atx, we representXwith
+particle trajectories at discrete time stamps. More specifically, let ∆t= 1
+m and the time stepst j =j∆tfor
+j= 1, . . . , m. We sample{xi}n
+i=1 i.i.d. fromµand the trajectory of thei-th particlex i is{X i,tj , j≤m}
+whereX i,tj ≈X(x i, tj). Then the collection of trajectories{X i,tj }i,j approximatesXand the empirical
+distribution of{X i,tj }i approximatesρ tj . With the finite difference and sampling approximation, we detail
+the implementation as follows.
+1. Resample and cost estimation.
+While obtainingX (ℓ) by resampling and solving ODE is straightforward, computingρ (ℓ) and therefore
+the cost can be costly. In practice, we use empirical samples{X i,tj }i ofρ tj to estimate the coupling
+costsF[ρ tj ],G[ρ tm] :R d →Rand their (sub)gradients. This procedure depends on the specific form
+of the coupling. We provide two representative cases, which will be numerically studied in Section 6:
+Example 5.1(Dynamic OT with relaxed terminal cost).Consider the OT problem with terminal
+constraint relaxed to KL divergence, i.e.F= 0, G[ρ] = log dρ
+dν . In practice, samples from bothρ
+andνare available. Following [47], we approximateG[ρ tm] by training a neural network classifier
+to distinguish between samples fromρ tm andν. The (sub)gradient ofG[ρ tm] at a pointxcan then
+be computed via auto-differentiation. When the cost is updated frequently, the particle distribution
+changes gradually, so the classifier can be trained for fewer steps at each update.
+Example 5.2(Smoothing coupling).Consider nonlocal couplingF[ρ](x) =
+R
+K(x, y)dρ(y) where
+the kernel functionK(x, y) is differentiable inx, and then∇F[ρ](x) =
+R
+∇xK(x, y)dρ(y). Both
+9
+F[ρ] and∇F[ρ] can be approximated via empirical averages over particles. Consider terminal cost
+G[ρ](x) = (a⊤x−c) 2 independent ofρ, then∇G[ρ] has a closed-form.
+2. Particle update.
+Givenρand particle trajectoriesX, assumeF[ρ t] andG[ρ 1] are differentiable and thatXis sufficiently
+smooth. Then, for any smooth perturbationY:R d ×[0, T]→R d withY(x,0) = 0, a first-order
+expansion gives
+J(X+ϵY;ρ) =J(X;ρ) +ϵ
+Z 1
+0
+⟨Yt,−(∂ ttX)t +∇F[ρ t](Xt)⟩µ dt+⟨Y 1,(∂ tX)1 +∇G[ρ 1](X1)⟩µ
+
++o(ϵ),
+where the first-order term inϵprovides the descent direction. In practice, we update particle trajectories
+{Xi,tj ,1≤j≤m} i forL 1 steps with batch sizen 1 by:
+Xi,tj ←
+(
+Xi,tj −β∆t
+ 
+−(DttXi)tj +∇F[ρ tj ](Xi,tj )
+
+, j= 1,2,···, m−1,
+Xi,tm −β((D tXi)tm +∇G[ρ tm](Xi,tm)), j=m. (19)
+Here←indicates thatX i,tj is updated by the right-hand side expression,βis the step size, andD tt
+andD t are finite-difference approximations of∂ tt and∂ t, respectively.
+3. Flow matching update.
+The flow matching update trains the velocity networkv θ to match the empirical velocities of particle
+trajectories{X i,tj , j≤m} n
+i=1, which is closely related to flow matching methods [2, 33, 35]. The
+training loss is
+min
+θ
+∆t
+n
+nX
+i=1
+mX
+j=1
+vθ(Xi,tj−1 , tj−1)− 1
+∆t(Xi,tj −X i,tj−1 )
+
+2
+.(20)
+We optimizeθforL 2 steps using Adam, with a batch ofn 2 trajectories per step. Since the particle
+update does not require access to the neural networkv θ, and flow matching reduces the cost only when
+trajectoriesXintersect, we apply the flow matching update less frequently.
+To summarize, at theℓ-th epoch, we first samplenparticles and compute their trajectories usingv θ,
+then run the particle update forLiterations. Afterward, we update the neural network by matching the
+computed trajectories. The full procedure is in Algorithm 1.
+The main computational costs come from the particle update (line 5) and the flow matching update
+(line 7). The cost of the particle update scales asO(n 1L1), and that of the flow matching update scales as
+O(n2L2), both proportional to the batch size and number of update steps. Importantly, the flow matching
+update is performed infrequently. In addition, compared to simulation-based methods, our approach offers a
+simpler and more efficient training process: the velocity network is updated via a decoupled, simulation-free
+flow matching step, which significantly reduces overall computational cost.
+6 Experiments
+We apply the proposed method to two types of MFGs: Section 6.1 and 6.3 compute the OT interpolation
+between two distributions via an MFG formulation, and Section 6.2 considers a non-potential MFG. De-
+tails of the experimental setup, including hyperparameters and neural network structures, are provided in
+Appendix D. Code can be found athttps://github.com/Jayaos/mfg_flow_matching.
+6.1 2D toy example
+We are to learn the dynamic OT inR 2 between a 4×4 checkerboard distribution and an isotropic Gaussian
+target, and we adopt the KL-divergence relaxation of the terminal constraints as in Example 5.1. Figure 2
+visualizes the evolution of the distribution, where lighter colors indicate more particles and higher density.
+The learned transport map continuously interpolates between the checkerboard source density and the target
+Gaussian density.
+10
+4
+ 2
+ 0 2 4
+4
+3
+2
+1
+0
+1
+2
+3
+4
+t = 0.00
+4
+ 2
+ 0 2 4
+t = 0.11
+4
+ 2
+ 0 2 4
+t = 0.26
+4
+ 2
+ 0 2 4
+t = 0.42
+4
+ 2
+ 0 2 4
+t = 0.53
+4
+ 2
+ 0 2 4
+t = 0.68
+4
+ 2
+ 0 2 4
+t = 0.84
+4
+ 2
+ 0 2 4
+t = 1.00
+Figure 2: Intermediate distributions between 4×4 checkerboard and an isotropic Gaussian solved by the
+proposed algorithm.
+(a) Residual versus the number of training epochk.
+The residual is defined in (21) and reflects how much
+the necessary condition of the MFG is violated.
+(b) Sample testing trajectories from the learned con-
+trolv θ. Players move toward the target linex2 =−1,
+adapting their speed to reduce the costs.
+(c) Estimated density evolution from test trajectories. The population tends to concentrate alongx 2 and spreads
+alongx 1 due to asymmetric interaction.
+Figure 3: Numerical results for the non-potential MFG in Section 6.2. (a) shows convergence of the algorithm.
+(b) and (c) illustrate that the algorithm output aligns with the physical intuition of a Nash equilibrium.
+6.2 Non-potential MFG
+We consider an MFG onRd with interaction costF[ρ](x, t) =λF
+R
+K(x, y)dρ(y), whereK(x, y) = exp(a⊤(x−
+y)) anda∈R d is a fixed non-zero vector. This is the smoothing coupling cost as in Example 5.2. SinceK
+is asymmetric, the game is non-potential. The terminal cost isG(x) =λ G(x2 −c) 2, wherec∈Randx 2
+denotes the second coordinate ofx, encouraging players to move towardx 2 =c. We setd= 2 and the initial
+distribution is Gaussian with mean [0,1]⊤ and covariance diag(0.02,0.1). The model parameters areλ F = 10,
+a= [0,1] ⊤,λ G = 1, andc=−1. As discussed in Example 5.2, evaluatingF[ρ] and its gradient∇F[ρ] only
+requires empirical averages ofe a⊤x, whileG[ρ] and its gradient∇G[ρ] admit closed-form evaluations.
+Training performance is measured by the residual
+
+∆t
+n
+nX
+i=1
+m−1X
+j=1
+−(DttX(ℓ)
+i )tj +∇F[ρ (ℓ)
+tj ](X(ℓ)
+i,tj )
+
+2
++ 1
+n
+nX
+i=1
+(DtX(ℓ)
+i )tm +∇G[ρ (ℓ)
+tm](X(ℓ)
+i,tm)
+
+2
+
+
+1/2
+,(21)
+which is a sample-based approximation of theµ⊗[0,1] norm of the first-order variation ofJ(X;ρ (ℓ)) at
+X=X (ℓ). A small residual indicates proximity to a stationary point. Figure 3a shows that the algorithm
+converges to a state with a residual of 10 −1.
+To evaluate the learned policyv θ, we simulate trajectories of testing particles resampled from the initial
+distribution. Figure 3b shows 10 testing trajectories, and Figure 3c shows the density evolution of testing
+11
+(a) Handbags→Shoes
+ (b) CelebA male→CelebA female
+Figure 4: Randomly selected three OT trajectories for image-to-image translation of (a) handbags→shoes
+and (b) CelebA male→CelebA female.
+Table 1: FID of translated images of our method and baselines. Lower FID is better. Results for Disco
+GAN, Cycle GAN, and NOT are reported from Korotin et al. [28]. Results for Q-Flow is reported from Xu
+et al. [47].
+OursQ-Flow OT-CFM SI Rectified Flow SB-CFM Disco GAN Cycle GAN NOT
+Handbag→Shoes 12.44 12.34 13.01 15.87 13.91 12.70 22.42 16.00 13.77
+Male→Female 9.68 9.66 12.88 16.39 14.01 11.55 35.64 17.74 13.23
+particles via Gaussian kernel density estimation. Players move toward the terminal linex 2 =−1 to reduce
+terminal cost. Those with larger initialx 2 move faster to escape higher interaction cost, while those with
+smallerx 2 balance interaction and dynamic costs. As players evolve, the population compresses alongx 2
+axis and spreads alongx 1 axis, makingx−ynearly orthogonal toa. This profile aligns with the optimal
+strategy of matching population pace while progressing towardx 2 =−1. More detailed discussion is in
+Appendix D.2.
+6.3 Image-to-image translation
+We use Algorithm 1 to learn the dynamic OT between distributions of two sets of RGB images. The
+first set contains Shoes [48] and Handbags [53] and the second set contains CelebA male and female [37]
+images. Specifically, the goal is to conditionally generate shoe/CelebA female images by transporting hand-
+bag/CelebA male images, respectively. We evaluate the quality of translated images by using Fr´ echet in-
+ception distance (FID) [21] and compare with different baselines: flow matching methods including Optimal
+Transport Conditional Flow Matching (OT-CFM) [44], Stochastic Interpolants (SI) [2], Rectified Flow [36],
+Schr¨ odinger Bridge Conditional Flow Matching (SB-CFM) [44]; two representative generative adversarial
+networks (GANs), Disco GAN [27] and Cycle GAN [54]; Neural Optimal Transport (NOT) [28]; and Q-
+flow [47], which aims to learn dynamic OT using flow.
+We train a deep variational autoencoder (VAE) to compress images into a latent space following Rombach
+et al. [41], so that learning dynamic OT between two sets of images can be conducted in the latent space for
+all methods. Table 1 reports FID between translated samples from the test set and ground-truth images from
+the held-out set, demonstrating that our method is comparable to Q-Flow and outperforms the baselines.
+Figure 4 visualizes OT trajectories from handbag/CelebA male to shoe/CelebA female images, respectively.
+We can observe that our method produces smooth and coherent translations, particularly in terms of color
+consistency and reduction of visual artifacts.
+7 Discussion
+The work can be extended in several future directions. First, although the particle-based method is
+simulation-free, it incurs significant memory costs when the number of trajectories and that of time steps are
+12
+large. Second, while our framework applies to general MFGs without requiring a variational formulation, the
+theoretical convergence guarantees currently only cover the optimal control setting. Third, the convergence
+analysis considers the idealized proximal fixed point scheme, and it would be useful to develop a more com-
+plete analysis that accounts for practical sources of error, such as sampling, finite difference approximations,
+and flow matching inaccuracies. Finally, it would be useful to extend the method to more datasets and real
+applications.
+Acknowledgments
+The authors thank Chen Xu and Edward Chen for their help with numerical experiments. The project was
+supported by the Simons Foundation (grant ID: MPS-MODL-00814643). XC was also partially supported by
+NSF DMS-2237842. The work of JL and YX was partially funded by NSF DMS-2134037, CMMI-2112533,
+and the Coca-Cola Foundation.
+References
+[1] Yves Achdou, Pierre Cardaliaguet, Fran¸ cois Delarue, Alessio Porretta, and Filippo Santambrogio.Mean
+field games. Lecture notes in mathematics. Springer Nature, Cham, Switzerland, 1 edition, January 2021.
+[2] Michael S. Albergo and Eric Vanden-Eijnden. Building normalizing flows with stochastic interpolants,
+2023.
+[3] Luigi Ambrosio.Transport Equation and Cauchy Problem for Non-Smooth Vector Fields, pp. 1–
+41. Springer Berlin Heidelberg, Berlin, Heidelberg, 2008. ISBN 978-3-540-75914-0. doi: 10.1007/
+978-3-540-75914-0 1.
+[4] Luigi Ambrosio, Nicola Gigli, and Giuseppe Savare.Gradient flows. Lectures in Mathematics. ETH
+Z¨ urich. Birkhauser Verlag AG, Basel, Switzerland, 2 edition, December 2008.
+[5] Andrea Angiuli, Jean-Pierre Fouque, and Mathieu Lauri` ere.Reinforcement Learning for Mean Field
+Games, with Applications to Economics, pp. 393–425. Cambridge University Press, 2023.
+[6] Mouhcine Assouli, Justina Gianatti, Badr Missaoui, and Francisco J Silva. Initialization-driven neural
+generation and training for high-dimensional optimal control and first-order mean field games.arXiv
+preprint arXiv:2507.15126, 2025.
+[7] Jean-David Benamou and Yann Brenier. A computational fluid mechanics solution to the Monge-
+Kantorovich mass transfer problem.Numerische Mathematik, 84(3):375–393, January 2000.
+[8] George W Brown. Some notes on computation of games solutions. Technical report, 1949.
+[9] George W Brown. Iterative solution of games by fictitious play.Act. Anal. Prod Allocation, 13(1):374,
+1951.
+[10] Pierre Cardaliaguet and Saeed Hadikhanloo. Learning in mean field games: the fictitious play.ESAIM:
+Control, Optimisation and Calculus of Variations, 23(2):569–591, 2017.
+[11] Rene Carmona. Applications of mean field games in financial engineering and economic theory, 2020.
+[12] Giulia Cavagnari, Stefano Lisini, Carlo Orrieri, and Giuseppe Savar´ e. Lagrangian, eulerian and kan-
+torovich formulations of multi-agent optimal control problems: equivalence and gamma-convergence.
+Journal of Differential Equations, 322:268–364, 2022.
+[13] Xu Chen, Shuo Liu, and Xuan Di. A hybrid framework of reinforcement learning and physics-informed
+deep learning for spatiotemporal mean field games. InIn Proceedings of the 20th International Confer-
+ence on Autonomous Agents and Multiagent Systems. ACM DIgital Library, 2023.
+13
+[14] Xu Chen, FU Yongjie, Shuo Liu, and Xuan Di. Physics-informed neural operator for coupled forward-
+backward partial differential equations. In1st Workshop on the Synergy of Scientific and Machine
+Learning Modeling@ ICML2023, 2023.
+[15] Boualem Djehiche, Alain Tcheukam, and Hamidou Tembine. Mean-field-type games in engineering,
+2017.
+[16] Carles Domingo-Enrich, Jiequn Han, Brandon Amos, Joan Bruna, and Ricky T. Q. Chen. Stochastic
+optimal control matching. InThe Thirty-eighth Annual Conference on Neural Information Processing
+Systems, 2024.
+[17] Carles Domingo-Enrich, Michal Drozdzal, Brian Karrer, and Ricky T. Q. Chen. Adjoint matching:
+Fine-tuning flow and diffusion generative models with memoryless stochastic optimal control, 2025.
+[18] Jean-Pierre Fouque, Mathieu Lauri` ere, and Mengrui Zhang. Convergence of actor-critic learning for
+mean field games and mean field control in continuous spaces.arXiv preprint arXiv:2511.06812, 2025.
+[19] Diogo Gomes, Julian Gutierrez, and Mathieu Lauri` ere. Machine learning architectures for price forma-
+tion models.Appl. Math. Optim., 88(1), August 2023.
+[20] Xin Guo, Anran Hu, Renyuan Xu, and Junzi Zhang. A general framework for learning mean-field games.
+Mathematics of Operations Research, 48(2):656–686, 2023.
+[21] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter. Gans
+trained by a two time-scale update rule converge to a local nash equilibrium.Advances in neural
+information processing systems, 30, 2017.
+[22] Mengjian Hua, Mathieu Lauriere, and Eric Vanden-Eijnden. An efficient on-policy deep learning frame-
+work for stochastic optimal control. InFrontiers in Probabilistic Inference: Learning meets Sampling,
+2025.
+[23] Han Huang, Jiajia Yu, Jie Chen, and Rongjie Lai. Bridging mean-field games and normalizing flows
+with trajectory regularization.Journal of Computational Physics, 487:112155, 2023. ISSN 0021-9991.
+[24] Minyi Huang, Roland P. Malham´ e, and Peter E. Caines. Large population stochastic dynamic games:
+closed-loop McKean-Vlasov systems and the Nash certainty equivalence principle.Communications in
+Information & Systems, 6(3):221 – 252, 2006.
+[25] Yan Huang and Li Wang. Jko for landau: a variational particle method for homogeneous landau
+equation, 2024.
+[26] Richard Jordan, David Kinderlehrer, and Felix Otto. The variational formulation of the fokker–planck
+equation.SIAM Journal on Mathematical Analysis, 29(1):1–17, 1998. doi: 10.1137/S0036141096303359.
+[27] Taeksoo Kim, Moonsu Cha, Hyunsoo Kim, Jung Kwon Lee, and Jiwon Kim. Learning to discover
+cross-domain relations with generative adversarial networks. InInternational conference on machine
+learning, pp. 1857–1865. PMLR, 2017.
+[28] Alexander Korotin, Daniil Selikhanovych, and Evgeny Burnaev. Neural optimal transport. InThe
+Eleventh International Conference on Learning Representations, 2023.
+[29] Jean-Michel Lasry and Pierre-Louis Lions. Mean field games.Japanese Journal of Mathematics, 2(1):
+229–260, March 2007.
+[30] Pierre Lavigne and Laurent Pfeiffer. Generalized conditional gradient and learning in potential mean
+field games.Applied Mathematics & Optimization, 88(3):89, October 2023.
+[31] Wonjun Lee, Siting Liu, Hamidou Tembine, Wuchen Li, and Stanley Osher. Controlling propagation
+of epidemics via mean-field control.SIAM Journal on Applied Mathematics, 81(1):190–207, 2021. doi:
+10.1137/20M1342690.
+14
+[32] Alex Tong Lin, Samy Wu Fung, Wuchen Li, Levon Nurbekyan, and Stanley J. Osher. Alternating the
+population and control neural networks to solve high-dimensional stochastic mean-field games.Proceed-
+ings of the National Academy of Sciences, 118(31):e2024713118, 2021. doi: 10.1073/pnas.2024713118.
+[33] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching
+for generative modeling, 2023.
+[34] Stefano Lisini. Characterization of absolutely continuous curves in wasserstein spaces.Calc. Var. Partial
+Differ. Equ., 28(1):85–120, October 2006.
+[35] Qiang Liu. Rectified flow: A marginal preserving approach to optimal transport, 2022.
+[36] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer
+data with rectified flow. InThe Eleventh International Conference on Learning Representations (ICLR),
+2023.
+[37] Ziwei Liu, Ping Luo, Xiaogang Wang, and Xiaoou Tang. Deep learning face attributes in the wild. In
+Proceedings of the IEEE international conference on computer vision, pp. 3730–3738, 2015.
+[38] Washim Uddin Mondal, Mridul Agarwal, Vaneet Aggarwal, and Satish V. Ukkusuri. On the approxi-
+mation of cooperative heterogeneous multi-agent reinforcement learning (marl) using mean field control
+(mfc).Journal of Machine Learning Research, 23(129):1–46, 2022.
+[39] Derek Onken, Samy Wu Fung, Xingjian Li, and Lars Ruthotto. Ot-flow: Fast and accurate continuous
+normalizing flows via optimal transport.Proceedings of the AAAI Conference on Artificial Intelligence,
+35(10):9223–9232, May 2021. doi: 10.1609/aaai.v35i10.17113.
+[40] Sarah Perrin, Julien Perolat, Mathieu Lauriere, Matthieu Geist, Romuald Elie, and Olivier Pietquin.
+Fictitious play for mean field games: Continuous time analysis and applications. In H. Larochelle,
+M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin (eds.),Advances in Neural Information Processing
+Systems, volume 33, pp. 13199–13213. Curran Associates, Inc., 2020.
+[41] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj¨ orn Ommer. High-
+resolution image synthesis with latent diffusion models. InProceedings of the IEEE/CVF conference on
+computer vision and pattern recognition, pp. 10684–10695, 2022.
+[42] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: Convolutional networks for biomedical
+image segmentation. InInternational Conference on Medical image computing and computer-assisted
+intervention, pp. 234–241. Springer, 2015.
+[43] Lars Ruthotto, Stanley J Osher, Wuchen Li, Levon Nurbekyan, and Samy Wu Fung. A machine learning
+framework for solving high-dimensional mean field game and mean field control problems.Proc. Natl.
+Acad. Sci. U. S. A., 117(17):9183–9193, April 2020.
+[44] Alexander Tong, Kilian Fatras, Nikolay Malkin, Guillaume Huguet, Yanlei Zhang, Jarrid Rector-Brooks,
+Guy Wolf, and Yoshua Bengio. Improving and generalizing flow-based generative models with minibatch
+optimal transport.arXiv preprint arXiv:2302.00482, 2023.
+[45] E Weinan. A proposal on machine learning via dynamical systems.Communications in Mathematics
+and Statistics, 5(1):1–11, 03 2017. ISSN 2194-6701. doi: 10.1007/s40304-017-0103-z.
+[46] Chen Xu, Xiuyuan Cheng, and Yao Xie. Normalizing flow neural networks by JKO scheme. InThirty-
+seventh Conference on Neural Information Processing Systems, 2023.
+[47] Chen Xu, Xiuyuan Cheng, and Yao Xie. Computing high-dimensional optimal transport by flow neural
+networks. In Yingzhen Li, Stephan Mandt, Shipra Agrawal, and Emtiyaz Khan (eds.),Proceedings of
+The 28th International Conference on Artificial Intelligence and Statistics, volume 258 ofProceedings
+of Machine Learning Research, pp. 2872–2880. PMLR, 03–05 May 2025.
+15
+[48] Aron Yu and Kristen Grauman. Fine-grained visual comparisons with local learning. InProceedings of
+the IEEE conference on computer vision and pattern recognition, pp. 192–199, 2014.
+[49] Jiajia Yu, Xiuyuan Cheng, Jian-Guo Liu, and Hongkai Zhao. Convergence analysis and acceleration of
+fictitious play for general mean-field games via the best response, 2024.
+[50] Benjamin J. Zhang and Markos A. Katsoulakis. A mean-field games laboratory for generative modeling,
+2023.
+[51] Mo Zhou, Stanley Osher, and Wuchen Li. A deep learning algorithm for computing mean field control
+problems via forward-backward score dynamics.Research in the Mathematical Sciences, 12(3):42, June
+2025.
+[52] Mo Zhou, Haosheng Zhou, and Ruimeng Hu. Learning mean-field games through mean-field actor-critic
+flow.arXiv preprint arXiv:2510.12180, 2025.
+[53] Jun-Yan Zhu, Philipp Kr¨ ahenb¨ uhl, Eli Shechtman, and Alexei A Efros. Generative visual manipulation
+on the natural image manifold. InEuropean conference on computer vision, pp. 597–613. Springer, 2016.
+[54] Jun-Yan Zhu, Taesung Park, Phillip Isola, and Alexei A Efros. Unpaired image-to-image translation
+using cycle-consistent adversarial networks. InProceedings of the IEEE international conference on
+computer vision, pp. 2223–2232, 2017.
+A Table of notations
+Table 2: Summary of Notations
+Notation Description
+P2(Rd) Set of Borel probability measures onR d with finite second moment.
+L2(µ) Space of functionsξ:R d →R d such that
+R
+∥ξ(x)∥2 dµ(x)<∞.
+⟨ξ, η⟩µ Inner product onL 2(µ) defined as
+R
+⟨ξ(x), η(x)⟩dµ(x).
+∥ξ∥µ Norm onL 2(µ) defined as (⟨ξ, ξ⟩µ)1/2.
+L2(µ⊗[0,1]) Space of functionsξ:R d ×[0,1]→R d with finiteµ⊗Lebesgue-norm.
+⟨ξ, η⟩µ⊗[0,1] Inner product onL 2(µ⊗[0,1]) defined as
+R1
+0 ⟨ξt, ηt⟩µ dt.
+∥ξ∥µ⊗[0,1] Norm onL 2(µ⊗[0,1]) defined as
+ 
+⟨ξ, ξ⟩µ⊗[0,1]
+1/2
+.
+µFixed initial distribution inP 2(Rd).
+ρPopulation distribution. Depending on context,ρ∈ P 2(Rd) orρ: [0,1]→
+P2(Rd), ρt =ρ(t).
+vControl function, velocity field. Depending on context,v:R d →R d orv: [0,1]→
+L2(Rd;Rd), vt =v(t).
+XCharacteristic map. Depending on context,X:R d →R d orX: [0,1]→
+L2(µ), Xt =X(t).
+mMomentum, vector-valued Radon measurem=ρv.
+Cρ Space of absolutely continuous curvesAC 2(0,1; (P2(Rd), W2)) with finite
+quadratic energy.
+CX Set of mapsX:R d ×[0,1]→R d such thatX(x,·)∈AC 2(0,1;R d) forµ-a.e.x.
+Cv Set of functionsv:R d ×[0,1]→R d that are bounded and Lipschitz continuous in
+xon every compact setB⊂R d
+(continued on next page)
+16
+Notation Description
+C(ρ,v) Feasible set of pairs of distribution flow and velocity field (ρ, v), defined in (2).
+C(X,v) Feasible set of pairs of characteristic map and velocity field (X, v), defined in (4).
+C(ρ,m) Feasible set of pairs of distribution flow and vector-valued Radon measure flow
+(ρ, m) defined in (27).
+R(ρ, v) Dynamic cost of (ρ, v)∈C (ρ,v).R(ρ, v) :=
+R1
+0
+R
+∥vt(x)∥2dρt(x).
+R(X) Dynamic cost ofX∈C X.R(X) :=
+R1
+0
+R
+∥∂tX(x, t)∥2dµ(x).
+R(ρ, m) Dynamic cost of (ρ, m)∈C (ρ,m).R(ρ, m) :=
+R1
+0
+R
+∥dmt
+dρt
+∥2dρt(x).
+FInteraction cost function,P(R d)×R d →R,(ρ, x)7→F[ρ](x). See Exs. 5.1, 5.2.
+GTerminal cost function, similar toF.
+J(ρ, v; ˜ρ) Individual optimal control cost onC (ρ,v) for given ˜ρ∈Cρ, defined in (5).
+J(X; ˜ρ) Individual optimal control cost onC X for given ˜ρ∈Cρ, defined in (9).
+J(ρ, m; ˜ρ) Individual optimal control cost onC (ρ,m) for given ˜ρ∈Cρ, defined in (29).
+F,GInteraction and terminal potentials,P 2(Rd)→R.
+J(ρ, v) MFC/potential MFG cost onC (ρ,v), defined in (7).
+J(X) MFC/potential MFG cost onC X, defined in (10).
+J(ρ, m) MFC/potential MFG cost onC (ρ,m),J(ρ, m) :=R(ρ, m) +
+R
+F(ρt)dt+G(ρ 1).
+m,∆t, tj mis number of time steps, ∆t= 1
+m andt j =j∆t.
+αℓ Weight for fictitious play in (8) or the proximal step-size in (14).
+βStep-size for particle update in (19).
+KTotal number of epochs in Algorithm 1.
+n, n1, n2 Number of samples per epoch, particle update batch size, and flow matching up-
+date batch size, respectively.
+L, L1, L2 Number of particle update iterations and flow neural network update iterations,
+respectively.
+Xi,tj Approximate location of particle initialized atx i at timet j, i.e.,X i,tj ≈X(x i, tj).
+B Other preliminaries
+We first recall the concept of absolutely continuous curves as defined in [4, Def. 1.1.1].
+Definition B.1(Absolutely continuous curves).Let (X, d) be a complete metric space and letl: (0,1)→ X
+be a curve. We say thatl∈AC 2(0,1;X) if there exists a functionm∈L 2(0,1) such that
+d(l(s), l(t))≤
+Z t
+s
+m(r)dr,∀0< s≤t < b.(22)
+By [4, Thm. 1.1.2], for anyl∈AC 2(0,1;X), the limit
+|l′|(t) := lim
+s→t
+d(l(s), l(t))
+|s−t| (23)
+exists for a.e.t∈(0,1). In addition,|l ′| ∈L2(0,1) and|l ′|is an admissible integrand of (22) and for anym
+satisfying (22),|l ′|(t)≤m(t) for a.e.t∈(0,1).|l ′|is called the metric derivative.
+The following definition is also called the Lions derivative. The main difference between it and Fr´ echet
+derivative is that the perturbation measure is required to have zero measure.
+17
+Definition B.2(First variation [10]).LetF:P 2(Rd)→R, we say thatDF:P 2(Rd)×R d →Ris the first
+variation ofFif for anyρ, ρ ′ ∈ P2(Rd),
+lim
+s→0
+1
+s (F((1−s)ρ+sρ ′)− F(ρ)) =
+Z
+DF[ρ](x)d(ρ′ −ρ)(x).(24)
+we say thatDF:P 2(Rd)×R d →Ris the first-order subdifferential ofFif for anyρ, ρ ′ ∈ P2(Rd),
+F((1−s)ρ+sρ ′)− F(ρ)≥s
+Z
+DF[ρ](x)d(ρ′ −ρ)(x).(25)
+SinceDFis defined up to an additive constant, we assume that
+Z
+DF[ρ](x)dρ(x) = 0,∀ρ∈ P 2(Rd).(26)
+C Proofs
+C.1 Proof of Proposition 2.1
+Proof.Letm=ρvbe the vector-valued Radon measure, and let dm
+dρ denote its Radon–Nikodym derivative.
+Define
+C(ρ,m) :=
+
+(˜ρ,˜m) :∂t ˜ρ+∇ ·˜m= 0,˜ρ0 =µ,˜ρ∈C ρ
+	
+.(27)
+The constraint is linear in (˜ρ,˜m), hence the setC(ρ,m) is convex.
+Define the functional
+R(˜ρ,˜m) =
+
+
+
+1
+2
+Z 1
+0
+Z 
+d ˜mt
+d˜ρt
+(x)
+
+2
+d˜ρt(x) dt,˜m t ≪˜ρt ∀t∈[0,1],
+∞,otherwise.
+(28)
+ThenR(˜ρ,˜m) is convex in (˜ρ,˜m). Next, set
+J(˜ρ,˜m;ρ) :=R(˜ρ,˜m) +
+Z 1
+0
+Z
+F[ρt] d˜ρt(x) dt+
+Z
+G[ρ1] d˜ρ1(x).(29)
+The functionalJ(˜ρ,˜m;ρ) is convex in (˜ρ,˜m) under theL2 metric.
+Since the objective is convex and the constraint is linear, (˜ρ,˜m) solves
+min
+(˜ρ,˜m)∈C(ρ,m)
+J(˜ρ,˜m;ρ) (30)
+if and only if it satisfies the first-order optimality condition:
+
+
+
+−∂t ˜ϕ+ 1
+2 ∥∇˜ϕ∥2 =F[ρ], ˜ϕ1 =G[ρ 1],
+˜m=−˜ρ∇˜ϕ,
+∂t ˜ρ+∇ ·˜m= 0,˜ρ 0 =µ.
+(31)
+Here, the Hamilton-Jacobi-Bellman equation is understood to hold on the support of ˜ρ, with equality replaced
+by inequality−∂ t ˜ϕ+ 1
+2 ∥∇˜ϕ∥2 ≤F[ρ], ˜ϕ1 ≤G[ρ 1] outside the support. The Fokker–Planck equation is
+understood in the sense of distributions.
+Therefore, (ˆρ,ˆv) solves (1) if and only if it satisfies
+
+
+
+−∂t ˆϕ+ 1
+2 ∥∇ˆϕ∥2 =F[ˆρ], ˆϕ1 =G[ˆρ1],
+ˆv=−∇ ˆϕ,
+∂t ˆρ+∇ ·(ˆρˆv) = 0,ˆρ 0 =µ,
+(32)
+Similarly, deriving the first-order optimality condition for (7) yields the same system (32). Hence, (ˆρ,ˆv)
+solving (1) is necessary for solving (7), and becomes sufficient provided thatF,Gare convex inρunder the
+L2 metric.
+18
+C.2 Proof of Lemma 4.1
+We prove the Lemma in two steps. We first show that the distribution flow ˜ρinduced by ˜Xis inC ρ and
+the interaction and terminal cost are unchanged with the change from Lagrangian coordinate ˜Xto Eulerian
+coordinate ˜ρ. As summarized in the following lemma.
+Lemma C.1.Let ˜X∈C X and set˜ρt := ( ˜Xt)#µ. Then˜ρ∈C ρ,
+R
+F(x)d˜ρt(x) =E x∼µ[F( ˜Xt(x))]for any
+F:R d →R d andF(˜ρt) =F(( ˜Xt)#µ)for anyF:P 2(Rd)→R.
+Proof.The costs are unchanged directly by the definition of pushforward.
+We first prove that ˜ρt ∈ P2(Rd). Fixt∈[0,1]. Forµ-a.e.x, since ˜X(x,·) is absolutely continuous, we
+have
+˜X(x, t) =x+
+Z t
+0
+∂s ˜X(x, s)ds.(33)
+Therefore
+∥ ˜X(x, t)∥2 ≤2∥x∥ 2 + 2
+
+Z t
+0
+∂s ˜X(x, s)ds
+
+2
+≤2∥x∥ 2 + 2
+Z 1
+0
+∥∂s ˜X(x, s)∥2ds,(34)
+where the second inequality is by the Cauchy-Schwarz inequality. Sinceµ∈ P2(Rd) and ˜X(x,·)∈AC 2(0,1;R d)
+forµ-a.e.x, integrating overµgives
+Z
+∥x∥2dρt(x) =
+Z
+∥ ˜X(x, t)∥2dµ(x)≤2
+Z
+∥x∥2dµ(x) + 2
+Z Z 1
+0
+∥∂s ˜X(x, s)∥2dsdµ(x)<∞,(35)
+therefore ˜ρt ∈ P2(Rd).
+For any 0≤s < t≤1, consider the couplingπ= ( ˜Xs, ˜Xt)#µbetween ˜ρs and ˜ρt. By definition, we have
+W2
+2 (˜ρs,˜ρt)≤
+Z
+Rd×Rd
+∥y−z∥ 2dπ(y, z) =
+Z
+Rd
+∥ ˜Xs(x)− ˜Xt(x)∥2dµ(x) =
+Z
+Rd
+
+Z t
+s
+∂rX(x, r)dr
+
+2
+dµ(x).(36)
+Let
+g(r) :=∥∂ rX(·, r)∥µ =
+Z
+Rd
+∥∂rX(x, r)∥2dµ(x)
+1/2
+.(37)
+Theng∈L 2([0,1]) and
+W2(˜ρs,˜ρt)≤
+
+Z t
+s
+∂rX(·, r)dr
+
+µ
+≤
+Z t
+s
+∥∂rX(·, r)∥µ dr=
+Z t
+s
+g(r)dr.(38)
+Therefore ˜ρ∈Cρ.
+We then construct the velocity field ˜vsuch that (˜ρ,˜v)∈C(ρ,v), show that ˜vis the unique solution to the
+flow matching, and the dynamic cost in (˜ρ,˜v) is bounded above by the dynamic cost in ˜X.
+Proof of Lemma 4.1.We construct ˜vand show that it solves the flow-matching. Define the vector measure
+˜mt(B) :=
+Z
+{x: ˜X(x,t)∈B}
+∂t ˜X(x, t)dµ(x), B⊂R d.(39)
+Then ˜mt ≪˜ρt and by Radon-Nikodym theorem, there exist a Borel vector field ˜vt definedρ t-a.e. such that
+˜mt(B) =
+R
+B ˜vt(y)d˜ρt(y). This implies that,
+Z
+˜v(˜X(x, t), t)−∂t ˜X(x, t)dµ(x)dt= 0,(40)
+Consider the flow matching problem
+min
+v
+Z 1
+0
+Z
+∥v( ˜X(x, t), t)−∂t ˜X(x, t)∥2dµ(x)dt.(41)
+19
+(40) shows that ˜vsatisfies the optimality condition of (41). Since the problem (41) is unconstrained with a
+convex objective, ˜vis therefore the solution to (41).
+We then prove that (˜ρ,˜v) satisfies the continuity equation. By the chain rule,
+d
+dt
+Z
+φ(y)d˜ρt(y) = d
+dt
+Z
+φ( ˜X(x, t))dµ(x) =
+Z
+∇φ( ˜X(x, t))·∂t ˜X(x, t)dµ(x).(42)
+By the definition of ˜v, for anyφ∈C ∞
+c (Rd),
+Z
+∇φ(y)·˜v(y, t)d˜ρt(y) =
+Z
+∇φ( ˜X(x, t))·∂t ˜X(x, t)dµ(x).(43)
+Combining (42) and (43) gives the desired weak formula of the continuity equation:
+d
+dt
+Z
+φd˜ρt =
+Z
+∇φ·v td˜ρt.(44)
+In the end, we show
+∥˜vt∥2
+˜ρt ≤ ∥∂t ˜X(·, t)∥2
+µ.(45)
+This implies ˜vt ∈L 2(˜ρt) and therefore concludes (˜ρ,˜v)∈C(ρ,v). In addition, integrating (45) over time and
+combining with Lemma C.1 givesJ(˜ρ,˜v;ρ)≤ J(˜X;ρ).
+Define a linear funationalTonL 2(˜ρt) by
+T(ψ) :=
+Z
+ψ(y)·d ˜mt(y) =
+Z
+ψ( ˜X(x, t))·∂t ˜X(x, t)dµ(x).(46)
+Then by Cauchu-Schwarz inequality inL 2(µ)
+|T(ψ)| ≤ ∥ψ◦˜Xt∥µ∥∂t ˜X(·, t)∥µ =∥ψ∥ ˜ρt∥∂t ˜X(·, t)∥µ,(47)
+which implies thatTis a bounded linear functional on the Hilbert spaceL 2(˜ρt) with operator norm
+∥T∥ ≤ ∥∂t ˜X(·, t)∥µ.(48)
+By the Riesz representation theorem, there existsv t ∈L 2(˜ρt) such that for everyψ∈L 2(˜ρt),
+T(ψ) =
+Z
+ψ(y)·v t(y)d˜ρt(y).(49)
+Moreover,
+∥vt∥2
+˜ρt =∥T∥ 2 ≤ ∥∂t ˜X(·, t)∥2
+µ.(50)
+It suffices to show thatv t = ˜vt. LetB⊂R d be a Borel set anda∈R d be a fixed vector, thenL 2(˜ρt)∋
+ψ(y) :=a1 B(y) =
+(
+a, y∈B,
+0, y̸∈B. By definition (46),T(ψ) =a·˜m t(B). On the other hand, by Riesz
+representation (49),T(ψ) =a·
+R
+B vt(y)d˜ρt(y). Thereforea·˜m t(B) =a·
+R
+B vt(y)d˜ρt(y) for anya∈R d and
+any BorelB⊂R d. This implies thatv t = d ˜mt
+d˜ρt
+andv t = ˜vt except on a ˜ρt-zero measure set, which concludes
+the proof.
+C.3 Proof of Lemma 4.2
+This is a direct corollary of [4, Prop. 8.1.8].
+C.4 Proof of Theorem 4.3
+Proof.We first prove (i). Since (ρ ∗, v∗) solves (1),v ∗ is inC v and by Lemma 4.2, there existsX ∗ ∈C X
+such that (X ∗
+t )#µ=ρ ∗
+t andJ(X ∗;ρ ∗) =J(ρ ∗, v∗;ρ ∗). For any other ˜X∈C X, by Lemma 4.1, there exist
+(˜ρ,˜v)∈C(ρ,v) such thatJ(˜ρ,˜v;ρ∗)≤ J(˜X;ρ ∗). Therefore,X ∗ solves (11).
+The same logic applies to MFC and concludes the first part of (ii).
+For the second part of (ii), it suffices to proveJ(ρ ∗, v∗) =J(ρ, v). By optimality of (ρ, v), we have
+J(ρ ∗, v∗)≥ J(ρ, v). By Lemma (4.2), there is anX∈C X such thatJ(X) =J(ρ, v). By Lemma (4.1) and
+optimality ofX ∗, we haveJ(ρ ∗, v∗)≤ J(X∗)≤ J(X) =J(ρ, v), which concludes the proof.
+20
+C.5 Proof of Lemma 4.4
+Proof.The dynamic cost
+Ex∼µ
+Z 1
+0
+1
+2∥∂t ˜X(x, t)∥2dt
+
+=∥∂ t ˜X∥2
+µ⊗[0,1] (51)
+is strictly convex in ˜X, In addition,F[ρ (ℓ)
+t ], G[ρ(ℓ)
+1 ] areL-smooth andα ℓ < 1
+L , therefore the objective of the
+update (14) is strongly convex. Therefore, the minimizer is unique if it exists.
+Let{X (n)} ⊂CX be a minimizing sequence lim n→∞ J(X (n);ρ (ℓ)) = inf X∈CX J(X;ρ (ℓ)). Then by
+L-smoothness ofF[ρ (ℓ)
+t ] andG[ρ (ℓ)
+1 ], and 0< αℓ < 1
+L , we have that
+sup
+n
+
+∥∂tX(n)∥µ⊗[0,1] +∥X (n)∥µ⊗[0,1] +∥X (n)
+1 ∥µ
+
+<∞,
+which implies{X (n)}is bounded inH 1(0,1;L 2(µ)). Therefore there exists a subsequence, still denoted as
+X(n), andX ∗ ∈H 1(0,1;L 2(µ)) such thatX (n) →X ∗ weakly inH 1(0,1;L 2(µ)).
+By weakly convergence inH 1(0,1;L 2(µ)) and weak lower semicontinuity ofL 2 norm,∥∂ tX∗∥2
+µ⊗[0,1] ≤
+lim infn→∞ ∥∂tX(n)∥2
+µ⊗[0,1].
+By compact embedding theorem, there exists a subsequence, still denoted asX (n) such thatX (n) →X ∗
+strongly inC(0, T;L 2(µ)) and thereforeX (n) →X ∗ strongly inL 2(0, T;L2(µ)) andX (n)
+1 →X ∗
+1 strongly in
+L2(µ). Combining with the kinetic term, we haveJ(X ∗;ρ (ℓ))≤lim inf n→∞ J(X (n);ρ (ℓ)), which impliesX ∗
+is the minimizer.
+By the update rule,X (ℓ+1/2) =X ∗ and the decay property (16) holds.
+C.6 Proof of Lemma 4.5
+Proof.By Lemma 4.1,ρ (ℓ+1) ∈C ρ,v (ℓ+1)
+t is unique upto aρ t-zero measure set. Then by Lemma 4.1 and
+Lemma 4.2, we have
+J(X (ℓ+1);ρ) =J(ρ (ℓ+1), v(ℓ+1);ρ)≤ J(X(ℓ+1/2);ρ),(52)
+which concludes the proof.
+C.7 Proof of Theorem 4.6
+Proof.SinceF, Gare independent ofρ, combining Lemmas 4.4 and 4.5 withα ℓ =αgives
+1
+2α
+
+∥X(ℓ+1/2) −X (ℓ)∥2
+µ⊗[0,1] +∥X (ℓ+1/2)
+1 −X (ℓ)
+1 ∥2
+µ
+
+≤ J(X(ℓ))− J(X(ℓ+1)) (53)
+Telescoping both sides andJ(X)≥ J gives (17).
+IfF, Gareλ-convex, then for anyX, Y∈C X,
+λ
+
+∥X−Y∥ 2
+µ⊗[0,1] +∥X 1 −Y 1∥2
+µ
+
+≤ ∥∂t(X−Y)∥ 2
+µ⊗[0,1] +
+Z 1
+0
+⟨∇F(Xt)− ∇F(Yt), Xt −Y t⟩µdt+⟨∇G(X 1)− ∇G(Y1), X1 −Y 1⟩µ
+(54)
+TakeX=X (ℓ+1) andY=X ∗. By the update rule and the optimality ofX ∗, we have
+λ
+
+∥X(ℓ+1) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ+1)
+1 −X ∗
+1 ∥2
+µ
+
+≤ −1
+α
+
+⟨X(ℓ+1) −X (ℓ), X(ℓ+1) −X ∗⟩µ⊗[0,1] +⟨X (ℓ+1)
+1 −X (ℓ)
+1 , X(ℓ+1)
+1 −X ∗
+1 ⟩µ
+
+,
+(55)
+By algebra on the inner product
+⟨a−b, a−c⟩= 1
+2
+ 
+∥a−b∥ 2 +∥a−c∥ 2 − ∥b−c∥2
+,(56)
+21
+Takea=X (ℓ+1), b=X (ℓ), c=X ∗. Then, (55) gives
+(2λα+ 1)
+
+∥X(ℓ+1) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ+1)
+1 −X ∗
+1 ∥2
+µ
+
++
+
+∥X(ℓ+1) −X (ℓ)∥2
+µ⊗[0,1] +∥X (ℓ+1)
+1 −X (ℓ)
+1 ∥2
+µ
+
+≤
+
+∥X(ℓ) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ)
+1 −X ∗
+1 ∥2
+µ
+
+.
+(57)
+Therefore,
+
+∥X(ℓ+1) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ+1)
+1 −X ∗
+1 ∥2
+µ
+
+≤ 1
+1 + 2λα
+
+∥X(ℓ) −X ∗∥2
+µ⊗[0,1] +∥X (ℓ)
+1 −X ∗
+1 ∥2
+µ
+
+,(58)
+and (18) holds.
+D Experiment details
+D.1 2D toy example
+We use multilayer perceptrons (MLP) with six hidden layers of width 512 and Rectified Linear Unit (ReLU)
+activations to model the velocity field and the classifier. The timetis concatenated with the input, and the
+concatenated input is fed into the velocity field. We userk4to solve ODEs. All other hyperparameters,
+aside from the model architecture, are listed in Table 3.
+Table 3: Hyperparameters for 2D toy example.
+Hyperparameter Value
+Total outer loop 20
+Classifier training batch size 2048
+Classifier training steps 1000
+Classifier learning rate 0.001
+Classifier intermediate training frequency 10
+Classifier intermediate training steps 20
+Velocity field training batch size 2048
+Velocity field training steps 1000
+Velocity field learning rate 0.001
+Particle optimization batch size 2048
+Particle optimization steps 1000
+Particle optimization learning rate 0.001
+Number of timesteps 10
+D.2 Non-potential MFG
+Notice that in (11), a vanishing first-order variation is a necessary condition for (X, ρ) to be a fixed point.
+The residual defined in (21) provides a sampling-based approximation of theL 2(µ) norm of the first-order
+variation of the functionalJ(X;ρ (ℓ)) evaluated atX=X (ℓ), i.e.
+Z 1
+0
+−(∂ttX(ℓ))t +∇F[ρ (ℓ)
+t ]
+
+2
+µ
+dt+
+(∂tX(ℓ))1 +∇G[ρ (ℓ)
+1 ](X(ℓ)
+1 )
+
+2
+µ
+1/2
+.(59)
+Therefore, a small residual (21) is necessary for (X(ℓ), ρ(ℓ)) to approximate a fixed point. Figure 3a illustrates
+that our algorithm achieves a residual on the order of 10 −1.
+To assess whether the learned neural network controlv θ induces a Nash equilibrium, we resample testing
+particles from the initial distribution and simulate their trajectories usingv θ. Figure 3b shows 10 testing
+22
+trajectories. Figure 3c displays the density evolution based on all testing trajectories, estimated using
+Gaussian kernel density estimation.
+All players move toward the linex 2 =−1 to reduce the terminal cost. For players with initially larger
+x2 values, the interaction cost dominates early in the trajectory since there is more mass ahead of them
+alonga. To mitigate this, they move quickly in the direction ofa. Players starting at smallerx 2 values also
+tend to move in the direction ofato avoid falling behind when other players catch up. However, because
+their initial interaction cost is lower, they balance interaction and dynamic costs, leading to slower initial
+movement. Although the initial distribution has a larger variance along thex 2 direction, players’ desire to
+reduce interaction cost causes them to compress alongx 2 and spread out alongx 1 aftert= 0.25, making
+x−ynearly orthogonal toa. Under this population profile, the optimal strategy becomes matching the pace
+of the group while moving toward the target terminal locationx 2 =−1.
+Overall, the trajectories in Figure 3b and the density evolution in Figure 3c are consistent with the
+physical interpretation of a Nash equilibrium for this test case.
+The hyperparameters for the algorithm are detailed below. We use MLP with 3 hidden layers of width
+[4, 8, 16]. We useeuler(forward Euler) to solve ODEs. All other hyperparameters, aside from the model
+architecture and pre-specified constants, are listed in Table 4.
+Table 4: Hyperparameters for Non-Potential MFG.
+Hyperparameter Values
+Total outer loop 100
+Velocity field training steps 100
+Velocity field learning rate 0.01
+Particle optimization steps 100
+Particle optimization learning rate 0.01
+Number of timesteps 20
+D.3 Image-to-image translation
+For image-to-image translation, we first train a deep variational autoencoder (VAE) to compress images into
+a latent space. The deep VAE is trained on the same setup following [41] in a latent space ofR 8×12×12,
+enabling dynamic OT to be learned in the latent space across all methods. We use a constant learning rate
+of 4.5e-06 and a batch size of 32 for training VAE on both datasets. For the handbags–shoes dataset, a
+single VAE is trained for 100 epochs, using 80% of the images for training and splitting the remaining 20%
+evenly into validation and held-out sets. The held-out set is excluded from training and later used for FID
+evaluation. For the CelebA dataset, we train a single VAE for 50 epochs, adopting the standard training,
+validation, and test splits fromtorchvision.datasets.CelebA. The test set is excluded from training and
+used only for FID evaluation. Table 5 reports the FID between reconstructed images from the training
+set and ground-truth images from the held-out sets (handbags, shoes, CelebA male, and CelebA female),
+presenting the quality of the trained VAE.
+We use a convolutional U-Net architecture [42] for the classifier. The Swish activation function is used
+throughout the network, except for the final fully connected layer, where ReLU is used. For the velocity
+field, we use a stack of convolutional layers with ReLU activations. The timetis concatenated with the
+input along the channel dimension, and the concatenated input is fed into each convolutional layer. To
+ensure a fair comparison, the same velocity field architecture is used for both our method and all baselines
+in the experiments. The detailed architectures of the classifier and velocity field are provided in Table 6 and
+Table 7, respectively.
+We initialize the velocity field in our method using flow matching on a linear interpolant for a specified
+number of training steps in both tasks. All hyperparameters of our method, except the velocity field and
+classifier architectures, are provided in Table 8. The hyperparameters of the baseline methods for the
+handbag-to-shoe and male-to-female translation tasks are listed in Table 9 and Table 10, respectively. All
+23
+Table 5: FID between reconstructed images from the training set and ground-truth images from the held-out
+sets on the images of Handbags, shoes, CelebA male, and CelebA female.
+Handbag Shoes Male Female
+5.07 6.09 7.09 5.06
+baselines are trained for 400K steps with a batch size of 512, ensuring comparability with the effective
+number of samples used in the particle optimization of our method.
+24
+Table 6: Architecture details of the classifier.
+Layer Component
+Encoding
+Conv 1 3×3Conv2d, channels=256, kernel size=3, stride=1, bias=True,
+padding=1
+Group Normalization 1 num groups=4, channels=256
+Conv 2 3×3Conv2d, channels=512, kernel size=3, stride=1, bias=True,
+padding=1
+Group Normalization 2 num groups=32, channels=512
+Conv 3 3×3Conv2d, channels=512, kernel size=3, stride=2, bias=True,
+padding=1
+Group Normalization 3 num groups=32, channels=512
+Conv 4 3×3Conv2d, channels=1024, kernel size=3, stride=1, bias=True,
+padding=1
+Group Normalization 4 num groups=32, channels=1024
+Conv 5 3×3Conv2d, channels=1024, kernel size=3, stride=1, bias=True,
+padding=1
+Group Normalization 5 num groups=32, channels=1024
+Decoding
+Conv Transpose 5 3×3ConvTranspose2d, channels=1024, kernel size=3, stride=1,
+bias=True, padding=1
+Group Normalization 5 num groups=32, channels=1024
+Conv Transpose 4 3×3ConvTranspose2d, channels=1024, kernel size=3, stride=1,
+bias=True, padding=1
+Group Normalization 4 num groups=32, channels=1024
+Conv Transpose 3 4×4ConvTranspose2d, channels=512, kernel size=4, stride=2,
+bias=True, padding=1
+Group Normalization 3 num groups=32, channels=256
+Conv Transpose 2 3×3ConvTranspose2d, channels=512, kernel size=3, stride=1,
+bias=True, padding=1
+Group Normalization 2 num groups=32, channels=512
+Conv Transpose 1 3×3ConvTranspose2d, channels=256, kernel size=3, stride=1,
+bias=True, padding=1
+25
+Table 7: Architecture details of the velocity field.
+Layer Component
+Encoding
+Conv 1 3×3Conv2d, channels=64, stride 1, bias=True, padding=1
+Conv 2 3×3Conv2d, channels=256, stride 1, bias=True, padding=1
+Conv 3 3×3Conv2d, channels=512, stride 2, bias=True, padding=1
+Conv 4 3×3Conv2d, channels=512, stride 1, bias=True, padding=1
+Conv 5 3×3Conv2d, channels=1024, stride 1, bias=True, padding=1
+Decoding
+Conv Transpose 5 3×3ConvTranspose2d, channels=1024, stride 1, bias=True,
+padding=1
+Conv Transpose 4 3×3ConvTranspose2d, channels=512, stride 1, bias=True,
+padding=1
+Conv Transpose 3 4×4ConvTranspose2d, channels=512, stride 2, bias=True,
+padding=1
+Conv Transpose 2 3×3ConvTranspose2d, channels=256, stride 1, bias=True,
+padding=1
+Conv Transpose 1 3×3ConvTranspose2d, channels=64, stride 1, bias=True,
+padding=1
+Table 8: Hyperparameters of our method in image-to-image translation experiments.
+Hyperparameter Value
+Handbag to shoe CelebA male to female
+Total outer loop 20 50
+Classifier training batch size 256 256
+Initial classifier training steps 2000 2000
+Classifier learning rate 0.001 0.001
+Classifier intermediate training frequency 10 10
+Classifier intermediate training steps 10 10
+Velocity field training batch size 256 256
+Velocity field initialization training steps 10000 10000
+Velocity field training steps 1000 300
+Velocity field learning rate 0.001 0.001
+Particle optimization batch size 512 1024
+Particle optimization steps 1000 300
+Particle optimization learning rate 0.001 0.001
+Kinetic loss weight 0.05 0.05
+Number of timesteps 15 15
+26
+Table 9: Hyperparameters of baselines on the handbags to shoes image translation experiment.
+Hyperparameter OT-CFM Stochastic Interpolants Rectified Flow SB-CFM
+Training steps 400000 400000 400000 400000
+Learning rate 0.001 0.001 0.001 0.001
+Batch size 512 512 512 512
+Number of timesteps 15 15 15 15
+Table 10: Hyperparameters of baselines on the CelebA male to female image translation experiment.
+Hyperparameter OT-CFM Stochastic Interpolants Rectified Flow SB-CFM
+Training steps 400000 400000 400000 400000
+Learning rate 0.001 0.001 0.001 0.001
+Batch size 512 512 512 512
+Number of timesteps 15 15 15 15
+27

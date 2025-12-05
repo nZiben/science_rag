@@ -1,0 +1,1074 @@
+DUALRANDOMIZEDSMOOTHING: BEYONDGLOBAL
+NOISEVARIANCE
+Chenhao Sun, Yuhao Mao, Martin Vechev
+Department of Computer Science, ETH Zurich, Switzerland
+{chenhao.sun, yuhao.mao, martin.vechev}@inf.ethz.ch
+ABSTRACT
+Randomized Smoothing (RS) is a prominent technique for certifying the robust-
+ness of neural networks against adversarial perturbations. With RS, achieving high
+accuracy at small radii requires a small noise variance, while achieving high accu-
+racy at large radii requires a large noise variance. However, the global noise vari-
+ance used in the standard RS formulation leads to a fundamental limitation: there
+exists no global noise variance that simultaneously achieves strong performance
+at both small and large radii. To break through the global variance limitation,
+we propose a dual RS framework which enables input-dependent noise variances.
+To achieve that, we first prove that RS remains valid with input-dependent noise
+variances, provided the variance is locally constant around each input. Building
+on this result, we introduce two components which form our dual RS framework:
+(i) a variance estimator first predicts an optimal noise variance for each input, (ii)
+this estimated variance is then used by a standard RS classifier. The variance esti-
+mator is independently smoothed via RS to ensure local constancy, enabling flex-
+ible design. We also introduce training strategies to iteratively optimize the two
+components involved in the framework. Extensive experiments on the CIFAR-
+10 dataset demonstrate that our dual RS method provides strong performance for
+both small and large radii—unattainable with global noise variance—while incur-
+ring only a 60% computational overhead at inference. Moreover, it consistently
+outperforms prior input-dependent noise approaches across most radii, with par-
+ticularly large gains at radii 0.5, 0.75, and 1.0, achieving relative improvements of
+19.2%, 24.2%, and 20.6%, respectively. On IMAGENET, dual RS remains effec-
+tive across all radii, with roughly 1.5x performance advantages at radii 0.5, 1.0 and
+1.5. Additionally, the proposed dual RS framework naturally provides a routing
+perspective for certified robustness, improving the accuracy-robustness trade-off
+with off-the-shelf expert RS models.
+1 INTRODUCTION
+Deep neural networks have achieved remarkable success across diverse tasks but remain highly vul-
+nerable to adversarial attacks—small, carefully crafted perturbations that can lead to incorrect or
+unexpected predictions. This vulnerability has made adversarial robustness, which ensures con-
+sistent model outputs under small perturbations, a critical research focus. As heuristic defenses
+are often unreliable (Athalye et al., 2018; Croce & Hein, 2020), methods with provable robustness
+guarantees have become increasingly important.
+Randomized Smoothing (RS) is a prominent technique for certifying robustness againstℓ 2-norm
+adversarial perturbations. It constructs a smoothed classifier by adding Gaussian noise to the input
+and taking the majority vote of predictions, thereby ensuring consistent outputs within a certified
+neighborhood. Prior work has primarily focused on two directions: (1) training-based RS, which
+improves robustness by explicitly training the base classifier on noisy inputs (Cohen et al., 2019;
+Salman et al., 2019; Jeong & Shin, 2020; Zhai et al., 2020; Jeong et al., 2021; 2023), and (2) de-
+noised smoothing, where noisy inputs are first denoised before classification (Salman et al., 2020;
+Carlini et al., 2023). Recent advances in deep learning, particularly diffusion models, have sig-
+nificantly enhanced denoised smoothing approaches, enabling state-of-the-art certified accuracy at
+small perturbation radii (Carlini et al., 2023; Xiao et al., 2023; Zhang et al., 2023).
+1
+arXiv:2512.01782v1  [cs.LG]  1 Dec 2025
+0.125 0.25 0.375 0.5 0.625 0.75 0.875 1.0
+Optimal σ
+0.0
+0.1
+0.2
+0.3
+Frequency
+0.2 0.4 0.6 0.8 1.0
+σ
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+Certiﬁed Radius
+Sample 1
+Sample 2
+Sample 3
+Sample 4
+Sample 5
+Figure 1: Left: The distribution of the optimalσon CIFAR-10 test set, where the base model is fixed to the
+pretrained denoised smoothing model from Carlini et al. (2023). The optimalσfor each input is defined as the
+σthat maximizes the certified radius under the standard RS certification. Right: The certified radii curve of five
+independent samples againstσ.
+Table 1: Comparison of key features of the literature and the proposed Dual RS.
+Literature FlexibleσNo test-time memorization Flexible routing
+Certified Routing Mueller et al. (2021) NA✓Restricted
+Adaptive RS
+Alfarra et al. (2022)✓ ✗NA
+Wang et al. (2021)✓ ✗NA
+Súkeník et al. (2022) Restricted✓NA
+Jeong & Shin (2024) Biased✓NA
+This work✓ ✓ ✓
+Despite recent advances, RS remains limited by a fundamental accuracy-robustness trade-off.
+Achieving a larger certified radius requires increasing the noise variance, which often reduces cer-
+tified accuracy at smaller radii. This trade-off arises because prior methods apply a global noise
+variance shared across all inputs (Cohen et al., 2019). As illustrated in Fig. 1, the noise variance that
+maximizes the certified radius varies substantially across samples. Recent work has explored input-
+dependent RS to mitigate this issue, but existing approaches either rely on test-time memorization
+(Alfarra et al., 2022; Wang et al., 2021), permit only limited adaptivity (Súkeník et al., 2022), or
+systematically over-estimate the optimal variance (Jeong & Shin, 2024).
+Motivated by these limitations, we proposeDual Randomized Smoothing(Dual RS), a novel frame-
+work that enables RS certification with input-dependent noise variances. Our key insight is that RS
+certification remains valid, with appropriate confidence adjustments, as long as the noise variance is
+locally constant within the certified region rather than globally fixed across all inputs.
+Main Contributions.Our key contributions are:
+• A generalization of RS certification to locally constant noise variances, enabling flexible
+models to predict an optimal variance for each input. This generalization expands the
+applicability of RS and supports more favorable accuracy-robustness trade-offs.
+• A dual RS framework consisting of a variance estimator and a standard RS classifier. The
+variance estimator predicts the optimalσfor each input, which is then used by the clas-
+sifier for RS inference. We develop an iterative training procedure that jointly optimizes
+both components. An alternative routing perspective is also discussed, where the variance
+estimator acts as a router that selects an appropriate off-the-shelf expert RS classifier based
+on the input. Table 1 compares key features of prior works with our proposed method.
+• An extensive experimental evaluation of Dual RS, showing that Dual RS achieves strong
+performance across both small and large radii, outperforming prior input-dependent noise
+methods at most radii while adding roughly 60% computational overhead at inference,
+compared to standard RS. Comparing against prior works, relative improvements of 19.2%,
+24.2%, and 20.6% are achieved at radii 0.5, 0.75, and 1.0 on CIFAR-10, respectively, and
+roughly 1.5x performance is delivered on IMAGENETat radii 0.5, 1.0, and 1.5.
+2 RELATEDWORK
+Provable Adversarial RobustnessEmpirical defenses against adversarial attacks are often un-
+reliable (Athalye et al., 2018; Croce & Hein, 2020), motivating research onprovable adversarial
+2
+robustness. Existing approaches fall into two categories: deterministic and probabilistic. Determin-
+istic methods provide exact guarantees but do not scale well to large models (Gowal et al., 2018;
+Mirman et al., 2018; Shi et al., 2021; Mueller et al., 2023; De Palma et al., 2024; Mao et al., 2023;
+2024; Balauca et al., 2024; Mao et al., 2025). Therefore,Randomized Smoothing(RS) (Lécuyer
+et al., 2019; Cohen et al., 2019) becomes the most widely used probabilistic method due to its scala-
+bility. Many works have improved RS by developing better training algorithms (Salman et al., 2019;
+Jeong & Shin, 2020; Zhai et al., 2020; Jeong et al., 2021; 2023), leveraging pretrained models to
+construct base classifiers (Salman et al., 2020; Carlini et al., 2023), extending RS to different norms
+and noise distributions (Yang et al., 2020; Kumar et al., 2020), designing alternative certification
+procedures (Xia et al., 2024; Cullen et al., 2022; Li et al., 2022), proposing new evaluation met-
+rics (Sun et al., 2025), and exploring ensemble techniques (Horváth et al., 2022; Liu et al., 2021).
+However, a common limitation of these works is the use of a global noise variance in the smoothing
+distribution for all inputs, which leads to an inherent accuracy-robustness trade-off.
+Input-dependent Randomized SmoothingTo mitigate the accuracy-robustness trade-off, recent
+works have explored adapting the noise variance per input. However, existing methods have notable
+limitations. Some rely on test-time memorization and are computationally expensive (Wang et al.,
+2021; Alfarra et al., 2022). Súkeník et al. (2022) provide theoretical guarantees for varyingσwith
+severely limited adaptivity. Jeong & Shin (2024) propose a multi-scale RS framework that cascades
+models with fixed variances, yet it always selects the largest variance that certifies an input, which
+often yields suboptimal results (Fig. 1). Finally, Lyu et al. (2024) introduce a two-stage framework
+forℓ ∞ norm by splitting a fixed noise budget, but it lacks flexible per-input adaptiveness and fails
+to generalize toℓ 2 norms.
+3 BACKGROUND
+This section introduces the key concepts of adversarial robustness and randomized smoothing (RS).
+Adversarial Robustness.A modelfis adversarially robust if it produces consistent outputs under
+small perturbations. Given inputxand labelywithf(x) =y,fis robust (with regard toℓ 2 norm) if
+f(x′) =f(x)for allx ′ inS(x) ={x ′ | ∥x′−x∥2 ≤ϵ}, whereϵdefines the perturbation magnitude.
+Randomized Smoothing.RS provides certified robustness by constructing a smoothed classifier
+gc(x) = arg maxy∈Y Pδ∼N(0,σ 2I)[f(x+δ) =y], wherefis the base classifier. The classifierg c
+is certifiably robust within anℓ 2 ball if the predicted class has probability greater than0.5(Cohen
+et al., 2019). Improving the probability margin enhances the certified radius.
+Denoised Smoothing.Denoised smoothing (Salman et al., 2020) applies a denoiser before classi-
+fication, i.e.,f(x+δ) =f cls(denoise(x+δ)), wheredenoiseremoves noise from the perturbed
+input andf cls performs classification. This approach serves as a powerful paradigm for construct-
+ing RS base classifiers. Diffusion models have proven to be highly effective denoisers (Carlini
+et al., 2023), achieving state-of-the-art performance with off-the-shelf components. Following Car-
+lini et al. (2023); Jeong & Shin (2024), we adopt diffusion-based denoised smoothing to build base
+classifiers in our framework.
+4 CERTIFICATION WITHLOCALLYCONSTANTNOISEVARIANCE
+In this section, we formalize the main theoretical contribution of this work: we prove that RS cer-
+tification remains valid when the noise variance is input-dependent, as long as it is constant within
+the certified region. This result provides the theoretical foundation for our dual RS framework.
+LetX ⊆R d be the input space,Ythe output space, andf c :X → Ythe base classi-
+fier. The classifier smoothed with a Gaussian distributionN(0, σ 2I)is defined asg c(x, σ) :=
+arg maxy∈Y Pδ∼N(0,σ 2I)(f(x+δ) =y). Letp σ be the probability of the most likely class, i.e.,
+pσ := maxy∈Y Pδ∼N(0,σ 2I)(f(x+δ) =y). Cohen et al. (2019) prove that with a globalσcon-
+stant inX, the smoothed classifierg c is certifiably robust within anℓ 2 ballB(x, R(x, σ))of radius
+R(x, σ) :=σΦ −1(pσ)centered at the inputx, whereΦis the cumulative distribution function
+of the standard Gaussian distribution. We replace the globalσwith an input-dependent function
+σ:X →Σ, whereΣ⊂R + is the discrete set of allowed values, and denote the smoothed classifier
+3
+with input-dependent noise variance asg c(x, σ(x)). Building on this setup, we present a certifi-
+cation theorem that refines the result of Cohen et al. (2019) by relaxing the assumption onσfrom
+being globally constant to locally constant.
+Theorem 4.1(Certification with Locally Constantσ).Fixx 0 ∈ Xandfc. Assumeσ(x)is constant
+within theℓ 2 ballB(x 0, Rσ). Then for allxsuch that∥x−x 0∥2 ≤min(R σ, R(x, σ(x0))), we
+haveg c(x, σ(x)) =gc(x0, σ(x0)).
+The proof follows by carefully adapting the alternative argument of Salman et al. (2019) on the result
+of Cohen et al. (2019), which leverages Lipschitz continuity, to remove the reliance on the global
+constancy ofσ. The detailed proof is deferred to §B.1.
+Practically, the assumption thatσis constant within a neighborhood ofx 0 can be satisfied in two
+ways: (1) by designingσ(x)to be piecewise constant (Wang et al., 2021; Alfarra et al., 2022), or
+(2) by certifying thatσ(x)is locally constant using deterministic certification methods (Singh et al.,
+2019; Wong & Kolter, 2018; Müller et al., 2022; Shi et al., 2024). Approaches in the former category
+typically rely on test-time memorization, which is undesirable in practice. In contrast, approaches
+in the latter category, though extensively developed, are usually computationally expensive and less
+scalable. Therefore, in this work, we seek a certification ofσ(x)that both scales well and eliminates
+test-time memorization. To this end, we propose to use a separate RS model to learn effectiveσ(x)
+and certify the local constancy. To achieve this, we need to extend Theorem 4.1 to a probabilistic
+setting, since RS in practice only provides probabilistic guarantees.
+Before presenting the theorem, we extend the notion of RS to the practical setting, wherepσ is lower
+bounded with uncertaintyα. GivenNtrials of the eventI(f(x+δ) =y)and a predefined threshold
+α, we can derive a lower boundˆp σ such thatP(p σ ≥ˆpσ)≥1−α(Cohen et al., 2019). Conse-
+quently, the smoothed classifiergc(x, σ)is certifiably robust within theℓ2 ballB(x, σΦ−1( ˆpσ))with
+probability at least1−α. Now we are ready to present the probabilistic version of Theorem 4.1.
+Theorem 4.2(Probabilistic Guarantee with Confidence Adjustment).Fixx 0 ∈ Xandfc. Assume
+gc(x, σ(x0))is certifiably robust withinB(x 0, Rc)with probability at least1−α, andσ(x)is
+constant withinB(x 0, Rσ)with probability at least1−β. Then for allxsuch that∥x−x 0∥2 ≤
+min(Rσ, Rc), we haveg c(x, σ(x)) =gc(x0, σ(x0))with probability at least1−α−β.
+The proof follows by applying union bound to upper bound the failure probability. The detailed
+proof is deferred to §B.2. Note that Theorem 4.2 does not assume independence between the two
+failure events, and therefore remains valid even when the two failure events are correlated, e.g.,
+correlated noise samples may be used in two certifications.
+Comparison with Prior Work.Although not explicitly formalized, the idea of using a locally
+constantσhas been explored in prior work (Wang et al., 2021; Alfarra et al., 2022). Wang et al.
+(2021) partitionXinto a collection ofℓ 2 balls, referred to as robust regions, and assign a constantσ
+to each region. These regions are allocated and stored at test time, which prevents parallel inference
+and leads to dependence on the prior test cases. Similar strategies are adopted by Alfarra et al.
+(2022). Beyond formalization and rigorous proof, Theorem 4.1 further improves by eliminating
+the need for test-time memorization and instead ensuring local constancy through certifyingσ(x),
+which can be any learned model or hand-crafted function.
+Separately, Súkeník et al. (2022) also study RS with input-dependentσ(x)and show that proofs
+based on Neyman-Pearson lemma cannot allow reasonably flexibleσ(x). We circumvent this lim-
+itation by leveraging a proof based on Lipschitz continuity, similar to Salman et al. (2019); Jeong
+& Shin (2024), which enables much greater flexibility in definingσ(x). Note that our result does
+not restrict the behavior ofσ(x)outside the certified region, which can be arbitrarily complex. We
+provide a comparison table of prior works in Table 1.
+Despite these advantanges, Theorem 4.2 introduces a confidence penalty ofβto account for the
+probabilistic guarantee ofσ(x)being locally constant. This cost is inevitable when using any cer-
+tification method that is not deterministic. However, in practice, we find that this cost is negligible
+when using RS to certifyσ(x). We list a few numerical examples under different configurations in
+Table 5 in §D, confirming thatβhas minimal impact on the certified radius.
+4
+x
+ge(x;σ e) σc(x)
+Rσ
+gc(x;σ c(x)) ˆy
+Rc
+Rfinal = min(R σ, Rc)
+Figure 2: The dual RS framework. First, a RS modelg e smoothed with a globalσ e is deployed to estimate
+σc(x)and return a certified radius for the estimation,R σ. Second, another RS model is smoothed withσ c(x),
+and then perform a standard classification and return a certified radius for the classification,R c. The final
+prediction is the result of the second stage, with a final certified radiusR final = min(Rσ, Rc). The green
+arrows indicate activated paths during inference.
+5 THEDUALRANDOMIZEDSMOOTHINGFRAMEWORK
+In this section, we present the dual RS framework implementing RS with input-dependent noise
+variances. We first give an overview of the framework, followed by details of the inference and
+certification process. Then, we describe the training methods to optimize the performance. Finally,
+we discuss an alternative routing perspective of the dual RS framework.
+5.1 INFERENCE& CERTIFICATION
+Fig. 2 illustrates the dual RS framework. Given an inputx, avariance estimatorpredicts an ap-
+propriate variance,σ c, followed by aclassifiersmoothed withσ c to perform the final classification.
+Intuitively, the variance estimator partitions the input space into disjoint subsets associated with dif-
+ferent values ofσ c, and assign the input (ideally also its neighborhood) to the corresponding subset.
+This formulation exactly matches the definition of robustness, in the task of predicting the optimal
+σc. Therefore, a separate RS model is applied, which uses a pre-defined global noise variance to
+certify the estimatedσ c. With the estimatedσ c, another base model can be smoothed via RS with
+σc to perform certified classification. The final certified radius is then guaranteed by Theorem 4.2.
+Note that one needs to ensureσ e ≥max x σc(x)to not limit the final certified radius inherently.
+Unless otherwise noted, we use diffusion denoised smoothing to build both the variance estimator
+and the RS classifier, for the simplicity and efficiency. Formally, we denote the two RS models as:
+ge(x, σe) := arg max
+σi∈Σ
+Pδe∼N(0,σ 2eI)(he(denoise(x+δ e)) =σ i),
+gc(x, σc) := arg max
+ˆy∈Y
+Pδc∼N(0,σ 2c I)(hc(denoise(x+δ c)) = ˆy),
+wheredenoiserepresents a single-step denoising using an off-the-shelf diffusion denoiser, andh e
+andh c are base models for variance estimation and classification, respectively.
+At inference time, given an inputx, we sample noise samples{δ e}fromN(0, σ 2
+eI), and use the
+PREDICTfunction from Cohen et al. (2019) to predict the noise varianceσc(x)with uncertaintyα/2.
+Then, we sample noise samples{δ c}fromN(0, σ c(x)2I), and use the PREDICTfunction again to
+predict the class labelˆywith uncertaintyα/2. The final prediction isˆy, with a total uncertainty ofα,
+using the union bound again on the failure events, similar to the proof of Theorem 4.2. To certify the
+prediction, we use the CERTIFYfunction from Cohen et al. (2019) to certify the local constancy of
+σc(x)with uncertaintyα/2, and certify the classification with uncertaintyα/2. The final certified
+radius isR final = min(Rσ, Rc), whereR σ is the certified radius for the estimation ofσ c(x), andR c
+is the certified radius for the classification. The total uncertainty isα, as guaranteed by Theorem 4.2.
+We note that for simplicity, we use the same uncertainty levelα/2for both certifications, but they
+can be adjusted flexibly as long as the total uncertainty does not exceedα.
+5.2 TRAINING METHODS
+5.2.1 TRAINING THEVARIANCEESTIMATOR
+Building the Training Dataset.Trainingh e requires ground-truth labels for the optimal noise
+σc(x)of each input. Given a candidate setΣand a fixedh c, we evaluate for each input the certified
+5
+radius under eachσ i ∈Σ. The label for the optimal noiseσ c(x)is thenarg max i Rc(x, σi).
+This step is usually the most computationally expensive part of the training, as it requires multiple
+certifications for each input. However, it only needs to be performed once before trainingh e, and
+can be parallelized across multiple devices. In practice, one may also use a smaller budgetNthan
+required during certification to estimateR c(x, σi)and train only on a subset of the train data, to
+reduce the computational cost. In §E.4, we conduct detailed studies on these two strategies to show
+that they can significantly reduce the training cost with minimal performance degradation.
+Training with Soft Labels.Estimating optimal variance is formulated as a classification task, but
+it has certain special properties. Even if the estimatedσc is not optimal, a non-zero certified radius is
+still likely. For example, assume that givenΣ ={0.25,0.5,1.0}, the certified radii ofx 1 are 0.0, 1.6
+and 0.0, respectively, while those ofx 2 are 0.3, 0.4 and 0.3, respectively. Choosing the wrongσfor
+x1 is more harmful than forx 2 intuitively, as the latter still has a reasonably close certified radius.
+Motivated by this, we propose to use soft labels introduced below to train the variance estimator.
+Formally, the soft label for the variance estimation is defined as:
+yi = exp(Rc(x, σi))P
+σj∈Σ exp(Rc(x, σj)).
+A standard cross-entropy loss is then applied between the soft labels and the predicted class proba-
+bilities to evaluate the estimation performance.
+Consistency Regularization.Many strategies have been proposed to increase the certified radius
+in the standard RS training. We choose one of them, consistency regularization (Jeong & Shin,
+2020), to further improve the certified radius of the estimatedσ. Formally,
+Lcon(x) :=λE δ
+h
+KL( ˆf(x)∥f(x+δ))
+i
++ηH( ˆf(x)),
+where ˆf(x) =E(f(x+δ)),KLis the Kullback-Leibler divergence,His the entropy, andλand
+ηare hyperparameters controlling the trade-off between accuracy and robustness. We remark that
+any other RS training strategies can be alternatively applied; we choose consistency because it is the
+fastest while being competitive in performance (Jeong et al. (2023), Appendix E).
+Overall Objective.The overall loss function to train the variance estimator is a weighted average
+between the soft-label cross-entropy loss and the consistency loss:
+Lσ =E x [we(x) (LsoftCE(x) +w r(x)Lcon(x))],
+wherew e(x)andw r(x)are two weighting functions. We introduce a balancing weightw e(x)
+because the distribution of optimalσ c is usually skewed. Formally, assume the fraction of training
+samples with optimal noiseσ i isq i, thenw e(x) = 1/qi if the optimal noise forxisσ i.w r(x) :=
+maxσi Rc(x, σi)/Cputs more consistency regularization for inputs with larger optimal certified
+radii, rescaled to[0,1]by a constantC.
+5.2.2 ADAPTING THECLASSIFIER TO THEVARIANCEESTIMATOR
+Prior work (Carlini et al., 2023) have shown that finetuning the off-the-shelf classifier with regard
+to the RS framework can significantly improve the performance. In this section, we follow a similar
+approach, showing how to adapt the classifier to the dual RS framework.
+Given a fixed variance estimatorge, we finetune the classifierhc under the estimated noise variances.
+Formally, given an inputx, we first query the noise varianceσ c(x)fromg e. Then, we sample noise
+δc ∼ N(0, σc(x)2I), and apply the denoising step to obtain ˜x=denoise(x+δ c). Finally,
+we apply a standard cross-entropy loss between the predictionh c(˜x)and the ground-truth labely.
+This procedure follows Carlini et al. (2023) with only one difference: the noise variance is input-
+dependent, estimated byg e, instead of being a global constant.
+The described training process naturally leads to an alternating training scheme, where we itera-
+tively train the variance estimator and finetune the classifier. In practice, we find that one round
+of classifier finetuning is usually sufficient to achieve good performance, i.e., training the variance
+estimator from scratch based on the off-the-shelf classifier, followed by one round of classifier fine-
+tuning. More rounds of alternating training may lead to marginal improvements, but at a much
+higher computational cost (c.f. §E.2).
+6
+5.3 ROUTING WITHEXPERTRS MODELS
+Routing is to select the best model from a pool of expert models for each input. It has been widely
+studied in the context of mixture-of-experts, especially for large language models (Varangot-Reille
+et al., 2025). In this section, we present a novel perspective of the proposed dual RS framework as a
+router among a pool of pretrained expert RS models.
+§5.2.1 proposes strategies to train the variance estimator to predict the bestσ c for a fixed base
+classifierh c. This naturally requiresh c to perform well under allσ i ∈Σ, each for a subset of
+inputs. However, as well-known in the RS literature (e.g., Sun et al. (2025)), no single model wins
+uniformly across all noise levels. Luckily, Theorem 4.2 does not restricth c to be the same model
+under differentσ i. Therefore, we can defineg c(x, σ(x))to be the best expert among a pool of
+models. Formally, letH:={H σi }be the pool of the pretrained expert models whereH σi are
+expert models performing well underσ i. DefineX σi :={x|g e(x, σe) =σ i}to be the subset of
+inputs assigned toσ i by the variance estimator. Then we defineg c(x, σ(x)) :=Hσi (x, σi)for all
+x∈ Xσi . In other words, the variance estimatorg e serves not only as a predictor for the optimal
+noise variance, but also as a router to select the best expert RS model for each input. The training
+process ofg e remains unchanged, except that the certified radiusR c(x, σi)is now evaluated using
+the corresponding expert modelH σi . Note that we do not evaluate the performance of the expert
+models except with the corresponding variance, i.e.,H σi is not evaluated withσ j forj̸=i.
+The proposed routing perspective of dual RS has several advantages. First, it allows leveraging
+existing expert models without the need for training a new base classifier that performs well under
+all noise levels. This is particularly useful when the training cost is prohibitively high. Second,
+it enables the use of specialized models that excel in specific noise regimes, potentially improving
+overall performance. Third, it provides a flexible framework that can easily incorporate new expert
+models, with the minimal effort of re-training the variance estimator. This is because certification
+under dual RS has much smaller overhead given the certified radii of the expert models since the
+variance estimator is usually lightweight. Fourth, assuming the expert models are trained indepen-
+dently, improving expert models usually leads to a strict improvement in the overall performance, as
+we will demonstrate in §6. However, due to the routing nature, the performance of dual RS is upper
+bounded by the performance of the expert modelH σi within eachX σi .
+As a final remark, the routing perspective of RS is not limited to the dual RS framework, and can be
+extended to deterministic certification methods as well. Given a pool of expert models (potentially
+trained with different algorithms and hyperparameters), offering different trade-offs between accu-
+racy and robustness, one can train a standard RS model to route each input to the best expert model,
+then certify the routing choice by RS. The final certified radius is the minimum between the certified
+radius of the routing RS model and that of the selected expert model. This generalization opens
+up new possibilities for combining the strengths of various certification methods within a unified
+framework. We leave the exploration of this direction to future work.
+Comparison with Prior Work.Mueller et al. (2021) presents a similar idea which routes among a
+standard network and a robust network using a deterministically certified router. We generalize their
+idea in the following ways: (i) they only considers routing between two models due to the design
+of their router, while our framework allows routing among multiple models natively; (ii) they uses a
+deterministic certification method to certify a heuristically trained router, while our framework uses
+RS to train and certify the router, which is more scalable and flexible; (iii) they focus on improving
+the accuracy-robustness trade-off under the given radii, while our objective is to optimize the overall
+performance across all radii.
+6 EXPERIMENTALEVALUATION
+In this section, we extensively evaluate the proposed dual RS method on CIFAR-10 and IMAGENET.
+The results demonstrate that dual RS can achieve strong performance across different radii, which
+is unattainable with a global noise variance. Further, it incurs only a modest computational over-
+head compared to standard RS. We include all implementation details in §C and only highlight key
+experimental settings here.
+Baselines.We compare our method against two baselines: (i) diffusion denoised smoothing with
+global noise variances (Carlini et al., 2023), which we use as the base classifiers, and (ii) the state-of-
+7
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+Carlini et al. σ = 0.25
+Carlini et al. σ = 0.5
+Carlini et al. σ = 1.0
+Dual RS
+(a) Comparison with Standard RS
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+Multiscale + ﬁnetuning
+Dual RS + ﬁnetuning (b) Comparison with Input-dependent RS
+Figure 3: Certified accuracy on CIFAR-10 across radii.
+Table 2: Certified accuracy on CIFAR-10 across different certification radii.Boldentries indicate
+whenever Dual RS outperforms Multiscale.
+Methodσ0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00 2.25 2.50
+Carlini et al.
+0.25 86.61 73.90 57.02 35.30 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+0.5 73.49 62.23 49.46 38.20 28.58 19.54 11.22 0.00 0.00 0.00 0.00
+1.0 47.98 39.85 32.17 25.16 19.34 14.49 10.30 7.32 4.89 3.35 2.15
+Multiscale + finetuning {0.25, 0.5, 1.0} 76.51 54.78 39.15 28.46 21.33 15.95 11.40 7.91 5.31 3.63 2.34
+Dual RS {0.25, 0.5, 1.0}68.9155.45 41.62 29.4820.26 13.29 7.95 4.70 3.45 2.40 1.70
+Dual RS + finetuning 71.1258.93 46.55 35.42 25.75 18.35 12.22 8.20 6.18 4.35 2.96
+the-art input-dependent RS method (Jeong & Shin, 2024), denoted asMultiscale. Unless otherwise
+stated, all results are reported withN= 10,000noise samples for certification with the overall
+uncertainty levelα= 0.001.
+CIFAR-10 Setup.Unless otherwise stated,Σis set to{0.25,0.5,1.0}. Following the baselines, we
+employ a 50M-parameter diffusion model (Nichol & Dhariwal, 2021) as the denoiser, and a 87M-
+parameter ViT model (Dosovitskiy et al., 2020) as the classifier. A ResNet-110 (He et al., 2016) is
+used as the base model for the variance estimator, andN= 10,000is used to estimateR c(x;σ i)
+during training.
+IMAGENETSetup.Unless otherwise stated,Σis set to{0.5,1.0}. Following Carlini et al., we
+utilize a 552M-parameter class-unconditional diffusion model (Dhariwal & Nichol, 2021) as the de-
+noiser and a 305M-parameter BEiT model (Bao et al., 2021) as the classifier. A ResNet-50 is used as
+the variance estimator, andN= 100is used to estimateR c(x;σ i)during training. We remark that
+here the Multiscale results are cited from Jeong & Shin (2024) due to a repetitive exception thrown
+by their public code, thus are based on a different classifier: a ViT-B/16 pre-trained via CLIP (Rad-
+ford et al., 2021) and finetuned on ImageNet using FT-CLIP (Dong et al., 2022). Since performance
+of classifiers on IMAGENETare weaker than on CIFAR-10, we adopt two additional modifications
+in training the variance estimator on IMAGENET: (1)Failure case filtering: samples that cannot be
+certified by any candidate noise variance are removed from training data, and (2)Weaker consistency
+loss: instead of settingw r(x) := max σi Rc(x, σi)/C, we setw r(x) :=R c(x,ˆσ)/C, whereˆσis
+the minimum variance predicted by the variance estimator among all noisy samples. The former
+strategy prevents the variance estimator from being trained on extremely hard samples, while the
+latter avoids over-regularizing the variance estimator towards the global optimal variance, which is
+less frequently predicted on IMAGENET.
+6.1 KEYRESULTS
+Dual RS with Single Pretrained Classifier.We first evaluate the performance of dual RS with
+a pretrained global classifier, as described in §5.2.1. Fig. 3a and Table 2 compare the pretrained
+diffusion denoised smoothing model with different global noise variances and dual RS using the
+same classifier on CIFAR-10. While the baseline models with a small global noise variance (e.g.,
+σ= 0.25or0.5) achieve high certified accuracy at small radii, they fail to provide non-trivial
+guarantees at larger radii. Conversely, the model with a large global noise variance (σ= 1.0) attains
+a large certified radius but suffers from low accuracy at small radii. In contrast, dual RS has a strong
+8
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+Weak Expert for Small
+Weak Expert for Large
+Dual RS with Weak Experts
+Strong Expert for Small
+Strong Expert for Large
+Dual RS with Strong Experts
+Figure 4: Comparison between dual RS built on weak and strong experts, respectively, along with the experts.
+Table 3: Certified accuracy on IMAGENET, structured in the same way as Table 2.
+Methodσ0.0 0.5 1.0 1.5 2.0
+Carlini at al.
+0.25 80.4 70.6 0.0 0.0 0.0
+0.5 74.4 64.4 52.4 34.8 0.0
+1.0 56.0 47.8 37.4 29.4 24.0
+Multiscale†
+{0.25, 0.5, 1.0}69.0 42.4 26.6 19.0 14.6
+Multiscale + finetuning† 72.5 44.0 27.5 19.9 14.1
+Dual RS {0.5, 1.0} 67.8 54.6 40.4 28.0 15.6
+Dual RS + finetuning74.0 60.6 48.0 33.6 17.0
+† Results cited from Jeong & Shin (2024), which use a different classifier.
+performance across all radii, achieving a superior accuracy-robustness trade-off. This demonstrates
+that dual RS can effectively leverage the pretrained classifier.
+Dual RS with Single Classifier Finetuning.Fig. 3b and Table 2 compare dual RS with Multi-
+scale (Jeong & Shin, 2024), the state-of-the-art input-dependent RS method. For a fair comparison,
+we finetune the classifier in dual RS as described in §5.2.2, while Multiscale adopts the finetuned
+diffusion denoiser described in Jeong & Shin (2024). The result shows that dual RS consistently
+outperforms Multiscale across most radii, with especially strong improvements in the small-radius
+region. At radii0.5,0.75, and1.0, dual RS improves certified accuracy by19.2%,24.2%, and
+20.6%, respectively. On a single NVIDIA RTX 4090 GPU with batch size 1000 andN= 10,000,
+certifying with dual RS requires 22.58 seconds per input on average, compared to 14.07 seconds for
+standard RS and 20.21 seconds for Multiscale. Thus, dual RS incurs only a modest computational
+overhead relative to standard RS, while achieving significant performance gains. We remark that
+Multiscale requires multiple rounds of certification for some inputs, leading to a higher worst-case
+certification time (14.07, 28.14, and 42.21 seconds on average for 1, 2, and 3 rounds, respectively).
+Dual RS with Multiple Pretrained Experts (Routing).We further evaluate the efficacy of dual RS
+as a routing mechanism with multiple pretrained expert classifiers, as discussed in §5.3. Specifically,
+we consider two experts: one specialized forσ= 0.25and another specialized forσ= 1.0. For
+σ= 0.25, we define theWeak Expert for Smallto be an off-the-shelf denoised smoothing model, and
+theStrong Expert for Smallto be a finetuned denoised smoothing model by Carlini et al. (2023) on
+σ= 0.25. Forσ= 1.0, we define theWeak Expert for Largeto be the same off-the-shelf model, and
+theStrong Expert for Largeto be another off-the-shelf model, pretrained by Sun et al. (2025), which
+achieves the state-of-the-art performance for large radii. Fig. 4 compares these four experts and
+dual RS built upon weak and strong experts, respectively. The results show that dual RS effectively
+leverages the improved performance of the strong experts, achieving a better accuracy-robustness
+trade-off than that of the weak experts. This demonstrates that dual RS can flexibly incorporate
+different expert models to further enhance performance.
+Dual RS on Large Datasets.We further evaluate dual RS on IMAGENET. As shown in Table 3,
+Dual RS achieves strong certified accuracy across all radii, consistent to the improvements shown on
+CIFAR-10. Compared to Multiscale, the state-of-the-art input-dependent RS, dual RS gets roughly
+1.5x performance advantage at radii 0.5, 1.0 and 1.5. Overall, these results show that Dual RS scales
+effectively to large datasets and high-dimensional input spaces.
+We further conduct ablation studies on three aspects: (1) different choices ofσcandidate sets, (2)
+strategies for constructing the train set of the variance estimator, and (3) different architectures of
+the variance estimator, detailed in §E.3, §E.4, and §E.5, respectively. The key findings are: (1) the
+9
+0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4
+∆ Rc
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+ECDF
+CE
+Soft CE
+Soft CE + Consistency λ = 20.0
+Soft CE + Consistency λ = 40.0
+Perfect Estimation
+(a)
+−3 −2 −1 0 1 2 3
+∆ Rσ
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+ECDF (b)
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy (c)
+Figure 5: Comparison of dual RS models with different variance estimators.
+candidate setΣstrongly affects the favored radii, similar to the observation in the global variance
+methods; (2) the variance estimator can be trained with minimal performance degradation on a much
+smallerN(up to 99% cost reduction) or a much smaller train set (up to 80% cost reduction); and
+(3) the performance of dual RS is robust to the architecture of the variance estimator.
+6.2 DELVING INTODUALRS
+In this section, we conduct an in-depth study on dual RS on CIFAR-10. We use diffusion denoised
+smoothing as the classifier with off-the-shelf models andΣ ={0.25,0.5,1.0}.
+To evaluate the performance of the variance estimation, we define∆R c :=R ∗
+c(x)−R c(x), where
+R∗
+c(x)is the maximum classification certified radius among all candidate noise variances for input
+x. This metric reflects how muchR c is reduced due to the suboptimal variance estimation. Fig. 5a
+shows the empirical cumulative distribution function (ECDF) of this metric for variance estimators
+trained with different loss functions and hyperparameters on CIFAR-10. The intercept at∆R c =
+0indicates the proportion of samples for which the variance estimator predicts the optimal noise
+variance, and the area between the curve and the the perfect estimation (black dash line) reflects the
+overall loss in the certified radius due to suboptimal variance estimation. We observe that using soft
+cross-entropy (CE) loss instead of standard CE loss reduces the variance estimation accuracy, as it
+encourages the model to predict a suboptimal noise variance that yields a similar certified radius
+rather than the optimal one. However, fewer inputs are constrained significantly when using soft
+CE loss, as the curve is closer to the perfect estimation line when∆R c is large. Further, adding
+the consistency loss reduces the variance estimation accuracy in general, since it puts additional
+regularization on the robustness of the variance estimator.
+Since the final certified radius is the minimum between the classification certified radius and the
+variance certified radius, the alignment between these two radii is of interest as well. We define
+∆Rσ as∆R σ =R σ −R c. A negative∆R σ means that the final radius is constrained by theR σ,
+while a positive∆R σ means it is constrained byR c. Ideally, we want∆R σ to be positive for as
+many samples as possible, so that the final certified radius is not constrained byR σ. Fig. 5b shows
+the ECDF of∆R σ. The intercept at∆R σ = 0indicates the proportion of samples constrained by
+Rσ. We observe that using soft CE loss decreases this ratio, and adding consistency loss further
+decreases it significantly. This aligns with our intuition in the design.
+As a reference, Fig. 5c shows the accuracy-radius curves for these models. Using soft CE loss almost
+improves over the standard CE loss uniformly, while adding consistency loss slightly degrades the
+performance at small radii but improves it at large radii. Overall, the model trained with soft CE
+loss and consistency loss achieves the best accuracy-robustness trade-off.
+7 CONCLUSION
+In this work, we address the fundamental trade-off between certified accuracy and certified radius
+in Randomized Smoothing (RS). We prove that RS remains valid under input-dependent noise vari-
+ances, provided the variance is locally constant within the certified region. Building on this result,
+we introduce a dual RS framework, which achieves strong performance across both small and large
+radii, unattainable with fixed noise variance, while incurring modest computational overhead. Our
+method consistently outperforms prior input-dependent noise approaches across most radii. Further,
+the dual RS framework offers a novel routing perspective for certified robustness, enhancing the
+accuracy-robustness trade-off using off-the-shelf expert RS models.
+10
+8 REPRODUCIBILITYSTATEMENT
+We have made extensive efforts to ensure the reproducibility of our work. For theoretical results, we
+provide precise definitions and formal statements in §4, with complete proofs given in §B. For the
+proposed framework, detailed descriptions of the inference, certification, and training procedures
+are presented in §5. Experimental settings, including architectures, hyperparameters, and training
+details, are reported in §6 and §C. To further support reproducibility, we include our code in the
+supplementary material, along with links to download the experiment checkpoints and data used in
+this paper.
+REFERENCES
+Motasem Alfarra, Adel Bibi, Philip HS Torr, and Bernard Ghanem. Data dependent randomized
+smoothing. InUncertainty in Artificial Intelligence, pp. 64–74. PMLR, 2022.
+Anish Athalye, Nicholas Carlini, and David Wagner. Obfuscated gradients give a false sense of se-
+curity: Circumventing defenses to adversarial examples. InInternational conference on machine
+learning, pp. 274–283. PMLR, 2018.
+Stefan Balauca, Mark Niklas Müller, Yuhao Mao, Maximilian Baader, Marc Fischer, and Martin T
+Vechev. Overcoming the paradox of certified training with gaussian smoothing.CoRR, 2024.
+Hangbo Bao, Li Dong, Songhao Piao, and Furu Wei. Beit: Bert pre-training of image transformers.
+arXiv preprint arXiv:2106.08254, 2021.
+Nicholas Carlini, Florian Tramer, Krishnamurthy Dj Dvijotham, Leslie Rice, Mingjie Sun, and
+J Zico Kolter. (certified!!) adversarial robustness for free! InThe Eleventh International Confer-
+ence on Learning Representations, 2023.
+Jeremy M. Cohen, Elan Rosenfeld, and J. Zico Kolter. Certified adversarial robustness via random-
+ized smoothing. InProc. of ICML, volume 97, 2019.
+Francesco Croce and Matthias Hein. Reliable evaluation of adversarial robustness with an ensemble
+of diverse parameter-free attacks. InICML, volume 119 ofProceedings of Machine Learning
+Research, pp. 2206–2216. PMLR, 2020.
+Andrew Cullen, Paul Montague, Shijie Liu, Sarah Erfani, and Benjamin Rubinstein. Double bubble,
+toil and trouble: enhancing certified robustness through transitivity.Advances in Neural Informa-
+tion Processing Systems, 35:19099–19112, 2022.
+Alessandro De Palma, Rudy Bunel, Krishnamurthy Dvijotham, M Pawan Kumar, Robert Stanforth,
+and Alessio Lomuscio. Expressive losses for verified robustness via convex combinations. In
+ICLR 2024-International Conference on Learning Representations, 2024.
+Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis.Advances
+in neural information processing systems, 34:8780–8794, 2021.
+Xiaoyi Dong, Jianmin Bao, Ting Zhang, Dongdong Chen, Shuyang Gu, Weiming Zhang, Lu Yuan,
+Dong Chen, Fang Wen, and Nenghai Yu. Clip itself is a strong fine-tuner: Achieving 85.7% and
+88.0% top-1 accuracy with vit-b and vit-l on imagenet.arXiv preprint arXiv:2212.06138, 2022.
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas
+Unterthiner, Mostafa Dehghani, Matthias Minderer, G Heigold, S Gelly, et al. An image is worth
+16x16 words: Transformers for image recognition at scale. InInternational Conference on Learn-
+ing Representations, 2020.
+Sven Gowal, Krishnamurthy Dvijotham, Robert Stanforth, Rudy Bunel, Chongli Qin, Jonathan Ue-
+sato, Relja Arandjelovic, Timothy Mann, and Pushmeet Kohli. On the effectiveness of interval
+bound propagation for training verifiably robust models.arXiv preprint arXiv:1810.12715, 2018.
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recog-
+nition. InProceedings of the IEEE conference on computer vision and pattern recognition, pp.
+770–778, 2016.
+11
+Miklós Z Horváth, Mark Niklas Mueller, Marc Fischer, and Martin Vechev. Boosting randomized
+smoothing with variance reduced classifiers. InInternational Conference on Learning Represen-
+tations, 2022.
+Jongheon Jeong and Jinwoo Shin. Consistency regularization for certified robustness of smoothed
+classifiers. InNeurIPS, 2020.
+Jongheon Jeong and Jinwoo Shin. Multi-scale diffusion denoised smoothing.Advances in Neural
+Information Processing Systems, 36, 2024.
+Jongheon Jeong, Sejun Park, Minkyu Kim, Heung-Chang Lee, Do-Guk Kim, and Jinwoo Shin.
+Smoothmix: Training confidence-calibrated smoothed classifiers for certified robustness. In
+NeurIPS, pp. 30153–30168, 2021.
+Jongheon Jeong, Seojin Kim, and Jinwoo Shin. Confidence-aware training of smoothed classifiers
+for certified robustness. InAAAI, pp. 8005–8013. AAAI Press, 2023.
+Aounon Kumar, Alexander Levine, Tom Goldstein, and Soheil Feizi. Curse of dimensionality on
+randomized smoothing for certifiable robustness. InInternational Conference on Machine Learn-
+ing, pp. 5458–5467. PMLR, 2020.
+Mathias Lécuyer, Vaggelis Atlidakis, Roxana Geambasu, Daniel Hsu, and Suman Jana. Certified
+robustness to adversarial examples with differential privacy. In2019 IEEE Symposium on Security
+and Privacy, SP 2019, San Francisco, CA, USA, May 19-23, 2019, 2019. doi: 10.1109/SP.2019.
+00044.
+Linyi Li, Jiawei Zhang, Tao Xie, and Bo Li. Double sampling randomized smoothing. InInterna-
+tional Conference on Machine Learning, pp. 13163–13208. PMLR, 2022.
+Chizhou Liu, Yunzhen Feng, Ranran Wang, and Bin Dong. Enhancing certified robustness via
+smoothed weighted ensembling. InICML 2021 Workshop on Adversarial Machine Learning,
+2021.
+Saiyue Lyu, Shadab Shaikh, Frederick Shpilevskiy, Evan Shelhamer, and Mathias Lécuyer. Adaptive
+randomized smoothing: Certifying multi-step defences against adversarial examples.arXiv e-
+prints, pp. arXiv–2406, 2024.
+Yuhao Mao, Mark Müller, Marc Fischer, and Martin Vechev. Connecting certified and adversarial
+training.Advances in Neural Information Processing Systems, 36:73422–73440, 2023.
+Yuhao Mao, Mark Niklas Mueller, Marc Fischer, and Martin Vechev. Understanding certified train-
+ing with interval bound propagation. InThe Twelfth International Conference on Learning Rep-
+resentations, 2024.
+Yuhao Mao, Stefan Balauca, and Martin Vechev. Ctbench: A library and benchmark for certified
+training. InForty-second International Conference on Machine Learning, 2025.
+Matthew Mirman, Timon Gehr, and Martin Vechev. Differentiable abstract interpretation for prov-
+ably robust neural networks. InInternational Conference on Machine Learning, pp. 3578–3586.
+PMLR, 2018.
+Mark Niklas Mueller, Mislav Balunovi´c, and Martin Vechev. Boosting certified robustness of deep
+networks via a compositional architecture. InInternational Conference on Learning Representa-
+tions, 2021.
+Mark Niklas Mueller, Franziska Eckert, Marc Fischer, and Martin Vechev. Certified training: Small
+boxes are all you need. InThe Eleventh International Conference on Learning Representations,
+2023.
+Mark Niklas Müller, Gleb Makarchuk, Gagandeep Singh, Markus Püschel, and Martin T. Vechev.
+PRIMA: general and precise neural network certification via scalable convex hull approximations.
+Proc. ACM Program. Lang., 6(POPL), 2022. doi: 10.1145/3498704.
+12
+Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models.
+InInternational conference on machine learning, pp. 8162–8171. PMLR, 2021.
+Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal,
+Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual
+models from natural language supervision. InInternational conference on machine learning, pp.
+8748–8763. PmLR, 2021.
+Hadi Salman, Jerry Li, Ilya P. Razenshteyn, Pengchuan Zhang, Huan Zhang, Sébastien Bubeck, and
+Greg Yang. Provably robust deep learning via adversarially trained smoothed classifiers. InProc.
+of NeurIPS, 2019.
+Hadi Salman, Mingjie Sun, Greg Yang, Ashish Kapoor, and J. Zico Kolter. Denoised smoothing: A
+provable defense for pretrained classifiers. InNeurIPS, 2020.
+Zhouxing Shi, Yihan Wang, Huan Zhang, Jinfeng Yi, and Cho-Jui Hsieh. Fast certified robust
+training with short warmup.Advances in Neural Information Processing Systems, 34:18335–
+18349, 2021.
+Zhouxing Shi, Qirui Jin, Zico Kolter, Suman Jana, Cho-Jui Hsieh, and Huan Zhang. Neural network
+verification with branch-and-bound for general nonlinearities.CoRR, abs/2405.21063, 2024. doi:
+10.48550/ARXIV .2405.21063. URLhttps://doi.org/10.48550/arXiv.2405.21063.
+Gagandeep Singh, Timon Gehr, Markus Püschel, and Martin T. Vechev. An abstract domain for
+certifying neural networks.Proc. ACM Program. Lang., 3(POPL), 2019. doi: 10.1145/3290354.
+Peter Súkeník, Aleksei Kuvshinov, and Stephan Günnemann. Intriguing properties of input-
+dependent randomized smoothing. InInternational Conference on Machine Learning. PMLR,
+2022.
+Chenhao Sun, Yuhao Mao, Mark Niklas Müller, and Martin T. Vechev. Average certified radius
+is a poor metric for randomized smoothing. InThe Forty-Second International Conference on
+Machine Learning, 2025.
+Clovis Varangot-Reille, Christophe Bouvard, Antoine Gourru, Mathieu Ciancone, Marion Schaef-
+fer, and François Jacquenet. Doing more with less: A survey on routing strategies for resource
+optimisation in large language model-based systems. 2025.
+Lei Wang, Runtian Zhai, Di He, Liwei Wang, and Li Jian. Pretrain-to-finetune adversarial training
+via sample-wise randomized smoothing. 2021.
+Eric Wong and J. Zico Kolter. Provable defenses against adversarial examples via the convex outer
+adversarial polytope. InProc. of ICML, volume 80, 2018.
+Song Xia, Yi Yu, Xudong Jiang, and Henghui Ding. Mitigating the curse of dimensionality for
+certified robustness via dual randomized smoothing. InICLR, 2024.
+Chaowei Xiao, Zhongzhu Chen, Kun Jin, Jiongxiao Wang, Weili Nie, Mingyan Liu, Anima Anand-
+kumar, Bo Li, and Dawn Song. Densepure: Understanding diffusion models for adversarial
+robustness. InThe Eleventh International Conference on Learning Representations, 2023.
+Greg Yang, Tony Duan, J Edward Hu, Hadi Salman, Ilya Razenshteyn, and Jerry Li. Randomized
+smoothing of all shapes and sizes. InInternational conference on machine learning, pp. 10693–
+10705. PMLR, 2020.
+Runtian Zhai, Chen Dan, Di He, Huan Zhang, Boqing Gong, Pradeep Ravikumar, Cho-Jui Hsieh,
+and Liwei Wang. MACER: attack-free and scalable robust training via maximizing certified
+radius. InICLR. OpenReview.net, 2020.
+Jiawei Zhang, Zhongzhu Chen, Huan Zhang, Chaowei Xiao, and Bo Li.{DiffSmooth}: Certifiably
+robust learning via diffusion models and local smoothing. In32nd USENIX Security Symposium
+(USENIX Security 23), pp. 4787–4804, 2023.
+13
+Table 4: GPU hours on a single NVIDIA RTX 4090 for the main components of our training
+pipeline. The costs of building the optimal-variance dataset, training variances estimator and fine-
+tuning the classifier are reported as (number of parallel GPUs×wall-clock time in hours).
+Component CIFAR-10 IMAGENET
+Building optimal variances dataset 48×14.6 128×42.2
+Training variance estimator 1×2.5 8×63
+Generating estimated variances 1.5 9.9
+Finetuning the classifier 1×1.0 8×0.7
+A USAGE OFLARGELANGUAGEMODELS
+We used a large language model (GPT-5) solely to assist with polishing and grammar correction of
+the paper. The LLM was not involved in other aspects of this paper.
+B DEFERREDPROOFS
+B.1 PROOF OFTHEOREM4.1
+We first cite the following lemma from Salman et al. (2019), using the formulation as in Lemma D.1
+of Jeong & Shin (2024). Note that we adapt the notation to be consistent with our paper. We slightly
+abuse the notation and letpσ be the probability of a certain class, i.e.,pσ(x) :=P δ∼N(0,σ 2I)(f(x+
+δ) =y)for somey.
+Lemma B.1.h y(x) :=σΦ −1(pσ(x))is1-Lipschitz with respect to theℓ 2 norm.
+Lemma B.1 can be extended to locally constantσ(x)as follows.
+Lemma B.2.LetXbe partitioned into non-overlapping subsets S
+i∈I Xi ⊆ X, and assumeσ(x)is
+constant within eachX i. Leth y(x) :=σ(x)Φ −1(pσ(x)(x)). Then for alli∈I,∀x 1,x2 ∈ Xi, we
+have|h y(x1)−h y(x2)| ≤ ∥x1 −x 2∥2.
+Proof.For anyi∈I, letσ i be the constant value ofσ(x)forx∈ X i. Then for anyx 1,x2 ∈ Xi,
+we have
+|hy(x1)−h y(x2)|=|σ iΦ−1(pσi (x1))−σ iΦ−1(pσi (x2))|
+≤ ∥x1 −x 2∥2,
+where the last inequality follows from Lemma B.1.
+Now we are ready to prove Theorem 4.1, restated below for convenience.
+Theorem 4.1(Certification with Locally Constantσ).Fixx 0 ∈ Xandfc. Assumeσ(x)is constant
+within theℓ 2 ballB(x 0, Rσ). Then for allxsuch that∥x−x 0∥2 ≤min(R σ, R(x, σ(x0))), we
+haveg c(x, σ(x)) =gc(x0, σ(x0)).
+Proof.LetX i ={x|σ(x) =σ i}, whereσ i are distinct values taken byσ(x). ThenX= S
+i∈I Xi is
+a partition ofXinto non-overlapping subsets. By Lemma B.2, for anyi∈I,∀x 1,x2 ∈ Xi, we have
+|hy(x1)−h y(x2)| ≤ ∥x1 −x2∥2. Further, givenx, there exists exactly onej∈Isuch thatx∈ X j.
+This impliesB(x 0, Rσ)⊆ Xj. If there is no adversarial perturbationδsuch that∥δ∥ 2 ≤R σ and
+gc(x0 +δ)̸=g c(x0), then the claim holds trivially. In the following, we consider the case where
+such adversarial perturbationδexists.
+Given the smoothing distributionN(0, σ2I)whereσ=σ j, letAbe the most likely class atx 0, and
+Bbe any other class. Letp A(x)be the probability of classAatxunder the smoothing distribution,
+andp B(x)be the probability of classBatx. Therefore,∀x 0 +δ∈ Xi, we haveσΦ −1(pA(x0))−
+σΦ−1(pA(x0 +δ)) =h A(x0)−h A(x0 +δ)≤ ∥δ∥2. Letδbe an adversarial perturbation such that
+14
+∥δ∥2 ≤R σ and letBbe the most likely class atx 0 +δ. Then, sincep A(x0 +δ)≤p B(x0 +δ)
+andΦ −1(t)is monotonically increasing int, we have
+σΦ−1(pA(x0))−σΦ −1(pB(x0 +δ))≤σΦ −1(pA(x0))−σΦ −1(pA(x0 +δ))
+≤ ∥δ∥2.
+Further, applying Lemma B.2 again givesσΦ −1(pB(x0 +δ))−σΦ −1(pB(x0)) =h B(x0 +δ)−
+hB(x0)≤ ∥δ∥2. Combining the two inequalities gives
+σΦ−1(pA(x0))−σΦ −1(pB(x0))≤2∥δ∥ 2.
+Thus, we have
+∥δ∥2 ≥ σ
+2
+ 
+Φ−1(pA(x0))−Φ −1(pB(x0))
+
+≥ σ
+2
+ 
+Φ−1(pA(x0))−Φ −1(1−p A(x0))
+
+=σΦ −1(pA(x0))
+=R(x, σj)
+=R(x, σ(x0)).
+This completes the proof.
+B.2 PROOF OFTHEOREM4.2
+We restate Theorem 4.2 below for convenience.
+Theorem 4.2(Probabilistic Guarantee with Confidence Adjustment).Fixx 0 ∈ Xandfc. Assume
+gc(x, σ(x0))is certifiably robust withinB(x 0, Rc)with probability at least1−α, andσ(x)is
+constant withinB(x 0, Rσ)with probability at least1−β. Then for allxsuch that∥x−x 0∥2 ≤
+min(Rσ, Rc), we haveg c(x, σ(x)) =gc(x0, σ(x0))with probability at least1−α−β.
+Proof.LetF 1 be the event thatg c(x0 +δ)̸=g c(x0)for someδsuch that∥δ∥ 2 ≤R c. LetF 2 be
+the event thatσ(x 0 +δ)̸=σ(x 0)for someδsuch that∥δ∥ 2 ≤R c. Then we haveP(F 1)≤αand
+P(F2)≤βby the assumption. LetF=F 1 ∪F 2. Then we haveP(F)≤P(F 1) +P(F 2)≤α+β,
+where the first inequality follows from the union bound. Applying Theorem 4.1, the complement of
+Fimplies thatg c(x0+δ) =g c(x0)for allδsuch that∥δ∥ 2 ≤min(R c, Rσ). The result follows.
+C EXPERIMENTDETAILS
+C.1 EXPERIMENTSETUP
+CIFAR-10In the main experiments, we useN= 10 4 to calculate the certified radius for each
+sample andσcandidate to construct the optimal variances dataset. The variance estimator model
+is trained from scratch for 90 epochs with a batch size of 256. We use the AdamW optimizer with
+an initial learning rate of 0.01 and a weight decay of 0.01. The learning rate is decayed by a factor
+of 0.5 every 30 epochs. Unless otherwise stated, we setλ= 40andη= 0.5for the consistency
+loss, and useσ e = 1.0for variance estimation certification. To compute the consistency loss, we
+always use two noise samples (m= 2) following Jeong & Shin (2020). For classifier finetuning, we
+apply the Cross-Entropy loss on denoised imagesdenoise(x+δ). The classifier is finetuned for 15
+epochs with a batch size of 128 using AdamW with a learning rate of2×10 −5 and a weight decay
+of 0.01.
+IMAGENETWe useN= 100to calculate the approximate certified radii to construct the optimal
+variances dataset. The detailed approach is described in §E.4. The variance estimator model is
+trained from scratch for 9 epochs with a batch size of 200. We use the AdamW optimizer with an
+initial learning rate of 0.005 and a weight decay of 0.01. The learning rate is decayed by a factor of
+0.5 every 3 epochs. Unless otherwise stated, we setλ= 10andη= 0.5for the consistency loss, and
+useσ e = 1.0for variance estimation certification. For the classifier finetuning, we randomly choose
+2% of the training set to finetune the classifier for 1 epoch with a batch size of 32 using AdamW
+with a learning rate of2×10 −5 and a weight decay of 0.01. On IMAGENET, after finetuning the
+classifier, we do not retrian the variance estimator due to the high computational cost.
+15
+Table 5: Numerical examples of the confidence penaltyβunder the given uncertainty level. We
+assume large enoughR σ, such that the final certified radius equalsR c. Whenα:β= 1 : 0, it
+matches the standard RS setting. The budget is fixed toN= 10 5,σis fixed to 1.0 andα+βis fixed
+to0.001, following the standard certification setting.
+α:βˆp σ certified radius
+1 : 0 0.992.2900
+1 : 1 0.992.2877
+1 : 4 0.992.2848
+1 : 0 0.80.8277
+1 : 1 0.80.8267
+1 : 4 0.80.8256
+1 : 0 0.60.2409
+1 : 1 0.60.2401
+1 : 4 0.60.2391
+0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4
+∆ Rc
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+ECDF
+λ = 60.0
+λ = 50.0
+λ = 40.0
+λ = 30.0
+λ = 20.0
+λ = 10.0
+(a)
+−3 −2 −1 0 1 2 3
+∆ Rσ
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+ECDF (b)
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy (c)
+Figure 6: Abaltion study onλin the consistency loss. The figures are organized in the same way as Fig. 5.
+C.2 TRAININGCOST
+We report the computational cost of training our dual RS framework. All experiments are conducted
+on NVIDIA RTX 4090 GPUs.Table 4 summarizes the GPU hours required for each major com-
+ponent of the training pipeline. The dominant cost arises from constructing the optimal variances
+dataset, which involves performing classification certification on the full dataset under all three noise
+variances. For the CIFAR-10 main experiments, two variance estimators are trained and one classi-
+fier finetuning is performed, resulting in approximately 1517 GPU hours on a single RTX 4090.
+In practice, on CIFAR-10 we parallelized the dataset construction step across 48 GPUs, reducing its
+wall-clock time to 14.6 hours. Consequently, the overall training pipeline requires approximately
+36.7 hours. On IMAGENET, we parallelized the dataset construction step across 128 GPUs. The
+overall training pipeline requires approximately 115.8 hours.
+D NUMERICALEXAMPLES FOR THECONFIDENCEPENALTY
+We list numerical examples of the confidence penaltyβunder different uncertainty levels in Table 5.
+E ADDITIONALSTUDIES
+In this section, we present additional studies to further investigate different components of our dual
+RS framework on CIFAR-10.
+E.1 ABLATION ONCONSISTENCYLOSSHYPERPARAMETERλ
+We employ the off-the-shelf diffusion denoiser and classifier in this study. Fig. 6 illustrates the
+effect ofλin the consistency loss. Asλincreases, the accuracy of variance estimation decreases and
+fewer samples are constrained byR σ. Beyondλ >40.0, the impact of further increases becomes
+16
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+1 Estimator Training
+1 Estimator Training + 1 Classiﬁer Fine-tuning
+2 Estimator Training + 1 Classiﬁer Fine-tuning
+Figure 7: Effect of training rounds for the variance estimator and the classifier.1 Estimator Trainingtrains the
+variance estimator using the off-the-shelf classifier.1 Estimator Training + 1 Classifier Finetuningfinetunes the
+classifier using the estimated variances by the trained variance estimator.2 Estimator Training + 1 Classifier
+Finetuningfurther re-train the variance estimator based on the finetuned classifier.
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+λ = 60.0
+λ = 50.0
+λ = 40.0
+λ = 30.0
+λ = 20.0
+λ = 10.0
+Figure 8: Accuracy–R final curves after1 Estimator Training + 1 Classifier Finetuningwith differentλin the
+consistency loss.
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+0.250, 0.500, 1.000
+0.250, 1.000
+0.500, 1.000
+0.250, 0.500
+0.500, 0.625
+0.250, 0.500, 0.750, 1.000
+Figure 9: Certified accuracyR final with differentσcandidate sets.
+17
+Table 6: Certified accuracy (%) at different radii with differentσcandidate sets. The denoiser and
+classifier are fixed (off-the-shelf), and only the variance estimator is trained. The best performance
+at each radius is highlighted inbold, and the worst and second worst are grayed.
+σcandidates set 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00 2.25 2.50
+{0.25, 0.5, 1.0} 68.91 55.45 41.62 29.48 20.26 13.29 7.95 4.70 3.45 2.40 1.70
+{0.25, 1.0} 72.26 57.17 41.74 26.74 16.36 12.62 9.16 6.634.63 3.23 2.10
+{0.5, 1.0} 67.31 53.37 39.29 27.59 18.99 12.77 8.13 5.40 3.90 2.78 1.90
+{0.25, 0.5}77.18 62.66 48.07 36.14 27.20 19.0811.92 0.00 0.00 0.00 0.00
+{0.5, 0.625} 69.71 56.91 43.64 32.78 24.24 17.1111.96 7.750.00 0.00 0.00
+{0.25, 0.5, 0.75, 1.0} 66.77 51.35 36.62 25.11 16.35 10.72 6.97 4.34 2.74 1.81 1.08
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+N = 100
+N = 1000
+N = 10000
+(a)
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+20% training set
+40% training set
+60% training set
+80% training set
+Full training set (b)
+Figure 10: Study on reducing the training set construction cost. (a) AccuracyR final curves with different
+number of samplesNwhen calculating the certified radius for eachσcandidate. (b) AccuracyR final curves
+with different portion of training data used to train the variance estimator.
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+Radius
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Accuracy
+resnet20
+resnet56
+resnet110
+Figure 11: AccuracyR final curves with differentσestimator architectures.
+18
+negligible. With a moderate value (e.g.,λ= 40.0), dual RS achieves strong performance in the
+medium-radius region, while incurring a slight performance drop in the small-radius region.
+E.2 ITERATIVETRAINING
+Fig. 7 shows training the variance estimator and finetune the classifier for different number of times.
+Finetuning the classifier with the estimated variances significantly improves the performance of dual
+RS across all radii. Moreover, re-training the variance estimator after classifier finetuning yields
+additional gains, particularly in the medium-radius region. Fig. 8 reports the Accuracy–Rfinal curves
+after1 Estimator Training + 1 Classifier Finetuningwith different values ofλin the consistency
+loss. Compared with Fig. 6c, which uses the off-the-shelf classifier, the influence ofλbecomes
+larger after finetuning. This occurs because largerλinduces largerR σ, thereby constraining fewer
+samples after finetuning, which amplifies the performance gap across differentλvalues.
+E.3 CHOICE OFσCANDIDATES
+Dual RS requires selecting a set of candidate noise variances. We conduct an ablation study to
+study how this choice affects certified accuracy on CIFAR-10. In this ablation study, we use the
+off-the-shelf denoiser and classifier, and train the variance estimator only. In addition to the original
+candidate set{0.25,0.5,1.0}, we evaluate five alternative candidate sets:{0.25,0.5},{0.5,0.625},
+{0.25,1.0},{0.5,1.0}, and{0.25,0.5,0.75,1.0}. For each set, we use the maximum of the candi-
+dates as the estimator’s global noise level,σ e. Fig. 9 shows the accuracy -R final curves and Table 6
+presents the numerical results.
+Compared with{0.25,0.5,1.0}, using only two candidates ({0.25,0.5},{0.5,0.625},{0.25,1.0},
+or{0.5,1.0}) leads to performance degradation at radii unfavored by the candidate set, but improv-
+ing the performance at radii favored by the candidate set. Specifically, the candidate set{0.25,0.5}
+and{0.5,0.625}cannot achieve non-trivial accuracy at radii larger than 2.0, but achieve stronger
+performance at radii smaller than 2.0. The candidate set{0.25,1.0}leads to reduced accuracy in
+the medium-radii range (radii from 0.75 to 1.25), but improves at both small and large radii (radii
+smaller than 0.75 or larger than 1.25).
+Increasing the number of candidates, e.g., using{0.25,0.5,0.75,1.0}, does not improve perfor-
+mance over{0.25,0.5,1.0}, potentially due to the increased difficulty of accurately estimating the
+optimalσand obtaining a sufficiently large certified radius for the estimatedσ.
+E.4 REDUCINGTRAININGCOST
+As shown in Table 4, constructing the optimal variance dataset contributes the majority of the train-
+ing cost. To reduce this overhead, we explore two strategies: (1) using a smaller number of samples
+Nto calculate the certified radius when constructing the training dataset, and (2) using only a subset
+of the training data to train the variance estimator. All experiments here use off-the-shelf denoiser
+and classifier, on the CIFAR-10 dataset.
+In the main CIFAR-10 experiments, we useN= 10 4 samples to estimate the radius used for
+training. However, an approximated radius might be sufficient for training: a much smallerNcan be
+used to estimateˆpA, then this weaker estimation can be plugged into the radius formula to compute
+an approximation of the certified radius. To see if reduction onNis possible, we additionally
+exploreN= 100andN= 1000in this paradigm. This reduces the dataset construction cost by
+99% and 90%, respectively. As shown in Fig. 10a, reducingNhas minimal effect on performance,
+demonstrating that the train set of the variance estimator can be constructed much more efficiently.
+For ImageNet, we adopt the same strategy, usingN= 100when building the training set, while still
+achieving strong performance (see §6.1). We note that this cost then matches the cost of inference,
+which typically also requires hundreds of queries to make a single prediction.
+We also study whether the variance estimator can be trained only on a subset of the training data.
+Specifically, we randomly sample{20%,40%,60%,80%}of the training data and train the variance
+estimator solely based on the sampled training subset, thereby cutting down the training cost respec-
+tively. As shown in Fig. 10b, using a significantly smaller training set for the variance estimator has
+19
+minimal effect on the performance. This shows that a relatively small portion of the training data is
+sufficient to train a high-quality variance estimator.
+In summary, both strategies substantially reduce the training cost while maintaining estimator per-
+formance. Therefore, in practice, we suggest to start with a small subset of the training data and
+estimate the radius based on smallN, then progressively grow the size and the estimation quality
+until the performance gain diminishes.
+E.5 ARCHITECTURE OF THEVARIANCEESTIMATOR
+In the main CIFAR-10 experiments, we used a ResNet-110 estimator, which is a standard choice
+in training-based RS. We additionally evaluate smaller architectures (ResNet-20 and ResNet-56)
+while keeping the denoiser and classifier fixed. As shown in Fig. 11, using a smaller variance
+estimator has minimal effect on the accuracy -R final curves. This indicates that even though smaller
+estimators have lower representational capacity, they remain sufficiently expressive to approximate
+locally constant variance in practice.
+20

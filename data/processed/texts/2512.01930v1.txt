@@ -1,0 +1,1349 @@
+Preprint. Under Review.
+SVRGANDBEYOND VIAPOSTERIORCORRECTION
+Nico Daheim1, Thomas M¨ollenhoff2, Ming Liang Ang3, Mohammad Emtiyaz Khan2
+1Ubiquitous Knowledge Processing Lab (UKP Lab)
+Department of Computer Science and Hessian Center for AI (hessian.AI)
+Technical University of Darmstadt
+2RIKEN Center for Advanced Intelligence Project, Tokyo, Japan
+3University College London
+www.ukp.tu-darmstadt.de
+www.adaptive-bayesian.ai
+ABSTRACT
+Stochastic Variance Reduced Gradient (SVRG) and its variants aim to speed-up
+training by using gradient corrections, but have seen limited success in deep learn-
+ing. Here, we show surprising new foundational connections of SVRG to a re-
+cently proposed Bayesian method called posterior correction. Specifically, we
+show that SVRG is recovered as a special case of posterior correction over the
+isotropic-Gaussian family, while novel extensions are automatically obtained by
+using more flexible exponential families. We derive two new SVRG variants by
+using Gaussian families: First, a Newton-like variant that employs novel Hes-
+sian corrections, and second, an Adam-like extension that improves pretraining
+and finetuning of Transformer language models. This is the first work to connect
+SVRG to Bayes and use it to boost variational training for deep networks.
+1 INTRODUCTION
+Variance Reduction is a powerful technique to speed-up stochastic optimization. For example,
+stochastic variance reduced gradient (SVRG) uses full-batch gradients to stabilize future mini-batch
+updates (Johnson & Zhang, 2013). The method originates in the works of Roux et al. (2012);
+Schmidt et al. (2017); Shalev-Shwartz & Zhang (2013) which require storing individual gradients
+over the full dataset. Since then, a large number of variants have been proposed exploring various
+aspects of this method (Nguyen et al., 2017; Fang et al., 2018; Cutkosky & Orabona, 2019). Variance
+reduction has become a useful tool to accelerate both convex and nonconvex optimization.
+Our goal here is to explore new connections of SVRG to Bayes. Currently, no work exists in this
+space and no foundational connections are known. We are particularly interested in investigating
+whether variance reduction can be effective in non-traditional settings, for example, in variational
+continual pre-training and fine-tuning of language models (Shen et al., 2024). Variance reduction
+has not yet seen a lot of success in deep learning (Defazio & Bottou, 2019). Our exploration here is
+meant to assess its potential in non-traditional variational training.
+In this paper, we present surprising new foundational connections of SVRG to a recently proposed
+Bayesian method called posterior correction (Khan, 2025). Specifically, we show that SVRG is
+recovered as a special case of posterior correction over the isotropic-Gaussian family, while novel
+extensions are automatically obtained by using more flexible exponential families (Fig. 1(left)).
+This result is surprising because posterior correction is not a variance reduction method, rather a
+knowledge transfer method. The result offers a new perspective of variance reduction as knowledge
+transfer, for instance, through frequent mega-batch gradient computations.
+Using this result, we derive new SVRG variants that go beyond existing proposals. For example, by
+using full-covariance Gaussians, we obtain a new variance-reduction method that employs Hessian
+corrections within a variational Online Newton algorithm. This differs from most works on Newton
+steps that only use corrections for the gradient and never for the Hessian (Derezinski, 2023; Sadiev
+et al., 2024; Garg et al., 2024; Sun et al., 2025). Another Adam-like extension is obtained by
+using diagonal covariances, implementing posterior correction over the IVON optimizer (Shen et al.,
+1
+arXiv:2512.01930v1  [cs.LG]  1 Dec 2025
+Preprint. Under Review.
+M e g a - b a t c h
+G r a d i e n t s
+M i n i - b a t c h
+S G D  
++
+G r a d i e n t
+c o r r e c t i o n  
+M e g a - b a t c h
+N a t u r a l
+G r a d i e n t s
+M i n i - b a t c h
+B L R   
++
+P o s t e r i o r
+c o r r e c t i o n  
+Outer Step
+Inner Step
+S V R G
+P o C o
+(a) SVRG vs. PoCo
+0 25000 50000 75000 100000
+# Steps
+20.0
+25.0
+30.0Validation PPL
+Correction starts
+AdamW
+IVON
+IVON-PoCoMo (b) GPT-2 (125M) pretraining
+0 25000 50000 75000 100000
+# Steps
+20.0
+25.0
+30.0Validation PPL
+Correction starts (c) Different correction starts
+Figure 1: (a) We present a generalization of SVRG by using Posterior Correction (PoCo) where
+gradients used in SGD are replaced by natural gradients of VB objectives via the Bayesian Learning
+Rule (BLR). (b) Our new IVON-PoCoMo (red) improves performance over IVON and AdamW
+when pretraining GPT2-125M from scratch on ca. 50B tokens from OpenWebText. Until 50K steps
+IVON-PoCo takes the same steps as IVON, and a huge boost is obtained when correction is started.
+Validation Perplexities at the end are 17.4, 18.0, 18.4. (c) We show three different IVON-PoCo runs
+where correction is started at a different iteration (pink to red). We see consistent improvements
+irrespective of the starting iteration.
+Algorithm 1SVRG
+1:Initializeθ in
+2:whilenot convergeddo
+3:g out ← PN
+i=1 ∇ℓi(θin)
+4:θ out ←θ in
+5:fort= 1,2, . . . , mdo
+6:Randomly picki∈ {1,2, . . . , N}
+7:g in ← ∇ℓi(θin)− ∇ℓi(θout) + 1
+N gout
+8:θ in ←θ in −ηg in
+9:end for
+10:end while
+Algorithm 2Posterior Correction (PoCo)
+1:Initializeλ in
+2:whilenot convergeddo
+3: egout ← PN
+i=1 e∇Li(λin)
+4:λ out ←λ in
+5:fort= 1,2, . . . , mdo
+6:Randomly picki∈ {1,2, . . . , N}
+7: egin ← e∇Li(λin)− e∇Li(λout) + 1
+N egout
+8:λ in ←(1−η)λ in −ηN egin
+9:end for
+10:end while
+Figure 2: Pseudo-code for SVRG (left) and our Bayesian generalization using PoCo (right). The
+latter replaces all instances ofθand∇ℓ i in SVRG by the natural parameterλ(of the posterior
+q) and natural gradient e∇Li. It also uses the BLR for the inner loop in line 8. We show that these
+differences disappear with an isotropic Gaussianqand SVRG is recovered as a special case of PoCo.
+2024). Empirically, the new variant boosts IVON’s speed in non-traditional settings and shows
+promising results at scales up to pretraining an LLM from scratch on 50B tokens; see the middle
+and right panels Fig. 1. In this setting, our method outperforms Adam too, which is unlike many
+other traditional applications where no effective gains in performance are observed. This result also
+far exceeds the scale of any prior work on SVRG-based methods that use mega-batches. We validate
+these findings with various small to large experiments on several architectures, including ResNet,
+GPT and ViT. Overall, our work encourages further investigation of the new connection to obtain
+real improvements with SVRG in deep learning.
+2 BACKGROUND ONSVRGANDVARIATIONALBAYES
+In SVRG, the goal is to minimize an empirical risk PN
+i=1[ℓi(θ)/N]averaged over lossesℓ i for
+examplesi= 1,2, . . . , N. A regularizer, denoted byℓ0, is often added and handled by redefining
+the losses asℓ i +ℓ 0/N. Standard stochastic gradient descent (SGD) steps use stochastic gradients,
+for instance, the following update where thei’th example is randomly sampled at each iteration,
+θ←θ−η∇ℓ i(θ).(1)
+2
+Preprint. Under Review.
+SVRG reduces the variance of such steps by using an outer loop where full-batch gradients are
+computed at parametersθ out, and then parametersθ in are updated using stochastic increments at a
+randomly samplediat every iteration,
+θin ←θ in −η
+
+∇ℓi(θin)− ∇ℓi(θout) + 1
+N
+NX
+j=1
+∇ℓj(θout)
+
+.(2)
+These steps can be seen as a full-batch gradient descent where old gradients∇ℓi(θout)are ‘corrected’
+by adding the fresh new gradients∇ℓ i(θin). The use of the full-batch gradient can reduce variance
+and speed up future mini-batch steps. Pseudo-code is shown in Alg. 1 wheremsteps are taken in
+the inner loop and a constant learning rateηis used.
+SVRG is built upon earlier ideas in Stochastic Average Gradient (SAG) (Roux et al., 2012; Schmidt
+et al., 2017) and Stochastic Dual Coordinate Descent (SDCA) (Shalev-Shwartz & Zhang, 2013)
+methods where the full batch gradient is stored for all examples separately and entries are re-
+freshed whenever corresponding examples are chosen during updating. Subsequently, many new
+practical variants have been proposed, for instance, SARAH (Nguyen et al., 2017) and SPI-
+DER (Fang et al., 2018), among many other proposals (Dubois-Taine et al., 2022; Lei et al., 2017;
+Babanezhad Harikandeh et al., 2015). Instead of full-batch, it is also possible to use largemega-
+batches which can be, for example, 10-50 times bigger than the mini-batches. It is also helpful to
+use Adam and down-weight the corrections (Yin et al., 2025). There is a large number of papers that
+show variance reduction is useful for accelerating both convex and nonconvex optimization.
+Despite this, variance reduction has not seen success in deep learning yet. The ineffectiveness is
+studied extensively by Defazio & Bottou (2019) who find little to no gain in run-time for traditional
+deep learning. They show that variance can even increase if mega-batch gradients are not refreshed
+often, in the end giving no effective gain in speed. The matter is complicated by the presence of
+additional deep learning tricks, such as, mini-batching, momentum, learning-rate schedules, etc.
+Numerous works have suggested new improvements but SVRG’s ineffectiveness is not fixed yet
+(Yin et al., 2025; Tondji et al., 2021; Cutkosky & Orabona, 2019; Arnold et al., 2019; Ma & Yarats,
+2019).
+Clearly, using SVRG to get a real speed-up in deep learning is not easy. Here, we ask if the same
+is true for non-traditional settings. We consider variational training of deep networks where the
+IVON optimizer has lead to promising results. Such Bayesian approaches hold promise to facilitate
+continual, federated, and active learning of deep networks. Use of mega-batches can enable us to
+build priors to speed up future learning. Currently, no such work exists in this space. With this in
+mind, we explore new connections between SVRG and Bayes and assess the potential of SVRG-
+style ideas for non-traditional deep learning.
+2.1 VARIATIONALBAYES(VB)ANDBAYESIANLEARNINGRULE(BLR)
+Throughout, we will use the variational-Bayesian (VB) generalization of empirical-risk minimiza-
+tion (ERM) which optimizes over a tractable set of distributionsq(θ)∈ Qinstead of a point estimate
+θ∈Θ. This formulation is crucial for us to connect and extend SVRG to Bayes. Below we show
+an ERM problem on the left and its VB formulation on the right,
+θ∗ = arg min
+θ∈Θ
+NX
+i=0
+ℓi(θ)vsq ∗ = arg min
+q∈Q
+NX
+i=1
+Eq[ℓi] +DKL[q∥p 0].(3)
+The ERM above contains a regularizer, denoted byℓ 0, which is also used to define a valid prior
+distributionp 0 ∝exp(−ℓ 0)that is added as a Kullback-Leibler (KL) divergence penalty. Ifℓ i is a
+proper likelihood,q ∗ produces a tractable approximation to the posteriorp ∗ ∝p 0
+Q
+i exp(−ℓi).
+Often we restrictQto be exponential-family (EF) distributions, for instance, Gaussians. An EF
+takes the following log-linear form with respect to a sufficient statistic, denoted byT(θ), as shown
+below with an example of an isotropic Gaussian whereT(θ) =θ,
+q(θ)∝h(θ) exp
+
+λ⊤T(θ)
+
+,N(θ|m,I)∝e −1
+2 θ⊤θ exp
+ 
+m⊤θ
+
+.(4)
+3
+Preprint. Under Review.
+The distribution is parameterized by the natural parameterλand uses a base measureh(θ). For
+an isotropic Gaussian,λ=mandh(θ) = exp(− 1
+2 θ⊤θ). Throughout, we will use the natural
+parameterizationλbecause updates over it naturally generalize those used in ERM forθ.
+Natural gradients are convenient for optimizing Eq. 3, even though for ERM they can be computa-
+tionally expensive. The convenience is that by using the expectation parameterµ=E q[T(θ)]we
+can easily compute the natural gradient ofL i(λ) =E q[ℓi]while avoid computing the FisherF(λ),
+e∇Li =F(λ) −1∇Li =∇ µLi.(5)
+The natural gradient of the KL term can also be simplified. Thus, the natural-gradient descent
+(NGD) update takes a much simpler form which resembles Bayes’ rule. This is called the Bayesian
+Learning Rule (BLR) (Khan & Rue, 2023) and is shown below in two equivalent forms: using the
+NGD update (shown on the left) and in its Bayes’ form (shown on the right),
+λ←(1−η)λ−η
+NX
+i=0
+e∇Li(λ)⇔q←q 1−η
+NY
+i=0
+exp
+
+−ηˆℓi
+
+. (6)
+The NGD update is simply a moving average of the natural gradients. The Bayes’ form is obtained
+by substitutingλobtained with an NGD step into the EF form of Eq. 4 and by defining thesite
+functions ˆℓi(θ) = e∇Li(λ)⊤T(θ)of the lossesℓ i. The form is equivalent to Bayes’ rule with prior
+q1−η and likelihoodexp(−η ˆℓi).
+The BLR is attractive not only because it closely mirrors Bayes’ rule, but also because it subsumes
+many ERM algorithms (Khan & Rue, 2023). For example, SGD (Eq. 1) can be derived with isotropic
+Gaussiansq(Eq. 4). Sinceλ=m,µ=E q[θ] =m,and∇logh(θ) =−θ, we can write Eq. 6 as
+m←m−η
+NX
+i=0
+∇Li(m)⇔q←q 1−η
+NY
+i=0
+exp
+ 
+−η∇Li(m)⊤θ
+
+.(7)
+To derive SGD, we use the delta method to approximate∇Li(m)≈ ∇ℓi(m)and write the stochas-
+tic version by redefiningℓ i +ℓ 0/N. We will use this same strategy to connect gradient correction
+in SVRG to natural-gradient correction in the BLR. When usingq=N(θ|m,Σ), we obtain the
+following Newton-like update, called Variational Online Newton (VON), where the pre-conditioner
+is the precision matrixS=Σ −1,
+m←m−ηS −1
+NX
+i=0
+∇Li(m),whereS←(1−η)S+η
+NX
+i=0
+∇2Li(m)(8)
+An improved version of VON is proposed by Lin et al. (2020) and used in Shen et al. (2024) to train
+large deep networks (such as GPT-2) and obtain competitive results to the Adam optimizer. We will
+derive a variant of this algorithm later as an extension of SVRG.
+3 SVRGANDBEYOND VIAPOSTERIORCORRECTION
+We will now present a Bayesian approach that generalizes SVRG and enables us to derive new
+extensions to improve variational deep learning. The approach uses Posterior Correction (PoCo)
+(Khan, 2025) which unifies various knowledge transfer tasks, such as, continual learning, federated
+learning, and model merging. We will now show that it can also be used to recover SVRG.
+3.1 POSTERIORCORRECTION
+Posterior correction aims to speed-up training by reusing previously computed posteriors, for ex-
+ample, in the form of old checkpoints Khan (2025, Sec. 4.2). We denote the checkpoint by natural
+parametersλ out and compute the posterior via natural gradients atλ out over the whole dataset:
+ˆqout ←
+NY
+i=0
+exp
+
+−ˆℓi|out
+
+where ˆℓi|out(θ) = e∇Li(λout)⊤T(θ).(9)
+4
+Preprint. Under Review.
+We can use this to ‘correct’ the future BLR updates by simply multiplying and dividing byq η
+out in
+the RHS of the Bayes’ form shown in Eq. 6, with added parts highlighted in red,
+q←q 1−η ˆqη
+out
+NY
+i=0
+exp
+
+−η
+h
+ˆℓi−ˆℓi|out
+i
+.(10)
+The update remains unchanged because we have simply multiplied it by1, but the new form can be
+seen as Bayes’ rule on a modified model where the prior includes contributions fromq out and the
+likelihood is ‘corrected’. Khan (2025) argue that quick adaptation is possible by reducing the cor-
+rection and show that many existing schemes perform such corrections. Here, we will use posterior
+correction to generalize SVRG.
+3.2 POSTERIORCORRECTIONGENERALIZESSVRG
+To mirror the inner loop Eq. 2 of SVRG, we write a stochastic version of Eq. 10 where one example
+is sampled. Analogously to Eq. 2, we denote the inner loop iterate asq in. We absorb the regularizer
+inℓ i ←(ℓ i +ℓ 0/N), sample a random exampleiand weight the correction term byNto get
+qin ←q 1−η
+in ˆqη
+out exp
+
+−ηN
+h
+ˆℓi|in − ˆℓi|out
+i
+.(11)
+When written in terms ofλ, the update takes an identical form to Eq. 2, as shown below:
+λin ←(1−η)λ in +η ˆλout −ηN
+h
+e∇Li(λin)− e∇Li(λout)
+i
+(12)
+=⇒λ in ←(1−η)λ in −ηN
+
+e∇Li(λin)− e∇Li(λout) + 1
+N
+NX
+j=1
+e∇Lj(λout)
+
+.(13)
+The second update is obtained by using Eq. 9 which shows that ˆλout = P
+i e∇Li(λout). The update
+is strikingly similar to Eq. 2 with all instances of gradients∇ℓ i replaced by natural gradients e∇Li.
+Alg. 2 shows this algorithm, where we denoteˆλout by egout and use the BLR in the inner-loop update.
+We will now show our main result that SVRG is a special case of Alg. 2, when we use PoCo over
+the isotropic-Gaussian family, that is, we setQto be a set ofq in =N(θ|m in,I).
+Theorem 1For isotropic-Gaussian family, Eq.13reduces to the following update of the meanm in,
+min ←m in −ηN
+
+Eqin [∇ℓi]−E qout [∇ℓi] + 1
+N
+NX
+j=1
+Eqout [∇ℓj]
+
+.(14)
+The proof follows similarly to Eq. 7 by plugging-in the definitions ofλ,µ, andh(θ), and using Bon-
+net’s theorem (Bonnet, 1964) which states that∇ mLi =E q[∇ℓi]. That is, the natural gradients can
+be computed by computing the expectation ofℓ i(θ)at sampleθ∼q, which is convenient for im-
+plementation. An algorithm to implement the update is given in Alg. 3, which we call VSGD-PoCo
+and where for simplicity we use one Monte Carlo (MC) sample. VSGD-PoCo and using SVRG
+with SGD have almost the same cost, except for the additional parameter sampling which is fast to
+compute. The algorithm is almost identical to SVRG (Alg. 1) with differences highlighted in red but
+can exactly match SVRG as shown below.
+Theorem 2SVRG (Alg. 1) is equivalent to VSGD-PoCo (Alg. 3) where we setϵ= 0in line 3 and 7.
+Settingϵ= 0is equivalent to applying the delta method:E qm[∇ℓi]≈ ∇ℓi(m)which we also use in
+Eq. 7 to recover SGD from the BLR. We will show in the next section that, by using other EF forms,
+we can derive new extensions that go beyond SVRG. We note that this is the first result of its kind
+connecting SVRG and Bayes. Previous works have applied SVRG to improve ELBO optimization
+(Zhang et al., 2018), but are merely using SVRG and unable to recover or extend it.
+3.3 BEYONDSVRG: NEWEXTENSIONSDERIVED USINGPOSTERIORCORRECTION
+In this section, we derive new extensions to boost variational training of deep networks.
+5
+Preprint. Under Review.
+Algorithm 3VSGD-PoCo: Variational SGD with posterior correction
+Initialize:Number of inner stepsm, learning ratesη
+1:Initializem in.
+2:whilenot convergeddo
+3:g out ← PN
+i=1 ∇ℓi(θin)whereθ in =m in +ϵwithϵ∼ N(0,I)
+4:θ out ←θ in
+5:fort= 1,2, . . . , mdo
+6:Randomly picki∈ {1,2, . . . , N}
+7:g in ← ∇ℓi(θin)− ∇ℓi(θout) + 1
+N gout whereθ in =m in +ϵwithϵ∼ N(0,I)
+8:m in ←m in −ηg in
+9:end for
+10:end while
+A Newton-like Variant:The original SVRG and many of its variants focus on stabilizing the gra-
+dient and little work has been done on methods that do the same for the Hessian. We derive such
+variants by using more flexible Gaussian forms than isotropic Gaussians, for example, the multi-
+variate Gaussianq=N(θ|m,S −1), where the precision matrixSis also estimated. Then, Alg. 2
+reduces to a posterior correction version of the Variational-Online-Newton (VON) algorithm shown
+in Eq. 8. The update shown below employs a stochastic variance reduction for the Hessian.
+Theorem 3For Gaussianq in =N(m in,S −1
+in ), Eq.13reduces to a Newton-like update,
+min =m in −ηNS −1
+in
+"
+Eqin [∇ℓi]−E qout [∇ℓi] + 1
+N
+NX
+j=1
+Eqout [∇ℓj]+Hout\i(min −m out)
+#
+(15)
+where we use a Stochastic Variance-Reduced Hessian (SVRH) estimate as the pre-conditioner
+Sin ←(1−η)S in +ηN
+
+Eqin [∇2ℓi]+ ¯Hout\i
+
+.(16)
+Here, ¯Hout\i = 1
+N
+PN
+j=1 Eqout [∇2ℓj]−E qout [∇2ℓi]is the full-batch expected Hessian withoutℓ i.
+The derivation uses the definition of natural parameter and gradient in Eq. 13 and is given in Sec. A.
+An algorithm is in Alg. 5 which we name VON-PoCo, as a posterior correction version of VON.
+We are not aware of any other Newton variant that implements similar Hessian corrections as shown
+above. Most works on Newton steps only use corrections for the gradient and never for the Hes-
+sian (Derezinski, 2023; Sadiev et al., 2024; Garg et al., 2024; Sun et al., 2025). One surprising con-
+nection is that the termHout\i(min −m out)in Eq. 15 is also used in Chayti et al. (2024, Eqs. 11–12)
+but is derived differently via cubic-Newton. The method has rigorous guarantees and its relation to
+our Bayesian approach remains an interesting case to study. The term can also be viewed as forcing
+the inner iteration to stay close to the most recent outer iteration.
+The PoCo method can be applied to any EF distribution and therefore yields novel extensions that
+go way beyond SVRG, for example, for binary neural networks (Meng et al., 2020) to yield SVRG-
+style updates for the Straight-Through Estimator (Bengio et al., 2013) via Bernoulli distributions.
+We omit the derivation because the procedure is similar to the ones we presented here. The PoCo
+method can yield novel extensions of SVRG by exploiting flexible EF distributions.
+An Adam-like variant:A cheaper Adam-like variant is obtained by using diagonal covariance, for
+example,q=N(θ|m,diag(s) −1). This implements posterior correction over IVON (Shen et al.,
+2024). A detailed derivation is in Sec. B and a pseudo-code of IVON-PoCoMo is in Alg. 4, where we
+highlight additional computation on top of IVON. Similarly to IVON, IVON-PoCoMo uses several
+practical tricks, for instance, weight decay, mini-batching, temperature, momentum, and debiasing.
+If momentum is switched off, i.e.ρ 1 =ρ 2 = 1, we simply refer to the metho as IVON-PoCo.
+Handling Mega-Batches and Weighted Corrections:The version shown in Alg. 4 also avoids
+expensive full-batch computations. Instead, it usesmega-batches (Defazio & Bottou, 2019) and
+builds online estimates of gradients and Hessians (line 3-4). Mega-batches can be tens of times
+the size of the inner loop mini-batches and can be used to slowly build an estimate of full-batch
+6
+Preprint. Under Review.
+Algorithm 4IVON-PoCoMo: IVON with Posterior Correction and Momentum. IVON-PoCo is
+obtained by removing momentum (differences to IVON highlighted in red)
+Require:Learning rates{η t},β 1 ∈[0,1),β 2 ∈[0,1),δ >0,κ >0,h 0 >0, clip radiusξ >0,
+mini-batch sizeB, mega-batch sizeM, outer loop learning rateρ 1, ρ2, refresh rateα.
+1:Initialize:m in ←(NN weight init),h in ←h 0,σ in ←1/
+p
+κ(hin +δ),g←0
+2:whilenot convergeddo
+3: bgout ← 1
+M
+P
+i∈M ∇ℓi(θin)where we sample a mega-batchMandθ in ∼ N(min,σ 2
+in)
+4:g out ←ρ 1gout + (1−ρ 1) bgout, andh out ←ρ 2hout + (1−ρ 2) bgout(θin −m in)/σ2
+in
+5:m out ←m in,σ out ←σ in
+6:fort= 1,2, . . . , mdo
+7:Sample a mini-batchB,θ in ∼ N(min,σ 2
+in),θ out ∼ N(mout,σ 2
+out)
+8: bgin ← 1
+B
+P
+i∈B ∇ℓi(θin)and bhin ← bgin(θin −m in)/σ2
+in
+9: bgout ← 1
+B
+P
+i∈B ∇ℓi(θout)and bhout ← ˆgout(θout −m out)/σ2
+out
+10: ˆg← ˆgin −α( ˆgout −g out)and bh← bhin −α( bhout −h out)
+11:g←β 1g+ (1−β 1)ˆg
+12:h←β 2h+ (1−β 2)bh+ 1
+2 (1−β 2)2(h− bh)2/(h+δ)
+13: ¯g←g/(1−β t
+1)
+14: ¯g←( ¯g+δm in+α(hout − bhout)(min −m out))/(h+δ)
+15:m in ←m in −η t clip(¯g, ξ)
+16:σ in ←1/
+p
+κ(h+δ)
+17:end for
+18:end while
+19:returnm,σ
+gradients and Hessians via an estimate of the site function, for example, for isotropic Gaussians:
+ˆqout ←exp
+
+−θ⊤gout
+
+,whereg out ←ρ 1gout + (1−ρ 1)
+X
+i∈M
+Eqout [∇ℓi].(17)
+A similar approach for full-Gaussians is in Sec. B.1. Posteriors constuctured using mega-batches
+can be imperfect and downweighed by modifying the PoCo update of Eq. 11 usingα <1,
+qin ←q 1−η
+in ˆqηα
+out exp
+
+−ηN
+h
+ˆℓi|in −α ˆℓi|out
+i
+,(18)
+Forα= 0, the update reduces to standard BLR, while forα= 1we use perfect corrections which
+are good for full-batchˆqout. When using mega-batches, a smaller value could be used and tuned.
+When applied to isotropic Gaussians, this reduces toα-SVRG (Yin et al., 2025), though their mo-
+tivation to useαdoes not stem from the use of mega-batches (they appear to use full batches).
+Their motivation is to reduce variance early on via schedulingα, starting with a high value. From a
+Bayesian perspective, theˆqout estimates are expected to be less useful early on. Thus, it makes more
+sense to use a ‘burn-in’ period withα= 0and then turn onα. In our experiments, we use a constant
+α, which seems to work better for deep learning.
+3.4 COMPUTATIONAL& MEMORYREQUIREMENTS
+The computation and memory overheads of IVON-PoCoMo are similar to the use of Adam to imple-
+ment alpha-SVRG. Adam uses an accumulation of squared gradients, while here reparameterization
+trick is used to compute a Hessian estimate (line 4, 8, 9). Unlike alpha-SVRG, IVON-PoCoMo use
+an additional Hessian correction as well, but this does not add a significant cost because the Hessian
+is already computed. We just need to store an additionalh out in the outer loop (in line 9), as well as
+σout (line 5). Similarly to VSGD-PoCo, sampling is added in line 3 and 7. All of these costs are not
+significant. Just like in SVRG and alpha-SVRG, the major overhead is the mega-batch computation
+and the use of two gradient (line 10). An extra Hessian correction is used in line 10 as well.
+7
+Preprint. Under Review.
+0.0 3.3 6.7 10.0 13.3 16.7
+# Gradient Computations / N
+89.0
+90.0
+91.0
+92.0Test Accuracy
+MNIST (N=60000, P=784)
+SGD SVRG IVON IVON-PoCo
+0.0 0.4 0.9 1.3 1.7 2.2
+# Gradient Computations / N
+64.0
+66.0
+68.0
+70.0
+72.0Test Accuracy
+Covertype (N=464809, P=54)
+SGD SVRG IVON IVON-PoCo
+Figure 3: IVON-PoCo significantly boosts the convergence speed of IVON and performs much
+better than SVRG, here on two convex logistic regression problems of varying dimension and size.
+The horizontal dashed line indicates the performance at the minimum, the gray bars indicate outer
+gradient computations used in SVRG and IVON-PoCo.
+0.6 1.2 1.8 2.4 3.0
+Optimizer Steps 1e5
+30%
+40%
+50%
+60%
+70%
+80%Test Accuracy (%)
+Correction starts
+0.2 0.4 0.6 0.8 1.0 1.2
+Data Examples Seen 1e8
+30%
+40%
+50%
+60%
+70%
+80%Test Accuracy (%)
+SGD
+AdamW
+IVON
+IVON-PoCo
+Figure 4: Performance on ImageNet for ResNet-50. When comparing by the number of optimization
+steps (left) IVON-PoCo gives clear improvements but not in terms of data examples seen (right). On
+the left, we zoom in on the final stage of training when correction is added.
+4 EXPERIMENTS& RESULTS
+4.1 LOGISTICREGRESSION
+We first illustrate our new method IVON-PoCo on simple convex logistic regression problems of
+varying dimensionality and number of data examples in Fig. 3. We show additional results on
+CIFAR-10 logistic regression in Sec. C. We compare IVON-PoCo against IVON, SVRG, and SGD.
+For all experiments, we used a large constant learning rate and a batch size of 5. For the IVON
+methods, we setρ 1 =ρ 2 = 1(i.e. no momentum) and downweight the extra terms in line 17
+of Alg. 4 by0.01. The effects of varryingρand the additional term are explored in our ablation
+experiments in Sec. C.
+Consistent with the original work by Johnson & Zhang (2013), our experiments show that SVRG
+drastically boosts the performance of SGD once the first outer loop—illustrated by the gray bars,
+which indicate the large outer batch size—is hit. Similarly, IVON-PoCo boosts the performance
+of IVON. Since IVON already outperforms SGD and is comparable to SVRG due to its inherent
+preconditioning and momentum, the further boost provided by IVON-PoCo makes it perform best.
+4.2 IMAGECLASSIFICATION WITHRESNETS
+We first evaluate our proposed IVON-PoCo method on training a ResNet-50 on ImageNet. Fig. 4
+shows the results. We can see that IVON-PoCo reaches a comparable accuracy to SGD, IVON
+and AdamW in much fewer optimization steps. Factoring in the outer loop gradient calculation,
+all methods perform similarly well. Variance reduction methods such as SVRG have classically
+struggled on training ResNets on ImageNet (Defazio & Bottou, 2019). We observe a similar effect
+but performance is greatly improved when just counting optimization steps as the recent work by
+Yin et al. (2025).
+8
+Preprint. Under Review.
+0.5 0.6 0.7 0.8 0.9 1.0
+Optimizer Steps 1e5
+84.0%
+85.5%
+87.0%
+88.5%
+90.0%
+91.5%Test Accuracy (%)
+Correction starts
+0 1 2 3 4 5
+Data Examples Seen 1e6
+60.0%
+66.0%
+72.0%
+78.0%
+84.0%
+90.0%Test Accuracy (%)
+SGD
+AdamW
+IVON
+-SVRG SGD
+-SVRG AdamW
+IVON-PoCo
+Figure 5: Comparison toα-SVRG on CIFAR-10 for ResNet-20. IVON-PoCo andα-SVRG with
+SGD give improvements, also when counting the number of data examples seen (right). At the end
+of training, IVON-PoCo performs best out of all methods.
+Table 1: IVON-PoCo can improve finetuning. All methods use the same number of steps. We
+indicate with “+” improvements over the IVON baseline.
+ViT-B/32 Qwen2.5-0.5B-it Llama-3.1-8B
+Cars DTD GTSRB RESISC45 XSUM (R-1, R-L) GSM8k
+IVON 79.5 72.999.995.2 48.7 23.6 30.4
++ PoCo 80.0+0.5 73.4+0.5 99.9+0.0 96.1+0.9 49.6+0.9 23.8+0.2 30.6+0.2
+In a second experiment on a smaller ResNet-20 in Fig. 5, we do not anneal the learning rate to zero
+but to a quarter of the starting learning rate. Then, the variance is not completely removed through
+learning rate annealing and bothα-SVRG with SGD and IVON-PoCo bring improvements in accu-
+racy over their respective baseline methods, with IVON-PoCo having the advantage of estimating a
+variational posterior distribution. All details for the two experiments are in Sec. D.1.
+4.3 LANGUAGEMODELPRETRAINING
+Here, we present results when pretraining a 125M parameter GPT-2 model from scratch on 50B
+tokens from the OpenWebText dataset1. We follow the set-up from Shen et al. (2024) and train each
+model for 100,000 steps using AdamW, IVON, and IVON-PoCoMo. For IVON-PoCoMo we use
+two different configurations: One refreshes a megabatch with size 10 times the minibatch size after
+10 inner step starting correction after 50,000 steps and another where we start correction at varying
+points, namely, after 30,000, 50,000, and 70,000 steps with a megabatch factor and refresh rate of
+20 as opposed to 10. Results are shown in Fig. 1b and Fig. 1c, respectively. We find that IVON-
+PoCoMo provides improvements in terms of validation perplexity in both settings. Interestingly,
+correction can be started at varying intervals and benefits, especially a direct jump downwards of
+the validation perplexity, are maintained. Details are found in Sec. D.2.
+4.4 CONTINUALPRETRAINING
+Next, we present results on continually pretraining the GPT-125M model from Shen et al. (2024)
+on 1B tokens from Fineweb-edu (Penedo et al., 2024). We compare AdamW and alpha-SVRG with
+AdamW against IVON, IVON-PoCo, and IVON-PoCoMo. Both alpha-SVRG and the IVON-PoCo
+runs useα= 0.7, 40 steps for the inner loop, and 1,000 warmup steps without correction. Results
+are in Fig. 6. Adding correction both withα-SVRG and IVON-PoCo helps but the gap between
+IVON, which struggles with larger learning rates, and IVON-PoCo is larger. Adding Momentum to
+IVON-PoCo improves results beyond those ofα-SVRG and IVON-PoCoMo converges to a better
+validation perplexity after the same number of steps. When comparing time,α-SVRG does not
+improve over AdamW but IVON-PoCoMo improves over IVON. Details can be found in Sec. D.3.
+9
+Preprint. Under Review.
+0 100 200 300 400
+Time (minutes)
+21.0
+21.6
+22.2   
+Large Improvement
+Degradation
+AdamW
+-SVRG
+IVON
+IVON-PoCo
+IVON-PoCoMo
+0.00 0.25 0.50 0.75 1.00
+Alpha
+45.0
+60.0
+75.0Val PPL
+IVON-PoCo
+-SVRG
+0.1 0.4 1.0 2.0 5.0
+Inner Steps / Mega-batch size
+45.0
+60.0
+75.0Val PPL @ 30min
+Better performance
+    at same cost
+Figure 6: (left) IVON-PoCo and IVON-PoCoMo also boost IVON’s performance when continually
+pretraining a GPT2-125M model on 1B tokens from Fineweb-Edu, here measured in terms of wall-
+clock time. This is unlike AdamW that does not benefit from SVRG when usingα-SVRG. (center)
+Tuningαhas a large effect on performance on wikitext103 with a 33M Transformer trained from
+scratch. (right) In the same setting, increasing the number of refreshes can help but at some point
+becomes slow, with better performance at the same time budget obtained by fewer refreshes.
+4.5 FINETUNING
+Here, we use IVON-PoCo for finetuning different Transformers, namely ViT-B/32 (Dosovitskiy
+et al., 2021), Qwen2.5-0.5B-Instruct (Yang et al., 2025), and Llama-3.1-8B (Dubey et al., 2024) on
+image classification, XSUM, and GSM8k, respectively. For the ViT models we finetune only the
+image coder, for Qwen we finetune the entire model, and for Llama-3.1 we use LoRA finetuning (Hu
+et al., 2022). Results are shown in Table 1 and show that IVON-PoCo can improve final performance
+over IVON when the models are trained with the same number of optimization steps. Details and
+hyperparameters used for these experiments can be found in Sec. D.4.
+4.6 ABLATIONS
+Influence ofα:We study the influence ofαforα-SVRG and IVON-PoCo on wikitext103 (Merity
+et al., 2017) by training a GPT-2-based model with 33M parameters from scratch for one epoch
+with batch size of 64 and 5000 warmup steps without correction. Results are shown in Fig. 6 (left):
+for both methods using correction improves performance over various values ofα. Both times the
+curve has a u-shape indicating that biasing too much towards large batches can harm performance.
+We provide details for these and the following analysis of the inner loop size in Sec. D.2.
+Influence of Inner Loop SizeHere, we fix the megabatch size to50·64in the same setting as above
+and vary the number of refreshes. Fig. 6 (center) shows that refreshing more often in general helps
+performance but when refreshing too often performance can get worse at the same compute budget.
+5 CONCLUSION
+In this paper, we present surprising new connections between two seemingly unrelated ideas: SVRG
+and posterior correction (PoCo) . The connections allow us to derive new extensions of SVRG which
+can boost variational training of deep networks. We hope that the non-traditional settings considered
+in this paper encourage researchers who wish to see SVRG successfully applied to deep learning.
+Our work attempts to offer a new perspective on variance reduction as knowledge transfer, giving
+SVRG-style ideas a fresh restart. In the future, we hope to apply these ideas to other non-traditional
+problems where reusing past knowledge is crucial for reducing cost.
+ACKNOWLEDGMENTS
+This work is supported by JST CREST Grant Number JP-MJCR2112.
+1https://huggingface.co/datasets/Skylion007/openwebtext
+10
+Preprint. Under Review.
+REFERENCES
+S´ebastien Arnold, Pierre-Antoine Manzagol, Reza Babanezhad Harikandeh, Ioannis Mitliagkas,
+and Nicolas Le Roux. Reducing the variance in online optimization by trans-
+porting past gradients.Advances in Neural Information Processing Systems, 32,
+2019. URLhttps://papers.neurips.cc/paper_files/paper/2019/hash/
+1dba5eed8838571e1c80af145184e515-Abstract.html.
+Reza Babanezhad Harikandeh, Mohamed Osama Ahmed, Alim Virani, Mark Schmidt,
+Jakub Kone ˇcn´y, and Scott Sallinen. Stopwasting my gradients: Practical svrg.
+In C. Cortes, N. Lawrence, D. Lee, M. Sugiyama, and R. Garnett (eds.),Ad-
+vances in Neural Information Processing Systems, volume 28. Curran Associates, Inc.,
+2015. URLhttps://proceedings.neurips.cc/paper_files/paper/2015/
+file/a50abba8132a77191791390c3eb19fe7-Paper.pdf.
+Yoshua Bengio, Nicholas L ´eonard, and Aaron Courville. Estimating or propagating gradients
+through stochastic neurons for conditional computation.arXiv preprint arXiv:1308.3432, 2013.
+URLhttps://arxiv.org/abs/1308.3432.
+G. Bonnet. Transformations des signaux al´eatoires a travers les systemes non lin´eaires sans m´emoire.
+InAnnales des T ´el´ecommunications, volume 19, pp. 203–220. Springer, 1964. URLhttps:
+//doi.org/10.1007/BF03014720.
+El Mahdi Chayti, Martin Jaggi, and Nikita Doikov. Unified convergence theory of stochastic and
+variance-reduced cubic newton methods.Transactions on Machine Learning Research, 2024.
+ISSN 2835-8856. URLhttps://openreview.net/forum?id=FCs5czlDTr.
+Gong Cheng, Junwei Han, and Xiaoqiang Lu. Remote Sensing Image Scene Classification: Bench-
+mark and State of the Art.Proceedings of the IEEE, 105(10):1865–1883, Oct 2017. ISSN 1558-
+2256. doi: 10.1109/jproc.2017.2675998. URLhttp://dx.doi.org/10.1109/JPROC.
+2017.2675998.
+M. Cimpoi, S. Maji, I. Kokkinos, S. Mohamed, and A. Vedaldi. Describing Textures in the Wild. In
+Proceedings of the IEEE Conf. on Computer Vision and Pattern Recognition (CVPR), 2014. URL
+https://doi.org/10.1109/CVPR.2014.461.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser,
+Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John
+Schulman. Training verifiers to solve math word problems, 2021. URLhttps://arxiv.
+org/abs/2110.14168.
+Ashok Cutkosky and Francesco Orabona. Momentum-based variance reduction in non-convex sgd.
+InAdvances in Neural Information Processing Systems, volume 32. Curran Associates, Inc.,
+2019. URLhttps://proceedings.neurips.cc/paper_files/paper/2019/
+file/b8002139cdde66b87638f7f91d169d96-Paper.pdf.
+Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R ´e. Flashattention:
+Fast and memory-efficient exact attention with io-awareness. In S. Koyejo, S. Mo-
+hamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh (eds.),Advances in Neural In-
+formation Processing Systems, volume 35, pp. 16344–16359. Curran Associates, Inc.,
+2022. URLhttps://proceedings.neurips.cc/paper_files/paper/2022/
+file/67d57c32e20fd0a7a302cb81d36e40d5-Paper-Conference.pdf.
+Aaron Defazio and Leon Bottou. On the ineffectiveness of variance reduced optimization for
+deep learning. InAdvances in Neural Information Processing Systems, volume 32. Curran
+Associates, Inc., 2019. URLhttps://proceedings.neurips.cc/paper_files/
+paper/2019/file/84d2004bf28a2095230e8e14993d398d-Paper.pdf.
+Michal Derezinski. Stochastic variance-reduced newton: Accelerating finite-sum minimization
+with large batches. InOPT 2023: Optimization for Machine Learning, 2023. URLhttps:
+//openreview.net/forum?id=EUshjvvMcj.
+11
+Preprint. Under Review.
+Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas
+Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszko-
+reit, and Neil Houlsby. An image is worth 16x16 words: Transformers for image recogni-
+tion at scale. InInternational Conference on Learning Representations, 2021. URLhttps:
+//openreview.net/forum?id=YicbFdNTTy.
+Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha
+Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3 herd of models.
+arXiv preprint arXiv:2407.21783, 2024. URLhttps://arxiv.org/abs/2407.21783.
+Benjamin Dubois-Taine, Sharan Vaswani, Reza Babanezhad, Mark Schmidt, and Simon Lacoste-
+Julien. Svrg meets adagrad: painless variance reduction.Machine Learning, 111(12):4359–4409,
+2022.
+Cong Fang, Chris Junchi Li, Zhouchen Lin, and Tong Zhang. Spider: Near-optimal non-
+convex optimization via stochastic path-integrated differential estimator. In S. Bengio,
+H. Wallach, H. Larochelle, K. Grauman, N. Cesa-Bianchi, and R. Garnett (eds.),Ad-
+vances in Neural Information Processing Systems, volume 31. Curran Associates, Inc.,
+2018. URLhttps://proceedings.neurips.cc/paper_files/paper/2018/
+file/1543843a4723ed2ab08e18053ae6dc5b-Paper.pdf.
+Sachin Garg, Albert S Berahas, and Michał Derezi ´nski. Second-order information promotes
+mini-batch robustness in variance-reduced gradients.arXiv:2404.14758, 2024. URLhttps:
+//arxiv.org/abs/2404.14758.
+Sebastian Houben, Johannes Stallkamp, Jan Salmen, Marc Schlipsing, and Christian Igel. Detection
+of traffic signs in real-world images: The German Traffic Sign Detection Benchmark. InInterna-
+tional Joint Conference on Neural Networks (IJCNN), 2013. URLhttps://doi.org/10.
+1109/IJCNN.2013.6706807.
+Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang,
+and Weizhu Chen. LoRA: Low-rank adaptation of large language models. InInternational
+Conference on Learning Representations (ICLR), 2022. URLhttps://openreview.net/
+forum?id=nZeVKeeFYf9.
+Gabriel Ilharco, Mitchell Wortsman, Ross Wightman, Cade Gordon, Nicholas Carlini, Rohan Taori,
+Achal Dave, Vaishaal Shankar, Hongseok Namkoong, John Miller, Hannaneh Hajishirzi, Ali
+Farhadi, and Ludwig Schmidt. Openclip, July 2021. URLhttps://doi.org/10.5281/
+zenodo.5143773.
+Rie Johnson and Tong Zhang. Accelerating stochastic gradient descent using pre-
+dictive variance reduction. InAdvances in Neural Information Processing Sys-
+tems, 2013. URLhttps://papers.nips.cc/paper_files/paper/2013/hash/
+ac1dd209cbcc5e5d1c6e28598e8cbbe8-Abstract.html.
+Mohammad Emtiyaz Khan. Knowledge adaptation as posterior correction.arXiv:2506.14262, 2025.
+URLhttps://www.arxiv.org/abs/2506.14262.
+Mohammad Emtiyaz Khan and Haavard Rue. The Bayesian learning rule.Journal of Ma-
+chine Learning Research, 24(281):1–46, 2023. URLhttp://jmlr.org/papers/v24/
+22-0291.html.
+Jonathan Krause, Michael Stark, Jia Deng, and Li Fei-Fei. 3D object representations for fine-grained
+categorization. InIEEE Conference on Computer Vision and Pattern Recognition, 2013. URL
+https://doi.org/10.1109/ICCVW.2013.77. (Workshops).
+Lihua Lei, Cheng Ju, Jianbo Chen, and Michael I Jordan. Non-convex finite-sum optimization via
+scsg methods. In I. Guyon, U. V on Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan,
+and R. Garnett (eds.),Advances in Neural Information Processing Systems, volume 30. Cur-
+ran Associates, Inc., 2017. URLhttps://proceedings.neurips.cc/paper_files/
+paper/2017/file/81ca0262c82e712e50c580c032d99b60-Paper.pdf.
+12
+Preprint. Under Review.
+Wu Lin, Mark Schmidt, and Mohammad Emtiyaz Khan. Handling the positive-definite constraint
+in the Bayesian learning rule. In Hal Daum ´e III and Aarti Singh (eds.),Proceedings of the 37th
+International Conference on Machine Learning, volume 119 ofProceedings of Machine Learning
+Research, pp. 6116–6126. PMLR, 13–18 Jul 2020. URLhttps://proceedings.mlr.
+press/v119/lin20d.html.
+Jerry Ma and Denis Yarats. Quasi-hyperbolic momentum and adam for deep learning. InInterna-
+tional Conference on Learning Representations, 2019. URLhttps://openreview.net/
+forum?id=S1fUpoR5FQ.
+Xiangming Meng, Roman Bachmann, and Mohammad Emtiyaz Khan. Training binary neural
+networks using the Bayesian learning rule. In Hal Daum ´e III and Aarti Singh (eds.),Pro-
+ceedings of the 37th International Conference on Machine Learning, volume 119 ofProceed-
+ings of Machine Learning Research, pp. 6852–6861. PMLR, 13–18 Jul 2020. URLhttps:
+//proceedings.mlr.press/v119/meng20a.html.
+Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher. Pointer sentinel mix-
+ture models. InInternational Conference on Learning Representations, 2017. URLhttps:
+//openreview.net/forum?id=Byj72udxe.
+Shashi Narayan, Shay B. Cohen, and Mirella Lapata. Don’t give me the details, just the sum-
+mary! topic-aware convolutional neural networks for extreme summarization. In Ellen Riloff,
+David Chiang, Julia Hockenmaier, and Jun’ichi Tsujii (eds.),Proceedings of the 2018 Confer-
+ence on Empirical Methods in Natural Language Processing, pp. 1797–1807, Brussels, Bel-
+gium, October-November 2018. Association for Computational Linguistics. doi: 10.18653/v1/
+D18-1206. URLhttps://aclanthology.org/D18-1206.
+Lam M. Nguyen, Jie Liu, Katya Scheinberg, and Martin Tak ´aˇc. SARAH: A novel method for
+machine learning problems using stochastic recursive gradient. In Doina Precup and Yee Whye
+Teh (eds.),Proceedings of the 34th International Conference on Machine Learning, volume 70
+ofProceedings of Machine Learning Research, pp. 2613–2621. PMLR, 06–11 Aug 2017. URL
+https://proceedings.mlr.press/v70/nguyen17b.html.
+Guilherme Penedo, Hynek Kydl´ıˇcek, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin
+Raffel, Leandro V on Werra, and Thomas Wolf. The fineweb datasets: Decanting the web for
+the finest text data at scale. InThe Thirty-eight Conference on Neural Information Processing
+Systems Datasets and Benchmarks Track, 2024. URLhttps://openreview.net/forum?
+id=n6SCkn2QaG.
+Nicolas Roux, Mark Schmidt, and Francis Bach. A stochastic gradient method with an expo-
+nential convergence rate for finite training sets. In F. Pereira, C.J. Burges, L. Bottou, and
+K.Q. Weinberger (eds.),Advances in Neural Information Processing Systems, volume 25. Cur-
+ran Associates, Inc., 2012. URLhttps://proceedings.neurips.cc/paper_files/
+paper/2012/file/905056c1ac1dad141560467e0a99e1cf-Paper.pdf.
+Abdurakhmon Sadiev, Aleksandr Beznosikov, Abdulla Jasem Almansoori, Dmitry Kamzolov,
+Rachael Tappenden, and Martin Tak ´aˇc. Stochastic gradient methods with preconditioned up-
+dates.Journal of Optimization Theory and Applications, 201(2):471–489, 2024. URLhttps:
+//doi.org/10.1007/s10957-023-02365-3.
+Mark Schmidt, Nicolas Le Roux, and Francis Bach. Minimizing finite sums with the stochastic
+average gradient.Mathematical Programming, 162(1):83–112, 2017. URLhttps://doi.
+org/10.1007/s10107-016-1030-6.
+Shai Shalev-Shwartz and Tong Zhang. Stochastic dual coordinate ascent methods for regularized
+loss.The Journal of Machine Learning Research, 14(1):567–599, 2013. URLhttps://www.
+jmlr.org/papers/v14/shalev-shwartz13a.html.
+Yuesong Shen, Nico Daheim, Bai Cong, Peter Nickl, Gian Maria Marconi, Bazan Clement
+Emile Marcel Raoul, Rio Yokota, Iryna Gurevych, Daniel Cremers, Mohammad Emtiyaz Khan,
+and Thomas M ¨ollenhoff. Variational learning is effective for large deep networks. InForty-first
+International Conference on Machine Learning, 2024. URLhttps://openreview.net/
+forum?id=cXBv07GKvk.
+13
+Preprint. Under Review.
+Jingruo Sun, Zachary Frangella, and Madeleine Udell. SAPPHIRE: preconditioned stochastic
+variance reduction for faster large-scale statistical learning.arXiv:2501.15941, 2025. URL
+https://arxiv.org/abs/2501.15941.
+Lionel Tondji, Sergii Kashubin, and Moustapha Cisse. Variance reduction in deep learning: More
+momentum is all you need.arXiv preprint arXiv:2111.11828, 2021. URLhttps://arxiv.
+org/abs/2111.11828.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N
+Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is all you need. In
+I. Guyon, U. V on Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan,
+and R. Garnett (eds.),Advances in Neural Information Processing Systems, volume 30,
+2017. URLhttps://proceedings.neurips.cc/paper_files/paper/2017/
+file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf.
+Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi,
+Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick
+von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger,
+Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers: State-of-the-art natural
+language processing. In Qun Liu and David Schlangen (eds.),Proceedings of the 2020 Confer-
+ence on Empirical Methods in Natural Language Processing: System Demonstrations, pp. 38–
+45, Online, October 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.
+emnlp-demos.6. URLhttps://aclanthology.org/2020.emnlp-demos.6.
+An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li,
+Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin
+Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang,
+Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tianyi Tang,
+Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan,
+Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. Qwen2.5 technical report, 2025. URL
+https://arxiv.org/abs/2412.15115.
+Yida Yin, Zhiqiu Xu, Zhiyuan Li, Trevor Darrell, and Zhuang Liu. A coefficient makes SVRG
+effective. InThe Thirteenth International Conference on Learning Representations, 2025. URL
+https://openreview.net/forum?id=twtTLZnG0B.
+Cheng Zhang, Judith B ¨utepage, Hedvig Kjellstr ¨om, and Stephan Mandt. Advances in variational
+inference.IEEE transactions on pattern analysis and machine intelligence, 41(8):2008–2026,
+2018. URLhttps://doi.org/10.1109/TPAMI.2018.2889774.
+A DERIVATION OF THENEWTON-LIKESVRG EXTENSION
+We start by writingqin an exponential-family form which in this case is convenient to write in terms
+of the precisionS=Σ −1. This is shown below with sufficient statistics highlighted in red,
+N(θ|m,S −1)∝exp
+h
+m⊤Sθ+Tr
+
+(−1
+2 S)θθ⊤
+i
+.(19)
+This is a log-linear form for a sufficient-statistics vector ofθandθθ ⊤. We denote the natural
+parameterλ= (Sm,− 1
+2 S)consisting of two elements: a vector and a square matrix. The natural
+gradient can be written in terms of the gradient and Hessian ofℓ i (Khan & Rue, 2023, Eq. 10-11),
+e∇Li(λ) =E q
+ 
+∇ℓi − ∇2ℓim, 1
+2 ∇2ℓi
+
+.(20)
+This also has two elements, and uses gradient and Hessian computed at samples fromq.
+We will denote theλin = (Sinmin,− 1
+2 Sin)andλ out = (Soutmout,− 1
+2 Sout). We first write the update
+for the second entry ofλ in which is− 1
+2 Sin,
+Snew ←(1−η)S in +ηN
+
+Eqλin
+[∇2ℓi]−E qλout [∇2ℓi] + 1
+N
+NX
+j=1
+Eqλout [∇2ℓj]
+
+.(21)
+14
+Preprint. Under Review.
+We denoted the new value asSnew to differentiate it with the old value. This will be useful to simplify
+the update for the first entryS inmin which we show below,
+Snewmnew = (1−η)S inmin −ηN
+"
+Eqλin
+[∇ℓi − ∇2ℓimin]−E qλout [∇ℓi − ∇2ℓimout]
++ 1
+N
+NX
+j=1
+Eqλout [∇ℓj − ∇2ℓjmout]
+#
+=
+
+
+Snew −ηN
+
+Eqλin
+[∇2ℓi]−E qλout [∇2ℓi] + 1
+N
+NX
+j=1
+Eqλout [∇2ℓj]
+
+
+
+
+min+
+−ηN
+"
+Eqλin
+[∇ℓi − ∇2ℓimin]−E qλout [∇ℓi − ∇2ℓimout]
++ 1
+N
+NX
+j=1
+Eqλout [∇ℓj − ∇2ℓjmout]
+#
+=S newmin −ηN
+"
+XXXXXXXEqλin
+[∇2ℓi]min −E qλout [∇2ℓi]min + 1
+N
+NX
+j=1
+Eqλout [∇2ℓj]min
++E qλin
+[∇ℓi − XXXX∇2ℓimin ]−E qλout [∇ℓi − ∇2ℓimout] + 1
+N
+NX
+j=1
+Eqλout [∇ℓj − ∇2ℓjmout]
+#
+=S newmin −ηN
+"
+Eqλin
+[∇ℓi]−E qλout [∇ℓi] + 1
+N
+NX
+j=1
+Eqλout [∇ℓj]−E qλout [∇2ℓi]min
++ 1
+N
+NX
+j=1
+Eqλout [∇2ℓj]min +E qλout [∇2ℓimout]− 1
+N
+NX
+j=1
+Eqλout [∇2ℓjmout]
+#
+=S newmin −ηN
+"
+Eqλin
+[∇ℓi]−E qλout [∇ℓi] + 1
+N
+NX
+j=1
+Eqλout [∇ℓj]
+
+ 1
+N
+NX
+j=1
+Eqλout [∇2ℓj]−E qλout [∇2ℓi]
+
+(min −m out)
+#
+(22)
+An algorithm can be conveniently written by defining the following outer-loop quantities using the
+outputλ in of the inner loop,
+gout ←
+NX
+j=1
+Eqin [∇ℓj],H out ←
+NX
+j=1
+Eqin [∇2ℓj].(23)
+We then setmout ←m in andS out ←S in, and the corresponding natural parameter to beλ out. Using
+these, we can write the updates in the inner loop as follows (strictly in this order),
+gin ←E qin [∇ℓi]−E qout [∇ℓi] +g out/N
+Hout\i ←H out/N−E qout [∇2ℓi]
+Hin ←E qin [∇2ℓi] +H out\i
+Sin ←(1−η)S in +ηNH in
+min ←m in −ηNS −1
+in
+
+gin +H out\i(min −m out)
+
+(24)
+These steps are implemented in Alg. 5 by using one Monte-Carlo sample to evaluate the expecta-
+tions. We highlight in red the new parts added on top of SVRG. We note two useful points regarding
+the implementation: first,S in need to be always updated beforem in, and second, variance is further
+reduced if different example use different seeds (which is not explicitly written in the algorithm).
+15
+Preprint. Under Review.
+Algorithm 5VON-PoCo: Variational Online Newton with Posterior Correction
+Initialize:Number of inner stepsm, learning ratesαandβ
+1:Initializem in,S in
+2:whilenot convergeddo
+3:g out ← PN
+i=1 ∇ℓi(θin)whereθ in =m in +S
+−1
+2
+in ϵwithϵ∼ N(0,I)
+4:H out ← PN
+i=1 ∇2ℓi(θin)
+5:θ out ←θ in,m out ←m in
+6:fort= 1,2, . . . , mdo
+7:Randomly picki∈ {1,2, . . . , N}
+8:g in ← ∇ℓi(θin)− ∇ℓi(θout) + 1
+N gout whereθ in =m in +S
+−1
+2
+in ϵwithϵ∼ N(0,I)
+9:H out\i ← 1
+N Hout − ∇2ℓi(θout)
+10:H in ← ∇2ℓi(θin) +H out\i
+11:S in ←(1−β)S in +βNH in
+12:m in ←m in −αNS −1
+in
+
+gin+Hout\i(min −m out)
+
+13:end for
+14:end while
+B DERIVATION OF THEADAM-LIKESVRG EXTENSION
+To derive the SVRG extension of IVON, we will first write the VB objective in the form used
+by IVON; see Shen et al. (2024, Eq. 1). Essentially, they use mini-batchesBof size B, and to
+accommodate this they scale the expected loss by a constantκE q[ℓi]. Settingκ=Ngives back the
+ERM loss but it can also be set to other values. In IVON, we also treat the regularizerℓ 0 explicitly
+by setting it to the weight decay. It is not merged in the losseℓ i as in the previous sections. With
+these changes, Sec. 3.2 can be written as where an explicit natural gradient ofL 0 is added,
+λin ←(1−η)λ in −ηκ
+
+ 1
+B
+X
+i∈B
+
+e∇Li(λin)− e∇Li(λout)
+
++ 1
+κ
+NX
+j=1
+e∇Lj(λout) + 1
+κ
+e∇L0(λin)
+
+.
+We then plug in the natural parameter and natural gradients ofq=N(θ|m,diag(s) −1), which
+yields a Newton-like update very similar to Thm. 3.
+To derive the IVON-PoCo update, we assume a quadratic regularizerℓ 0 =s 0 1
+2 θ⊤θwiths 0 >0.
+The VONcorr update can be written as follows where the new parts compared to Eq. 15 are in red,
+sin ←(1−η)s in +ηκ
+
+ 1
+B
+X
+i∈B
+
+Eqλin
+[∇2ℓi]−E qλout [∇2ℓi]
+
++ 1
+κ
+NX
+j=1
+Eqλout [∇2ℓj]+s0
+κ
+
+,
+min ←m in −ηκ 1
+sin
+"
+1
+B
+X
+i∈B
+
+Eqλin
+[∇ℓi]−E qλout [∇ℓi]
+
++ 1
+κ
+NX
+j=1
+Eqλout [∇ℓj] + s0
+κ min
++
+
+1
+κ
+NX
+j=1
+Eqλout [∇2ℓj]− 1
+B
+X
+i∈B
+Eqλout [∇2ℓi]
+
+(min −m out)
+#
+.
+(25)
+To write the update in IVON form, we make a few modifications.
+1. For weight decay, we tuneδ=s 0/κdirectly.
+2. We removeδfrom thes in update and divide the whole update byκ. The resulting update
+is written in terms ofh in such thats in =κ(h in +δ)andσ 2
+in = 1/(κ(hin +δ)).
+3. We use different learning rate form in andh in updates. Form in, we use a scheduledη t for
+iterationt. Forh in, we useβ 2 ∈[0,1).
+4. We use momentum with learning rateβ 1 ∈[0,1)and debiasing forg(but not forh).
+5. We add a term for the update ofhwhich ensures positivity ofh. We initializehby a scalar
+constanth 0 >0.
+16
+Preprint. Under Review.
+6. The scaling factorκis often set toNbut it can be different for cases when the effective
+number of examples is not immediately clear (for example, for LLM training).
+7. We add an additional factorαin front of the outer gradients and Hessian, similarly to
+α-SVRG (Yin et al., 2025).
+B.1 HANDLINGMEGA-BATCHES FORFULL-GAUSSIAN
+For full-Gaussians, we can build the site as follows,
+ˆqout ←exp
+
+−θ⊤gout − 1
+2 (θ−m out)⊤Hout(θ−m out)
+
+,
+whereg out ←ρ 1gout + (1−ρ 1)
+X
+i∈M
+Eqout [∇ℓi]
+Hout ←ρ 2Hout + (1−ρ 2)
+X
+i∈M
+Eqout [∇2ℓi].
+(26)
+C ABLATIONS ANDADDITIONALRESULTS ONLOGISTICREGRESSION
+Here, we run several ablations on the IVON-PoCo algorithm proposed in the main paper (Alg. 4).
+Extra term inm-update.The leftmost plot in Fig. 7 shows how the new term in the mean-update
+can cause instabilities in the training when naively implemented. This is likely due to the noisy
+reparametrization-trick based Hessian estimate. Using exact diagonal Hessian fixes the problem and
+leads to more stable training. Since the diagonal Hessian is expensive to compute, one can also
+simply downweigh the extra term by0.01. This works well throughout our experimnts. Therefore,
+we follow this approach in all logistic regression and image classification experiments. Aggressive
+gradient clipping (ξ= 10 −4) also somewhat stabilizes the training, but does not work as well as
+downweighting on this example. For more frequent refreshing as used in the transformer experi-
+ments, gradient clipping was enough to stabilize the training and no downweighting was required.
+Outer megabatch momentum.We also perform two ablations over the outer momentum param-
+eterρ. The middle plot in Fig. 7 shows that when a few large outer batches are used, it is best to use
+ρ= 0(no momentum) which always uses the freshest outer batch. In contrast, when using small
+megabatches as in the right plot in Fig. 7, larger values ofρ= 0.9are advantageous.
+D HYPERPARAMETERS ANDADDITIONALDETAILS
+D.1 IMAGECLASSIFICATION WITHRESNETS
+The ImageNet experiments run for 90 epochs, using batch size 384 on 8 GPUs which took around
+12-15 hours. The learning rate is annealed to zero using a cosine schedule. For the CIFAR-10
+experiments, we train for 100 epochs and batch size 50 on a single GPU, and each run took around
+1-2 hours. As described in the main text, the learning rate is annealed to a quarter of the starting
+learning rate for all methods.
+The hyperparameters for SGD, AdamW and IVON are set identical to the ones used in (Shen et al.,
+2024), except for CIFAR-10 where we use an ess of5·105. All SVRG methods and IVON-PoCo in-
+herit the hyperparameters from their base algorithm. The variance reduced methods use a megabatch
+size 50 times larger than the minibatch size on ImageNet and 10 times larger than the minibatch size
+on CIFAR-10. We tunedαforα-SVRG and IVON-PoCo seperately. The optimalαis 0.2 for
+AdamW, 0.4 for SGD and 0.1 for IVON-PoCo. On ImageNet, we usedα= 0.6but it was not overly
+tuned due to computational constraints. IVON-PoCo uses outer momentum ofρ 1 =ρ 2 = 0.3on
+CIFAR-10 and no momentum was tried on ImageNet.
+D.2 PRETRAINING FROMSCRATCH
+We first detail the experiments described in Sec. 4.3. We use the same set-up as in (Shen
+et al., 2024) which follows the nanoGPT repository found underhttps://github.com/
+17
+Preprint. Under Review.
+0.0 4.0 8.0 12.0 16.0 20.0
+# Gradient Computations / N
+25.0
+30.0
+35.0
+40.0Test Accuracy
+CIFAR-10 (N=50000, P=3072)
+SGD SVRG IVON IVON-PoCo
+0.0 0.4 0.9 1.3 1.7 2.2
+# Gradient Computations / N
+64.0
+66.0
+68.0
+70.0
+72.0T est Accuracy
+Covertype (N=464809, P=54)
+Exact Hessian
+Downweighting
+Inexact Hessian
+Clipping
+0.0 4.0 8.0 12.0 16.0 20.0
+# Gradient Computations / N
+25.0
+30.0
+35.0
+40.0Test Accuracy
+CIFAR-10 (N=50000, P=3072)
+IVON-PoCo (0.0)
+IVON-PoCo (0.5)
+IVON-PoCo (0.8)
+IVON-PoCo (0.9)
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+# Gradient Computations / N
+25.0
+30.0
+35.0
+40.0Test Accuracy
+CIFAR-10 (N=50000, P=3072)
+IVON-PoCo (0.0)
+IVON-PoCo (0.5)
+IVON-PoCo (0.8)
+IVON-PoCo (0.9)
+Figure 7: First plot shows additional result on CIFAR-10. For the second plot, we ablate the new red
+term in them-update of Alg. 4 to show that it can be numerically unstable. Using exact Hessians or
+downweighting it improves the performance. Third plot shows that when large outer batches with
+infrequent refreshes are used,ρ= 0performs best (no momentum). For small outer batches, small
+momentum works best (ρ= 0.9).
+karpathy/nanoGPT. We use an effective batch size of 480 achieved via 48 gradient accumula-
+tion steps to train a 125M parameter GPT-2 model from scratch on ca. 50B tokens from OpenWeb-
+text in 100,000 steps. The AdamW run uses a learning rate of6·10 −4,(β 1, β2) = (0.9,0.95). The
+IVON run uses a learning rate of0.3,(β 1, β2) = 0.9,0.99999, an effective sample sizeκ= 1·10 10,
+a Hessian initialization of0.001as well as element-wise clipping of 0.001. For IVON-PoCoMo we
+use the same hyperparameters but starting at step 50,000 we add a correction with a megabatch that
+is 10 times the size of a minibatch and megabatch statistics that get updated after every 10 inner loop
+steps. We also useρ 1 = 0.6andρ 2 = 0.1for momentum. All these experiments are run on 8xA100
+GPUs for up to one and a half days using bf16 and flash attention (Dao et al., 2022).
+For the ablations we follow a similar recipe but rather use a smaller GPT-2 model which we downsize
+to ca. 33M parameters by using only 4 layers and 4 heads with an embedding dimension of 512.
+We run the experiments on wikitext103 and use the official train-validation splits for training and
+evaluation. Hyperparameters for IVON, IVON-PoCo, and AdamW are kept as above. We warmup
+IVON-PoCo andα-SVRG with IVON and AdamW for 5,000 steps for the ablation overαand for
+1,000 steps for the ablation over the refresh rate of the outer estimates. We use a batch size of 64
+and a short context length of 128.
+D.3 CONTINUALPRETRAINING
+In this experiment we continually pretrain the GPT2-125M model from Shen et al. (2024) which
+is publicly available (https://huggingface.co/team-approx-bayes/gpt2-small)
+which was trained for 50B tokens on OpenWebText. All methods use a context length of 512 and
+a batch size of 80 and are trained on a single NVIDIA A100 80GB GPU with bf16 and flash
+attention to speed up training and reduce GPU memory utilization. We use the first 1B tokens
+from the Fineweb-edu-sample-10BT which is available openly on Huggingface under the following
+linkhttps://huggingface.co/datasets/HuggingFaceFW/fineweb-eduand split
+18
+Preprint. Under Review.
+off the final 2000 documents for a validation split. For all experiments the learning rates are annealed
+to zero.
+For IVON and IVON-PoCo, we continue using the optimizer state from pretraining but change some
+of the hyperparameters. We change the ess to3·10 10 and useβ 2 = 0.9999. The learning rate is set
+to0.04instead of0.3, which was used for pretraining. With larger learning rates we found IVON
+to become less stable. For AdamW we start the optimizer state freshly and use a learning rate of
+1·10 −4, down from the6·10 −4 which was used for AdamW-trained models in Shen et al. (2024).
+Above, we found that loss sharply increased early in training which could lead to more forgetting of
+the data it was trained on. We useβ 1 = 0.9andβ 2 = 0.999which are oft-used for finetuning and
+the default choice in huggingface transformers (Wolf et al., 2020), which we use to implement our
+experiments.
+Forα-SVRG and IVON-PoCo we warmstart training with 1,000 steps of AdamW and IVON, re-
+spectively, and use 40 inner steps before refreshing the outer gradient and Hessian estimates using
+40 randomly sampled batches of size 80, i.e., 3200 examples and up to 1,638,400 tokens in total
+for estimating the gradients. We sample these batches randomly, so they need not overlap with the
+batches used in the following inner loop. We have found this to perform better in small experiments.
+Potentially, randomly sampling the batches reduces bias towards the same data used in the inner
+loop. For IVON-PoCo we setρ 1 = 0.3andρ 2 = 0.05.
+D.4 FINETUNING
+We finetune various models following the Transformer architecture (Vaswani et al., 2017). First,
+we use Vision Transformers (Dosovitskiy et al., 2021) with ca. 88M parameters. Our experiment
+uses OpenCLIP (Ilharco et al., 2021) and we only train the vision encoder but not the text encoder
+which produces label embeddings to which the image embeddings are matched. We train for 5
+epochs on Cars (Krause et al., 2013), DTD (Cimpoi et al., 2014), GTSRB (Houben et al., 2013) and
+RESISC45 (Cheng et al., 2017) and start correction for IVON-PoCo after just 50 steps. We use a
+batch size of 8, 32 warmup steps,β 1 = 0.9,β 2 = 0.99999, the Hessian is initialized to0.1, ess
+equals1·10 10, and the learning rate is initialized to0.3and annealed to zero.
+Next, we finetune two LLMs. First, we finetune the full Qwen2.5-0.5B-Instruct model on the first
+50% of the training set of XSUM (Narayan et al., 2018) and evaluate on the corresponding test
+split. We finetune for a single epoch with a learning rate of 0.01,β 1 = 0.9,β 2 = 0.99999, ess of
+1·10 10 and a Hessian initialized to0.001as well as element-wise clipping to0.001. We useα= 0.7
+and refresh the outer gradients and Hessians every 50 steps. We use the same hyperparameters for
+LoRA-finetuning of LLAMA-3.1-8B but increase the learning rate to 0.05. We train the model for 3
+epochs on GSM8k (Cobbe et al., 2021) and calculate the loss on both input and output tokens with
+a standard cross-entropy criterion. For all LLM methods we use greedy decoding and zero-shot
+prompting.
+19

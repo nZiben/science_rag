@@ -1,0 +1,663 @@
+ADAPTIVE-λSISS in MACHINE UNLEARNING for
+DDPM & VAE
+M. Parsa Dini
+mp.dini@ee.sharif.edu
+Human Jafari
+houman.jafari627@sharif.edu
+Sajjad Amini
+s_amini@sharif.edu
+M. Mahdi Mojahedian
+mojahedian@sharif.edu
+December 2, 2025
+Abstract
+Machine Unlearning (MU)iscriticalforlargegenerativemodels, suchasVAEs[1]andDDPMs[4],
+to enforce theright to be forgottenand ensure safe content generation without expensive retraining. Ex-
+isting methods, like theStatic-λSISS framework[6] for Diffusion Models, rely on a fixed data mixing
+parameterλ, which is suboptimal as the necessary unlearning rate varies dynamically across samples and
+training stages.
+We introduceADAPTIVE-λSISS, a novel approach that transforms the mixing parameterλfrom
+a fixed constant into alatent variablewhose optimal value is dynamically inferred at each unlearning
+step. We leverage aVariational Inference-basedobjective[2], employing a small neural network to
+learn an adaptive posterior distributionqϕ(λ). This network conditions on context features derived from
+the SISS loss components, enabling simultaneous and robust optimization of the diffusion model and the
+λ-inference mechanism.
+We also explore the application of this adaptive concept to score-function-based unlearning, proposing
+a multi-class extension for theScore Forgetting Distillation (SFD) framework[7]. Empirical results
+on an augmented MNIST dataset demonstrate thatADAPTIVE-λSISSsignificantly improves over
+the original SISS, yielding superior removal of forgotten content while better maintaining the generative
+quality on the retain set.
+Furthermore, we propose novel extensions to this unlearning paradigm. First, we explore a unified
+unlearning objective that leverages the Score Forgetting Distillation (SFD) framework’s data-free effi-
+ciency and the SISS framework’s direct gradient control, creating a hybrid approach that exploits the
+strengths of both. Second, to enhance the robustness and fine-grained control of the unlearning process,
+we introduce a Reinforcement Learning (RL) framework that learns an optimal, sequential unlearning
+policy, treating the unlearning operation as an action in a state space defined by the model’s current
+memory of the forget-set.
+1 Introduction
+Modern generative models, ranging from VAEs and DDPMs to large-scale systems such as Stable Diffusion
+are trained on massive, high-dimensional datasets that frequently contain sensitive personal information.
+As a result, growing regulatory and ethical pressures have intensified the need for machine unlearning: the
+ability to remove or suppress the influence of specific data points, concepts, or classes after training.
+Practical motivations for unlearning span several dimensions. Individuals may demand that facial images
+resembling them in datasets such as CelebA be removed from the learned model. More broadly, erasing
+semanticconceptsorclasslabelsenablesapathwaytowardcontrollableeditingandconcept-levelmodification
+within generative models. In addition, unlearning supports safe guidance, where a model avoids sampling
+from inappropriate or undesirable regions of the data distribution. These considerations, together with the
+infeasibility of retraining large models from scratch, have made unlearning an increasingly active research
+direction.
+1
+arXiv:2512.01054v1  [cs.LG]  30 Nov 2025
+Large Language Models & Large generative models, including Diffusion Models (DDPMs, VAEs, Sta-
+ble Diffusion), are typically trained on massive, high-dimensional datasets. Retraining these models from
+scratch is computationally prohibitive, necessitating the development of efficient and effective unlearning
+methodologies. Furthermore, unlearning serves as a foundation for concept erasure and general data editing,
+while also bolstering defense against Membership Inference Attacks (MIA).
+Our work significantly advances machine unlearning in generative models through several key innovations.
+Beyond the adaptive SISS framework, we explore methods that bridge existing limitations. Specifically, we
+investigate a hybrid objective that merges the robust, data-dependent unlearning control of the SISS frame-
+work with the efficient, conditional score-alignment of SFD. This synthesis aims to achieve rapid and effective
+concept erasure while maintaining high generative quality. Building on this, we introduce a Reinforcement
+Learning-based machine unlearning method. This RL approach allows the unlearning procedure itself to be
+optimized as a sequential decision-making process, enabling the model to learn context-aware, temporally
+optimal updates that maximize forgetting while minimizing performance degradation on the retain set. This
+is a crucial step toward creating truly robust and efficient unlearning protocols.
+2 Related Works
+Several approaches to machine unlearning have been explored. A straightforward strategy applies gradient
+ascent on a designated forget-set to counteract learned influence. Other methods operate in latent space,
+steering samples toward alternative semantic directions. Weight-saliency-based approaches attempt to iden-
+tify and suppress parameter subsets most responsible for memorisation. More recently, works such as Ermon
+et al. (SISS framework) propose relaxing the goal of exact unlearning by instead attenuating the contribution
+of forgotten data in a controlled manner, acknowledging that strict removal often harms generative fidelity.
+However, existing frameworks exhibit notable limitations. Many assume that forgotten samples should
+map to pure noise like [9], which leads to semantically broken or incoherent generations, contradicting the
+practical goal of replacing forgotten content with meaningful high-probability alternatives.
+In our work, we focus on several key ideas. First, we address the poor forgetting and sample-generation
+performance of the SISS framework by introducing additional components to its design. In Ermon et al.’s
+work, the parameterλ; the Bernoulli variable controlling the probability of sampling from the forget-set
+during the DDPM backward process was fixed atλ=1
+2 . Whenλapproaches0or1, SISS effectively draws
+its noisy latents almost entirely from the retain set or from the forget set, respectively, producing latents that
+are unlikely to be sampled from the opposite distribution. Therefore, this fixed choice can be problematic, as
+different images may require different values ofλ. To remedy this, we propose samplingλfrom a posterior
+distribution, which leads to significantly improved performance compared to the original method.
+Second, we revisit the label-assignment strategy used for guidance within the SFD framework, proposing
+improvements for more effective unlearning.
+Third, we explore a unified approach that combines ideas from both the first and second directions.
+Finally, we introduce a reinforcement-learning–based machine-unlearning method to further enhance
+unlearning efficiency and robustness.
+3 Problem Formulation
+LetD={x i}n
+i=1 denote the original training data. Suppose we wish to unlearn a subsetF={aj}k
+j=1 ⊂ D.
+Retraining the full model, parameterized byθ, on the retain-setR=D \ Fis typically infeasible due to
+computational cost and model scale. The ideal exact machine unlearning objective is to achieve parity
+between the model trained on the full dataset and a hypothetical model trained only on the retain-set:
+pθ(x| D)≈p(x| R).
+To approximate this goal efficiently, most unlearning methods adopt a bi-criteria optimization based on
+the empirical risk minimization framework, balancing the effort to suppress the forget-set’s influence while
+preserving performance on the retain-set:
+θ∗ = arg min
+θ
+{Lretain −αL forget}.
+2
+Here,L retain andL forget are loss functions or divergence measures defined over samples from the retain-set
+Rand forget-setF, respectively, andα >0is a scalar hyperparameter controlling the forgetting strength.
+This general structure is the foundation for numerous state-of-the-art unlearning techniques. For instance,
+the SISS framework explicitly uses this adversarial loss structure on a mixture distribution, while the Score
+Forgetting Distillation (SFD) framework employs a variant whereLretain is a knowledge distillation loss
+andL forget aligns the forget-concept score with a retain-concept score. Similarly, other approaches, such as
+those minimizing the KL divergence between the unlearned and vanilla model outputs on the retain-set and
+maximizing it on the forget-set, adhere to this core objective.
+4 Preliminaries
+In this section, first we will review VAE & DDPM models and afterwards, we will continue with SISS & SFD
+frameworks
+4.1 Variational Autoencoders (VAEs)
+Variational Autoencoders (VAEs)[1, 2] are a generative model that learns alatent variablerepresen-
+tation of the data. They consist of two main components: anEncoder(or inference model),qϕ(z|x), and
+aDecoder(or generative model),p θ(x|z).
+The Encoder maps an input data pointxto a distribution over the latent spacez, introducing the
+necessarystochasticity. The Decoder reconstructs the dataxfrom a samplezdrawn from this latent
+distribution. The model is trained to maximize theevidence lower bound (ELBO), which is a tractable
+lower bound on the log-likelihood of the data,logp(x).
+The ELBO objective function is given by:
+LVAE(θ, ϕ;x) =Eqϕ(z|x)
+h
+logp θ(x|z)
+i
+−D KL
+
+qϕ(z|x)∥p(z)
+
+Thefirst termis thereconstruction loss, ensuring the decoder accurately recreates the input. The
+second termis theKullback-Leibler (KL) divergencebetween the learned posteriorq ϕ(z|x)and a
+prior distributionp(z)(typically Gaussian), which acts as aregularizerto structure the latent space.
+4.2 Denoising Diffusion Probabilistic Models (DDPMs)
+4.2.1 DDPM (VAE-Based Approach)
+TheForward Processis a fixed Markov chain that gradually addsGaussian noiseto the datax0 overT
+time steps. The transition probability is:
+q(xt|xt−1) =N
+
+xt;
+p
+1−β txt−1, βtI
+
+whereβ t is a predefined noise schedule. If this process continues for many steps (T→ ∞), the data
+distributionp(x 0)is diffused into a simple, knownGaussian distribution,p(xT )≈ N(0,I).
+TheReverse Processis a learned Markov chain that reverses the diffusion, graduallydenoisingthe
+data fromxT back tox0. The transition probabilities are parameterized by a neural network (e.g., aU-Net):
+pθ(xt−1|xt) =N
+
+xt−1;µ θ(xt, t),Σθ(xt, t)
+
+In practice, the simplified training objective minimizes the mean squared error between the true noiseϵand
+the noise predicted by the modelϵθ [4]:
+LDDPM(θ) =E t,x0,ϵ
+hϵ−ϵ θ
+ √¯αt x0 +
+√
+1−¯αt ϵ, t
+2
+2
+i
+3
+4.2.2 Score-Based DDPM & SDE Approach
+This perspective focuses on learning thescore functionof the noisy data distribution,s(x, t) =∇x logp t(x).
+The score function is avector fieldthat, at any pointx, points towards the nearest high-probability region
+of the data distribution. The generative modelsθ(x, t)is trained to approximate this true score function [5].
+The training is done using thedenoising score matchingloss:
+LSGM(θ) =E t,x0,xt
+h
+∥sθ(xt, t)− ∇xt logq(x t |x 0)∥2
+2
+i
+This framework unifies DDPMs by defining the noise injection and generation process viaStochastic
+Differential Equations (SDEs)[8].
+The continuousForward SDEfor noise injection is:
+dx=f(x, t)dt+g(t)dw
+wheref(x, t)is the drift,g(t)is the diffusion coefficient, andwis the standard Wiener process.
+The correspondingReverse SDEfor sampling and generation is:
+dxt =
+h
+f(xt, t)−g(t)2∇xt logp t(xt)
+i
+dt+g(t) d ¯wt (1)
+whered¯ wis the infinitesimal reverse-time Wiener process. By substituting the learned scoresθ(x, t)for
+∇x logp t(x)and solving the SDE numerically, new data samples are generated.
+4.3 SISS Framework
+The SISS framework utilizes a mixture distributionqλ(mt)from which the noisy samplemt is drawn at time
+stept
+∀λ∈[0,1] :q λ(mt|x, a) = (1−λ)q(mt|x) +λq(m t|a)(2)
+whereq(m t|x) =N(m t|γtx, σ2
+t I). It is like tossing a coin and if it was heads which happens with probability
+ofλ, we sample fromF, otherwise, we sample fromR=D\F.
+The unlearning objectiveLsiss is defined using the retain and forget loss components,Lretain andL forget,
+which employ Importance Sampling (IS) to correct for sampling fromqλ:
+Lretain(x, a, mt, t;θ) = n
+n−k
+q(mt|x)
+qλ(mt|x, a)
+
+mt −γ tx
+σt
+−ϵ θ(mt, t)
+
+2
+2
+Lforget(x, a, mt, t;θ) = k
+n−k
+q(mt|a)
+qλ(mt|x, a)
+
+mt −γ ta
+σt
+−ϵ θ(mt, t)
+
+2
+2
+(3)
+whereϵ θ(mt, t)is the predicted noise by the UNet with parametersθ. The n
+n−k and k
+n−k terms are
+dataset-size-related weighting terms, wherenis the total dataset size andkis the size of the forget set.The
+overall unlearning loss is:
+Lsiss =E x∼PX Ea∼PA Et∼PT Emt∼qλ
+h
+Lretain −(1 +s)L forget
+i
+=E x∼PX Ea∼PA Et∼PT Emt∼qλ
+"
+n
+n−k · q(mt |x)
+qλ(mt |x, a)
+mt −γ tx
+σt
+−ϵ θ(mt, t)
+
+2
+2
+−(1 +s)· k
+n−k · q(mt |a)
+qλ(mt |x, a)
+mt −γ ta
+σt
+−ϵ θ(mt, t)
+
+2
+2
+#
+(4)
+, wheres≥0is a scale factor for the forget loss. Here is the algorithm of SISS Framework:
+4
+Algorithm 1: Static-λSISS Unlearning for DDPMs
+Require:DatasetD, Forget setF, Retain setR, Modelε θ, Noiseq, mixture weightλ, learning rate
+η, scalings, epochsE
+1:fore= 1toEdo
+2:Samplex∼ R,a∼ F,t∼P T
+3:Sample latent:m t ∼q λ(mt) = (1−λ)q(m t|x) +λq(m t|a)
+4:Retain Loss:
+Lret ← |D|
+|R|
+q(mt|x)
+qλ(mt)
+mt−γtx
+σt
+−ε θ(mt, t)
+
+2
+5:Forget Loss:
+Lforget ← |D|
+|F|
+q(mt|a)
+qλ(mt)
+mt−γta
+σt
+−ε θ(mt, t)
+
+2
+6:Total loss:L SISS ← Lret −(1 +s)L forget
+7:Optionally clip/scale gradient ofL forget
+8:Update:θ←θ−η∇ θLSISS
+9:end for
+Figure 1: Static-λSISS unlearning for DDPMs.
+4.4 SFD Framework
+TheSFD (Score Forgetting Distillation)framework enables data-free machine unlearning in diffusion
+models by distilling knowledge from a pretrained model into a one-step generator while aligning scores of
+forget classes/concepts with retain ones. For a forget conditioncf and override conditionco from the retain
+setC r, the framework optimizes a generatorgθ(n, c)withn∼ N(0, I)such that the induced distribution
+Dθ,cf matchesp data(x|c o), while preservingDθ,cr ≈p data(x|c r)forc r ∈C r.
+Noisy samples are generated via forward diffusion:zt =a tx+σ tϵt withϵ t ∼ N(0, I),x∼D θ,c, where
+at, σt follow the diffusion schedule. The pretrained model provides the scoresϕ(zt, c, t) =∇zt lnp data(zt |c)
+and mean predictorx ϕ(zt, c, t). The generator’s optimal score issψ∗(θ)(zt, c, t) =atxψ∗(θ)(zt, c, t)−zt/σ2
+t ,
+whereψ ∗(θ)minimizes the denoising score matching loss over fake data.
+The core SFD loss aligns pretrained and generator scores across conditions:
+Lsfd(θ;ϕ, c1, c2) =E zt,t,x∼Dθ,c2
+h
+ωt
+sϕ(zt, c1, t)−sψ∗(θ)(zt, c2, t)
+
+2
+2
+i
+,(5)
+with re-weightingω t >0. This decomposes into distillationL sfd(θ;ϕ, cr, cr)and forgettingL sfd(θ;ϕ, co, cf )
+components (which is quite the forget & retain approach).
+The overall objective balances retention and forgetting:
+Lsfd =E cr∼Cr
+h
+Lsfd(θ;ϕ, cr, cr) +λL sfd(θ;ϕ, co, cf )
+i
+,(6)
+whereλ >0are balancing hyperparameters. In practice, alternating optimization betweenθand an approx-
+imate score networkψuses an equivalent form via Tweedie’s formula:
+ˆLsfd
+ 
+θ, ψ;ϕ, c1, c2, α
+
+= (1−α)ω ta2
+t σ4
+t ∥xϕ(zt, c1, t)−xψ(zt, c2, t)∥2
+2
++ω ta2
+t σ4
+t (xϕ(zt, c1, t)−xψ(zt, c2, t))⊤(xψ(zt, c2, t)−x)
+(7)
+withα∈ {1,1.2}andω t =σ 4
+t a2
+t C∥xϕ(zt, t, c)−x∥sg
+1 for stop-gradient. This data-free approach requires only
+the pretrained score network, enabling efficient unlearning without real or fully denoised samples.
+5 Our Contribution
+5.1 Reforming SISS Framework
+The primary limitation of SISS is the fixedλ. We introduce a novel approach to learn an adaptiveλat each
+unlearning step, making the process dynamic and sensitive to the current degree of forgetting and retention.
+5
+The SISS framework utilizes a weighted sampling distributionqλ(mt|x, a)wherexis a retain-set sample
+andais a forget-set sample. The parameterλ∈[0,1]controls the mixture. Our key innovation is to replace
+the fixedλwith a neural network that learns its optimal value during the unlearning process. This learnedλ
+is designed to be adaptive to the current state of the unlearning process, encoded by context features derived
+from the SISS loss components.
+5.1.1 Variational Inference forλ
+We treatλas a latent variable and utilize a separate, small neural network, parametrized byϕ, to infer its
+distributionq ϕ(λ)given a set of features describing the current state of the unlearning process. This leads
+to a Variational Autoencoder (VAE)-like objective applied to the SISS loss:
+LELBO =E λ∼qϕ(λ)
+h
+Lsiss(λ) +βD KL
+
+qϕ(λ)||p(λ)
+i
+=E x∼PX Ea∼PAEt∼PT Eλ∼qϕ(λ)Emt∼qλ
+"
+n
+n−k · q(mt|x)
+qλ(mt|x, a)
+
+mt −γ tx
+σt
+−ϵ θ(mt, t)
+
+2
+2
+−(1 +s)· k
+n−k · q(mt|a)
+qλ(mt|x, a)
+
+mt −γ ta
+σt
+−ϵ θ(mt, t)
+
+2
+2
+#
++βD KL
+
+qϕ(λ)||p(λ)
+
+(8)
+his loss simultaneously optimizes the diffusion model parametersθthroughLsiss(λ)and the inference net-
+work parametersϕthrough the Kullback-Leibler (KL) divergence term,DKL, which regularizes the posterior
+qϕ(λ)towards a priorp(λ). We can assumep(λ)is a simple uniform or Gaussian prior.
+5.1.2 Context Feature Vector and Reparameterization
+To makeλadaptive, the inference networkq ϕ(λ)takes a context vectorvas input, which encapsulates the
+current unlearning feedback:
+v=
+h
+Lretain,Lforget,||∇θLretain||,||∇θLforget||
+i
+The network outputs the parameters(µϕ(v), σϕ(v))for a Gaussian distribution on a latent variablez. We
+use the reparameterization trick to ensure that the gradient can flow back toϕ:
+z=µ ϕ(v) +ξ·σ ϕ(v), ξ∼ N( ⃗0, I)
+The final adaptiveλis obtained by passingzthrough a sigmoid function to constrain it to the interval[0,1]
+(The architecture of our framework is depicted in Figure 2):
+λ=σ(z) = 1
+1 +e −z
+.
+This approach has two benefits, one clearly makes the SISS framework much mature and with better
+performance, secondly it does not use any other pretrained model and it is very easy to calculate because we
+made a gaussian prior assumption which makes the KL divergence a very easy differentiable function and
+also for generation ofλ, we used sigmoid function, another easily differentiable function.
+For the context feature vectorv, we selected the retain and forget losses along with the norms of their
+corresponding gradients. In practice, this combination provided a sufficiently informative and stable signal
+for the inference network to learn an effective mapping to the adaptiveλ. Within this setup, the model can
+be trained end-to-end to infer an optimal balance between forgetting and retention based solely on these core
+optimization dynamics. Although this minimal set of features already yielded strong performance, an alter-
+native extension would be to augmentvwith semantic or representation-level features such as embeddings
+or concept-specific activations. Such additions could potentially enrich the contextual information available
+to the inference network, although we leave this direction for future exploration.
+6
+5.1.3 Backpropagation and Gradient Update
+The gradient of ELBO with respect to the inference network parametersϕis calculated using the chain rule,
+using the reparameterization trick:
+∂LELBO
+∂ϕ =E λ∼qϕ(λ)
+"
+∂Lsiss
+∂λ · ∂λ
+∂z
+ 
+∂z
+∂µ · ∂µ
+∂ϕ + ∂z
+∂σ · ∂σ
+∂ϕ
+!
++β ∂DKL
+∂ϕ
+#
+The intermediate derivatives are:
+∂λ
+∂z =λ(1−λ), ∂z
+∂µ = 1, ∂z
+∂σ =ξ
+We can also observe that our changes to the original SISS framework do not add significant computational
+cost. This is clear from the derivatives above and because the derivative of the KL divergence is easily
+computed.
+Figure 2: Our own method is depicted in this image.
+5.2 Adaptive-λMulti-Class Concept Erasure for Score-Based Unlearning
+While SISS is VAE-based, the adaptiveλconcept can enhance score-function-based unlearning methods
+like Score Forgetting Distillation (SFD). SFD, which seeks to approximate the unlearned score function
+∇x logp(x)via distillation, is generally more effective for concept erasure (e.g., erasing a labelcf in favor of
+co).The SFD objective combines a retaining distillation loss and a forgetting loss:
+Lsfd(θ, ψ)∝ ˆLsfd(θ, ψ;. . . , cr, cr, α) +λˆLsfd(θ, ψ;. . . , co, cf , α)
+whereψare parameters for a teacher network andcr is the retain class.We propose a multi-class extension
+using an adaptiveλfor the concept erasure portion:
+Eλ∼qϕ(λ)
+"
+ˆLsfd(θ, ψ;ϕ, cr, cr, α) +
+X
+co∈Cretain
+q(mt|co)
+qλ(x,C)
+ˆLsfd(θ, ψ;ϕ, co, cf , α)
+#
+Here, the forgetting process ofcf is directed towards a mixture of all retain classesco ∈ Cretain, weighted by
+an adaptiveλ. The importance weight q(mt|co)
+qλ(x,C) is adapted to the multi-class context, guiding the model to
+a high-probability manifold other than the one associated with the forget class.
+5.3 Unlearning as a Sequential Decision Process: Reinforcement Learning for
+λSelection
+Traditional unlearning methods, including the Static-λSISS framework and simple heuristic scheduling,
+primarilyemployagreedy approachtolossbalancing. Thesemethodsoptimizeλbasedonlyontheimmediate
+7
+objective, failing to account for the crucial long-term effects that a single regularization weight choice has
+on the unlearning stability and the final state of the model. To overcome this fundamental limitation and
+learn a policy that maximizes long-term, discounted unlearning success, we re-frame the selection of the
+regularization weightλt at steptas a formalMarkov Decision Process (MDP).
+5.3.1 MDP Formulation for Adaptiveλ
+The unlearning process is modeled as an MDP defined by the tupleM= (S,A,R,T, γ), where the policy
+πlearned by the agent determines the optimalλt given the current state.
+TheState Space (S)is designed to provide the agent with a complete, low-dimensional view of the
+current unlearning dynamics and history. The stateSt at timetcaptures the instantaneous loss values, the
+magnitude of the model’s response to these losses via gradient norms, the immediate past action, and the
+progression of time:
+St =
+n
+Lretain,Lforget,||∇θLretain||,||∇θLforget||, λt−1, t
+o
+TheAction Space (A)is a single-dimensional continuous space, representing the chosen regularization
+weightλ t for the current step:
+At =
+n
+λt ∈[λ min, λmax]
+o
+The formulation of theReward Function (R)is critical, as it encodes the desired trade-off. The
+immediate rewardR t is designed to maximizeunlearning efficacy(L forget − Lretain), while simultaneously
+applying penalties to enforce training stability and model safety. The term−γ|λt −λ t−1|penalizes large,
+erratic changes in the action, thus promoting a smoother unlearning trajectory. The term−L2
+retain acts as
+a strong safety penalty, ensuring the policy prioritizes minimal degradation on the retain set:
+Rt =−L retain +L forget| {z }
+Unlearning Efficacy
+−γ|λ t −λ t−1|| {z }
+Stability Penalty
+− L 2
+retain| {z }
+Safety Penalty
+5.3.2 RL Algorithms for Policy Optimization
+To learn the optimal continuous policyπ(λt|St), we consider several robust policy optimization algorithms
+suited for continuous control tasks.
+Monte Carlo Policy Gradient (MCPG)As a foundational method for optimizing a stochastic policy
+πθ(λt|St), the Monte Carlo Policy Gradient aims to adjust the policy parametersθin the direction of higher
+return. Given the stochastic nature of theλselection (similar to our proposedλ-encoder from the Variational
+Inference section), a policy loss can be derived that incorporates a regularization term:
+Lpolicy =−R t log(πθ(λt|St)) +βD KL(qϕ(z)||p(z))
+Here,R t acts as an estimated advantage or return, and the KL divergence term helps to constrain the policy
+distribution.
+Proximal Policy Optimization (PPO)Proximal Policy Optimization is a highly stable and sample-
+efficient on-policy algorithm used to perform the optimization. PPO improves upon standard Policy Gradient
+methods by employing aclipped surrogate objective. This clipping mechanism prevents extreme policy shifts
+by bounding the probability ratior t(θ) = πθ(At|St)
+πθold (At|St) . This stability is crucial in the volatile setting of
+machine unlearning, as it prevents the policy from converging to poor local optima early in the training
+process. The clipped objective is designed to maximize the following expression, where the clipping region
+prevents drastic divergence:
+max
+θ
+E
+h
+min
+
+rt(θ) ˆAt,clip(r t(θ),1−ϵ,1 +ϵ) ˆAt
+i
+8
+Deep Deterministic Policy Gradient (DDPG) with Entropy RegularizationDDPG is an es-
+tablished off-policy algorithm for deterministic continuous control, where the policy directly outputs the
+continuousλ t =π θ(St). To ensure adequate exploration in the complexλspace, especially early in the pro-
+cess, the deterministic action is often perturbed by noise:λt =π θ(St) +ϵ. Furthermore, the algorithm can
+be modified to incorporatemaximum entropy regularization, similar to methods like Soft Actor-Critic (SAC).
+The objective function is augmented with the policy’s entropyH(π)to encourage broader exploration:
+L=E[Q(S, A)] +αH(π)
+While DDPG is considered the "Best Continuous Control" framework for many applications, the use of a fully
+entropy-regularized approach for a single-dimensional action spaceλmay introduce unnecessary complex-
+ity. However, the benefits of improved exploration and robustness could still outweigh the implementation
+overhead.
+6 Experiments
+Experiment A
+To illustrate practical behavior, we construct an augmented MNIST dataset in which class “1” is contami-
+nated withFashion-MNISTtrousers in a1 : 10ratio. A conditional diffusion model trained on these data
+learns hybrid semantics for the label “1” (refer to Figure 3). We train: a baseline model, an SISS unlearning,
+our adaptive-λmethod. It is also worth mentioning that we use EMA smoothing and Flipping to make the
+Baseline DDPM model be able to generate trousers as well conditional on label1.
+Figure 3: The Augmented-Mnist Dataset is depicted in this image.
+Across repeated runs, qualitative samples and quantitative metrics: KID, FID, SSIM, and IS; show that
+our framework more effectively removes trouser content while restoring clean digit structure, outperforming
+SISS consistently (please refer to Table 1 & Appendix). Additional CIFAR-10 and ImageNet results will be
+included in the final paper.
+Table 1: Comparison of Metrics Across Methods (Mean±Std)
+Metric Forget Set Retain Set
+Baseline Dynamic SISS Baseline Dynamic SISS
+FID 145.03±12.5 214.83±18.0 243.51±20.5 32.92±2.8 39.41±3.2 62.67±5.1
+KID 0.93±0.21 1.72±0.19 0.83±0.12 0.06±0.01 0.06±0.01 0.16±0.02
+IS 2.20±0.16 1.69±0.06 1.89±0.07 1.75±0.12 1.73±0.11 1.72±0.10
+SSIM 0.65±0.08 0.70±0.17 0.86±0.11 0.38±0.03 0.42±0.03 0.29±0.02
+For the MNIST dataset, in the tasks that we defined, for the FID score metrics (the lower the score, the
+better), in the retain set our model has a lower score vs. the SISS framework with respect to the baseline.
+This is also visible in per-class evaluations. In KID metrics (the lower the better as well), our model is
+getting much lower KID vs. SISS with respect to the baseline model, and it is having much higher KID with
+9
+respect to the baseline and SISS as we want our model not to perform well on the forget set! We can also
+see how much we are close to baseline metrics per class in general. The same things apply to SSIM metrics;
+however, there is not much difference in IS scores.
+Furthermore, the qualitative comparison in Figure 4 illustrates the visual differences between the gener-
+ated samples. The baseline model is shown on the left, SISS in the middle, and our proposed method on the
+right. In our experiments, the samples produced by our method exhibit clearer separation between retained
+and forgotten concepts compared to the SISS framework.
+Figure 4: Visualization of samples generated by each model: baseline (left), SISS (middle), and our method
+(right).
+7 Conclusion
+In this work, we addressed the critical challenge of balancing the competing objectives of model fidelity
+and unlearning efficacy within the Stochastic Sampling Importance Sampling (SISS) framework for machine
+unlearning in Diffusion Models[6]. We identified the primary limitation of existing methods as the use of a
+staticλhyperparameter, which fails to account for the dynamic, sample-dependent nature of the unlearning
+process. To overcome this, we introducedthe Adaptive-λSISSframework, which leverages Variational
+Inference to learn an optimal, context-dependent distribution overλ. By conditioningλon a feature vector
+derived from the currentretain and forget losses, our approach enables the model to dynamically adjust the
+penalty applied to the forget objective during training.
+Our empirical analysis demonstrated that the Adaptive-λapproach achieves superior performance across
+challenging concept erasure tasks. Specifically, the dynamic approach significantly improved the unlearning
+metrics (e.g., FID, KID) for the Forget Set, confirming greater erasure efficacy, while maintaining or even
+improving the generative fidelity metrics (e.g., IS, SSIM) on the Retain Set compared to the Static-λbaseline.
+This substantiates the core hypothesis: a learned, adaptive loss balancing mechanism yields a more stable
+and effective unlearned model, successfully mitigating the common trade-off between forgetting and retaining
+capabilities.
+We also extended this dynamic loss balancing to a more sophisticated, sequential decision-making process
+by formalizing the unlearning task as a Reinforcement Learning (RL) problem. This framework will model
+the loss balancing as a Markov Decision Process (MDP), allowing an agent to learn a policy that maximizes
+a reward function tied to both retention and forgetting metrics over an entire unlearning epoch, promising
+an even greater degree of control and performance stability.
+10
+References
+[1] Kingma, D. P., & Welling, M. (2013). Auto-Encoding Variational Bayes.arXiv preprint arXiv:1312.6114.
+[2] Rezende, D. J., Mohamed, S., & Wierstra, D. (2014). Stochastic Backpropagation and Approximate
+Inference in Deep Generative Models.arXiv preprint arXiv:1401.4082.
+[3] Sohl-Dickstein, J., Weiss, E., Mané, D., Allec, R., & Ermon, S. (2015). Deep Unsupervised Learning
+using Nonequilibrium Thermodynamics.arXiv preprint arXiv:1503.03585.
+[4] Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models.arXiv preprint
+arXiv:2006.11239.
+[5] Song, Y., & Ermon, S. (2019). Generative Modeling by Estimating Gradients of the Data Distribution.
+arXiv preprint arXiv:1907.05600.
+[6] Alberti, S., Hasanaliyev, K., Shah, M., & Ermon, S. (2025). Data Unlearning in Diffusion Models.arXiv
+preprint arXiv:2503.01034.
+[7] Chen, T., Zhang, S., & Zhou, M. (2024). Score Forgetting Distillation: A Swift, Data-Free Method for
+Machine Unlearning in Diffusion Models.arXiv preprint arXiv:2409.11219.
+[8] Song, Y., Chen, J., & Ermon, S. (2020). Score-Based Generative Modeling through Stochastic Differential
+Equations.arXiv preprint arXiv:2011.13456.
+[9] Li, G., Hsu, H., Chen, C.-F. (Richard), & Marculescu, R. (2024). Machine Unlearning for Image-to-Image
+Generative Models.arXiv preprint arXiv:2402.00351.
+11
+Appendix A
+Algorithm 2: Adaptive-λSISS Unlearning for DDPMs
+Require:DatasetD, Forget setF, Retain setR, Modelε θ, Inference Netεϕ, noiseq, learning rateη, scaling factors,
+KL-weightβ, epochsE
+1: Initializeθ,ϕ, priorp(λ)
+2:fore= 1toEdo
+3: Samplex∼ R,a∼ F,t∼P T
+4:Base Losses:
+Lbase
+ret =
+mt−γtx
+σt
+−ε θ(mt, t)
+
+2
+Lbase
+forget =
+mt−γta
+σt
+−ε θ(mt, t)
+
+2
+5:Context:v=
+h
+Lbase
+ret ,Lbase
+forget,||∇θLbase
+ret ||,||∇θLbase
+forget||
+i
+6:Adaptiveλ(Reparam):
+(µϕ, σϕ) =εϕ(v); sampleξ∼ N(0, I),z=µ ϕ +ξσ ϕ,λ=σ(z)
+7: Sample latent:m t ∼q λ(mt) = (1−λ)q(mt|x) +λq(mt|a)
+8:Weighted Losses:
+Lret(λ) = |D|
+|R|
+q(mt|x)
+qλ(mt) Lbase
+ret
+Lforget(λ) = |D|
+|F|
+q(mt|a)
+qλ(mt) Lbase
+forget
+9:Total:L SISS =L ret(λ)−(1 +s)L forget(λ)
+10:ELBO:L ELBO =L SISS +βD KL(N(µϕ, σϕ)∥p(λ))
+11: Update:θ←θ−η∇ θLELBO,ϕ←ϕ−η∇ ϕLELBO
+12:end for
+Figure 5: Adaptive-λSISS Unlearning using a VAE-like inference network for dynamicλ.
+12
+Appendix B
+Average Metrics
+Per-Class Metrics
+Figure 6: MNIST experiment Average and Per-Class metrics displayed side-by-side in a single row.
+13

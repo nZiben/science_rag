@@ -1,0 +1,797 @@
+Efficient Training of Diffusion Mixture-of-Experts Models: A Practical Recipe
+Yahui Liu, Yang Yue, Jingyuan Zhang, Chenxi Sun, Yang Zhou, Wencong Zeng, Ruiming Tang, Guorui Zhou†1
+Abstract
+Recent efforts on Diffusion Mixture-of-Experts
+(MoE) models have primarily focused on devel-
+oping more sophisticated routing mechanisms.
+However, we observe that the underlying architec-
+tural configuration space remains markedly under-
+explored. Inspired by the MoE design paradigms
+established in large language models (LLMs),
+we identify a set of crucial architectural factors
+for building effective Diffusion MoE models–
+including DeepSeek-style expert modules, alter-
+native intermediate widths, varying expert counts,
+and enhanced attention positional encodings. Our
+systematic study reveals that carefully tuning
+these configurations is essential for unlocking the
+full potential of Diffusion MoE models, often
+yielding gains that exceed those achieved by rout-
+ing innovations alone. Through extensive experi-
+ments, we present novel architectures that can be
+efficiently applied to both latent and pixel-space
+diffusion frameworks, which provide a practical
+and efficient training recipe that enables Diffusion
+MoE models to surpass strong baselines while us-
+ing equal or fewer activated parameters. All code
+and models are publicly available at: https:
+//github.com/yhlleo/EfficientMoE.
+1. Introduction
+The Diffusion Transformer (DiT) (Peebles & Xie, 2023)
+architecture represents a novel approach to diffusion-based
+visual generation, combining the power of transform-
+ers (Vaswani et al., 2017) with the flexibility and effi-
+ciency of diffusion models (Ho et al., 2020; Song et al.,
+2020). DiT leverages the inherent scalability and expressive-
+ness of transformers, making it particularly well-suited for
+generating high-quality, high-fidelity images from random
+noise (Esser et al., 2024; Yang et al., 2024).
+Inspired by the success of Mixture-of-Experts (MoE) mod-
+els in the large language model (LLM) community (Dai
+1Kuaishou Technology, Beijing, China. Correspondence to:
+Guorui Zhou<zhouguorui@kuaishou.com>.
+Preprint. December 2, 2025.
+et al., 2024; Liu et al., 2024a;b; Yang et al., 2025; Team
+et al., 2025), there has been increasing interest in integrating
+MoE into diffusion architectures, espcially those based on
+DiT framework. In LLMs, MoE allows the model to scale
+its capacity dramatically while activating only a small sub-
+set of parameters per token. This efficiency makes MoE an
+attractive direction for diffusion models as they also grow
+larger and more capable.
+However, recent efforts (Fei et al., 2024; Sun et al., 2024) to
+integrate it into DiT models have not yielded the significant
+gains observed in LLMs. Prior works (Shi et al., 2025; Yuan
+et al., 2025; Wei et al., 2025b) often attribute this gap to
+the fundamental differences between text tokens and visual
+tokens. As a result, research efforts have tended to center
+around designing routing networks that can intelligently
+select experts based on factors such as noise level or in-
+put conditions. In contrast, our investigation reveals that
+the core limitation lies elsewhere:the architectural design
+space of MoE for diffusion models remains significantly
+under-explored, and this under-exploration is the primary
+reason behind the performance gap. Notably, by taking es-
+tablished LLM MoE architecture as our starting point and
+conducting a broad, multi-dimensional investigation, we
+identify a set of design principles that lead to efficient and
+effective Diffusion MoE models.
+Finally, we distill several key findings:
+• MoE modules that have proven effective in LLMs re-
+main highly effective in diffusion models. For exam-
+ple, the DeepSeek-V3 (Liu et al., 2024b) MoE block,
+with minor modifications, already yields strong perfor-
+mance in diffusion tasks.
+• The MoE MLP intermediate-size scaling can follow
+similar principles to those in LLM MoE models.Set-
+ting the scaling factor to below 4.0 reduces both total
+parameters and activated parameters. When combined
+with an appropriate number of active experts, this re-
+duction does not degrade the performance of Diffusion
+MoE models.
+• Using shared experts tends to improve training stabil-
+ity and convergence.Our observations indicate that
+incorporating shared experts provides a beneficial reg-
+ularizing effect.
+1
+arXiv:2512.01252v1  [cs.LG]  1 Dec 2025
+• Incorporating 2D RoPE into the attention layers signifi-
+cantly improves training.Adding explicit 2D positional
+information enhances spatial reasoning and contributes
+to more stable and effective model optimization.
+We present our DSMoE and JiTMoE, the novel MoE archi-
+tectures that applies the above principles to both latent (Rom-
+bach et al., 2022) and pixel-space (Li & He, 2025) diffusion
+frameworks of various scales (e.g., from 100M to 3B pa-
+rameters) and observe consistent performance gains on the
+Flow Matching (Lipman et al., 2022; Esser et al., 2024)
+paradigm. Especially, our “XL” model achieves substantial
+improvements over prior methods with comparable activa-
+tion parameters on latent diffusion framework. Our 3B vari-
+ant establishes a new state of the art among diffusion-based
+models, attaining a best FID of 2.38 on class-conditional
+ImageNet (Deng et al., 2009) 256 ×256 with only 700K
+training steps. Notably, this matches the performance of
+DiffMoE (Cheng et al., 2025), which reports a 2.30 FID but
+requires an order-of-magnitude more training (7000K steps).
+We release all code, model configurations, and pretrained
+weights to the community. To the best of our knowledge,
+this is the first open-source model in this direction, enabling
+future researchers to conduct deeper and more systematic
+exploration.
+2. Related Work
+Diffusion Models.Diffusion models (Ho et al., 2020; Song
+et al., 2020) have emerged as a dominant and highly effec-
+tive paradigm for high-quality visual generation. Recent
+work (Chen et al., 2023; Ma et al., 2024; Hatamizadeh et al.,
+2024; Chu et al., 2024; Esser et al., 2024; Wei et al., 2025a)
+has achieved impressive scalability and generative quality
+by adopting the Diffusion Transformers (DiT) (Peebles &
+Xie, 2023) on the latent diffusion (Rombach et al., 2022)
+framework. Such DiT models are usually trained with two
+primary paradigms: Denoising Diffusion Probabilistic Mod-
+els (DDPM) trained via score matching (Ho et al., 2020;
+Song et al., 2020) and Rectified Flow (RF) (Liu et al., 2022)
+approaches optimized through flow-matching (Lipman et al.,
+2022; Esser et al., 2024; Ma et al., 2024). Recently, JiT (Li &
+He, 2025), introduced a new diffusion framework operating
+in the pixel space, exhibits remarkably strong performance.
+In this work, we implement our MoE designs on both the
+latent and pixel-space diffusion frameworks using only the
+RF paradigm.
+Mixture of Experts.Mixture-of-Experts (MoE) (Jacobs
+et al., 1991; Shazeer et al., 2017; Lepikhin et al., 2020) is de-
+signed to increase model capacity by routing each input to a
+small subset of specialized experts, enabling efficient sparse
+computation. Recently, such approach has demonstrated
+remarkable success in Large Language Models (LLMs) (Dai
+et al., 2024; Liu et al., 2024b; Yang et al., 2025; Team et al.,
+2025). However, adapting MoE to DiT architecture faces
+some limitations (Sehwag et al., 2025; Cheng et al., 2025;
+Fei et al., 2024; Sun et al., 2024; Shi et al., 2025; Wei et al.,
+2025b) to achieve appealing performance. A common line
+of analysis attributes this gap to fundamental differences
+between language and vision tokens. Consequently, many
+works explore diverse routing strategies that adapt expert
+selection based on noise level and input conditions. Dis-
+tinct from prior work, we are the first to systematically
+explore the architecture design space of MoE and demon-
+strate that improved MoE structures alone offer significant
+performance potential.
+3. Architecture Design
+Diffusion Models.Diffusion models are generative models
+that learn data distributions by reversing a forward nois-
+ing process. The continuous-time forward process can be
+formulated as xt =α tx0 +σ tϵ, with t∈ U(0,1) and
+ϵ∼ N(0,I). αt and σt are monotonically decreasing and
+increasing functions of t, respectively. For the reverse pro-
+cess, a denoising network Fθ is trained to predict the target
+y at each timestep t, conditioned on c (e.g., class labels or
+text prompts):
+L=E x0,c,ϵ,t
+h
+∥y− Fθ (xt,c, t)∥2
+2
+i
+,(1)
+where the training target y can be the Gaussian noise ϵ for
+DDPM models (Ho et al., 2020), or the vector field(ϵ−x 0)
+for Rectified Flow models (Liu et al., 2022). In this work,
+our discussions focus on Rectified Flow.
+MoE Module.We employ the MoE module proposed in
+DeepSeekMoE (Liu et al., 2024b; Dai et al., 2024) as our
+Feed-Forward Networks (FFNs). Different from traditional
+MoE architectures, DeepSeekMoE uses finer-grained ex-
+perts and isolates some experts as shared ones. Let ut
+denote the FFN input of the t-th token, the FFN output ht
+is computed as follows:
+ht =u t +
+NsX
+i=1
+FFN(s)
+i (ut) +
+NrX
+i=1
+gi,t FFN(r)
+i (ut),(2)
+gi,t = g′
+i,t
+PNr
+j=1 g′
+j,t
+,(3)
+g′
+i,t =
+(
+si,t, s i,t ∈Topk({s j,t|1≤j≤N r}, Kr),
+0,otherwise, (4)
+si,t = Sigmoid
+ 
+ut
+T ei
+
+,(5)
+where Ns and Nr denote the numbers of shared experts
+and routed experts, respectively; FFN(s)
+i (·) and FFN(r)
+i (·)
+denote the i-th shared expert and the i-th routed expert,
+respectively; Kr denotes the number of activated routed
+experts; gi,t is the gating value for the i-th expert; si,t is the
+2
+Table 1.DSMoE and JiTMoE Model Configurations. DSMoE is designed for latent diffusion models (LDMs), whereas JiTMoE is tailored
+for pixel-space diffusion models. Hyperparameter settings and computational specifications for class-conditional models. “S1E16A2””
+denotes that a shared expert shared by all tokens, 16 experts used for routing, and 2 experts activated for each token.
+Model #Activated #Total #Blocks #Hidden #Intermediate #Head #Experts
+Config Params. Params. L dim. D size S n
+DSMoE-S-E16 33M 92M 10 384 768 6 S1E16A2
+DSMoE-S-E48 30M 66M 12 384 128 6 S1E48A5
+DSMoE-B-E16 132M 368M 10 768 1536 12 S1E16A2
+DSMoE-B-E48 118M 263M 12 768 256 12 S1E48A5
+DSMoE-L-E16 465M 1.304B 20 1024 2048 16 S1E16A2
+DSMoE-L-E48 436M 1.112B 24 1024 448 16 S1E48A5
+DSMoE-3B-E16 965M 2.958B 30 1152 2880 16 S1E16A2
+JiTMoE-B/16-E16 133M 369M 10 768 1536 12 S1E16A2
+JiTMoE-L/16-E16 465M 1.306B 20 1024 2048 16 S1E16A2
+token-to-expert affinity; ei is the centroid vector of the i-th
+routed expert; and Topk(·, K)denotes the set comprising
+K highest scores among the affinity scores calculated for
+the t-th token and all routed experts. In our experiments, we
+set Ns = 1 and Kr to either 2 or 5, depending on the model
+configuration.
+To achieve a better trade-off between load balance and
+model performance, we follow the auxiliary-loss-free load
+balancing strategy (Wang et al., 2024). In this strategy, a
+bias term bi is introduced for each expert and added to the
+corresponding affinity score si,t to determine the Top-K
+routing. Thus, the Eq. (4) is adjusted to:
+g′
+i,t =
+(
+si,t, s i,t +b i ∈Topk({s j,t +b j|1≤j≤N r}, Kr),
+0,otherwise.
+(6)
+Note that the bias term is only used for routing. The gating
+value, which will be multiplied with the FFN output, is still
+derived from the original affinity scores i,t.
+Position Encoding.We replace absolute position embed-
+dings with 2D rotary position embeddings (RoPE) applied
+to queries and keys in both self-attention and cross-attention.
+Standard RoPE (Su et al., 2024) rotates each query/key di-
+mension by a phase proportional to its position, so relative
+offsets are captured by phase differences. Let RΘ be the
+rotary matrix defined by a frequency vector Θ; the RoPE
+attention between tokeniandjis
+ARoPE
+i,j =q ⊤
+i R⊤
+Θ,iRΘ,jkj,(7)
+RΘ,j−i =R ⊤
+Θ,iRΘ,j,(8)
+so the product depends on the relative displacement j−i .
+For 2D inputs (e.g., images and their latent counterparts),
+flattening tokens discards the separable row/column struc-
+ture. 2D RoPE restores this by assigning independent rotary
+phases to height and width indices and interleaving them,
+so the resulting phase encodes both axes. This preserves rel-
+ative geometry on 2D grids, adds no parameters, and keeps
+attention equivariant to translations/rotations in the rotary
+subspace.
+4. Experimental Results
+4.1. Experimental Setup
+Baseline and Model architecture.We compare with ex-
+isting state-of-the-art diffusion MoE models with latent dif-
+fusion framework by flow matching (Lipman et al., 2022),
+including DiffMoE (Cheng et al., 2025) and ProMoE (Wei
+et al., 2025b). We compare with the dense pixel-space diffu-
+sion framework JiT (Li & He, 2025) by flow matching. Our
+models are named as: [Model]-[Size]-[# Experts]. Similar
+to previous work, we replace even FFN layers with MoE lay-
+ers containing N identical FFN components (Lepikhin et al.,
+2020), and replace the absolute position embeddings in the
+original DiT architeture with 2D RoPE. Details of architec-
+ture are presented in Table 1. All these class-conditional
+diffusion MoE models are trained at 256×256 image reso-
+lution on the ImageNet dataset (Russakovsky et al., 2015),
+which contains 1,281,167 training images.
+Evaluation.We evaluate our DSMoE and JiTMoE models
+through both quantitative and qualitative metrics. Quanti-
+tatively, we evaluate DSMoE, DiffMoE and ProMoE used
+FID50K (Heusel et al., 2017) with DDPM/Euler steps for
+class-conditional generation. We evaluate JiTMoE by fol-
+lowing the configuration of JiT by setting ODE steps to 50
+and with CFG interval (Kynk ¨a¨anniemi et al., 2024). No-
+tably, we keep the original training and evaluation config-
+urations/protocols of both latent-diffusion and pixel-space
+diffusion frameworks unchanged to ensure a fair compari-
+3
+Table 2.Quantitative comparison with DiffMoE (Shi et al., 2025) on various model sizes under Rectified Flow. All models are trained on
+ImageNet 256x256 with 700K steps (batch size 512). Note that DiffMoE-L-E16 (CFG=1.0) reports FID and IS scores 14.41 and 88.19,
+respectively. The version of DiffMoE-L-E16 we reproduced performs even better.
+Model #Activated #Total CFG = 1.0 CFG = 1.5
+Params. Params. FID (↓) IS (↑) FID (↓) IS (↑)
+DiffMoE-S-E16 32M 139M 41.02 37.53 15.47 94.04
+DSMoE-S-E16 33M 92M 39.84 38.63 14.53 97.55
+DSMoE-S-E48 30M 66M 40.20 38.09 14.81 96.51
+DiffMoE-B-E16 130M 555M 20.83 70.26 4.87 183.43
+DSMoE-B-E16 132M 368M 20.33 71.42 4.50 186.79
+DSMoE-B-E48 118M 263M 19.46 72.69 4.27 191.03
+DiffMoE-L-E16 458M 1.982B 11.16 107.74 2.84 256.57
+DSMoE-L-E16 465M 1.304B 9.80 115.45 2.59 272.55
+DSMoE-L-E48 436M 1.112B 9.19 118.52 2.55 278.35
+DSMoE-3B-E16 965M 2.958B 7.52 135.29 2.38 304.93
+Table 3.Quantitative comparison with Dense-DiT (Peebles & Xie, 2023) and ProMoE (Wei et al., 2025b) on various model sizes under
+Rectified Flow. All models are trained on ImageNet 256x256 with 500K steps (batch size 512).
+Model #Activated #Total CFG = 1.0 CFG = 1.5
+Params. Params. FID (↓) IS (↑) FID (↓) IS (↑)
+Dense-DiT-B 130M 130M 30.61 49.89 9.02 131.13
+ProMoE-B 130M 300M 24.44 60.38 6.39 154.21
+DSMoE-B-E16 132M 368M 22.46 64.57 5.38 170.22
+DSMoE-B-E48 118M 263M 21.56 66.48 5.14 172.80
+Dense-DiT-L 458M 458M 15.44 84.20 3.56 209.03
+ProMoE-L 458M 1.063B 11.61 100.82 2.79 244.21
+DSMoE-L-E16 465M 1.304B 10.71 107.34 2.78 258.09
+DSMoE-L-E48 436M 1.112B 9.87 111.54 2.72 263.13
+son. Similar to previous work (Cheng et al., 2025; Wei et al.,
+2025b; Li & He, 2025), we evaluate FID (Heusel et al.,
+2017) and IS (Salimans et al., 2016) using 50,000 generated
+images. For latent-diffusion and pixel-space diffusion mod-
+els, we follow their respective evaluation protocols, using
+CFG values of 1.0 and 1.5 for LDM-based methods, and
+the CFG interval protocol for JiTMoE. Additionally, we
+assessed the model’s performance through visual inspection
+of samples generated from class conditions.
+4.2. Main Results
+Table 2 compares DSMoE with DiffMoE (Cheng et al.,
+2025) under the latent diffusion RF setup. Prior work typ-
+ically uses a small number of experts (e.g., 8, 14, or 16)
+with wide intermediates (e.g., hidden size×4), our design
+increases the expert count (e.g., 48) while shrinking interme-
+diate width (e.g., hidden size×0.3), which simultaneously
+lowers activated parameters and improves quality. At the
+B scale, DSMoE-B-E48 improves FID from 20.83 to 19.46
+(CFG=1.0) and from 4.87 to 4.27 (CFG=1.5) while using
+roughly half the total parameters. At the L scale, DSMoE-
+L-E48 attains 9.19/2.55 FID versus DiffMoE’s 11.16/2.84
+with a 44% reduction in total parameters. The 3B model
+further pushes FID to 7.52/2.38 without increasing activated
+parameters relative to L. As shown in Figure 1, we plot train-
+ing MSE loss for matched DiffMoE and DSMoE models,
+showing that our design not only converges faster but also
+attains consistently lower losses as scaling the model size,
+indicating improved optimization stability.
+Table 3 benchmarks DSMoE against Dense-DiT (Peebles
+& Xie, 2023) and ProMoE (Wei et al., 2025b). DSMoE
+consistently outperforms both while keeping activated pa-
+rameters close to the dense baselines. For instance, DSMoE-
+L-E48 improves over ProMoE-L by 1.74 (CFG=1.0) and
+0.07 (CFG=1.5) FID despite using fewer total parameters
+(1.11B vs. 1.06B activated 436M vs. 458M).
+In Figure 2, we show expert usage analysis of our DSMoE-
+4
+0 100000 200000 300000 400000 500000 600000 700000
+Training Step
+0.72
+0.74
+0.76
+0.78
+0.80
+0.82MSE Loss
+DiffMoE-S-E16
+DSMoE-S-E16
+DiffMoE-B-E16
+DSMoE-B-E16
+DiffMoE-L-E16
+DSMoE-L-E16
+DSMoE-3B-E16
+Figure 1.Training MSE loss curves of DiffMoE and DSMoE mod-
+els. DSMoE, equipped with improved MoE designs, consistently
+achieves lower diffusion MSE losses than the baselines. Moreover,
+this performance gap further widens as the model scales up.
+0 1 2 3 4
+MoE Layer Index
+0
+200
+400
+600
+800
+1000Class ID
+Average Number of Experts Hit per Class × Layer
+0
+2
+4
+6
+8
+10
+12
+14
+16
+Num Experts Hit
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+Expert ID
+0
+1
+2
+3
+4 MoE Layer Index
+Per-Layer Expert Activation Frequency (averaged over classes)
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+0.14
+Activation Frequency (normalized)
+Figure 2.Top: Average number of experts activated per class
+across MoE layers. Bottom: Per-layer expert activation frequency
+averaged over all classes.
+S-E16 by tracking the activations with 5,000 randomly sam-
+pled images. In Figure 2 (Top), each row corresponds to
+a class, and each column to an MoE layer. The number of
+activated experts remains consistently high across classes
+and layers, indicating stable routing behavior. This indi-
+cates that: 1) the routing network does not collapse into
+a small subset of experts; 2) most experts are frequently
+utilized; and 3) load distribution remains balanced. Mean-
+while, different experts exhibit distinct activation patterns
+across layers in Figure 2 (Bottom). Several observations
+emerge: 1) different experts dominate at different layers,
+showing that specialization naturally emerges; 2) special-
+ization is layer-dependent: certain experts are used more in
+early layers, while others are preferred in later layers. This
+pattern implies that experts learn functionally distinct roles,
+similar to how different convolutional filters specialize in
+edges, textures, or semantics. Moreover, in deeper layers
+(e.g., MoE layer 4), the activation patterns become more
+pronounced and unequal. This indicates that (1) the later
+layers capture increasingly abstract or higher-level features,
+and (2) token representations become more separable with
+respect to type, noise level, or semantic content.
+0 100000 200000 300000 400000 500000 600000 700000
+Training Step
+0.74
+0.76
+0.78
+0.80
+0.82
+0.84MSE Loss
+DSMoE-S-E16
+DSMoE-S-E48
+DSMoE-B-E16
+DSMoE-B-E48
+DSMoE-L-E16
+DSMoE-L-E48
+Figure 3.Training MSE loss curves of DSMoE with “E16” and
+“E48”. Across all model sizes, E48 consistently achieves lower
+MSE losses than E16, indicating faster and more stable conver-
+gence.
+As shown in Figure 3, increasing the number of experts,
+with a corresponding reduction in the FFN intermediate
+width to keep activated parameters constant, consistently
+yields lower MSE losses. This demonstrates faster and more
+stable training convergence.
+Table 4 extends the recipe to pixel-space diffusion JiT (Li &
+He, 2025). JiTMoE-B/16-E16 slightly improves FID over
+JiT-B/16 (4.23 vs. 4.37) while dramatically boosting IS
+(245.53). On larger JiTMoE-L/16-E16, we also achieve
+performance comparable to JiT-L/16.
+Overall, the architectural changes (DeepSeek-style experts,
+narrowed intermediates, shared experts, and 2D RoPE) de-
+liver consistent gains across latent and pixel diffusion mod-
+els, with better parameter efficiency than routing-heavy base-
+lines (e.g., DiffMoE and ProMoE).
+4.3. Ablation Study
+On Positional Encoding.Table 5 demonstrates the effect
+of positional encoding on DSMoE-S-E16. Moving from
+absolute position embeddings (APE) to 1D RoPE yields a
+small improvement, but 2D RoPE delivers a large boost:
+FID drops from 45.13 to 39.84 (CFG=1.0) and from 18.10
+to 14.53 (CFG=1.5), while IS improves from 33.27 to 38.63
+(CFG=1.0) and from 82.37 to 97.55 (CFG=1.5). This val-
+idates that encoding row/column structure is critical for
+diffusion MoE training stability and quality. As shown in
+Figure 4, we observe that 2D RoPE leads to faster training
+convergence, reflecting by consistently lower MSE losses
+than both APE and 1D RoPE.
+5
+Table 4.Quantitative comparison with JiT (Li & He, 2025) on various model sizes. All models are trained on ImageNet 256x256 with 200
+epochs (batch size 1024). * refers to our reproduced performence.
+Model #Activated #Total w/ CFG interval
+Params. Params. FID (↓) IS (↑)
+JiT-B/16 131M 131M 4.37 (4.81*) - (222.32*)
+JiTMoE-B/16-E16 133M 369M 4.23 245.53
+JiT-L/16 459M 459M 2.79 (3.19*) - (309.72*)
+JiTMoE-L/16-E16 465M 1.306B 3.10 311.34
+Table 5.Ablation study on positional encoding (PE) methods. All models are trained on ImageNet 256x256 with 700K steps.
+Model PE method CFG = 1.0 CFG = 1.5
+FID (↓) IS (↑) FID (↓) IS (↑)
+DSMoE-S-E16
+APE 45.13 33.27 18.10 82.37
+RoPE (1D) 44.75 33.64 18.12 83.13
+RoPE (2D) 39.84 38.63 14.53 97.55
+0 100000 200000 300000 400000 500000 600000 700000
+Training Step
+0.77
+0.78
+0.79
+0.80
+0.81
+0.82MSE Loss
+DSMoE-S-E16 (APE)
+DSMoE-S-E16 (RoPE 1D)
+DSMoE-S-E16 (RoPE 2D)
+Figure 4.Training MSE loss curves of DSMoE with different
+position encoding methods.
+On Shared Experts.In DiffMoE (Cheng et al., 2025), the
+shared experts are not employed. We further investigate the
+role of shared experts by conducting an experiment where
+we remove them and instead increase the number of acti-
+vated experts by one. In this manner, we keep the number of
+activated parameters unchanged. As shown in Figure 5, this
+variant (i.e., S0A3) converges more slowly. This suggests
+that the shared expert plays an important stabilizing role: it
+provides a consistent fallback representation across tokens
+and timesteps, reducing routing variance and improving op-
+timization smoothness. Consequently, models with a shared
+expert tend to train more reliably and converge faster.
+On Interleave of Using MoE Layers.In previous Diffusion
+MoE models (Cheng et al., 2025), MoE layers are applied
+only to the even DiT blocks. We also evaluate a variant
+where all FFN layers are replaced with MoE layers. This
+modification substantially increases the total parameters
+10000 20000 30000 40000 50000 60000
+Training Step
+0.78
+0.79
+0.80
+0.81
+0.82
+0.83
+0.84MSE Loss
+DSMoE-S-E16 (w/o Interleave)
+DSMoE-S-E16 (S0A3)
+DSMoE-S-E16 (w/ GQA)
+DSMoE-S-E16
+Figure 5.Ablations on replacing all FFN layers with MoE layer
+(i.e., w/o Interleave), applying GQA (Ainslie et al., 2023) (i.e., w/
+GQA), and removing shared experts (i.e., S0A3).
+from 92M to 158M. With 1 shared expert and 2 activated
+experts per token, the number of activated parameters rises
+to 44M (compared with 33M in our default setting). How-
+ever, this configuration yields slight slower convergence, as
+shown in Figure 5 (i.e., w/o Interleave). We speculate that
+applying MoE to every FFN layer removes the alternation
+between dense and sparse computations, which normally
+provides a balance between stable global representations and
+specialized expert behaviors. In other words, interleaving
+dense and MoE layers helps maintain feature smoothness,
+reduces routing variance, and stabilizes optimization.
+On Efficiency of the Attention Mechanism.GQA (Ainslie
+et al., 2023) and MLA (Liu et al., 2024a) methods have
+shown strong potential for compressing KV caches while
+preserving inference performance. We apply GQA to the
+DiT attention module and observe a slight performance
+6
+degradation, as shown in Figure 5 (i.e., w/ GQA). When
+applying GQA, many heads share the same K/V projections,
+effectively: 1) reducing the diversity of attention patterns, 2)
+weakening the model’s ability to capture fine-grained spatial
+structures. These are harmful for the iterative denoising
+process.
+4.4. Visual Generation Results
+Figure 6.Class-conditional Generation with DSMoE-3B-E16.
+Uncurated 256×256 samples CFG scale=1.5.
+To demonstrate the generation capabilities of our model,
+we showcase diverse images sampled from DSMoE-3B-
+E16 and JiTMoE-L/16-E16, conditioned on ImageNet class
+labels. These visualizations illustrate the model’s ability to
+generate high-quality, class-specific images. See Figure 6
+and Figure 7.
+5. Conclusion
+We presented a practical recipe for diffusion MoE models
+that emphasizes architecture over routing. DeepSeek-style
+experts with narrowed intermediates, shared experts, and
+2D RoPE yield DSMoE and JiTMoE models that outper-
+form dense and prior MoE baselines on ImageNet 256×256
+under Rectified Flow, with lower activated parameters and
+Figure 7.Class-conditional Generation with JiTMoE-L/16-E16.
+Uncurated 256×256 samples with CFG interval.
+improved training curves. The same design scales smoothly
+across model sizes and pixel/latent diffusion settings.
+Future work includes combining these architectural choices
+with stronger routing strategies, expanding to text-to-image
+and video tasks, and exploring the reinforcement learning
+on the diffusion MoE models.
+References
+Ainslie, J., Lee-Thorp, J., De Jong, M., Zemlyanskiy, Y .,
+Lebr´on, F., and Sanghai, S. Gqa: Training generalized
+multi-query transformer models from multi-head check-
+points.arXiv preprint arXiv:2305.13245, 2023.
+Chen, J., Yu, J., Ge, C., Yao, L., Xie, E., Wu, Y ., Wang, Z.,
+Kwok, J., Luo, P., Lu, H., et al. Pixart- α: Fast training
+of diffusion transformer for photorealistic text-to-image
+synthesis.arXiv preprint arXiv:2310.00426, 2023.
+Cheng, K., He, X., Yu, L., Tu, Z., Zhu, M., Wang, N., Gao,
+X., and Hu, J. Diff-moe: Diffusion transformer with
+time-aware and space-adaptive experts. InInternational
+Conference on Machine Learning (ICML), 2025.
+Chu, X., Su, J., Zhang, B., and Shen, C. Visionllama: A
+7
+unified llama backbone for vision tasks. InEuropean
+Conference on Computer Vision (ECCV), 2024.
+Dai, D., Deng, C., Zhao, C., Xu, R., Gao, H., Chen, D., Li, J.,
+Zeng, W., Yu, X., Wu, Y ., et al. Deepseekmoe: Towards
+ultimate expert specialization in mixture-of-experts lan-
+guage models.arXiv preprint arXiv:2401.06066, 2024.
+Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and Fei-Fei,
+L. Imagenet: A large-scale hierarchical image database.
+InProceedings of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition (CVPR), 2009.
+Esser, P., Kulal, S., Blattmann, A., Entezari, R., M¨uller, J.,
+Saini, H., Levi, Y ., Lorenz, D., Sauer, A., Boesel, F., et al.
+Scaling rectified flow transformers for high-resolution
+image synthesis. InInternational Conference on Machine
+Learning (ICML), 2024.
+Fei, Z., Fan, M., Yu, C., Li, D., and Huang, J. Scaling
+diffusion transformers to 16 billion parameters.arXiv
+preprint arXiv:2407.11633, 2024.
+Hatamizadeh, A., Song, J., Liu, G., Kautz, J., and Vahdat, A.
+Diffit: Diffusion vision transformers for image generation.
+InEuropean Conference on Computer Vision (ECCV),
+2024.
+Heusel, M., Ramsauer, H., Unterthiner, T., Nessler, B., and
+Hochreiter, S. Gans trained by a two time-scale update
+rule converge to a local nash equilibrium.Advances in
+Neural Information Processing Systems (NeurIPS), 2017.
+Ho, J., Jain, A., and Abbeel, P. Denoising diffusion proba-
+bilistic models.Advances in Neural Information Process-
+ing Systems (NeurIPS), 2020.
+Jacobs, R. A., Jordan, M. I., Nowlan, S. J., and Hinton, G. E.
+Adaptive mixtures of local experts.Neural computation,
+3(1):79–87, 1991.
+Kynk¨a¨anniemi, T., Aittala, M., Karras, T., Laine, S., Aila, T.,
+and Lehtinen, J. Applying guidance in a limited interval
+improves sample and distribution quality in diffusion
+models.Advances in Neural Information Processing
+Systems (NeurIPS), 2024.
+Lepikhin, D., Lee, H., Xu, Y ., Chen, D., Firat, O., Huang, Y .,
+Krikun, M., Shazeer, N., and Chen, Z. Gshard: Scaling
+giant models with conditional computation and automatic
+sharding.arXiv preprint arXiv:2006.16668, 2020.
+Li, T. and He, K. Back to basics: Let denoising generative
+models denoise.arXiv preprint arXiv:2511.13720, 2025.
+Lipman, Y ., Chen, R. T., Ben-Hamu, H., Nickel, M., and
+Le, M. Flow matching for generative modeling.arXiv
+preprint arXiv:2210.02747, 2022.
+Liu, A., Feng, B., Wang, B., Wang, B., Liu, B., Zhao, C.,
+Dengr, C., Ruan, C., Dai, D., Guo, D., et al. Deepseek-v2:
+A strong, economical, and efficient mixture-of-experts
+language model.arXiv preprint arXiv:2405.04434,
+2024a.
+Liu, A., Feng, B., Xue, B., Wang, B., Wu, B., Lu, C., Zhao,
+C., Deng, C., Zhang, C., Ruan, C., et al. Deepseek-
+v3 technical report.arXiv preprint arXiv:2412.19437,
+2024b.
+Liu, X., Gong, C., and Liu, Q. Flow straight and fast:
+Learning to generate and transfer data with rectified flow.
+arXiv preprint arXiv:2209.03003, 2022.
+Loshchilov, I. and Hutter, F. Decoupled weight decay regu-
+larization.arXiv preprint arXiv:1711.05101, 2017.
+Ma, N., Goldstein, M., Albergo, M. S., Boffi, N. M., Vanden-
+Eijnden, E., and Xie, S. Sit: Exploring flow and diffusion-
+based generative models with scalable interpolant trans-
+formers. InEuropean Conference on Computer Vision
+(ECCV), 2024.
+Peebles, W. and Xie, S. Scalable diffusion models with
+transformers. InProceedings of the IEEE/CVF Interna-
+tional Conference on Computer Vision (ICCV), 2023.
+Rombach, R., Blattmann, A., Lorenz, D., Esser, P., and
+Ommer, B. High-resolution image synthesis with la-
+tent diffusion models. InProceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR), 2022.
+Russakovsky, O., Deng, J., Su, H., Krause, J., Satheesh, S.,
+Ma, S., Huang, Z., Karpathy, A., Khosla, A., Bernstein,
+M., et al. Imagenet large scale visual recognition chal-
+lenge.International Journal of Computer Vision (IJCV),
+115(3):211–252, 2015.
+Salimans, T., Goodfellow, I., Zaremba, W., Cheung, V .,
+Radford, A., and Chen, X. Improved techniques for
+training gans.Advances in Neural Information Processing
+Systems (NeurIPS), 2016.
+Sehwag, V ., Kong, X., Li, J., Spranger, M., and Lyu, L.
+Stretching each dollar: Diffusion training from scratch
+on a micro-budget. InProceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR), 2025.
+Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le,
+Q., Hinton, G., and Dean, J. Outrageously large neural
+networks: The sparsely-gated mixture-of-experts layer.
+arXiv preprint arXiv:1701.06538, 2017.
+8
+Shi, M., Yuan, Z., Yang, H., Wang, X., Zheng, M., Tao, X.,
+Zhao, W., Zheng, W., Zhou, J., Lu, J., et al. Diffmoe: Dy-
+namic token selection for scalable diffusion transformers.
+arXiv preprint arXiv:2503.14487, 2025.
+Song, Y ., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Er-
+mon, S., and Poole, B. Score-based generative modeling
+through stochastic differential equations.arXiv preprint
+arXiv:2011.13456, 2020.
+Su, J., Ahmed, M., Lu, Y ., Pan, S., Bo, W., and Liu, Y .
+Roformer: Enhanced transformer with rotary position
+embedding.Neurocomputing, 568:127063, 2024.
+Sun, H., Lei, T., Zhang, B., Li, Y ., Huang, H., Pang, R.,
+Dai, B., and Du, N. Ec-dit: Scaling diffusion transform-
+ers with adaptive expert-choice routing.arXiv preprint
+arXiv:2410.02098, 2024.
+Team, K., Bai, Y ., Bao, Y ., Chen, G., Chen, J., Chen,
+N., Chen, R., Chen, Y ., Chen, Y ., Chen, Y ., et al.
+Kimi k2: Open agentic intelligence.arXiv preprint
+arXiv:2507.20534, 2025.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. Atten-
+tion is all you need.Advances in Neural Information
+Processing Systems (NeurIPS), 2017.
+Wang, L., Gao, H., Zhao, C., Sun, X., and Dai, D. Auxiliary-
+loss-free load balancing strategy for mixture-of-experts.
+arXiv preprint arXiv:2408.15664, 2024.
+Wei, Y ., Zhang, S., Yuan, H., Gong, B., Tang, L., Wang,
+X., Qiu, H., Li, H., Tan, S., Zhang, Y ., et al. Dream-
+relation: Relation-centric video customization.arXiv
+preprint arXiv:2503.07602, 2025a.
+Wei, Y ., Zhang, S., Yuan, H., Han, Y ., Chen, Z., Wang,
+J., Zou, D., Liu, X., Zhang, Y ., Liu, Y ., et al. Routing
+matters in moe: Scaling diffusion transformers with ex-
+plicit routing guidance.arXiv preprint arXiv:2510.24711,
+2025b.
+Yang, A., Li, A., Yang, B., Zhang, B., Hui, B., Zheng, B.,
+Yu, B., Gao, C., Huang, C., Lv, C., et al. Qwen3 technical
+report.arXiv preprint arXiv:2505.09388, 2025.
+Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu,
+J., Yang, Y ., Hong, W., Zhang, X., Feng, G., et al.
+Cogvideox: Text-to-video diffusion models with an ex-
+pert transformer.arXiv preprint arXiv:2408.06072, 2024.
+Yuan, Y ., Wang, Z., Huang, Z., Zhu, D., Zhou, X., Yu, J.,
+and Min, Q. Expert race: A flexible routing strategy
+for scaling diffusion transformer with mixture of experts.
+arXiv preprint arXiv:2503.16057, 2025.
+A. Detailed Configurations
+For training DSMoE models, we follow DiffMoE (Cheng
+et al., 2025) use horizontal flips as the only data augmen-
+tation. We train all models with AdamW (Loshchilov &
+Hutter, 2017). We use a constant learning rate of 1×10−4,
+no weight decay and a fixed global batch size of 512. We
+also maintain an exponential moving average (EMA) of
+DSMoE and baseline model weights over training with a
+decay of 0.9999. All results reported use the EMA mode.
+We utilized NVIDIA H800 GPUs during training.
+For training JiTMoE models, we follow JiT (Li & He, 2025)
+and keep the main training and sampling procedures un-
+changed, as shown in Table 6. For further details, refer to
+the original JiT paper.
+Table 6.Configurations of experiments on JiT and JiTMoE models.
+Except for the MoE components, we keep the remaining architec-
+ture, training procedure, and sampling pipeline unchanged.
+B L
+Architecture
+depth 12 24
+hidden dim 768 1024
+heads 12 16
+image size 256
+patch size image size/ 16
+bottleneck 128 (B/L)
+dropout 0 (B/L)
+in-context class tokens 32 (if used)
+in-context start block 4 8
+Training
+epochs 200
+warmup epochs 5
+optimizer Adam,β 1, β2 = 0.9,0.95
+batch size 1024
+learning rate 2e-4
+learning rate schedule constant
+weight decay 0
+ema decay {0.9996, 0.9998, 0.9999}
+time sampler logit(t)∼N(µ, σ2),
+µ=−0.8, σ= 0.8
+noise scale 1.0×image size/ 256
+clip of(1−t)in division 0.05
+class token drop (for CFG) 0.1
+Sampling
+ODE solver Heun
+ODE steps 50
+time steps linear in [0.0, 1.0]
+CFG scale sweep range [1.0, 4.0]
+CFG interval [0.1, 1] (if used)
+9

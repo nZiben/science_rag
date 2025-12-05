@@ -1,0 +1,3072 @@
+Open-Set Domain Adaptation Under Background Distribu-
+tion Shift: Challenges and A Provably Efficient Solution
+Shravan Chaudhari schaud35@jh.edu
+Department of Computer Science, Johns Hopkins University, Baltimore, MD, USA.
+Yoav Wald yoav.wald@nyu.edu
+Center for Data Science, New York University, New York, NY, USA.
+Suchi Saria ssaria1@jhu.edu
+Department of Computer Science, Johns Hopkins University, Baltimore, MD, USA.
+Bayesian Health, New York, NY, USA.
+Abstract
+As we deploy machine learning systems in the real world, a core challenge is to maintain a
+model that is performant even as the data shifts. Such shifts can take many forms: new classes
+may emerge that were absent during training, a problem known as open-set recognition, and
+the distribution of known categories may change. Guarantees on open-set recognition are
+mostly derived under the assumption that the distribution of known classes, which we call
+the background distribution, is fixed. In this paper we develop CoLOR, a method that is
+guaranteed to solve open-set recognition even in the challenging case where the background
+distribution shifts. We prove that the method works under benign assumptions that the
+novel class is separable from the non-novel classes, and provide theoretical guarantees that it
+outperforms a representative baseline in a simplified overparameterized setting. We develop
+techniques to make CoLOR scalable and robust, and perform comprehensive empirical
+evaluations on image and text data. The results show that CoLOR significantly outperforms
+existing open-set recognition methods under background shift. Moreover, we provide new
+insights into how factors such as the size of the novel class influences performance, an aspect
+that has not been extensively explored in prior work.
+1 Introduction
+Adapting Machine Learning models to shifts in the data distribution is pivotal to ensuring their robustness and
+safety in real world applications (Quinonero-Candela et al., 2008; Koh et al., 2021) for fields like healthcare
+(Finlayson et al., 2021), autonomous driving (Filos et al., 2020; Wong et al., 2020) and more broadly in
+computer vision (Bendale & Boult, 2016). Maintaining robustness to distribution shift in classification
+problems includes both identifying familiar objects under new conditions, while detecting the long tail of
+object categories that has not been observed in the past. In this work we study the problem of adaptation
+when these two types of distribution shift occur concurrently. Specifically, we address the emergence of novel
+categories (Panareda Busto & Gall, 2017) alongside shifting distributions of known classes, a scenario referred
+to as Open-Set Domain Adaptation (OSDA).
+Let our training data beSS. The core task here is to detect the novel classes in target dataST collected
+under some conditions different from those observed at training time (Panareda Busto & Gall, 2017) while
+maintaining good performance over the existing classes. The emergence of a novel class in itself constitutes a
+shift betweenSS and ST, however, in real world scenariosit is likely not the only distribution shift that occurs
+(Garg et al., 2022; Wald & Saria, 2023). Our study concentrates on scenarios where the novel class exhibits a
+notable degree of separability from the known classes, and a distribution shift with overlapping supports
+between source and target distributions exists within the known classes, which we refer to as ‘background
+shift’. Figure 1 depicts a scenario of background shift within indoor scene images taken from the SUN397
+dataset (Xiao et al., 2010) while the novel class belongs to an outdoor scene category. Arguably, this is a very
+1
+arXiv:2512.01152v1  [cs.LG]  1 Dec 2025
+Figure 1: An instantiation of OSDA with background shift in addition to a novel subgroup.Top:Source
+dataset with PS(x|y)representing distribution of subclasses of the labeledk known categories (y∈ [k]).
+Bottom:Target dataset with PT(x|y)representing the distribution of subclasses of unlabeled known classes
+(y∈ [k]) along with a novel subgroup (y= k+ 1). Unlike pure label shift or covariate shift, bothPS(x)or
+PS(y)may change toPT(x)andP T(y)under background distribution shift.
+common case in domains such as healthcare, e.g. classifying histopathology slides for known and novel tumor
+types, where the background shift is due to differences in geographic locations (Poceviči¯ ut˙ e et al., 2025).
+Several aspects of our work are understudied in the OSDA literature;(i)formally characterizing the shifts of
+interest;(ii)developing methods with formal guarantees (finite sample bounds in our case) that are also
+effective in practice;(iii)examining the effect of the novel class size on performance. Most research primarily
+address open-set recognition instead of OSDA because they assume there is no distribution shift for known
+classes (Ge et al., 2017; Neal et al., 2018; Lin & Xu, 2019; Chen et al., 2021; Zeng et al., 2021; Vaze et al.,
+2022; Esmaeilpour et al., 2022). Other methods tackle OSDA without formally characterizing ‘domain shifts’
+(Liang et al., 2021; Li et al., 2021). They typically validate their methods empirically on benchmarks such
+as Office-Home (Venkateswara et al., 2017) or VisDA (Peng et al., 2017), where the shift is simulated by
+changing the domain from real to sketch images or from synthetic to real world images. However, since these
+methods lack formal guarantees and rely on limited types of simulated shifts, their effectiveness beyond these
+datasets remain uncertain. Garg et al. (2022) tackle OSDA under shifting class probabilities inST (label
+shift) and show improved results compared to prior methods. To this end, our theoretical and empirical
+results emphasize the regimes where our method is expected to outperform alternatives that do not address
+background shift in OSDA properly. In particular, we show that our approach is more effective when the novel
+class constitutes a relatively small proportion of the target distribution—an important scenario in practice.
+Reliably identifying novel classes enables updating models or deferring to human oversight in safety-critical
+settings such as healthcare and autonomous driving (Amodei et al., 2016; Hendrycks & Gimpel, 2016).
+Our contributions to these aspects of OSDA are thus the following:
+2
+• Leverage and improve constrained learning rule for OSDA:We develop CoLOR (Constrained
+Learning for Open-set Recognition), a scalable method to train models for OSDA (section 5). Our work
+builds on a method developed for a special case of our setting, where small models are trained and there
+are no known classes (Wald & Saria, 2023). Our architectural and algorithmic improvements enable us to
+work effectively with large models and complex, high-dimensional datasets such as images and text. Our
+theoretical contributions, explain why and when the method performs favorably in the large scale regime.
+• Formal results on identifiability under background shift:We characterize sufficient conditions
+for identifiability of the novel class and analyze sample efficiency of CoLOR on a problem that captures
+key aspects of OSDA with expressive models (section 4.2). While prior work (Garg et al., 2022) shows
+that OSDA under label shift among non-novel instances is solvable under weaker assumptions than our
+separability condition, we prove that these assumptions fail to handle the more general case of background
+shift (see Lemma 1). Using linear–Gaussian framework, we characterize problem regimes where CoLOR
+significantly outperforms a standard domain-discriminator baseline, especially when novel classes are rare.
+• Comprehensive empirical validation across diverse data modalities and datasets:Extensive
+experiments across image and text classification (section 6) confirm our theoretical findings. We observe
+that background shift substantially degrades OSDA baselines, whereas our enhanced adaptation of the
+constrained learning rule, CoLOR, achieves superior performance on CIFAR100 (Krizhevsky, 2009),
+Amazon Reviews (Ni et al., 2019) and SUN397 (Xiao et al., 2010). Notably, CoLOR remains robust even
+when the novel class constitutes a small portion ofST, where other methods tend to struggle.
+2 Related Work
+Our work is closely related to several lines of work involving novelty detection, summarized below.
+Out-of-Distribution (OOD) Detection and Open Set Recognition:Most works on detecting novel
+instances aim to locate novelties withinST without adapting to it. To this end, methods useSS alone to
+determine an “anomaly score”s(x)(i.e. a score that ranks examples as more or less likely to be novel) (Ruff
+et al., 2021; Esmaeilpour et al., 2022). Related to this setting is Open Set Recognition (OSR) (Bendale &
+Boult, 2016; Ge et al., 2017; Liu et al., 2018; Xu et al., 2019; Saito et al., 2018; Vaze et al., 2022), where
+the goal is again to detect the novelties (while classifying known classes correctly), but the learner is given
+access toST without the labels. This essentially grants us the ability to adapts(x)to the specific novel class
+presented inST. Some OSR approaches use generative models to generate synthetic images using known
+instances to further improves(x)(Neal et al., 2018; Kong & Ramanan, 2021). However, both OSR and OOD
+detection methods suffer from degraded performance when there is a distribution shift betweenPS and the
+distribution of known classes underPT (PT,[k] ) (Schölkopf et al., 2001; Cao et al., 2023), hence methods that
+are adaptable to such shifts have been developed.
+Open Set Domain Adaptation:Works that seek to adapt toPT,[k] , while correctly classifying known
+instances and detecting novel ones, fall into this category. Recent works on OSDA primarily focus on specific
+domain shifts from real images to sketches or real to synthetic (Wen & Brbic, 2024; Panareda Busto & Gall,
+2017; Choe et al., 2024; Hur et al., 2023; Zhu et al., 2023). However, the narrow focus on these shifts limits
+their generalizability to broader shifts, such as background shift. Garg et al. (2022) show that these methods
+may not be versatile across datasets and propose a sophisticated OSDA method specifically to handle label
+shift. Additionally, prior works have leveraged multi-modal foundation models like ChatGPT, DALL-E and
+CLIP for OSDA (Qu et al., 2023; Esmaeilpour et al., 2022). However, since their pretraining data is not
+publicly accessible, it is infeasible to curate truly novel classes or distribution shifts. This makes it difficult to
+ensure fair evaluation of these methods on open-set problems. Most OSDA methods lack formal guarantees
+or a clear characterization of the shifts they address. In this context, well-studied Positive and Unlabeled
+(PU) learning problems offer a useful framework to develop more generalizable methods with guarantees
+(Garg et al., 2022; Wald & Saria, 2023).
+PU-Learning Under Distribution Shift:It is formally equivalent to OSDA where k=1. In the absence
+of distribution shift, effective solutions with formal guarantees already exist, primarily based on adjustments
+to “Domain Discriminator” models (that are trained to distinguish source and target distributions i.e.PS
+and PT respectively) (Garg et al., 2021; du Plessis et al., 2014; Blanchard et al., 2010; Elkan & Noto, 2008).
+Under distribution shift, domain discriminator type methods still have guarantees when given infinite data
+(Gerych et al., 2022). In practice, however, we will see that they underperform (table 2), even when the
+3
+separability assumption (see assumption 1) holds. Garg et al. (2022) propose ak-way PU learning based
+method for identifying unseen classes under special case of label shift amongkknown classes, given certain
+assumptions. We show that these assumptions are insufficient to handle the more general case of background
+shift, where additional conditions are required for reliable recovery. Furthermore, Wald & Saria (2023)
+propose an algorithm with finite-sample guarantees and demonstrate its performance on small-scale models.
+In contrast, our formal analysis targets the large-scale, overparameterized learning regime, where their results
+no longer apply (Belkin et al., 2019). We extend these ideas to the setting of OSDA under background shift.
+3 Open-Set Domain Adaptation under Background Shift – Problem Definition and
+Identifiability
+In this section, we review the problem setting and develop the theory that motivates our solution. Section 3.1
+reviews the problem definition and section 3.2 discusses conditions for identifiability, such that a learner
+provided with unlimited data can solve the problem. Notably, we show that conditions studied in prior work
+for the case of label shift, are insufficient for identifiability under background shift.
+3.1 Problem Definition
+For a prediction task withk classes, we are interested in detecting the emergence of a novel class where
+y= k+ 1, while classifying a set of known classesy= 1,...,k . To treat this formally, we assume a learner is
+provided with two datasets, the training setSS= {xi,yi}NS
+i=1 and an unlabelled target datasetST = {xi}NT
+i=1.
+The datasetsSSand ST are sampled i.i.d from joint distribution over(x∈X,y∈Y ), PSand PT respectively,
+which take on values inX,Y= [k+ 1]andP S(y=k+ 1) = 0.P T is a mixture distribution:
+PT(x,y) = (1−α)P T,[k] (x,y) +αP T,k+1 (x).(1)
+Here we use the notationα:= PT(y= k+1), PT,k+1 (x) := PT(x |y = k+1), andPT,[k] (x,y) := PT(x,y|y̸ =
+k+ 1). Our goal is to learn a model that minimizes the error over all classes, including the novelk+ 1-th class.
+All errors will be measured w.r.tPT. To do this, we learn a modelh: X→R k+1 that gives a score for each
+class. We also assume that a novelty detection scorehnovel : X→R , derived from the overall model, is given
+and we will define a binary decision threshold at0wherehnovel(x) >0meansxis classified as a novelty.1
+For example,hnovel(x) = h(x)k+1 −max ˆy∈[k]h(x)ˆyor h(x)k+1 when h(x)returns a probability distribution.
+The success of an OSDA model may be determined by its classification accuracy on data fromPT, Rl01
+T (h) =
+Ey,x∼PT[arg maxˆy{h(x)ˆy}̸= y], but since we often wish to emphasize novelty detection and not treat the
+novel class like any other known class, several other notions of success have been defined in the literature. Our
+theory focuses on the simple case in whichk= 1, where such considerations are unnecessary, and standard
+metrics for binary classification can be used. In our experiments, as we mention again in section 6, we also
+use the OSCR metric of Dhamija et al. (2018). Below we formally define the problem setting and other
+performance metrics we use for our theory.
+Definition 1.An Open Set Domain Adaptation problem with hypothesis class H is a tuple
+⟨PS(x,y),PT,[k] (x),PT,k+1 (x),α,N S,NT,NT,0 ,NT,1 ⟩, where we are given NS and NT i.i.d examples
+from PS and PT (defined in eq.(1)) respectively. We further define β(h; t) = Ex∼SS[1[hnovel(x)>t]] ,
+α(h) = Ex∼ST [1[hnovel(x;t)>t]] as the False Positive Rate (FPR) and recall respectively, of a novelty
+detector hnovel derived fromh∈H where t∈R is a scalar decision threshold. For notational convenience, we
+will defineβ(h) :=β(h; 0)and likewise forα(h).
+With the problem formulation in hand, we now turn to discuss formal guarantees and the possibility of
+solving the problem.
+3.2 Necessary and Sufficient Assumptions for OSDA under Background Shift
+Without any assumptions on the relationship betweenPS and PT it is impossible to obtain a guarantee of
+better than chance accuracy. This holds even under strong simplifying assumptions, such as the existence of
+a model that solves the problem without errors: that is,Rl01
+T (h∗) = 0for some hypothesish ∗2 .
+1The threshold value is arbitrary and can be changed depending on the specific setting.
+2see Prop. 1 in Garg et al. (2022), Prop. 2.1 in Wald & Saria (2023), or discussion in Bekker et al. (2019) for the results of
+this flavor.
+4
+Background shift.We define any distribution shift betweenPS and PT that maintains support overlap
+such thatSupp(PT,[k] ) ⊆Supp (PS)as background shift. Combining this with the above assumption about
+the existence of an oracleh∗, we obtain the separability assumption with which we will work.
+Assumption 1(separability).There exists h∗∈H such thatRl01
+novel(h∗) = 0. Furthermore, it holds that
+Supp(PT,[k] )⊆Supp(P S)i.e. background shift exists betweenPS andP T,[k]
+Both parts of the assumption are rather intuitive, and hold at least approximately for many problems we
+consider in novelty detection, such as detection of novel semantic visual concepts. Let us emphasize two
+aspects of our assumption.
+Separability and background shift characteristics in known classes.The separability assumption
+is required only for the novel classY = k+ 1vs. the known ones, we do not explicitly limit thek known
+classes to be separable amongst themselves. Such an assumption would have placed the shift between
+PS and PT,[k] purely in the realm of covariate shift (Shimodaira, 2000). However, background shift with
+assumption 1 facilitates more general forms of label shift and covariate shift. In our experiments we mostly
+create distribution shifts such thatPT,[k] (X|Y) ̸= PS(X|Y )which follow the definition of background shift
+that are underexplored in existing works.
+Insufficiency of less stringent assumptions.While generalization bounds for domain adaptation are well
+known from seminal works such as Ben-David et al. (2010b), they are less common in the Open Set learning
+literature, hence let us focus on this aspect of our problem, i.e. detecting the novel class. To the best of our
+knowledge the only characterized sufficient and necessary conditions for (non-separable) OSDA are those in
+Garg et al. (2022), whichhold only for label shift, where it is assumed thatPS(X|Y = y) = PT(X|Y = y)for
+all y∈[k] . For this special case, they propose two assumptions which are sufficient (when added on top of the
+label-shift assumption) to guaranteeh∗can be learned from observed data. Their first assumption is(Strong
+Positivity): there existsXsep ∈X such thatPT,k+1 (Xsep) = 0and the matrix[PS(x |y)]x∈Xsep,y∈[k] is full rank
+and diagonal. We show that once more general shifts than label shifts are allowed, e.g. background/covariate
+shift, this condition is no longer sufficient and in fact no algorithm can guarantee better-than-chance detection.
+The proof for this is in A.3.
+Lemma 1.Let Abe an algorithm for Open-Set Domain Adaptation. There are distributionsPS,PT,[k] ,PT,k+1
+such that the problem satisfies strong positivity, and ∃h∗ ∈ H for which Rl01
+T (h∗) = 0, while
+ESS,ST
+[
+Rl01
+T (A(SS,ST))
+]
+≥0.5.
+The second assumption proposed in Garg et al. (2022) is separability as defined in assumption 1; however,
+since their assumption is combined with the label shift assumption, the methods they develop are tailored to
+that scenario and do not apply to our problem.3
+Assumption 1 guarantees that given an infinitely large sample and an optimization oracle, we can learn to
+identify the novelties. It is also desirable to have guarantees on the required sample size. In this paper we
+focus on the finite sample guarantees of detecting the novel class in the overparameterized regime, since results
+on classification of remainingk non-novel classes can be obtained from prior work on domain adaptation, see
+for instance Ben-David et al. (2010a) and the survey of Redko et al. (2020). This is to formally study and
+understand best practices in learning expressive models for open-set problems under background shift.
+4 Constrained Open-Set Learning Rules and Domain Discriminators
+We focus on the case k = 1, i.e., PU-learning (Bekker & Davis, 2020), to study the novelty detec-
+tion aspect of OSDA. The domain discrimination approach trains a classifier, via Empirical Risk Min-
+imization (ERM), to distinguish between PS and PT such that for a 0-1 loss function l01, hDD =
+arg minh∈H
+1
+NS+NT
+(∑
+x∈SS
+l01(h(x),0) + ∑
+x∈ST
+l01(h(x),1)
+)
+. Similarly, the learning rule for constrained
+3Lemma 1 has a similar flavor to Prop. 3.1 in Wald & Saria (2023), but it is stronger. Our result shows impossibility under
+an additional assumption of strong positivity. This is significant in the context we consider here, as Garg et al. (2022) give
+guarantees on OSDA with label shift under this strong positivity assumption, but our lemma shows that this is impossible under
+the background shifts we consider.
+5
+learning is hcolor = arg minh∈H
+1
+NS
+(∑
+x∈SS
+l01(h(x),0)
+)
+s.t. 1
+NT
+∑
+x∈ST
+l01(h(x),1) ≤1 −ˆα. In practice,
+these rules are often implemented with the logistic loss or some close variation, e.g. (Kiryo et al., 2017).
+As noted in section 2, standard PU-learning methods without distribution shift rely on domain discriminators.
+Constrained learning rules were studied in Blanchard et al. (2010) and later extended under distribution shift
+by Wald & Saria (2023) using small models. Their analysis, however, is limited to classical learning regimes
+that assume infinite data, whereas in practice, we prefer high-capacity models and only have limited data. A
+regime that is beyond the scope of their theory. In this section, we review both approaches and explain why
+applying these guarantees to such high-capacity models is non-trivial. Our main result in section 4.2 compares
+constrained learning and domain discrimination in a simplified overparameterized setting that preserves key
+aspects of open-set training. The model builds on ideas from generalization to minority subgroups (Sagawa
+et al., 2020; Wald et al., 2022; Puli et al., 2023; Nagarajan et al., 2021). Empirical results in section 6
+corroborate conclusions to which the theory points.
+4.1 Overparameterization and Finite Sample Analysis
+In terms of formal guaranties, it is well known that at the limit of infinite data and a familyHthat is large
+enough, the minimizerhDD(x)will be proportional to the log-odds ratio,hDD(x) = log(PT(x)/PS(x)). Under
+assumption 1, this means that the instances of the novel class will be classified as originating fromPT w.p.
+1, while forx ∼PT,0 (= PT,[k] since k= 1) it will be bounded away from1sinceSupp(PT,[k] ) ⊆Supp (PS).
+Hence, under these favorable conditions,hDD will classify the novel class vs. the single known class with
+accuracy1. In practice, we do not perform perfect optimization with infinitely large datasets and highly
+expressive models. Therefore, it is desirable to study the sample complexity of different learning rules.
+Without further assumptions, the sample complexity of the domain discrimination approach resembles those
+in the domain adaptation literature, which depend on the divergence betweenPS and PT, e.g. (Ben-David
+et al., 2010a). Wald & Saria (2023) show that instead of following ERM, solving a constrained learning
+rule, achieves a generalization bound where the error scales with a divergencedH,β(PS∥PT)which is usually
+considerably smaller than common divergences in domain adaptation4. Here, β is a constant that depends
+on the Rademacher complexity ofHand the sample size. We refer to Thm 4.3 in Wald & Saria (2023) for
+more details.
+Why existing theory may not reflect large-scale training.As reflected by dependence on quantities
+like the Rademacher complexity ofH, the results on constrained learning apply to a regime where models are
+of relatively low capacity and may not be expressive enough to achieve arbitarily low training loss. However,
+it is rather common to fit much more expressive models, as they often generalize better in practice. In what
+follows we formally study a simple example of overparameterized models, where the number of parameters
+is larger than the number of training examples. This is a common toy model to study deep networks that
+overfit their training data but still generalize well, also known as “benign overfitting” (Belkin et al., 2019).
+4.2 Why Should Constrained Learning be Effective? Linear-Gaussian Overparameterized OSDA
+Example withk= 1
+To capture key aspects of the problem solved in practice, while maintaining a manageable mathematical
+analysis, we perform a few simplifications:Data and models.(i) We study linear modelsh(x) =w ⊤xfor
+w ∈R d, whered>N S+ NT so the models are expressive and can interpolate the data; (ii) We focus on a
+problem with two features (alongµ and η) and Gaussian noise (see definition 2). Hereµ and η denote the
+two informative directions in the problem: the background shift, i.e. the shift in the known class, is in the
+direction µ, and its magnitude is proportional to the normrµ. While η marks the novel class, and higherrη
+corresponds to a larger signal for learning the novel class. The covariance matrices (e.g.,Id−r−2
+µ µµ⊤) remove
+the corresponding rank-one components so the problem satisfies assumption 1. This construction keeps the
+model analytically tractable and this type of simplifications are common in works on benign overfitting and
+robustness to distribution shifts (Nagarajan et al., 2021; Wald et al., 2022; Muthukumar et al., 2021).
+4Intuitively,β is a small number, anddH,β(PS∥PT )measures how probable a rare event underPS, i.e. with probability
+smaller thanβ, can become underPT
+6
+Definition 2.Let d >0, µ,η∈R d, σ = 1/
+√
+d, α∈(0,1) , rµ = ∥µ∥, rη = ∥η∥. ALinear-Gaussian PU-
+learning problemis an OSDA problem (definition 1) with1known class wherePS= N(µ,σ2(Id −r−2
+η ηη⊤)),
+PT,0 =N(−µ,σ 2(Id −r−2
+η ηη⊤)andP T,1 =N(−η,σ 2(Id −r−2
+µ µµ⊤)).
+Simplified CoLOR and Domain Discriminator methods.(iii) The last simplification regards which
+optimization problem to analyze. In an overparameterized problem, there are many possible minimizers of
+the empirical risk and the constrained risk in eq. (3). Therefore to analyze the solutions, it is common to
+considerh DD andh color as max-margin classifiers5 such that:
+wDD = arg min
+w
+∥w∥
+s.t.w ⊤x≤−1∀x∈S S
+w⊤x≥1∀x∈S T
+wcolor = arg min
+w
+∥w∥
+s.t.w ⊤x≤0∀x∈S S
+w⊤x≥1∀x∈S T
+(2)
+That is, whilewDD is the max-margin classifier on the entire dataset,wcolor maximizes margin only onST
+while constrainingSS to lie on the correct side of the decision threshold. Our practical implementation of
+the learning rule (hcolor) maximizes the margin onSS while constrainingST as it leads to a more stable
+optimization. In the overparameterized regime, the conditions we lay out below ensure that both optimization
+problems admit feasible solutions with probability1. Now we present our main result for this section.
+Theorem 1.Consider a Linear-Gaussian PU-learning problem with parametersµ,η,d> 300,α∈(0, 1
+1024 )
+and dataset sizesNT >10,N S=NT,N=N S+NT = 2NT, and letδ∈(0,1). For all problems where
+min{rη,rµ}≥ 32√
+N
+,rµ ≤1
+2
+√
+NT,0 ,rη
+rµ
+≤32
+N,d>c 1Nlog
+(c2
+δ
+)
+,N≥c 1 log(c2
+δ ),
+it holds with probability at least1−δthatAU−ROC(w DD)<0.5andAU−ROC(w color)>0.9.
+Proof sketch.The proof consists of four parts. First, we show thatAU−ROC (w) = Q( w⊤(µ−η)
+σ
+√
+∥w∥2−(w⊤(µ+η))2 ),
+where Q(·)is the inverse Gaussian tail function. This means that wheneverw⊤
+DD(µ−η ) ≤0, the domain
+discriminator algorithm will haveAU−ROC (wDD) ≤0.5. To derive ranges of problem parameters where
+this happens, we analyze the convex dual of the maximum-margin problem with an added constraint that
+w⊤
+DD(µ−η ) > 0and obtain a lower boundγ on the value of the primal problem (i.e. a lower bound on
+the norm of a “good” solution). Then we guess a solution of the formw′= µ+ ∑
+i∈U ξi, which does not
+depend onη at all and has AU-ROC smaller than0.5. Intuitively,U is constructed by including the novel
+class examples and use the noise vectors of these examples to fit them and satisfy the constraints of the
+problem. Then, by showing that∥w′∥<γ we prove thatAU−ROC (wDD) ≤0.5. This is summarized in
+proposition 1. Next in proposition 2, we follow a similar procedure withwcolor of analyzing a problem with
+an added constraintw⊤(µ−η ) <τ for someτ >0. Again using weak duality and guessing a solution, we
+prove thatwcolor will satisfy the constraint, this time showing that it obtains a high AU-ROC. Finally, by
+finding an intersection of parameters ranges where both bounds on the AU-ROC hold, we prove the main
+claim in theorem 2 (restatement of theorem 1).
+Detailed derivation of the theorem 1 claims are provided in section A.1. The result shows that a constrained
+learning rule can be arbitrarily more accurate than a domain discriminator.6 This advantage holds even for
+overparameterized models that generalize well to domain discrimination. The parameter ranges in theorem 1
+indicate when the constrained approach outperforms the baseline, specifically, when the novel-class fractionα
+is small and the shift magnituderµ is large enough but not too large so that support overlap betweenPS and
+PT,0 is close to being violated by density ratios growing very large. More specifically, the conditions impose
+lower bounds on the norms of the source and novel class samples to avoid cases with excessive noisy sampling.
+They further provide an upper bound on the norm of the source class signals and constrain the norm of the
+novel class signal relative to that of the source class. This makes it harder to distinguish between known and
+5This is based on results that show the implicit bias of gradient descent and the logistic loss to the max-margin classifier on
+separable data (Soudry et al., 2018)
+6We prove that the AU-ROC of CoLOR exceeds0.9, but the proof can be extended to yield arbitrarily high AU-ROC.
+7
+novel instances. Intuitively, higher-norm features induce stronger separation margins, making them easier for
+a classifier to detect. Hence, at lower norms,wcolor outperforms the baselinewDD. We also have a condition
+ondto ensure overparameterized regime given a lower bound onN.
+In the next section, we introduce a practical implementation of the constrained learning rule for OSDA under
+background shift. Although it differs from the theoretical setup forwcolor, experiments in section 6 confirm
+superior performance over baselines, including the domain discriminator, in regimes consistent with theory.
+5 CoLOR: A solution to OSDA under Background Shift
+In practice, we formulate constrained learning rule (CoLOR) for OSDA setup under background shift as
+follows:
+hcolor = arg minh∈H
+(∑
+i∈SS
+lce(hc(xi),yi) + ˆβ(hnovel)
+)
+s.t.ˆα(hnovel)<ˆα.(3)
+where h = [hc,hnovel], hc are classification heads for known classes,hnovel is the novelty detection head,
+lce is the supervised cross entropy loss,ˆα(h),ˆβ(h)are empirical estimates of α(h),β(h)from ST and SS
+respectively. ˆαis some constant corresponding to the target recall. It is a hyperparameter that needs tuning.
+5.1 Efficient Architecture for Estimating the Novel Class Ratio (α)
+To solve the eq. (3), we follow Wald & Saria (2023); Chamon et al. (2022); Cotter et al. (2019) and solve a
+Lagrangian optimization problem obtained by switching the role of maximization and constraints in eq. (3)
+and taking its dual, see eq. (4) for the full objective. However, a naïve implementation of this objective has
+a significant drawback in terms of computational complexity due to hyperparameter optimization. Indeed,
+prior work on the rate-constrained learning problems we seek to solve (where rate in our problem corresponds
+to the size of the novel class) is limited to either very small models and datasets (Wald & Saria, 2023), or to
+certain applications such as fairness (Zafar et al., 2019), where the desired rate is known a-priori.
+The computationally challenging part is that our Lagrangian problem needs to be solved forL candidate
+values ofˆα∈α, corresponding to the potential estimates of novel class proportion, whereα∈[0,1] L. We
+perform grid search overαand choose the model that obtains largest empirical recall estimate (ˆα(h)) w.r.t.
+the task of distinguishing betweenPS and PT, while still satisfying the constraint on empirical FPR i.e. false
+positive rate estimate (ˆβ) for the same task as specified in the learning objective. For empirical purposes, we
+calculate the approximate bound forβ (constraint on ˆβ(h)) using the Rademacher complexity in theorem 1
+of Wald & Saria (2023). We find that settingβ = 0.01is well within the theoretically calculated bounds and
+works well in practice for all the experiments. Plots in figure 4 provide further insights about the impact of
+varyingβon OSDA performance of CoLOR.
+To this end we train an architectureh(x) = ϕ◦w (x)where ϕ : X →Rd is a shared representation for
+classification heads,wc : Rd →R k, as well as several novelty heads,wα = {wα
+i : Rd →R}L
+i=1, and eachwα
+i
+corresponds to a candidate valueˆαin the search gridα. Hence the solution amortizes training time for all
+candidate values by solving the primal dual optimization problem once. which leads to better performance
+with large data & models in practice as we see in section 6.
+5.2 A simple Extension of Constrained Learning for OSDA
+Figure 2: (left) CoLOR architecture for
+OSDA, headswa
+i for multiple recall values
+and classification headswc, vs. (right) a net-
+work optimizing for novelty detection with
+single recall value as in Wald & Saria (2023).
+To account for the known classesY = 1,...,k and L novelty
+heads, we constructw = [wc,wα], such thatw : Rd →R L+k.
+wα is responsible for detecting novelties with various propor-
+tions whilewc determines the known class of the inputx. See
+algorithm 1 for further details. Note that training multiple
+novelty heads ([wα
+1 ,wα
+2 ,...,w α
+L]) simultaneously is much more
+computationally efficient than training a separate model for
+each candidate ˆαin a loop. We hypothesize that having a
+shared representation for both tasks enables the model to learn
+a simpler representation that fits both tasks, yielding favor-
+able generalization bounds as suggested by theory on multitask
+learning (Baxter, 2000; Maurer et al., 2016).
+8
+Let us gather the components for our overall method, CoLOR,
+that we evaluate in the next section. Figure 2 illustrates the
+architecture of CoLOR. It is trained by combining the constrained learning rule withℓlog, the binary cross-
+entropy loss, aiming to detect novel examples inST,7 λˆαis a Lagrange multiplier corresponding to the head
+hˆα= ϕ◦w α(x), ℓσ(·)is a sigmoid function which serves as an approximation to the indicator function, and
+the supervised cross entropy loss islce forh c(xi) =ϕ◦w c(x).
+L(h) =N−1
+S
+∑
+i∈SS
+(
+lce(hc(xi),yi) +
+∑
+ˆα∈α
+llog(hˆα(xi),0)
+)
++N −1
+T
+∑
+i∈ST,
+ˆα∈α
+λˆα·
+(
+lσ(hˆα(xi))−ˆα
+)
+(4)
+In our experiments, the representationϕ(x)is either trained from scratch or built on a pretrained backbone
+with added fully connected layers. For small datasets (e.g., CIFAR100), we trainϕ(x)as ResNet18 (He
+et al., 2016) from scratch. For larger ones (e.g., SUN397), we use pretrained ϕ(x)such as ResNet50
+(ImageNet1K_V1) (Russakovsky et al., 2015) or a CLIP-pretrained ViT-L/14 encoder (Radford et al., 2021).
+For text datasets (e.g., Amazon Reviews), we use RoBERTa (Liu et al., 2019) for embeddings. See section A.5
+for details.
+Algorithm 1CoLOR: Constrained Learning for Open-set Recognition
+Require: Labelled SS and unlabelledST datasets, hypothesis classH, target FPRβ >0and L potential
+novel class sizesα∈[0,1] L.
+1:SplitS S,ST into trainTS,TT and validation setsVS,VT respectively.
+2: Train either the entire model (ϕ, wc & wα) or use pretrainedϕ and just train the last fully connected
+layer ofϕalong withw c &w α
+ˆαto minimize the eq. 4.
+3:Let ˆβ(wα
+ˆα) = 1
+|VS|
+∑
+x∈VS
+wα
+ˆα◦ϕ(x), andˆα(wα
+ˆα) = 1
+|VT|
+∑
+x∈VT
+wα
+ˆα◦ϕ(x)∀α∈α
+4:return
+[
+wc, argmaxwα
+ˆα:α∈α,ˆβ(wα
+ˆα)<βˆα(wα
+ˆα)
+]
+6 Experiments
+We are now in place to empirically evaluate CoLOR against variety of baselines across background shifts and
+novel classes that we create in real data. Here, the main questions we wish to answer are:
+1. Does background shift within non-novel instances affect OSDA performance?
+2. Can shared representations mitigate the impact of background shift by enhancing robustness in classifying
+samples fromST,[k] thereby improving overall OSDA performance?
+3. What is the effect of novel class ratioαparticularly w.r.t. detecting novel classes?
+6.1 Experimental setting
+The experiments to examine these questions are devised over image and text datasets as follows. We randomly
+draw a class from the set of classesYand assign that as thek+ 1-th novel class. Denoting the instances of
+known classes bySk = {x: y∈ [k]}∀(x,y) ∈S and novel ones asSk+1 = {x: y = k+ 1}∀(x,y) ∈S , we
+create a background shift by further splittingSk into SS and ST,[k] . We use semantic attributes that are
+annotated in the metadata of each dataset to create this shift betweenSS and ST,[k] . The attributes used
+for each dataset are specified in section 6.2 and elaborated further in section A.5.1. At training time the
+learner is provided with a labelled datasetSS and the unlabelled datasetST = ST,[k] ∪Sk+1. The mixture
+proportionα=|S k+1|/(|Sk+1|+|S T,[k] |)is set by adjusting the sizes of the selected novel classes inST,[k] .
+6.2 Datasets
+Most of the large scale image classification models are trained on ImageNet dataset. Hence we use a similar
+large scale dataset,SUN397(Xiao et al., 2010) having completely different categories than ImageNet. It is
+a popular scene understanding dataset with a three-level hierarchy of scene categories Xiao et al. (2010),
+exploiting this structure to create distribution shifts by varying subtype (y) proportions within primary class
+7label0in the loss corresponds here to a sample belonging toSS.
+9
+labels Y. Indoor scenes (e.g., shopping/dining places, workplaces) serve as known (in-distribution) classes,
+while outdoor scenes are randomly selected as novel classes. Varying subtype proportions in indoor categories
+causes a background shift sinceSupp(PT,[k] ) ⊆Supp (PS). We also include aAmazon Product Reviews
+text dataset (Ni et al., 2019) to demonstrate the versatility of the method across multiple modalities. Classes
+are different product categories (prime pantry, musical instruments, etc.), and induce background/covariate
+shift in known classes based on positive vs. negative sentiment in the review. The novel class is an unknown
+product category. Finally, we include small scaleCIFAR100(Krizhevsky, 2009) dataset to evaluate the
+adaptive methods (like DD, nnPU, uPU, BODA, OSDA) particularly in scenarios when their feature extractors
+are trained from scratch. Similar to the SUN397 dataset, we leverage the inherent hierarchies of CIFAR100
+classes to create a natural background shift based on subtypes (e.g. dolphins) of known primary categories like
+aquatic mammals. Novel classes are chosen from other categories in distinct branches of the class hierarchy.
+Table 1 provides a summary of characteristics and further details on each dataset are in section A.5.1.
+Table 1: Overview of experiment settings. DS = distribution shift, prop. = proportions
+Experiment setup SUN397 CIFAR100 Amazon Reviews
+DS factor varying subtypes prop.varying subtypes prop.sentiment
+no. of novel classes 12 5 6
+Novel class ratio (α)0.07±0.03 0.16±0.09 0.07±0.02
+Evaluation metrics:We primarily use Area Under ROC Curve (AUROC) and Area Under Precision-Recall
+Curve (AUPRC) to evaluate the novel category detection performance, while we use Open-Set Classification
+Rate (OSCR) to summarize overall OSDA performance for all the methods8. OSCR measures the trade-off
+between correct classification rate of the known classes and false positive rate of the novel samples, we refer
+to Dhamija et al. (2018) for further details about the metric.
+6.3 Baseline methods
+We include adaptive methods from novelty detection that access both labelled source and unlabelled target
+data. These baselines include domain discriminator DD, (Elkan & Noto, 2008; du Plessis et al., 2014), uPU
+(du Plessis et al., 2014) and nnPU (Kiryo et al., 2017). These methods are modified for OSDA through
+joint learning approach enabled by a simple architectural modification like figure 2 and aggregating the loss
+components from both the tasks. We also include another popular OSDA baselines BODA (Saito et al.,
+2018) and PULSE (Garg et al., 2022) that are agnostic to input data modality. Another adaptive baseline is
+Li et al. (2023), however, this is specifically designed for vision data. Hence, we report its performance on
+SUN397 dataset in table 3 along with other vision-specific baselines.
+We include an entropy-based method, ARPL (Chen et al., 2021) with Maximum Logit Score as proposed in
+(Vaze et al., 2022). Such methods are non-adaptive as they do not access target data, yet are a popular choice
+for novelty detection.9 We also tested simple and popular baselines such as MSP Hendrycks & Gimpel (2016)
+and results can be found in appendix tables 15, 16. We further include SHOT (Liang et al., 2021), CAC
+(Miller et al., 2021) and a zero-shot OOD detection method (ZOC) proposed in Esmaeilpour et al. (2022).
+Further details about training and hyperparameters are in Appendix A.5.2.
+6.4 Results
+Table 2 summarizes the OSDA performance across all the datasets using all the metrics discussed previously.
+We observe that CoLOR generally outperforms all the baselines with a significant margin. The OSCR
+performance of CoLOR is comparable to BODA, ARPL and PULSE for CIFAR100 and Amazon Reviews
+dataset however, they notably under perform in novelty detection (AUROC and AUPRC) for the same
+datasets. Additionally, we observe that these methods do not perform as well on the larger dataset of SUN397.
+We find that the nnPU objective defaults to uPU when using pretrained feature extractors (SUN397 and
+Amazon Reviews), as the empirical risk remains non-negative for both. This causes similar results of uPU and
+nnPU on SUN397 and CIFAR100 datasets. In the image datasets, we find that adaptive methods significantly
+outperform non-adaptive methods overall. We further strengthen our results by extending the study to
+8Section A.4.1 in appendix provides detailed argument for the preference of AUPRC over AUROC mainly when minority
+class proportions are very low.
+9We are using ARPL on SUN397. The paper that proposed ARPL also introduced an improvement with Confused Sampling
+(ARPL+CS) that uses GANs, but that proved challenging to apply in the SUN397 dataset
+10
+Table 2: Performance comparison of adaptive methods for OSDA under background shift demonstrating
+versatility across data modalities. Detailed results in appendix Tables 6, 10, and 12.10
+Metric Methods
+SUN397 (α= 0.07±0.03) CIFAR100 (α= 0.07±0.02)Amazon Reviews (α= 0.16±0.09)
+ResNet50 pretrained on ImageNet1KResNet18 (randomly initialized)pretrained RoBERTa
+Summary Wins Summary Wins Summary Wins
+AUROC
+DD 0.91±0.05 1/15 0.70±0.11 3/25 0.72±0.09 1/30
+uPU 0.76±0.14 0/15 0.67±0.10 1/25 0.76±0.08 4/30
+nnPU 0.76±0.14 0/15 0.67±0.12 1/25 0.76±0.08 4/30∗
+BODA 0.86±0.06 0/15 0.57±0.06 0/25 0.66±0.10 2/30
+ARPL 0.71±0.08 0/15 0.76±0.05 8/25 0.70±0.05 1/30
+CAC 0.80±0.05 0/15 0.69±0.04 2/25 0.70±0.07 5/30
+PULSE 0.73±0.07 0/15 0.72±0.04 0/25 0.63±0.08 1/30
+CoLOR 0.98±0.02 14/15 0.77±0.09 10/25 0.79±0.09 16/30
+AUPRC
+DD 0.54±0.22 1/15 0.24±0.13 2/25 0.43±0.18 0/30
+uPU 0.21±0.22 0/15 0.18±0.12 1/25 0.51±0.17 7/30
+nnPU 0.21±0.22 0/15 0.20±0.16 2/25 0.51±0.17 7/30∗
+BODA 0.45±0.11 0/15 0.09±0.03 0/25 0.28±0.21 1/30
+ARPL 0.12±0.07 0/15 0.18±0.07 4/25 0.27±0.13 0/30
+CAC 0.18±0.07 0/15 0.15±0.05 1/25 0.3±0.16 1/30
+PULSE 0.15±0.05 0/15 0.17±0.05 0/25 0.21±0.13 0/30
+CoLOR 0.91±0.09 14/15 0.33±0.14 15/25 0.54±0.18 21/30
+OSCR
+DD 0.68±0.05 1/15 0.51±0.10 1/25 0.50±0.06 0/30
+uPU 0.40±0.11 0/15 0.49±0.09 0/25 0.54±0.05 5/30
+nnPU 0.40±0.11 0/15 0.48±0.10 1/25 0.54±0.05 5/30∗
+BODA 0.55±0.10 0/15 0.60±0.04 3/25 0.56±0.06 7/30
+ARPL 0.60±0.06 0/15 0.61±0.04 7/25 0.56±0.05 4/30
+CAC 0.68±0.05 0/15 0.55±0.04 0/25 0.49±0.07 0/30
+PULSE 0.65±0.06 0/15 0.62±0.03 6/25 0.53±0.07 4/30
+CoLOR 0.81±0.04 14/15 0.59±0.08 7/25 0.56±0.06 10/30
+∗ When nnPU behaves exactly like uPU, both are awarded the win.
+Table 3: OSDA performance with and without background shift (DS) using ResNet50 backbone for SUN397.
+These results include additional vision-specific baselines like SHOT, ZOC, ANNA
+Method AUROC AUPRC OSCR
+w/ BS w/o BS w/ BS w/o BS w/ BS w/o BS
+DD 0.91±0.05 1.00±0.00 0.54±0.22 1.00±0.00 0.68±0.05 0.99±0.00
+uPU 0.76±0.14 1.00±0.00 0.21±0.22 1.00±0.00 0.40±0.11 0.99±0.00
+BODA 0.86±0.06 0.88±0.04 0.45±0.11 0.24±0.15 0.55±0.10 0.93±0.02
+ARPL 0.71±0.08 0.84±0.04 0.12±0.07 0.20±0.07 0.60±0.06 0.80±0.04
+CAC 0.80±0.05 0.88±0.03 0.18±0.07 0.29±0.07 0.68±0.05 0.84±0.03
+PULSE 0.73±0.07 0.82±0.05 0.15±0.05 0.20±0.05 0.65±0.06 0.78±0.05
+CoLOR 0.98±0.02 1.00±0.00 0.91±0.09 0.99±0.03 0.81±0.04 0.93±0.01
+SHOT 0.71±0.16 0.84±0.04 0.19±0.13 0.20±0.07 0.22±0.07 0.80±0.04
+ZOC* 0.82±0.07 0.82±0.08 0.23±0.06 0.22±0.07 0.48±0.12 0.49±0.05
+ANNA 0.93±0.05 0.95±0.07 0.73±0.16 0.90±0.08 0.60±0.07 0.82±0.07
+*ZOC uses CLIP ViT-B/32 image encoder with BERT text encoder.
+other richer feature representations like pretrained CLIP ViT-L/14, particularly for SUN397 dataset. This is
+shown in 3a across different novel classes (X-axis) of SUN397 dataset. CoLOR still outperforms the baselines
+using either of the backbone architectures. We can see that CLIP ViT-L/14 have overall better performance
+than ResNet50 (pretrained on ImageNet) in SUN397 dataset due to richer and more robust features. This
+mitigates the impact of distribution shift, which is more pronounced in SUN397 compared to other datasets.
+Further results are in appendix tables 6, 8, 10, 12.
+11
+(a)
+ (b)
+Figure 3: (a) OSDA performance of top performing adaptive methods on SUN397 dataset with background
+shift using pretrained ResNet50 & CLIP ViT-L/14 backbone architectures. (b) Impact of novel class ratio
+(α) on adaptive methods on SUN397 dataset under background shift.
+Table 4: Top-1 accuracy overST for closed-set classification on SUN397 data.
+Method ResNet50 ViT-L/14 from CLIP
+Source-only 0.72±0.03 0.97±0.01
+DD 0.75±0.04 0.97±0.01
+BODA 0.70±0.07 0.75±0.13
+CAC 0.85±0.02 0.98±0.01
+PULSE 0.82±0.03 0.97±0.01
+CoLOR 0.83±0.03 0.98±0.01
+6.5 Discussion
+Based on our observations from the experiments, we address the three critical questions below:
+Background shift within non-novel instances causes a significant drop in the OSDA performance
+of all the methods that involve fine-tuning using the source data.
+From tables 3, 8 and 9 we observe that all the methods that involve training a closed-set classifier suffer
+from background shift. Hence, background shift not only harms closed-set performance but also that of
+open-set recognition. If we had a better closed set classifier, in the sense that it was more robust to the
+background shift, then we probably would’ve ended up with better OSDA performance too. More specifically,
+CoLOR seems to primarily help when standard techniques like long training, label smoothing, and other
+techniques used in Vaze et al. (2022) are insufficient to train a model that’s robust to shift. ZOC performs
+zero-shot open-set classification using pretrained CLIP and text decoder models without accessing source and
+target data. Hence, it is not impacted by background shift as expected. We have provided further results on
+CIFAR100 dataset in 10 & 11 although CIFAR100 is a much simpler dataset and hence we see near perfect
+scores by ZOC due to the use of large CLIP ViT-B/32 model pretrained on huge image caption datasets. We
+see in tables 8 & 9 that non-adaptive methods do not perform well when scaled to larger SUN397 dataset.
+10The summary statistics are derived by averaging (or aggregating wins) across all novel class identities and randomly generated
+data splits (betweenPS &P T ) along with the corresponding standard deviations. Refer A.5.2
+12
+Shared representations obtained by joint learning of closed set classification and novel category
+detection can help mitigate the impact of background shift within non-novel instances.
+Table 4 compares the Top-1 accuracy for known classes under background shift betweenSS and ST. The
+Source-only method is trained on labelledSSfor classifying known classes inST, while DD combines closed-set
+classification with domain discrimination (distinguishing samples fromSS and ST). We can see that DD has
+better Top-1 accuracy of known classes than the Source-only method onST notably for ResNet50 model.
+CoLOR further improves the performance by employing constrained learning instead of domain discrimination
+in the joint learning objective to detect novel classes. Performance differences remain incremental for CLIP
+ViT-L/14 because its pretrained representations are already rich and robust.
+As the novel class ratio α decreases, the performance of existing methods to detect un-
+known/novel classes significantly decreases.
+Figure 3b illustrates the effect of novel class ratio on the novel class detection performance of existing OSDA
+methods and CoLOR. A lowαsignificantly deteriorates the open-set classification performance, especially for
+methods not designed to handle such cases. Existing benchmarks focus on large novel class sizes. We believe
+that experimenting with smaller sizes would be a valuable step toward creating more realistic benchmarks.
+7 Future Work
+Future research could focus on refining the search criteria for the optimal model head by selecting an
+appropriate β threshold. Additionally, a robust theoretical underpinning is needed to explain why shared
+representations improve the classification of known classes under distribution shifts. Integrating test-time or
+model-free domain adaptation methods, such as those by Wang et al. (2020), Zhang et al. (2023), or Saito
+et al. (2018), could further enhance OSDA performance. It would be valuable to compare our approach with
+large foundation models. Although curating such a benchmark would require access to publicly available
+pretraining datasets like LAION, which would require significant effort and present unforeseen challenges.
+Acknowledgments
+Shravan S. Chaudhari and Rama Chellappa acknowledge support from the DARPA TIAMAT program under
+Grant No. HR00112490422. The views and conclusions contained in this document are those of the authors
+and should not be interpreted as representing the official policies, either expressed or implied, of the U.S.
+Government.
+This work was also supported by the Gordon and Betty Moore Foundation through the grant titled “Safety
+Monitoring of Deployed Clinical AI via the Framework for Real-time Auditing of Individual Predictions
+(FRAP)” (GBMF ID #12128).
+We additionally acknowledge support from the NSF award titled “FW-HTF: Human-Machine Teaming for
+Medical Decision Making” (FAIN 1840088), which concluded in September 2024.
+References
+Dario Amodei, Chris Olah, Jacob Steinhardt, Paul Christiano, John Schulman, and Dan Mané. Concrete
+problems in ai safety.arXiv preprint arXiv:1606.06565, 2016.
+J. Baxter. A Model of Inductive Bias Learning.Journal Of Artificial Intelligence Research, 2000. doi:
+10.1613/jair.731. URLhttps://arxiv.org/abs/1106.0245v1.
+Jessa Bekker and Jesse Davis. Learning from positive and unlabeled data: A survey.Machine Learning, 109
+(4):719–760, 2020.
+Jessa Bekker, Pieter Robberechts, and Jesse Davis. Beyond the selected completely at random assumption
+for learning from positive and unlabeled data. InJoint European Conference on Machine Learning and
+Knowledge Discovery in Databases, pp. 71–85. Springer, 2019.
+Mikhail Belkin, Daniel Hsu, Siyuan Ma, and Soumik Mandal. Reconciling modern machine-learning practice
+and the classical bias–variance trade-off.Proceedings of the National Academy of Sciences, 116(32):
+15849–15854, 2019.
+13
+Shai Ben-David, John Blitzer, Koby Crammer, Alex Kulesza, Fernando Pereira, and Jennifer Wortman
+Vaughan. A theory of learning from different domains.Machine learning, 79:151–175, 2010a.
+Shai Ben-David, John Blitzer, Koby Crammer, Alex Kulesza, Fernando Pereira, and Jennifer Wortman
+Vaughan. A theory of learning from different domains.Machine Learning, 79(1):151–175, 2010b.
+Abhijit Bendale and Terrance E Boult. Towards open set deep networks. InProceedings of the IEEE
+conference on computer vision and pattern recognition, pp. 1563–1572, 2016.
+Gilles Blanchard, Gyemin Lee, and Clayton Scott. Semi-supervised novelty detection.The Journal of Machine
+Learning Research, 11:2973–3009, 2010.
+Tri Cao, Jiawen Zhu, and Guansong Pang. Anomaly detection under distribution shift, 2023. URL
+https://arxiv.org/abs/2303.13845.
+Luiz FO Chamon, Santiago Paternain, Miguel Calvo-Fullana, and Alejandro Ribeiro. Constrained learning
+with non-convex losses.IEEE Transactions on Information Theory, 2022.
+Guangyao Chen, Peixi Peng, Xiangqian Wang, and Yonghong Tian. Adversarial reciprocal points learning for
+open set recognition.IEEE Transactions on Pattern Analysis and Machine Intelligence, pp. 1–1, 2021. ISSN
+1939-3539. doi: 10.1109/tpami.2021.3106743. URLhttp://dx.doi.org/10.1109/TPAMI.2021.3106743.
+Seun-An Choe, Ah-Hyung Shin, Keon-Hee Park, Jinwoo Choi, and Gyeong-Moon Park. Open-set domain
+adaptation for semantic segmentation. In2024 IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), pp. 23943–23953, 2024. doi: 10.1109/CVPR52733.2024.02260.
+Andrew Cotter, Heinrich Jiang, Maya R Gupta, Serena Wang, Taman Narayan, Seungil You, and Karthik
+Sridharan. Optimization with non-differentiable constraints with applications to fairness, recall, churn, and
+other goals.J. Mach. Learn. Res., 20(172):1–59, 2019.
+Akshay Raj Dhamija, Manuel Günther, and Terrance Boult. Reducing network agnostophobia.Advances in
+Neural Information Processing Systems, 31, 2018.
+Marthinus C du Plessis, Gang Niu, and Masashi Sugiyama. Analysis of learning from positive and unlabeled
+data. In Z. Ghahramani, M. Welling, C. Cortes, N. Lawrence, and K.Q. Weinberger (eds.),Advances in
+Neural Information Processing Systems, volume 27. Curran Associates, Inc., 2014.
+Charles Elkan and Keith Noto. Learning classifiers from only positive and unlabeled data. InProceedings of
+the 14th ACM SIGKDD international conference on Knowledge discovery and data mining, pp. 213–220,
+2008.
+Sepideh Esmaeilpour, Bing Liu, Eric Robertson, and Lei Shu. Zero-shot out-of-distribution detection based on
+the pre-trained model clip.Proceedings of the AAAI Conference on Artificial Intelligence, 36(6):6568–6576,
+Jun. 2022. doi: 10.1609/aaai.v36i6.20610. URLhttps://ojs.aaai.org/index.php/AAAI/article/view/
+20610.
+Angelos Filos, Panagiotis Tigkas, Rowan McAllister, Nicholas Rhinehart, Sergey Levine, and Yarin Gal. Can
+autonomous vehicles identify, recover from, and adapt to distribution shifts? InInternational Conference
+on Machine Learning, pp. 3145–3153. PMLR, 2020.
+Samuel G Finlayson, Adarsh Subbaswamy, Karandeep Singh, John Bowers, Annabel Kupke, Jonathan
+Zittrain, Isaac S Kohane, and Suchi Saria. The clinician and dataset shift in artificial intelligence.New
+England Journal of Medicine, 385(3):283–286, 2021.
+Saurabh Garg, Yifan Wu, Alexander J Smola, Sivaraman Balakrishnan, and Zachary Lipton. Mixture
+proportion estimation and pu learning: A modern approach.Advances in Neural Information Processing
+Systems, 34:8532–8544, 2021.
+Saurabh Garg, Sivaraman Balakrishnan, and Zachary C. Lipton. Domain adaptation under open set label
+shift, 2022. URLhttps://arxiv.org/abs/2207.13048.
+14
+Zongyuan Ge, Sergey Demyanov, Zetao Chen, and Rahil Garnavi. Generative openmax for multi-class
+open set classification. In Krystian Mikolajczyk and Gabriel Brostow (eds.),British Machine Vision
+Conference Proceedings 2017, British Machine Vision Conference 2017, BMVC 2017. British Machine Vision
+Association, 2017. ISBN 190172560X. doi: 10.5244/C.31.42. URLhttps://bmvc2017.london/,https:
+//dblp.org/db/conf/bmvc/bmvc2017.html. British Machine Vision Conference 2017, BMVC 2017 ;
+Conference date: 04-09-2017 Through 07-09-2017.
+Walter Gerych, Thomas Hartvigsen, Luke Buquicchio, Emmanuel Agu, and Elke Rundensteiner. Recovering
+the propensity score from biased positive unlabeled data. 2022.
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep Residual Learning for Image Recognition.
+In2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR), pp. 770–778, Las
+Vegas, NV, USA, June 2016. IEEE. ISBN 978-1-4673-8851-1. doi: 10.1109/CVPR.2016.90. URL
+http://ieeexplore.ieee.org/document/7780459/.
+Dan Hendrycks and Kevin Gimpel. A baseline for detecting misclassified and out-of-distribution examples in
+neural networks. InInternational Conference on Learning Representations, 2016.
+Sungsu Hur, Inkyu Shin, Kwanyong Park, Sanghyun Woo, and In So Kweon. Learning classifiers of prototypes
+and reciprocal points for universal domain adaptation. InProceedings of the IEEE/CVF Winter Conference
+on Applications of Computer Vision (WACV), pp. 531–540, January 2023.
+Ryuichi Kiryo, Gang Niu, Marthinus C Du Plessis, and Masashi Sugiyama. Positive-unlabeled learning with
+non-negative risk estimator.Advances in neural information processing systems, 30, 2017.
+Pang Wei Koh, Shiori Sagawa, Henrik Marklund, Sang Michael Xie, Marvin Zhang, Akshay Balsubramani,
+Weihua Hu, Michihiro Yasunaga, Richard Lanas Phillips, Irena Gao, Tony Lee, Etienne David, Ian Stavness,
+Wei Guo, Berton Earnshaw, Imran Haque, Sara M Beery, Jure Leskovec, Anshul Kundaje, Emma Pierson,
+Sergey Levine, Chelsea Finn, and Percy Liang. Wilds: A benchmark of in-the-wild distribution shifts.
+In Marina Meila and Tong Zhang (eds.),Proceedings of the 38th International Conference on Machine
+Learning, volume 139 ofProceedings of Machine Learning Research, pp. 5637–5664. PMLR, 18–24 Jul 2021.
+URLhttps://proceedings.mlr.press/v139/koh21a.html.
+Shu Kong and Deva Ramanan. Opengan: Open-set recognition via open data generation. InProceedings of
+the IEEE/CVF International Conference on Computer Vision (ICCV), pp. 813–822, October 2021.
+Alex Krizhevsky. Learning multiple layers of features from tiny images. Technical report, 2009.
+Alex Krizhevsky, Geoffrey Hinton, et al. Learning multiple layers of features from tiny images. 2009.
+Michel Ledoux and Michel Talagrand.Probability in Banach Spaces: isoperimetry and processes. Springer
+Science & Business Media, 2013.
+Guangrui Li, Guoliang Kang, Yi Zhu, Yunchao Wei, and Yi Yang. Domain consensus clustering for universal
+domain adaptation. In2021 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR),
+pp. 9752–9761, 2021. doi: 10.1109/CVPR46437.2021.00963.
+Wuyang Li, Jie Liu, Bo Han, and Yixuan Yuan. Adjustment and alignment for unbiased open set domain
+adaptation. In2023 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp.
+24110–24119, 2023. doi: 10.1109/CVPR52729.2023.02309.
+Jian Liang, Dapeng Hu, and Jiashi Feng. Do we really need to access the source data? source hypothesis
+transfer for unsupervised domain adaptation, 2021. URLhttps://arxiv.org/abs/2002.08546.
+Ting-En Lin and Hua Xu. A post-processing method for detecting unknown intent of dialogue system via pre-
+trained deep neural network classifier.Knowledge-Based Systems, 186:104979, December 2019. ISSN 0950-
+7051. doi: 10.1016/j.knosys.2019.104979. URLhttp://dx.doi.org/10.1016/j.knosys.2019.104979.
+Si Liu, Risheek Garrepalli, Thomas Dietterich, Alan Fern, and Dan Hendrycks. Open category detection
+with pac guarantees. InInternational Conference on Machine Learning, pp. 3169–3178. PMLR, 2018.
+15
+Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer Levy, Mike Lewis, Luke
+Zettlemoyer, and Veselin Stoyanov. RoBERTa: A Robustly Optimized BERT Pretraining Approach, July
+2019. URLhttp://arxiv.org/abs/1907.11692. arXiv:1907.11692 [cs].
+Andreas Maurer, Massimiliano Pontil, and Bernardino Romera-Paredes. The benefit of multitask representa-
+tion learning.Journal of Machine Learning Research, 17(81):1–32, 2016. URLhttp://jmlr.org/papers/
+v17/15-242.html.
+Matthew B. A. McDermott, Lasse Hyldig Hansen, Haoran Zhang, Giovanni Angelotti, and Jack Gallifant. A
+closer look at auroc and auprc under class imbalance, 2024.
+Dimity Miller, Niko Sünderhauf, Michael Milford, and Feras Dayoub. Class anchor clustering: A loss for
+distance-based open set recognition.2021 IEEE Winter Conference on Applications of Computer Vision
+(WACV), pp. 3569–3577, 2021. URLhttps://api.semanticscholar.org/CorpusID:230091082.
+Vidya Muthukumar, Adhyyan Narang, Vignesh Subramanian, Mikhail Belkin, Daniel Hsu, and Anant Sahai.
+Classification vs regression in overparameterized regimes: Does the loss function matter?Journal of
+Machine Learning Research, 22(222):1–69, 2021.
+Vaishnavh Nagarajan, Anders Andreassen, and Behnam Neyshabur. Understanding the failure modes of
+out-of-distribution generalization. InInternational Conference on Learning Representations, 2021. URL
+https://openreview.net/forum?id=fSTD6NFIW_b.
+Lawrence Neal, Matthew Olson, Xiaoli Fern, Weng-Keen Wong, and Fuxin Li. Open set learning with
+counterfactual images. InProceedings of the European Conference on Computer Vision (ECCV), September
+2018.
+Jianmo Ni, Jiacheng Li, and Julian McAuley. Justifying Recommendations using Distantly-Labeled Reviews
+and Fine-Grained Aspects. InProceedings of the 2019 Conference on Empirical Methods in Natural Language
+Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP),
+Hong Kong, China, 2019. Association for Computational Linguistics. doi: 10.18653/v1/D19-1018. URL
+https://www.aclweb.org/anthology/D19-1018.
+Pau Panareda Busto and Juergen Gall. Open set domain adaptation. InProceedings of the IEEE international
+conference on computer vision, pp. 754–763, 2017.
+Xingchao Peng, Ben Usman, Neela Kaushik, Judy Hoffman, Dequan Wang, and Kate Saenko. Visda: The
+visual domain adaptation challenge, 2017.
+Milda Poceviči¯ ut˙ e, Yifan Ding, Ruben Bromée, and Gabriel Eilertsen. Out-of-distribution detection in digital
+pathology: Do foundation models bring the end to reconstruction-based approaches?Computers in Biology
+and Medicine, 184:109327, 2025.
+Aahlad Puli, Lily Zhang, Yoav Wald, and Rajesh Ranganath. Don’t blame dataset shift! shortcut learning
+due to gradients and cross entropy.Advances in Neural Information Processing Systems, 36:71874–71910,
+2023.
+Haoxuan Qu, Xiaofei Hui, Yujun Cai, and Jun Liu. Lmc: Large model collaboration with cross-assessment
+for training-free open-set object recognition, 2023.
+Joaquin Quinonero-Candela, Masashi Sugiyama, Anton Schwaighofer, and Neil D Lawrence.Dataset shift in
+machine learning. MIT Press, 2008.
+Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish
+Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning
+transferable visual models from natural language supervision.CoRR, abs/2103.00020, 2021. URLhttps:
+//arxiv.org/abs/2103.00020.
+Ievgen Redko, Emilie Morvant, Amaury Habrard, Marc Sebban, and Younès Bennani. A survey on domain
+adaptation theory: learning bounds and theoretical guarantees.arXiv preprint arXiv:2004.11829, 2020.
+16
+Lukas Ruff, Jacob R Kauffmann, Robert A Vandermeulen, Grégoire Montavon, Wojciech Samek, Marius
+Kloft, Thomas G Dietterich, and Klaus-Robert Müller. A unifying review of deep and shallow anomaly
+detection.Proceedings of the IEEE, 109(5):756–795, 2021.
+Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej
+Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-Fei. ImageNet Large Scale
+Visual Recognition Challenge.International Journal of Computer Vision (IJCV), 115(3):211–252, 2015.
+doi: 10.1007/s11263-015-0816-y.
+Shiori Sagawa, Aditi Raghunathan, Pang Wei Koh, and Percy Liang. An investigation of why overparameteri-
+zation exacerbates spurious correlations. InInternational Conference on Machine Learning, pp. 8346–8356.
+PMLR, 2020.
+Kuniaki Saito, Shohei Yamamoto, Yoshitaka Ushiku, and Tatsuya Harada. Open set domain adaptation by
+backpropagation, 2018.
+Bernhard Schölkopf, John C. Platt, John Shawe-Taylor, Alex J. Smola, and Robert C. Williamson. Estimating
+the support of a high-dimensional distribution.Neural Computation, 13(7):1443–1471, 2001. doi: 10.1162/
+089976601750264965.
+Hidetoshi Shimodaira. Improving predictive inference under covariate shift by weighting the log-likelihood
+function.Journal of statistical planning and inference, 90(2):227–244, 2000.
+Daniel Soudry, Elad Hoffer, Mor Shpigel Nacson, Suriya Gunasekar, and Nathan Srebro. The implicit bias of
+gradient descent on separable data.Journal of Machine Learning Research, 19(70):1–57, 2018.
+Sagar Vaze, Kai Han, Andrea Vedaldi, and Andrew Zisserman. Open-set recognition: a good closed-set
+classifier is all you need? InInternational Conference on Learning Representations, 2022.
+Hemanth Venkateswara, Jose Eusebio, Shayok Chakraborty, and Sethuraman Panchanathan. Deep hashing
+network for unsupervised domain adaptation.CoRR, abs/1706.07522, 2017. URLhttp://arxiv.org/
+abs/1706.07522.
+Roman Vershynin.High-dimensional probability: An introduction with applications in data science, volume 47.
+Cambridge university press, 2018.
+Yoav Wald and Suchi Saria. Birds of an odd feather: guaranteed out-of-distribution (ood) novel category
+detection. InUncertainty in Artificial Intelligence, pp. 2179–2191. PMLR, 2023.
+Yoav Wald, Gal Yona, Uri Shalit, and Yair Carmon. Malign overfitting: Interpolation can provably preclude
+invariance.arXiv preprint arXiv:2211.15724, 2022.
+Dequan Wang, Evan Shelhamer, Shaoteng Liu, Bruno Olshausen, and Trevor Darrell. Tent: Fully Test-
+Time Adaptation by Entropy Minimization. October 2020. URLhttps://openreview.net/forum?id=
+uXl3bZLkr3c.
+Shuo Wen and Maria Brbic. Cross-domain open-world discovery. In Ruslan Salakhutdinov, Zico Kolter,
+Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp (eds.),Proceedings
+of the 41st International Conference on Machine Learning, volume 235 ofProceedings of Machine Learning
+Research, pp. 52744–52761. PMLR, 21–27 Jul 2024. URLhttps://proceedings.mlr.press/v235/wen24b.
+html.
+Kelvin Wong, Shenlong Wang, Mengye Ren, Ming Liang, and Raquel Urtasun. Identifying unknown instances
+for autonomous driving. InConference on Robot Learning, pp. 384–393. PMLR, 2020.
+Jianxiong Xiao, James Hays, Krista A. Ehinger, Aude Oliva, and Antonio Torralba. Sun database: Large-scale
+scene recognition from abbey to zoo. In2010 IEEE Computer Society Conference on Computer Vision and
+Pattern Recognition, pp. 3485–3492, 2010. doi: 10.1109/CVPR.2010.5539970.
+17
+Hu Xu, Bing Liu, Lei Shu, and P Yu. Open-world learning and application to product classification. InThe
+World Wide Web Conference, pp. 3413–3419, 2019.
+Muhammad Bilal Zafar, Isabel Valera, Manuel Gomez-Rodriguez, and Krishna P Gummadi. Fairness
+constraints: A flexible approach for fair classification.Journal of Machine Learning Research, 20(75):1–42,
+2019.
+Zhiyuan Zeng, Keqing He, Yuanmeng Yan, Zijun Liu, Yanan Wu, Hong Xu, Huixing Jiang, and Weiran
+Xu. Modeling discriminative representations for out-of-domain detection with supervised contrastive
+learning. In Chengqing Zong, Fei Xia, Wenjie Li, and Roberto Navigli (eds.),Proceedings of the 59th Annual
+Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on
+Natural Language Processing (Volume 2: Short Papers), pp. 870–878, Online, August 2021. Association for
+Computational Linguistics. doi: 10.18653/v1/2021.acl-short.110. URLhttps://aclanthology.org/2021.
+acl-short.110.
+YiFan Zhang, Xue Wang, Tian Zhou, Kun Yuan, Zhang Zhang, Liang Wang, Rong Jin, and Tieniu
+Tan. Model-free Test Time Adaptation for Out-Of-Distribution Detection, November 2023. URLhttp:
+//arxiv.org/abs/2311.16420. arXiv:2311.16420 [cs].
+Didi Zhu, Yinchuan Li, Junkun Yuan, Zexi Li, Kun Kuang, and Chao Wu. Universal domain adaptation via
+compressive attention matching. InProceedings of the IEEE/CVF International Conference on Computer
+Vision (ICCV), pp. 6974–6985, October 2023.
+18
+A Appendix
+A.1 Theoretical analysis
+Lemma 2.For a Gaussian two-feature PU problem, letˆη= η/∥η∥and ˆµaccordingly. We have that the
+AU-ROC of a modelw∈R d isQ( ⟨w,η−µ⟩
+σ
+√
+(2∥w∥2−⟨w,ˆη⟩2−⟨w,ˆµ⟩2)
+).
+Proof.Letx novel ∼PT,1 ,x T,0 ∼PT,0 , we have
+AU−ROC(w) =P(⟨w,x novel⟩<⟨w,x T,0 ⟩)
+=P(⟨w,−η+ξ novel⟩<⟨w,−µ+ξ T,0 ⟩)
+=P(⟨w,−η+µ⟩<⟨w,−ξ novel +ξT,0 ⟩),
+where ξnovel ∼ N(0,σ2(Id −ˆµˆµ⊤))and ξT,0 ∼ N(0,σ2(Id −ˆηˆη⊤)). Then we have that ⟨w,ξnovel −
+ξT,0 ⟩ ∼ N
+(
+0,σ2 (
+2∥w∥2 −⟨w,ˆη⟩2 −⟨w,ˆµ⟩2))
+. Dividing both sides of the argument above by a factor
+σ
+√
+2∥w∥2 −⟨w,ˆη⟩2 −⟨w,ˆµ⟩2 we get that for a variableξ∼N(0,1)
+AU−ROC(w) =P
+(
+⟨w,µ−η⟩
+σ
+√
+2∥w∥2 −⟨w,ˆη⟩2 −⟨w,ˆµ⟩2 <ξ
+)
+=Q
+(
+⟨w,µ−η⟩
+σ
+√
+2∥w∥2 −⟨w,ˆη⟩2 −⟨w,ˆµ⟩2
+)
+Note that when ⟨w,µ−η⟩> 0then the AU-ROC is lower than0 .5, and when ⟨w,µ−η⟩< 0then
+Q
+(
+⟨w,µ−η⟩
+σ
+√
+2∥w∥2−⟨w,ˆη⟩2−⟨w,ˆµ⟩2
+)
+≥Q
+(
+⟨w,µ−η⟩√
+2σ∥w∥
+)
+. Hence the RHS is a lower bound on the AU-ROC.
+Proposition 1.For σ= 1/
+√
+d, letδ∈(0,1) be a failure probability, andCd,cd constants, and consider the
+set of problems where
+Cdlog(cd
+δ )≤
+√
+d
+4√NS+NT
+, 1
+2√NS+NT
+≤rµ,rη ≤ rµ
+4 + 8rµ
+√
+NT,1
+− 1√NS+NT
+There existsCd,cd such that for anyδ, if we fixµ,η,r µ,rη,NS,NT,0 ,NT,1 that are in the above set, and
+drawing training data(SS,ST)as described in problem definition. LetwDD as defined in eq.(2), then with
+probability at least1−δwe have thatAU−ROC(w DD)≤0.5.
+Proof.Lower bound on norm of good solutions under DD:
+Lets take a Lagrangian
+L(w,λ,ν) =∥w∥ 2 +λ⊤
+S(1S−XSw) +λ⊤
+T(1T +XTw) +ν·(w ⊤(µ−η))
+and zero the gradient
+∇wL(w,λ,ν) = 2w−X ⊤
+SλS+X⊤
+TλT +ν·(µ−η) = 0
+⇔w= 1
+2
+(
+ν·(η−µ) +X ⊤
+SλS−X⊤
+TλT
+)
+Plug back in to Lagrangian:
+L(λ,ν) =λ ⊤
+S1S+λ⊤
+T1T −1
+4∥ν·(η−µ) +Z ⊤λ∥2
+Here we used the notationZ to denote a matrix whosei-th row equalsxiyi, the set of indices of rows where
+xi ∈SS asIS, and similarly forIT,0 ,IT,1 .
+19
+Let α> 0, to be determined later,ν = (|U|−k)2α
+|U| , and define the setU = IT,1 ∪IRand where IRand has |U|
+2αν
+indices randomly drawn fromIS and half fromIT,0 (not we should also set|U|later). Set λ= α
+|U|1U and
+plug back into the Lagrangian. We have that
+Z⊤λ=νµ+ α
+|U|
+[
+kη+
+∑
+i∈U
+ξiyi
+]
+.
+Hence denoting¯ξU = 1
+|U|
+∑
+i∈U ξiyi as the average added noise vector (multiplied by the label) over setU, we
+have
+L(α,ν) =α− 1
+4∥η(ν+k α
+|U|) +α¯ξU∥2
+Plugging in the value we already set forν,
+L(α) =α− 1
+4∥η( α(2|U|−k)
+|U| ) +α¯ξU∥2
+Taking the maximum overα, and denoting the optimal solution to the primal optimization problem byw∗,
+we get with probability at least1−2 exp(−ct2)
+∥w∗∥2 ≥L(α∗) = 4∥η( 2|U|−k
+|U| ) + ¯ξU∥−2
+= 4
+(
+r2
+η(2−k/|U|) 2 +∥¯ξU∥2 + 2(2−k/|U|)η ⊤¯ξU
+)−1
+≥4
+(
+r2
+η(2−k/|U|) 2 +|U|−2σ2(d+ 2t
+√
+d) + 2(2−k/|U|)r ησ|U|−1t
+)−1
+Upper bound on norm of bad solutions under DD:
+Now we will guess a solutionwDD, show it satisfies the constraints of the problem and, under some conditions,
+achieves lower norm than the bound we obtained in the last section.
+Lemma 3.Let t> 0then with probability at least1 −2 exp
+[
+−ct2k−2]
+−2 exp
+[
+−ct2/2
+]
+−3 exp
+[
+−ct2/4
+]
+−
+2 exp
+[
+−ct2]
+, the model
+wDD = 2
+(
+r2
+µ −σrµt
+)−1
+·µ−4σ −2kd−1 ·¯ξT,1 ,
+satisfiesy iw⊤
+DDxi ≥1for alli∈Uandw ⊤
+DD(µ−η)≥0.
+Proof.Fori /∈IT,1 ,
+yi ·w ⊤
+DDxi =
+[
+2
+(
+r2
+µ −σrµt
+)−1
+·µ−4σ −2kd−1 ¯ξT,1
+]⊤
+[µ+y iξi]
+= 2(r2
+µ −σrµt)−1(r2
+µ +yiµ⊤ξi)−4σ −2kd−1yiξ⊤
+i ¯ξT,1
+From eq. (14) we have that|yiξ⊤
+i ¯ξT,1 |<σ 2t
+√
+d
+k w.p. at least1 −2 exp
+[
+−ct2]
+for t≤d
+√
+|U|σ2. Hence, we
+can say w.p. at least1−2 exp
+[
+−ct2]
+,
+yi ·w ⊤
+DDxi ≥2(r2
+µ −σrµt)−1(r2
+µ +yiµ⊤ξi)−4σ −2kd−1 ·σ2t
+√
+d
+k
+= 2(r2
+µ −σrµt)−1(r2
+µ +yiµ⊤ξi)−4t
+√
+k
+d
+≥2(r2
+µ −σrµt)−1(r2
+µ +yiµ⊤ξi)−1... (fork≤d/(16t 2)andt>1)
+20
+We also have that|yiµ⊤ξi|<tσr µ w.p. at least1−2 exp(−ct 2/2). Putting these together
+yi ·w ⊤
+DDxi ≥2(r2
+µ −σrµt)−1(r2
+µ −σrµt)−1 = 1.
+Now fori∈I T,1 , we repeat these steps, but this time use eq. (15) to bound|ξ⊤
+i ¯ξT,1 |≥ σ2d
+2k with probability
+at least1 −3 exp(−ct2)for t≤
+√
+d
+2(2+
+√
+|U|−1)
+and |η⊤¯ξT,1 |< tσrηk−1 w.p. at least1 −2 exp
+(
+−ct2/2
+)
+. We
+get again that
+yi ·w ⊤
+DDxi = 2(r2
+µ −σrµt)−1(−yiµ⊤η+y i ·µ⊤ξi)−4σ −2kd−1(−yiη⊤¯ξT,1 +yi ·ξ⊤
+i ¯ξT,1 )
+= 4σ−2kd−1(−η⊤¯ξT,1 +ξ⊤
+i ¯ξT,1 )
+≥4σ−2kd−1(−tσrη
+k + σ2d
+2k )
+Forrη ≤σd
+4t
+yi ·w ⊤
+DDxi ≥4σ−2kd−1(σ2d
+4k ) = 1
+Finally, let us calculatew⊤
+DD(µ−η),
+w⊤
+DD(µ−η) = 2(r 2
+µ −σrµt)−1r2
+µ + 4σ−2kd−1η⊤¯ξT,1
+≥2(1−σr −1
+µ t)−1 + 4σ−2kd−1σrηtk−1
+= 2(1−σr −1
+µ t)−1 + 4σ−1d−1rηt
+≥0....(forr µ ≥σtor more tighter condition isrη ≥σd
+2t(σr−1
+µ t−1) −1.)
+The first inequality holds w.p. at least1−2 exp{−ct2}. Hence, forσd
+2t(σr−1
+µ t−1)−1 ≤rη ≤σd
+4t, we have w.p.
+at least1−2 exp{−ct 2}that
+w⊤
+DD(µ−η)>0
+Overall, taking the union bounds so that these inequalities hold over the entire dataset, we get that the solution
+wDD satisfies all the constraints with probability1−3|U|exp(−ct2/4)−2 exp(−ct 2/2)−2 exp(−ct 2).
+Requirements for parameters:
+•t≤d
+√
+|U|σ2
+•r µ ≥σt
+•t≤
+√
+d
+2(2+
+√
+|U|−1)
+• σd
+2t(σr−1
+µ t−1) −1 ≤rη ≤σd
+4t (Lower bound is negative, so can be ignored)
+Finding ranges where AU-ROC is smaller than 0.5:
+Compare ∥wDD∥and lower bounds on∥w∗∥obtained in earlier parts and find regions where we must have
+∥wDD∥<∥w ∗∥
+From Section A.1
+We have that
+∥wDD∥=
+
+2
+r2µ −σrµt ·µ− 4k
+σ2d
+¯ξT,1
+.
+21
+Hence from triangle inequality,
+∥wDD∥≤ 2
+r2µ −σrµt1
+·∥µ∥+ 4k
+σ2d ·∥¯ξT,1 ∥.
+We know that∥µ∥= rµ and ¯ξT,1 ∼N(0,σ2
+k Id). Hence, using the concentration bound in 12, we have with
+probability at least1−exp
+(
+−t2
+4
+)
+that
+∥¯ξT,1 ∥≤σ
+√
+d+ 2t
+√
+d
+k
+Hence with probability at least1−exp
+(
+−t2
+4
+)
+,
+∥wDD∥≤ 2
+rµ −σt + 4k
+σd
+√
+d+ 2t
+√
+d
+k
+≤ 2
+rµ −σt + 8σ−1
+√
+k
+d .... fort≤ 3
+2
+√
+d
+We also have from section A.1,
+∥w∗∥≥2∥η( 2|U|−k
+|U| ) + ¯ξU∥−1
+∥w∗∥≥2(∥η∥( 2|U|−k
+|U| ) +∥¯ξU∥)−1
+Similarly, using concentration bound in 12 for∥¯ξU∥, we get with probability at least1−exp
+(
+−t2
+4
+)
+,
+∥w∗∥≥ 2
+rη(2−k/|U|) +σ
+√
+d+2t
+√
+d
+|U|
+Fort≤ 3
+2
+√
+d=⇒
+√
+d+ 2t
+√
+d≤2
+√
+d, hence
+∥w∗∥≥ 2
+rη(2−k/|U|) + 2σ
+√
+d
+|U|
+We know thatk≥ 0, Hence, the following inequality will guarantee 6 with probability at least1−exp
+(
+−t2
+4
+)
+,
+∥w∗∥≥ 2
+2rη + 2σ
+√
+d
+|U|
+(5)
+By union bounds w.p. at least1−2 exp
+(
+−t2
+4
+)
+, we want conditions for
+2
+2rη + 2σ
+√
+d
+|U|
+≥ 2
+rµ −σt + 8σ−1
+√
+k
+d
+1
+2rη + 2σ
+√
+d
+|U|
+≥ 1
+rµ −σt + 4
+√
+k
+σ
+√
+d
+22
+2rη + 2σ
+√
+d
+|U| ≤
+(
+1
+rµ −σt + 4
+√
+k
+σ
+√
+d
+)−1
+(6)
+Forrµ ≥2σt,
+(
+2
+rµ
++ 4
+√
+k
+σ
+√
+d
+)−1
+≤
+(
+1
+rµ−σt + 2
+√
+k
+σ
+√
+d
+)−1
+. Hence, eq. 6 is satisfied if the following is guaranteed,
+2rη + 2σ
+√
+d
+|U| ≤
+(
+2
+rµ
++ 4
+√
+k
+σ
+√
+d
+)−1
+rη ≤σ
+√
+d
+4
+(
+rµ
+σ
+√
+d+ 2rµ
+√
+k
+− 4√
+|U|
+)
+Or more tighter condition that will guarantee eq. 6 is the following usingrµ ≥2σt
+rη ≤σ
+√
+d
+4
+(
+2t√
+d+ 4t
+√
+k
+− 4√
+|U|
+)
+This means that the above parameter requirements are sufficient to guarantee that a domain discriminator
+is a suboptimal solution to the novelty detection problem under background shift with probability at least
+1−2 exp
+(
+−t2
+4
+)
+.
+Parameter requirements to guarantee eq. 6 w.p. at least1−2 exp
+(
+−t2
+4
+)
+:
+•t≤d
+√
+|U|σ2
+•t≤ 3
+2
+√
+d(redundant see next condition below.)
+•t≤
+√
+d
+2(2+
+√
+|U|−1)
+•r µ ≥2σt
+• σd
+2t(σr−1
+µ t−1) −1 ≤rη ≤σd
+4t (Negative lower bound, so can be ignoredy)
+•r η ≤σ
+√
+d
+4
+(
+rµ
+σ
+√
+d+2rµ
+√
+k − 4√
+|U|
+)
+Proposition 2.For σ = 1 /
+√
+d, there exist some constantsCd and cd, and for any failure probability
+0≤δ≤1, if
+Cdlog(cd
+δ )≤
+√
+d
+4√NS+NT
+, 1
+2√NT
+≤rµ ≤min
+(
+2
+√
+NT(1−5τ),16
+√
+NT,1 τ
+)
+,rη ≥ 1
+2
+√
+NT,1
+, 3
+rη
++3−5τ
+rµ
+≤3
+8
+√
+NT,1 −2
+then with probability at least1−δ over the drawing of(SS,ST)as described in problem,AU−ROC( ˆwcolor) ≥...
+as defined in first part of eq.(2)is at leastQ
+(
+−τ
+√
+d√
+2∥ˆwcolor∥
+)
+≥Q
+(
+−τ
+√
+d√
+2( 3
+rη+ 3−5τ
+rµ +2)
+)
+≥Q
+(
+−τ
+√
+d√
+2(1−τ)
+)
+.
+Proof.Lower bound on norm of bad solutions under CoLOR:
+This time the Lagrangian is
+L(w,λ,ν) =∥w∥ 2 −λ⊤
+S(XSw) +λ⊤
+T(1T +XTw)−ν·(w ⊤(µ−η) +τ)
+and zero the gradient
+∇wL(w,λ,ν) = 2w−X ⊤
+SλS+X⊤
+TλT −ν·(µ−η) = 0
+23
+⇔w= 1
+2
+(
+ν·(µ−η) +X ⊤
+SλS−X⊤
+TλT
+)
+Plug back in to Lagrangian:
+L(λ,ν) =−ν·τ+λ ⊤
+T1T −1
+4∥ν·(µ−η) +Z ⊤λ∥2
+Consider settingλ= ν
+|U|1ST, whereU has randomly drawn|U|(|U|is to be determined) examples fromST.
+Also setν= (1−τ)
+∥¯ξST∥2 . We have
+Z⊤λ=−ν·µ+ν ¯ξST,0 +ν·η+ν ¯ξST,1
+=ν(η−µ) +ν ¯ξST
+and then the lagrangian
+L(λ,ν) =ν·(1−τ)− 1
+4∥ν¯ξST∥2
+=ν·(1−τ)− 1
+4ν2 (
+∥¯ξST∥2)
+∥
+L(λ) = 3
+4
+(1−τ) 2
+∥¯ξST∥2
+∥ˆwcolor∥2 ≥L(λ∗) = 3
+4
+(1−τ) 2
+∥¯ξST∥2
+Getting feasible solution for our optimization problem:We will guess a solution of the form:
+wcolor =αη+ ( αr2
+η
+r2µ
+−5τ
+r2µ
+)µ−β ¯ξST,0
+wcolor = 2 η
+r2η
++ ( 2
+r2µ
+−5τ
+r2µ
+)µ− 1
+σ2 ·|U|−k
+d
+¯ξST,0
+wcolor = 2 η
+r2η
++ ( 2
+r2µ
+−5τ
+r2µ
+)µ−(|U|−k) ¯ξST,0
+To havew⊤
+colorxiyi >1fori∈I T,1 , we need
+w⊤
+color(η−ξ i) =αr2
+η +βξ⊤
+i ¯ξST,0 >1
+We have
+w⊤
+color(−yiη+y iξi) =w ⊤
+color(η−ξ i)
+=αr2
+η −αη⊤ξi +βξ⊤
+i ¯ξT,0
+We know that|η⊤ξi|< σtr η w.p. at least1 −2 exp
+(
+−ct2/2
+)
+and |ξi¯ξT,0 | ≤σ2t
+√
+d
+|U|−k w.p. at least
+1−2 exp(−ct 2)fort≤d
+√
+|U|σ2. Hence, w.p. at least1−2 exp
+(
+−ct2/2
+)
+−2 exp(−ct2), we can say that,
+w⊤
+color(η−ξ i)≥αr 2
+η −ασtrη −βσ2t
+√
+d
+|U|−k
+Required condition:
+αr2
+η −ασtrη −βσ2t
+√
+d
+|U|−k ≥1
+24
+Possibly setα= 3r −2
+η andβ=σ −2
+√
+|U|−k
+d .
+3−3σtr −1
+η − t√
+d
+≥1
+t√
+d
+≤2−3σtr −1
+η
+For2σt≤r η,
+t√
+d
+≤1
+2
+Parameter requirements:
+•σt≤ rη
+2
+•t≤
+√
+d
+2
+To also havew⊤
+colorxiyi >1fori∈I T,0 we need
+w⊤
+color(µ+ξ i) = (αr2
+η
+r2µ
+−5τ
+r2µ
+)r2
+µ +βξ⊤
+i ¯ξST,0 >1
+We have
+w⊤
+color(−yiµ+y iξi) =w ⊤
+color(µ−ξ i)
+=
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+(µ⊤µ−µ ⊤ξi)−β(µ ⊤¯ξT,0 −ξ⊤
+i ¯ξT,0 )
+We know that |µ⊤ξi| ≤σtrµ w.p. at least1 −2 exp
+(
+−ct2/2
+)
+and |ξ⊤
+i ¯ξT,0 | ≥ σ2d
+2(|U|−k) w.p. at least
+1 −2 exp(−ct2)for t≤σ 2 and t≤
+√
+d
+2(2+
+√
+|U|−1)
+. We also know that |µ⊤¯ξT,0 | ≤σtrµ
+|U|−k w.p. at least
+1−2 exp(−ct 2/2)Hence, w.p. at least1−4 exp
+(
+−ct2/2
+)
+−2 exp(−ct2), we can say that,
+w⊤
+color(−yiµ+y iξi)≥
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+(r2
+µ −σtrµ) +β
+(
+− σtrµ
+|U|−k + σ2d
+2(|U|−k)
+)
+≥r2
+µ
+2
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
++β
+(
+σ2d−r 2
+µ
+2(|U|−k)
+)
+..... forrµ ≥2σt
+Required condition:
+1
+2
+(
+αr2
+η −5τ
+)
++β
+(σ2d−2σtr µ
+2(|U|−k)
+)
+≥1
+Settingα= 3r −2
+η we get,
+1
+2 (3−5τ) +β
+(σ2d−2σtr µ
+2(|U|−k)
+)
+≥1
+β
+(σ2d−2σtr µ
+2(|U|−k)
+)
+≥5τ−1
+2
+βσtrµ
+|U|−k ≤ βσ2d
+2(|U|−k) + 1−5τ
+2
+25
+Settingβ=σ −2
+√
+|U|−k
+d we get,
+rµt
+σd ≤1
+2 + 1−5τ
+2
+√
+|U|−k
+Parameter requirements:
+•2σt≤r µ
+•r µt≤ σd
+2 (1 + (1−5τ)
+√
+|U|−k)
+Finally, we also requirew⊤
+colorxiyi >0fori∈I S,0, we need
+We have
+w⊤
+color(yiµ+y iξi) =w ⊤
+color(µ+ξ i)
+=
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+(µ⊤µ+µ ⊤ξi)−β(µ ⊤¯ξT,0 +ξ⊤
+i ¯ξT,0 )
+We know that|µ⊤ξi|≤σtr µ w.p. at least1 −2 exp
+(
+−ct2/2
+)
+and |ξ⊤
+i ¯ξT,0 |≤σ 2t
+√
+d
+|U|−k w.p. at least
+1 −2 exp(−ct2)for t≤σ 2 and t≤
+√
+d
+2(2+
+√
+|U|−1)
+. We also know that |µ⊤¯ξT,0 | ≤σtrµ
+|U|−k w.p. at least
+1−2 exp(−ct 2/2)Hence, w.p. at least1−4 exp
+(
+−ct2/2
+)
+−2 exp(−ct2), we can say that,
+w⊤
+color(−yiµ+y iξi)≥
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+(r2
+µ −σtrµ)−β
+(
+σtrµ
+|U|−k +σ2t
+√
+d
+|U|−k
+)
+≥r2
+µ
+2
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+−β
+(
+σtrµ
+|U|−k +σ2t
+√
+d
+|U|−k
+)
+..... forrµ ≥2σt
+Required condition:
+1
+2
+(
+αr2
+η −5τ
+)
+−β
+(
+σtrµ
+|U|−k +σ2t
+√
+d
+|U|−k
+)
+≥0
+Usingαandβ,
+3−5τ
+2 −
+(
+trµ
+σd
+√
+|U|−k
++ t√
+d
+)
+≥0
+The minimum value of the LHS above would be3−5τ
+2 −
+(
+trµ
+σd
+√
+|U|−k
++ 1
+2
+)
+We want this term to be greater
+than0. Hence,
+1−5τ
+2 − trµ
+σd
+√
+|U|−k
+≥0
+trµ
+σd ≤1−5τ
+2
+√
+|U|−k
+Substitutingα= 3r −2
+η andβ=σ −2
+√
+|U|−k
+d , we get,
+trµ
+σd ≤1−5τ
+2
+√
+|U|−k
+Parameter requirements:
+26
+•t≤
+√
+d
+2
+•r µt≤ 1
+2 σd(1−5τ)
+√
+|U|−k
+We wantw⊤
+color(µ−η)≤−τi.e.w ⊤
+color(η−µ)≥τ
+We have
+w⊤
+color(η−µ) =αη ⊤η−
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+µ⊤µ+β·µ ⊤¯ξT,0
+We know that|µ⊤¯ξT,0 |≤ σtrµ
+|U|−k w.p. at least1 −2 exp(−ct2/2)Hence, w.p. at least1 −2 exp
+(
+−ct2/2
+)
+, we
+can say that,
+w⊤
+color(η−µ)≥αr 2
+η −
+(
+αr2
+η
+r2µ
+−5τ
+r2µ
+)
+r2
+µ −β σtrµ
+|U|−k
+Required condition:
+5τ−β σtrµ
+|U|−k ≥τ
+β σtrµ
+|U|−k ≤4τ
+trµ
+σd
+√
+|U|−k
+≤4τ
+Parameter requirements:
+• trµ
+σd ≤4τ
+√
+|U|−k
+Bound on the norm ofwcolor:
+wcolor = 3 η
+r2η
++
+(3
+r2µ
+−5τ
+r2µ
+)
+µ−σ −2
+√
+|U|−k
+d
+¯ξST,0
+∥wcolor∥≤ 3
+rη
++
+(3
+rµ
+−5τ
+rµ
+)
++σ−1
+√
+|U|−k
+d
+√
+d+ 2t
+√
+d
+|U|−k
+∥wcolor∥≤ 3
+rη
++ 3
+rµ
+−5τ
+rµ
++ 2
+∥wcolor∥≤ 3
+rη
++ 3−5τ
+rµ
++ 2
+.... fort≤ 3
+2
+√
+d
+We also want∥wcolor∥≤∥ ˆwcolor∥. For this, it is sufficient to ensure the following w.p. at least1−2 exp(−ct2):
+3
+rη
++ 3−5τ
+rµ
++ 2≤ 3
+4
+1−τ√
+(|U|)−1σ2(d+ 2t
+√
+d)
+≤3
+8
+1−τ√
+(|U|)−1σ2d
+....fort≤ 3
+2
+√
+d
+≤3
+8(1−τ)
+√
+|U|....forσ= 1√
+d
+3
+rη
++ 3−5τ
+rµ
+≤3
+8(1−τ)
+√
+|U|−2
+27
+Parameter requirements ifα= 2r−2
+η andβ=σ −2 |U|−k
+d :
+•t≤
+√
+d
+2(2+
+√
+|U|−1)
+•t≤
+√
+d
+2
+•2σt≤r η
+•2σt≤r µ
+•r µt≤min
+(
+1
+2 σd(1−5τ)
+√
+|U|−k,4σdτ
+√
+|U|−k
+)
+• 3
+rη
++ 3−5τ
+rµ
+≤3
+8 (1−τ)
+√
+|U|−2
+Setσ= 1√
+d andt=
+√
+d
+4
+√
+|U|
+Hence, 1
+2
+√
+|U|
+≤rη
+1
+2
+√
+|U|
+≤rµ
+rµ ≤min{2
+√
+|U|(1−5τ),8
+√
+|U|τ}
+Now we want,
+Q
+(
+−τ
+√
+d√
+2(1−τ)
+)
+≥0.9
+This means we want,
+−τ
+√
+d√
+2(1−τ) ≤−1.283
+τ
+√
+d√
+2(1−τ) ≥1.283
+τ(
+√
+d
+2 + 1.283)≥1.283
+τ≥ 1.283√
+d
+2 + 1.283
+From parameter requirements, we can also say,
+1.283√
+d
+2 + 1.283
+≤τ≤0.2(7)
+For d >300, we can easily say pickτ = 0.1. This gives usrµt≤min
+(
+1
+4 σd
+√
+|U|−k,0.4σd
+√
+|U|−k
+)
+=
+1
+4 σd
+√
+|U|−kThis gives us final parameter ranges as follows,
+•t≤
+√
+d
+2(2+
+√
+|U|−1)
+•t≤
+√
+d
+2
+•2σt≤r η
+•2σt≤r µ
+28
+•r µt≤ 1
+4 σd
+√
+|U|−k
+• 3
+rη
++ 3−5τ
+rµ
+≤3
+8 (1−τ)
+√
+|U|−2
+Theorem 2.(Restating theorem 1)
+Consider a Linear-Gaussian PU-learning problem with parametersµ,η,d > 300,α∈(0, 1
+1024 ) and dataset
+sizesN T >10,N S=NT,N=N S+NT = 2NT, and letδ∈(0,1). For all problems where
+(i)min{r η,rµ}≥ 32√
+N,(ii)r µ ≤1
+2
+√
+NT,0 ,(iii) rη
+rµ
+≤32
+N,(8)
+(iv)d>c 1Nlog
+(c2
+δ
+)
+,(v)N≥c 1 log
+(c2
+δ
+)
+.(9)
+it holds with probability at least1−δthatAU−ROC(w DD)<0.5andAU−ROC(w color)>0.9.
+Proof.Based on the stated assumptions onNS,NT,NT,0 ,NT,1
+v)
+√
+N·N T,1 =
+√
+2NT ·NT,1 ≥
+√
+2NT,0 ·NT,1 ≥(
+√
+2−1)
+√
+NT,0 ·NT,1 +
+√
+NT,0 ·NT,1 ≥1+
+√
+NT,0 ·NT,1
+Using condition ii) we can write,1 +
+√
+NT,0 ·NT,1 ≥1 + 2rµ
+√
+NT,1
+vi) rµ
+√
+N≥ 8 + 1
+2 rµ
+√
+N≥ 8 + 16rµ
+√
+NT,1 = 8(1 + 2rµ
+√
+NT,1 ). Here, the first transition is from condition i)
+and second from the range ofα= NT,1
+NT
+≤ 1
+1024 .
+From the proposition 1 and proposition 2, we have the following ranges of parameter ranges fort= c1 log(c2
+δ )
+where the AUROC(wDD)<0.5 and AUROC(wcolor)>0.9 with probability at least1−δ:
+N≥c 1 log(c2
+δ )
+d≥c 1Nlog( c2
+δ )
+1
+2
+√
+N
+≤min(rη,rµ)
+rµ ≤
+√
+N·N T,0
+rη
+rµ
+≤1
+4
+(
+1
+1 + 2rµ
+√
+NT,1
+− 4
+rµ
+√
+N
+)
+3
+rη
++ 3−5τ
+rµ
+≤27
+80
+√
+N−2
+Then putting this together, for parameters that satisfy the above constraint we have from i) and iv),
+rη
+rµ
+< 1
+8(N·N T,1 )−1/2
+< 1
+8(1 + 2rµ
+√
+NT,1 )−1 ... from v)
+< 1
+4
+(
+1
+1 + 2rµ
+√
+NT,1
+− 4
+rµ
+√
+N
+)
+... from vi)
+1
+2
+√
+N
+≤rµ <min
+(1
+2
+√
+d(1−5τ)
+√
+NT,0 ,4
+√
+dτ
+√
+NT,0
+)
+,
+< 1
+4
+√
+dNT,0 ... usingτ= 0.1
+29
+3
+rη
++ 3−5τ
+rµ
+≤3
+8(1−τ)
+√
+N−2
+3
+rη
++ 2.5
+rµ
+≤27
+80
+√
+N−2... usingτ= 0.1
+3 + 2.5rη
+rµ
+≤27
+80rη(
+√
+N−2)
+rη
+rµ
+≤10
+25
+(27
+80rη(
+√
+N−2)−3
+)
+We know from ii) thatrη(
+√
+N−2)≥16 =⇒ 27
+5 ≤27
+80 rη(
+√
+N−2).
+rη
+rµ
+≤24
+25
+= 10
+25
+(27
+5 −3
+)
+≤10
+25
+(27
+80rη(
+√
+N−2)−3
+)
+A.2 Concentration statements
+Ifξ i ∼N(0,σ 2Id)for alli∈[N], then
+•Bound on norm of vector (Ledoux & Talagrand, 2013, Eq. 3.5)
+P(∥ξi∥≤t)>1−4 exp
+{
+− t2
+8dσ2
+}
+.(10)
+•ForU⊆[N]consider{ξ j}j∈U andξ i,i /∈U,
+P
+
+
+⏐⏐⏐⟨ξi, 1
+|U|
+∑
+j∈U
+ξj⟩
+⏐⏐⏐<|U|−1/2t
+
+>1−2 exp
+[
+−cmin{ t2
+σ4d, t
+4σ2 }
+]
+(11)
+This is a derivation from Bernstein’s inequality, see e.g. Lemma 3 in Puli et al. (2023).
+•Fori∈Uwe have,
+P
+(
+∥ξi∥2 >σ2(d+ 2t
+√
+d)
+)
+≤exp
+(
+−t2
+4
+)
+(12)
+•IfZis a chi-square variable with d-degrees of freedom, then it holds for anyv >0
+P(Z≤d−2
+√
+dv)≤exp (−v)
+It follows that
+P(Z≥d−2
+√
+dv)≥1−exp (−v)
+Hence, the lower bound on∥ξi∥2 ≥σ2(d−2
+√
+dv)w.p. at least1−exp(−v).
+Upon settingt= √v, we get
+P
+(
+∥ξi∥2 ≥σ2(d−2t
+√
+d)
+)
+≥1−exp
+(
+−ct2)
+(13)
+30
+•Letu∈[d], then
+∥ξi,u ·
+∑
+j∈U\i
+ξj,u∥ψ1 ≤∥ξi,u∥ψ2∥
+∑
+j∈U\i
+ξj,u∥ψ2 ≤
+√
+|U|σ2.
+Recall Bernstein (Vershynin, 2018) says that for independent sub-exponential variablesX1,...,X N, for
+everyt>0,
+P(
+⏐⏐⏐⏐⏐
+N∑
+i=1
+Xi
+⏐⏐⏐⏐⏐≥t)≤2 exp
+[
+−cmin
+{
+t2
+∑N
+i=1 ∥Xi∥2
+ψ1
+, t
+maxi∥Xi∥ψ1
+}]
+Applying this inequality to our case (whereN = d and theXis are the products ofξ variables on the
+LHS above),
+P(|
+∑
+j∈U\i
+ξ⊤
+i ξj|≥t)≤2 exp
+[
+−cmin
+{
+t2
+d|U|σ4 , t√
+|U|σ2
+}]
+.
+Nowassume thatt<d
+√
+|U|σ2, then
+P(|
+∑
+j∈U\i
+ξ⊤
+i ξj|≥t)≤2 exp
+[
+−cmin
+{
+t2
+d|U|σ4 , t√
+|U|σ2
+}]
+= 2 exp
+[
+−c t2
+d|U|σ4
+]
+.
+Replacing variablestwitht
+√
+d|U|σ4, and divding both sides of the inequality by|U|, we end up with
+P
+
+
+⏐⏐⏐|U|−1 ∑
+j∈U\i
+ξ⊤
+i ξj
+⏐⏐⏐≥σ2t
+√
+d|U|−1
+
+≤2 exp
+[
+−ct2]
+(14)
+•We know that for
+⏐⏐⏐⟨ξi, 1
+|U|
+∑
+j∈U ξj⟩
+⏐⏐⏐= 1
+|U|∥ξi∥2 + 1
+|U|
+⏐⏐⏐⟨ξi, 1
+|U|
+∑
+j∈U,i̸=j ξj⟩
+⏐⏐⏐
+⟨ξ⊤
+i ¯ξU⟩=|U| −1∥ξi∥2 +⟨ξi,|U|−1 ∑
+j∈U,j̸=i
+ξj⟩
+⏐⏐⟨ξ⊤
+i ¯ξU⟩
+⏐⏐≥
+⏐⏐|U|−1∥ξi∥2⏐⏐−
+⏐⏐⏐⏐⏐⏐
+⟨ξi,|U|−1 ∑
+j∈U,j̸=i
+ξj⟩
+⏐⏐⏐⏐⏐⏐
+Taking union bound of inequalities 13 and 14, we get
+P
+(⏐⏐⟨ξ⊤
+i ¯ξU⟩
+⏐⏐≥|U|−1σ2(d−2t
+√
+d)−|U| −1σ2t
+√
+d(|U|−1)
+)
+≥1−3 exp(−ct 2)
+P
+(⏐⏐⟨ξ⊤
+i ¯ξU⟩
+⏐⏐≥|U|−1σ2
+(
+d−2t
+√
+d−t
+√
+d(|U|−1)
+))
+≥1−3 exp(−ct 2)
+If we assumet≤
+√
+d
+2(2+
+√
+|U|−1)
+, we get
+P
+(⏐⏐⟨ξ⊤
+i ¯ξU⟩
+⏐⏐≥ σ2d
+2|U|
+)
+≥1−3 exp(−ct 2)(15)
+A.3 Proof of Lemma 1
+Let us recall the strong positivity assumption stated in the main paper, which appears in Garg et al. (2022).
+31
+Assumption 2(Strong positivity).There exists Xsep ⊆ Xsuch that PT,1 (Xsep) = 0and the matrix
+[PS(x|y)] x∈Xsepmy∈[k] is full rank and diagonal.
+We restate and prove the claim that Open-Set Domain Adaptation is not learnable under this assumption,
+once the label shift assumption is removed.
+Lemma.Let Abe an algorithm for Open-Set Domain Adaptation. There are distributions PS,PT,[k]
+and PT,k+1 such that the problem satisfies strong positivity, and∃h∗ ∈H for which Rl01
+T (h∗) = 0, while
+ESS,ST
+[
+Rl01
+T (A(SS,ST))
+]
+≥0.5.
+Proof.Define the following distributions over4states
+[PS(x|y)] x∈X,y∈[k] =
+[1−ε0 0ε
+0 1−ε ε0
+]
+,
+PS(Y) = [ 1−2ε
+1−ε , ε
+1−ε ,0]
+for someε >0, and two other distribution overX, Q(X) = [0,0,1,0]and D(X) = [0,0,0,1]. Consider2
+Open-Set Domain Adaptation problems wherek= 2andα= 0.5:
+• One wherePT,[k] = Q and PT,k+1 = D, which means thatPT,[k] (X|Y = y) = [0,0,1,0]and we set
+PT,[k] (Y) = [ 1−2ε
+1−ε , ε
+1−ε,0]although we can set it to any arbitrary distribution.
+• For the second problemPT,[k] = D and PT,k+1 = Q, which entails similarly to the first case that
+PT,[k] (X|Y = y) = [0,0,0,1]for y∈[k] , while we keepPS and the rest of the details as they are in the
+first problem.
+Itisclearthatunderthehypothesisclass Hofallbinaryclassifierson X, itholdsthat Rl01
+T (h∗) = 0. Nowwewill
+show that both problems satisfy strong positivity (note that they also satisfy thatSupp(PT,[k] ) ⊆Supp (PS)),
+and alsoPS(X,Y)andP T(X)are the same for both problems.
+Once this is shown, we can conclude our result, since any observed dataset that is an input toAis equally
+likely in both problems. However, any hypothesish that achievesRl01
+T (h) = δ on the first problem, achieves
+risk1−δon the other problem sinceP T,[k] andP T,k+1 switch roles between the two problems.
+To show that the problems satisfy strong positivity, considerXsep as the first and second states. We have
+that for both problemPT,k+1 (Xsep = 0since bothD(X sep) = 0andQ(X sep) = 0, while
+[PS(x|y)] x∈Xsep,y∈[k] =
+[1−ε0
+0 1−ε
+]
+,
+which is a full rank and diagonal matrix. Hence the strong positivity condition is satisfied. We defined
+the samePS(X,Y )for both problems, so it is left to show thatPT(X)also equals for them. This is also
+straightforward as for both problemPT(X) = 0.5·Q+ 0.5·D, which concludes the proof.
+A.4 Additional details on experimental setting
+A.4.1 AUROC vs AUPRC scores for novel class detection
+It is a common argument in the machine learning literature that AUPRC scores are more suitable for
+evaluating methodologies in class-imbalanced scenarios. However, this stance is nuanced, as some research,
+such as McDermott et al. (2024) suggests favoring AUROC over AUPRC in certain imbalanced conditions.
+McDermott et al. (2024) further notes that AUPRC inherently emphasizes the performance on samples with
+higher scores. Given our experimental focus on assessing models’ ability to assign higher scores for novelty
+detection, AUPRC emerges as the most relevant metric for our analysis, especially when the proportions of
+positive class (novel class in our case) is very low.
+32
+A.4.2 Discussion
+Building on the results and observations from the previous section, we proceed to further analyze and
+understand the aspects of OSDA under conditions of background shift. The curve plots in 3b compare the
+novelty detection performance of the methods shown , it is evident that CoLOR outperforms other methods
+particularly when the novel class ratioα is less than0.2. However, asα is increased beyond0.3, the other
+baselines rapidly catch up to the AUPRC performance of CoLOR. From Table 4 we observe that using
+constrained learning to acquire shared representations benefits the classification performance on known classes.
+The source-only method mentioned in 4 serves as a baseline, trained exclusively on theSS and evaluated on
+the ST without employing any strategies to mitigate shift effects. Furthermore, Table 3 provides insights on
+the impact of distribution shift on the overall OSDA performance of all the methods using ViT-L/14 visual
+encoder pretraiend using CLIP.
+We specify our empirical test of measuring separability in A.5.1. Based on this test of separability, we observe
+that novel classes in Amazon Reviews dataset are not perfectly separable and hence violate the assumption of
+separability to some extent. However, we see in our result in tables 2, 12 and 14 that CoLOR still outperforms
+other baselines. Hence, we realize that CoLOR is robust to certain violations of the separability assumption.
+A.4.3 Implementation of CoLOR
+It is important to note that each model headhˆαindependently solve constrained problem in 4 using
+primal-dual optimization while remainingk heads focus on classifying samples (fromSS) from k known
+categories using ground truthsYS.
+A.5 Extending constrained learning objective to OSDA
+In practice, constraints such asβ(h) ≤β are enforced using a differentiable approximation of a step function,
+e.g. via a sigmoid∑
+x∈SS
+σ(h(x)) ≤β , and objectives are optimized using the logistic loss. We either train
+an entire model (encoder + classifier) from scratch or just add two fully-connected (FC) layers on top of
+a pretrained encoder and only train these additional FC layers. The first FC layer provides the shared
+representation acquired through learning from the related tasks while second FC layer uses this shared
+representation to classify the known classes and detect novel identities.
+A.5.1 Dataset
+One important factor to consider while creating shifts is thatSS and ST,k+1 should be distinguishable.
+As dataset separability is a difficult quantity to measure we train a classifier (oracle) for each dataset to
+distinguish novel groups from samples belonging to known categories. We then use the learnability of the
+oracle as a criterion to ensure the separability of novel classes. This means that we calculate the AUROC and
+AUPRC scores of the oracle for the task of supervised novelty detection. Higher AUROC and AUPRC would
+correspond to higher separability. We consider an AUROC and AUPRC higher than 0.98 as ideal to ensure
+separability between novel class identities and known classes. It is difficult to ensure such high separability
+for all the datasets, particularly for Amazon Reviews dataset which does not perfectly satisfy the separability.
+Yet we observe that CoLOR is robust to background shift in such settings outperforming all the baselines as
+observed in Tables 2, 12 and 14.
+We conduct 5 repetitions of an experiment for each dataset and for every identity of the novel class. Each
+repetition uses a unique random seed, representing a distinct background shift setting. These settings are
+generated by randomly varying the subtype proportions of the known categories within the SUN397 dataset.
+SUN397:It consists of images of scenes/places from various locations. The dataset is provided with 3 levels
+of hierarchy where Level-1 is grouped as indoor, natural outdoor and man-made outdoor scenes. We use
+indoor classes as in-distribution classes while we choose novel classes from natural outdoor scenes. Level-2
+hierarchy has shopping, workplace, homes/hotels, etc. under indoor category while outdoor natural contains
+classes like water/ice/snow, mountains/hills desert/sky, forest, etc. Each of these level-2 categories have
+subcategories (level-3 classes) that form these level-2 groupings. We randomly select 8 level-3 subtypes (like
+bakery shop or banquet hall) per level-2 category (shopping/dining places) and vary the subtype proportions
+to create background shift between source and target. Furthermore, novel classes are randomly selected from
+the level-2 categories of outdoor natural group.
+33
+CIFAR100:It consists of 60,000 32x32 colour images in 20 primary classes (superclasses) each of which
+have 5 subcategories composing a total of 100 classes Krizhevsky et al. (2009). The training set has 50,000
+images (i.e. 500 images per subcategory and 2500 images per primary class) while the test set has 10000
+images (i.e. 100 images per subcategory and 500 images per primary class). We retain these splits for our
+experiments. We use 4 primary categories as aquatic mammals, flowers, fishes and birds. The subcategories
+of the aquatic mammals are beaver, dolphin, otter, seal are whale while that of flowers are orchid, poppy, rose,
+sunflower and tulip. Similarly fishes and birds have 5 subcategories each. We vary the marginal distribution
+of these subcategories to create a subpopulation shift leading to a background shift between source and target
+data while maintaining no label shift w.r.t. primary categories i.e. aquatic mammals and flowers. The novel
+category is randomly selected from the remaining unseen categories.
+Amazon ReviewsThe dataset is heavily skewed with respect to sentiments and product categories. Hence,
+we select 6 product categories having similar orders of magnitude of the number of reviews namely ’Digital
+Music’, ’Industrial & Scientific’, ’Luxury Beauty’, ’Musical Intstruments’, ’Prime Pantry’ and ’Software’. To
+prevent further skewness in the dataset due to sentiments, we restrict the sample size per sentiment per
+category to 500 reviews in the training set and 125 reviews per sentiment per product category. We induce a
+background shift based on sentiments. Reviews with rating strictly below 3.0 (out of 5.0) are considered
+negative sentiments and those with rating strictly above 3.0 are considered positive sentiments whereas
+reviews having a rating of exactly 3.0 are discarded from the dataset. The minimum rating is 1.0 while the
+maximum is 5.0.
+A.5.2 Hyper-Parameters and Training
+For all the methods, we keep the set of candidate target recall values consistent through all the experiments
+α= [0.02,0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45]. We consistently set the FPR thresholdβ = 0.01
+without optimizing it at all based on validation dataset. For each novel class identity, we repeat the
+experiments for 5 different randomly generated splits betweenPS and PT adhering to the definition and
+assumptions of background shift. For CIFAR100, we use ResNet18 backbone followed by a linear layer for
+classification and train the whole model from scratch for all the methods. For Amazon Reviews dataset,
+we use pretrained RoBERTa features followed by 2 linear layers for classification. For Amazon Reviews,
+due to computational limitations we resort to linear probing rather than finetuning the whole model and
+only finetune the last two linear layers. The primary hyperparameters we tune for stable convergence are
+learning rate, L2 weight penalty scalar to prevent overfitting, logit multiplier values that act as temperature
+controllers for softmax/sigmoid scores and gradient clipping to avoid exploding gradients. These hyper
+parameters are tuned based on a sample training and validation sets but are kept constant throughout the
+dataset and baseline across different seed values and novelty cases. Furthermore, the methods CoNoC &
+CoLOR require additional hyperparameters like dual learning rate and lagrange multipliers. Each output
+node is associated with Lagrange multipliers, which address a distinct primal-dual optimization problem
+owing to diverse target recall constraints. These multipliers are initialized to 1.0, while the dual learning rate
+is meticulously calibrated for CIFAR100 & Amazon Reviews datasets individually to ensure stable learning
+dynamics conducive to minimizing both the objective surrogate loss function for FPR and recall inequality
+constraints. Note that for ZOC, We used cosine similarity between image embeddings and the known class
+text embeddings to obtain the closed-set class predictions. Table 5 displays all the hyperparameters used for
+each of the baselines and datasets.
+Table 5: Hyperparameters: lr = learning rate, dlr = dual learning rate (CoLOR), L2 penalty = L2 weight
+penalty scaler, lm = logit multiplier, clip = gradient clipping value. The two values separated by "/" in learning
+rate column of SUN397 dataset correspond to the linear probing of ResNet50 (pretrained on ImageNet) and
+ViT (pretrained using CLIP) backbones respectively.
+Method CIFAR100 Amazon Reviews SUN397
+lr dlr L2 penaltylm clip lr dlr L2 penaltylm clip lr dlr L2 penaltylm clip
+DD 1e−2 − 3e−5 1.2 5.0 1e−2 − 1e−4 1.0 1.0 1e−2/1e−1 − 3e−5 1.2 5.0
+uPU 1e−3 − 3e−7 1.2 5.0 1e−3 − 1e−4 1.0 1.0 1e−3/1e−1 − 3e−7 1.2 5.0
+nnPU 1e−3 − 3e−7 1.2 5.0 1e−3 − 1e−4 1.0 1.0 1e−3/1e−1 − 3e−7 1.2 5.0
+BODA1e−3 − 3e−3 1.2 5.0 1e−3 − 1e−4 1.0 1.0 1e−3 − 3e−3 1.2 5.0
+ARPL 1e−2 − 3e−5 1.0 100.0 − − − − − 1e−2 − 3e−5 1.0 100.0
+PULSE1e−3 − 3e−5 1.2 5.0 1e−3 − 1e−4 1.0 1.0 1e−3 − 3e−5 1.2 5.0
+CoLOR1e−3 2e−2 3e−7 1.2 5.0 1e−3 6e−2 1e−4 1.0 1.0 1e−3 2e−2 3e−7 1.2 5.0
+34
+A.6 Performance comparison based on average relative & absolute AU-ROC and AU-PRC scores
+Refer to tables 10, 12, 6, 8, 9, 3, 4 below.
+Table 6: SUN397 dataset with distribution shift due to varying proportions of subtypes of scenes/places. All
+the methods here use ResNet50 backbone pretrained on ImageNet1K_V1 Russakovsky et al. (2015). AUROC
+and AUPRC represent the performance for the novel category detection task while OSCR measures overall
+performance of the methods on both known and unknown classes.α is the mixture proportion column for
+the respective novel classes.
+Metric Method Novel Classes (natural outdoor scenes/places)
+α= 0.06±0.01 α= 0.06±0.01 α= 0.08±0.04
+[water, ice, snow, etc.][mountains, hills, desert, sky, etc.][forest, field, jungle, etc.]Summary
+AUROC
+DD 0.90±0.06 0.88±0.05 0.94±0.02 0.91±0.05
+uPU 0.71±0.13 0.72±0.18 0.84±0.08 0.76±0.14
+nnPU 0.71±0.13 0.72±0.18 0.84±0.08 0.76±0.14
+BODA 0.86±0.03 0.90±0.01 0.82±0.09 0.86±0.06
+SHOT 0.77±0.08 0.64±0.21 0.70±0.18 0.71±0.16
+ARPL 0.73±0.03 0.72±0.08 0.68±0.12 0.71±0.08
+ANNA 0.92±0.03 0.96±0.02 0.92±0.08 0.93±0.05
+CAC 0.79±0.05 0.82±0.05 0.78±0.04 0.80±0.05
+PULSE 0.75±0.05 0.76±0.05 0.69±0.10 0.73±0.07
+CoLOR 0.98±0.02 0.98±0.01 0.98±0.02 0.98±0.02
+AUPRC
+DD 0.50±0.20 0.40±0.23 0.73±0.10 0.54±0.22
+uPU 0.11±0.04 0.18±0.20 0.34±0.30 0.21±0.22
+nnPU 0.11±0.04 0.18±0.20 0.34±0.30 0.21±0.22
+BODA 0.41±0.04 0.52±0.06 0.43±0.16 0.45±0.11
+SHOT 0.19±0.08 0.17±0.19 0.21±0.14 0.19±0.13
+ARPL 0.11±0.02 0.11±0.04 0.15±0.11 0.12±0.07
+ANNA 0.71±0.13 0.77±0.13 0.72±0.23 0.73±0.16
+CAC 0.17±0.05 0.17±0.06 0.20±0.10 0.18±0.07
+PULSE 0.15±0.05 0.14±0.06 0.15±0.06 0.15±0.05
+CoLOR 0.92±0.04 0.93±0.05 0.89±0.15 0.91±0.09
+OSCR
+DD 0.66±0.04 0.67±0.06 0.70±0.03 0.68±0.05
+uPU 0.35±0.10 0.35±0.08 0.48±0.11 0.40±0.11
+nnPU 0.35±0.10 0.35±0.08 0.48±0.11 0.40±0.11
+BODA 0.56±0.10 0.59±0.09 0.50±0.09 0.55±0.10
+SHOT 0.25±0.05 0.18±0.07 0.24±0.08 0.22±0.07
+ARPL 0.61±0.01 0.61±0.06 0.58±0.08 0.60±0.06
+ANNA 0.58±0.07 0.62±0.05 0.59±0.09 0.60±0.07
+CAC 0.68±0.05 0.70±0.07 0.66±0.03 0.68±0.05
+PULSE 0.66±0.05 0.68±0.05 0.62±0.09 0.65±0.06
+CoLOR 0.82±0.03 0.81±0.03 0.81±0.05 0.81±0.04
+(a)
+ (b)
+ (c)
+Figure 4: Effects of varying the FPR threshold on CoLOR method performance on SUN397 dataset.
+35
+Table 7: SUN397 dataset without distribution shift due to varying proportions of subtypes of scenes/places.
+All the methods here use ResNet50 backbone pretrained on ImageNet1K_V1 Russakovsky et al. (2015).
+AUROC and AUPRC represent the performance for the novel category detection task while OSCR measures
+overall performance of the methods on both known and unknown classes.αis the mixture proportion column
+for the respective novel classes.
+Metric Method Novel Classes (natural outdoor scenes/places)
+α= 0.06±0.01 α= 0.06±0.01 α= 0.08±0.04
+[water, ice, snow, etc.][mountains, hills, desert, sky, etc.][forest, field, jungle, etc.]Summary
+AUROC
+DD 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+uPU 0.99±0.00 0.99±0.01 1.00±0.00 0.99±0.01
+nnPU 0.99±0.00 0.99±0.01 1.00±0.00 0.99±0.01
+BODA 0.86±0.06 0.91±0.01 0.85±0.05 0.87±0.05
+SHOT 0.63±0.08 0.58±0.12 0.61±0.14 0.61±0.11
+ARPL 0.86±0.03 0.81±0.03 0.84±0.05 0.84±0.04
+ANNA 0.95±0.05 0.98±0.02 0.92±0.11 0.95±0.07
+CAC 0.89±0.05 0.89±0.01 0.87±0.03 0.88±0.03
+PULSE 0.82±0.08 0.84±0.02 0.79±0.04 0.82±0.05
+CoLOR 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+AUPRC
+DD 1.00±0.00 1.00±0.00 0.99±0.01 1.00±0.00
+uPU 0.95±0.05 0.90±0.13 0.98±0.02 0.94±0.09
+nnPU 0.95±0.05 0.90±0.13 0.98±0.02 0.94±0.09
+BODA 0.40±0.11 0.52±0.02 0.40±0.06 0.44±0.09
+SHOT 0.09±0.02 0.09±0.06 0.11±0.06 0.10±0.05
+ARPL 0.20±0.04 0.16±0.04 0.25±0.09 0.20±0.07
+ANNA 0.90±0.05 0.94±0.03 0.86±0.13 0.90±0.08
+CAC 0.29±0.08 0.27±0.06 0.30±0.08 0.29±0.07
+PULSE 0.21±0.07 0.21±0.05 0.19±0.03 0.20±0.05
+CoLOR 0.96±0.03 1.00±0.00 1.00±0.00 0.99±0.02
+OSCR
+DD 0.86±0.00 0.86±0.00 0.86±0.00 0.86±0.00
+uPU 0.72±0.01 0.72±0.01 0.72±0.01 0.72±0.01
+nnPU 0.72±0.01 0.72±0.01 0.72±0.01 0.72±0.01
+BODA 0.71±0.03 0.70±0.01 0.61±0.05 0.67±0.06
+SHOT 0.19±0.05 0.16±0.04 0.17±0.08 0.18±0.06
+ARPL 0.82±0.02 0.78±0.03 0.80±0.05 0.80±0.04
+ANNA 0.82±0.05 0.85±0.02 0.79±0.10 0.82±0.07
+CAC 0.84±0.05 0.85±0.01 0.83±0.03 0.84±0.03
+PULSE 0.78±0.08 0.81±0.02 0.76±0.03 0.78±0.05
+CoLOR 0.92±0.03 0.93±0.01 0.92±0.02 0.92±0.02
+B Analysis of toy example
+We haveNS = |SS|, NT,0 = (1 −α)|ST|, NT,1 = α|ST|for examples fromPS = N(µ,σ(Id −r−2
+η ηη⊤)),
+PT,0 = N(−µ,σ(Id −r−2
+η ηη⊤)and PT,1 = N(η,σ(Id −r−2
+µ µµ⊤))respectively. Here, rµ = ∥µ∥and rη
+respectively, we setη⊤µ= 0and let the novelties and non-novel data lie in orthogonal subspaces to each
+other. This is for simplicity of analysis, and to mimic the case where at optimality we can perfectly detect
+the novelties.
+Consider a linear modelw ∈R d, i.e. its bianry predictions are1w⊤x>0 and the scores arew⊤x. We are
+interested in the AU-ROC obtained w.r.t novelty detection, i.e. distinguishingPT,0 and PT,1 . This is
+measured byQ( ⟨w,2µ−η⟩
+∥w∥ )whereQis the Gaussian tail function.
+We will compare two learning rules. Takingℓas the logistic loss, we are interested in:
+min
+w∈Rd
+∑
+xi∈SS
+ℓ(w⊤xi,0) +
+∑
+xi∈ST
+ℓ(w⊤˜xi,1),
+and
+min
+w∈Rd
+∑
+xi∈ST
+ℓ(w⊤˜xi,1)s.t.w ⊤xi <0∀x i ∈SS
+36
+Table 8: SUN397 dataset with distribution shift due to varying proportions of subtypes of scenes/places. All
+the principled methods (DD, uPU, nnPU, BODA & CoLOR) here use pretrained CLIP ViT-L/14 backbone
+from Radford et al. (2021).
+Metric Method Novel Classes (natural outdoor scenes/places)
+α= 0.06±0.01 α= 0.06±0.01 α= 0.08±0.04
+[water, ice, snow, etc.][mountains, hills, desert, sky, etc.][forest, field, jungle, etc.]Summary
+AUROC
+DD 0.96±0.03 0.96±0.03 0.96±0.02 0.96±0.02
+uPU 0.95±0.03 0.94±0.05 0.95±0.04 0.95±0.04
+nnPU 0.95±0.03 0.94±0.05 0.95±0.04 0.95±0.04
+BODA 0.91±0.06 0.82±0.18 0.79±0.19 0.84±0.15
+ZOC 0.84±0.02 0.85±0.03 0.78±0.12 0.82±0.07
+CAC 0.98±0.02 0.99±0.01 0.98±0.01 0.98±0.01
+PULSE 0.96±0.02 0.96±0.01 0.95±0.01 0.96±0.01
+CoLOR 0.99±0.02 0.99±0.01 0.99±0.01 0.99±0.01
+AUPRC
+DD 0.88±0.05 0.85±0.12 0.90±0.07 0.87±0.08
+uPU 0.84±0.05 0.78±0.19 0.85±0.10 0.82±0.12
+nnPU 0.84±0.05 0.78±0.19 0.85±0.10 0.82±0.12
+BODA 0.39±0.23 0.37±0.39 0.38±0.30 0.38±0.29
+ZOC 0.21±0.05 0.23±0.04 0.26±0.08 0.23±0.06
+CAC 0.77±0.12 0.82±0.10 0.78±0.08 0.79±0.10
+PULSE 0.6±0.09 0.61±0.11 0.60±0.09 0.60±0.09
+CoLOR 0.95±0.04 0.95±0.01 0.96±0.03 0.95±0.03
+OSCR
+DD 0.93±0.02 0.93±0.03 0.93±0.02 0.93±0.02
+uPU 0.92±0.02 0.91±0.05 0.91±0.04 0.92±0.03
+nnPU 0.92±0.02 0.91±0.05 0.91±0.04 0.92±0.03
+BODA 0.82±0.04 0.61±0.34 0.73±0.14 0.72±0.21
+ZOC 0.53±0.03 0.52±0.05 0.47±0.08 0.51±0.06
+CAC 0.96±0.02 0.96±0.01 0.95±0.02 0.96±0.02
+PULSE 0.94±0.01 0.95±0.02 0.94±0.02 0.94±0.02
+CoLOR 0.96±0.02 0.97±0.01 0.96±0.01 0.96±0.01
+37
+Table 9: SUN397 datasetwithoutany intended distribution shift. All the principled methods (DD, uPU,
+nnPU, BODA & CoLOR) here use pretrained CLIP ViT-L/14 backbone from Radford et al. (2021).
+Metric Method Novel Classes (natural outdoor scenes/places)
+α= 0.06±0.00 α= 0.05±0.01 α= 0.07±0.03
+[water, ice, snow, etc.][mountains, hills, desert, sky, etc.][forest, field, jungle, etc.]Summary
+AUROC
+DD 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+uPU 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+nnPU 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+BODA 0.87±0.03 0.88±0.04 0.90±0.05 0.88±0.04
+ARPL 0.86±0.03 0.81±0.03 0.84±0.05 0.84±0.04
+ZOC 0.84±0.02 0.86±0.02 0.77±0.12 0.82±0.08
+CAC 0.99±0.01 0.99±0.00 0.99±0.01 0.99±0.01
+PULSE 0.98±0.01 0.98±0.01 0.97±0.02 0.98±0.01
+CoLOR 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+AUPRC
+DD 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+uPU 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+nnPU 1.00±0.00 1.00±0.00 1.00±0.00 1.00±0.00
+BODA 0.18±0.04 0.20±0.06 0.34±0.22 0.24±0.15
+ARPL 0.20±0.04 0.16±0.04 0.25±0.09 0.20±0.07
+ZOC 0.19±0.02 0.21±0.04 0.25±0.11 0.22±0.07
+CAC 0.87±0.10 0.91±0.03 0.86±0.08 0.88±0.08
+PULSE 0.76±0.08 0.76±0.08 0.74±0.11 0.75±0.09
+CoLOR 0.99±0.01 0.99±0.01 0.99±0.01 0.99±0.01
+OSCR
+DD 0.99±0.00 0.99±0.00 0.99±0.00 0.99±0.00
+uPU 0.99±0.00 0.99±0.00 0.99±0.00 0.99±0.00
+nnPU 0.99±0.00 0.99±0.00 0.99±0.00 0.99±0.00
+BODA 0.94±0.01 0.94±0.01 0.92±0.02 0.93±0.02
+ARPL 0.82±0.02 0.78±0.03 0.80±0.05 0.80±0.04
+ZOC 0.50±0.01 0.51±0.02 0.45±0.07 0.49±0.05
+CAC 0.98±0.01 0.99±0.00 0.98±0.01 0.98±0.01
+PULSE 0.98±0.01 0.98±0.01 0.97±0.02 0.97±0.02
+CoLOR 0.98±0.00 0.98±0.00 0.98±0.00 0.98±0.00
+38
+Table 10: CIFAR100 dataset with background shift due to varying proportions of subtypes. (AUROC) and
+(AUPRC) represent the performance for the task of novel class detection while Open-Set Classification Rate
+(OSCR) measures overall performance of the methods on both known and unknown classes.α is in the range
+of0.05to0.10.Note that all the adaptive methods use ResNet18 and are trained from scratch.
+Metric Method Novel Classes (α= 0.07±0.02)
+Baby Man Butterfly Rocket Streetcar Summary
+AUROC
+DD 0.76±0.03 0.61±0.13 0.64±0.10 0.78±0.09 0.72±0.07 0.70±0.11
+uPU 0.71±0.07 0.62±0.09 0.56±0.13 0.74±0.06 0.73±0.05 0.67±0.10
+nnPU 0.69±0.09 0.58±0.10 0.60±0.09 0.74±0.06 0.72±0.16 0.67±0.12
+BODA 0.57±0.07 0.54±0.05 0.59±0.03 0.54±0.07 0.61±0.05 0.57±0.06
+ARPL 0.79±0.05 0.80±0.03 0.73±0.05 0.73±0.04 0.73±0.05 0.76±0.05
+ZOC 0.97±0.01 0.98±0.01 0.82±0.03 0.98±0.01 1.00±0.00 0.95±0.07
+CAC 0.71±0.05 0.72±0.04 0.71±0.02 0.64±0.03 0.68±0.02 0.69±0.04
+PULSE 0.72±0.04 0.74±0.03 0.70±0.02 0.70±0.02 0.72±0.06 0.72±0.04
+CoLOR 0.77±0.06 0.70±0.12 0.68±0.04 0.83±0.04 0.85±0.03 0.77±0.09
+AUPRC
+DD 0.25±0.03 0.15±0.10 0.15±0.09 0.37±0.12 0.27±0.17 0.24±0.13
+uPU 0.22±0.18 0.11±0.03 0.11±0.05 0.28±0.14 0.18±0.10 0.18±0.12
+nnPU 0.21±0.16 0.09±0.03 0.11±0.04 0.32±0.09 0.27±0.25 0.20±0.16
+BODA 0.10±0.05 0.08±0.02 0.09±0.02 0.08±0.02 0.09±0.03 0.09±0.03
+ARPL 0.22±0.07 0.23±0.06 0.16±0.05 0.15±0.05 0.15±0.06 0.18±0.07
+ZOC 0.89±0.04 0.76±0.05 0.32±0.07 0.77±0.05 0.96±0.02 0.74±0.23
+CAC 0.18±0.06 0.16±0.06 0.17±0.04 0.11±0.03 0.14±0.07 0.15±0.05
+PULSE 0.18±0.06 0.21±0.06 0.15±0.05 0.13±0.02 0.16±0.04 0.17±0.05
+CoLOR 0.35±0.12 0.20±0.11 0.21±0.06 0.43±0.03 0.44±0.14 0.33±0.14
+OSCR
+DD 0.55±0.04 0.44±0.12 0.44±0.11 0.57±0.10 0.52±0.07 0.51±0.10
+uPU 0.51±0.08 0.45±0.08 0.42±0.12 0.53±0.05 0.53±0.05 0.49±0.09
+nnPU 0.50±0.09 0.41±0.07 0.44±0.07 0.54±0.08 0.52±0.16 0.48±0.10
+BODA 0.61±0.04 0.61±0.04 0.61±0.02 0.57±0.05 0.62±0.04 0.60±0.04
+ARPL 0.63±0.04 0.64±0.03 0.60±0.04 0.60±0.04 0.59±0.05 0.61±0.04
+ZOC 0.82±0.02 0.83±0.02 0.70±0.02 0.82±0.02 0.82±0.01 0.84±0.01
+CAC 0.56±0.04 0.57±0.04 0.56±0.03 0.51±0.03 0.54±0.02 0.55±0.04
+PULSE 0.62±0.03 0.64±0.04 0.61±0.02 0.60±0.02 0.62±0.05 0.62±0.03
+CoLOR 0.58±0.06 0.54±0.12 0.52±0.05 0.64±0.05 0.65±0.02 0.59±0.08
+39
+Table 11: CIFAR100 dataset without background shift. (AUROC) and (AUPRC) represent the performance
+for the task of novel class detection while Open-Set Classification Rate (OSCR) measures overall performance
+of the methods on both known and unknown classes.α is set to0.05.Note that all the adaptive methods use
+ResNet18 and are trained from scratch.
+Metric Method Novel Classes (α= 0.05±0.00)
+Baby Man Butterfly Rocket Streetcar Summary
+AUROC
+DD 0.82±0.04 0.71±0.09 0.71±0.11 0.84±0.09 0.72±0.15 0.76±0.11
+uPU 0.75±0.10 0.67±0.08 0.64±0.12 0.84±0.06 0.74±0.11 0.73±0.11
+nnPU 0.75±0.05 0.62±0.05 0.66±0.07 0.82±0.04 0.79±0.08 0.73±0.10
+BODA 0.59±0.0 0.58±0.02 0.59±0.05 0.59±0.02 0.62±0.06 0.60±0.04
+ARPL 0.78±0.03 0.82±0.03 0.76±0.03 0.73±0.04 0.74±0.05 0.77±0.05
+ZOC 0.97±0.01 0.98±0.01 0.82±0.02 0.98±0.00 1.00±0.00 0.95±0.07
+CAC 0.71±0.01 0.72±0.02 0.69±0.03 0.62±0.03 0.71±0.01 0.69±0.04
+PULSE 0.73±0.02 0.77±0.03 0.72±0.01 0.70±0.02 0.72±0.05 0.73±0.04
+CoLOR 0.82±0.05 0.76±0.04 0.76±0.05 0.82±0.03 0.82±0.05 0.80±0.05
+AUPRC
+DD 0.39±0.10 0.15±0.06 0.20±0.09 0.48±0.23 0.25±0.16 0.29±0.18
+uPU 0.20±0.11 0.13±0.06 0.11±0.05 0.45±0.12 0.21±0.13 0.22±0.15
+nnPU 0.18±0.08 0.08±0.02 0.10±0.05 0.39±0.12 0.27±0.14 0.21±0.14
+BODA 0.07±0.01 0.06±0.00 0.06±0.01 0.07±0.01 0.07±0.01 0.07±0.01
+ARPL 0.15±0.06 0.20±0.05 0.18±0.06 0.11±0.03 0.12±0.02 0.15±0.05
+ZOC 0.87±0.03 0.68±0.04 0.25±0.04 0.70±0.05 0.94±0.02 0.69±0.25
+CAC 0.12±0.02 0.13±0.02 0.09±0.01 0.08±0.01 0.12±0.02 0.11±0.02
+PULSE 0.12±0.01 0.16±0.03 0.12±0.02 0.12±0.03 0.11±0.02 0.13±0.03
+CoLOR 0.35±0.12 0.17±0.05 0.21±0.07 0.39±0.05 0.33±0.11 0.29±0.12
+OSCR
+DD 0.63±0.05 0.51±0.15 0.52±0.17 0.62±0.17 0.53±0.18 0.56±0.15
+uPU 0.54±0.12 0.49±0.08 0.45±0.11 0.63±0.06 0.53±0.13 0.53±0.12
+nnPU 0.55±0.06 0.44±0.06 0.45±0.07 0.58±0.06 0.59±0.10 0.52±0.09
+BODA 0.62±0.04 0.63±0.03 0.61±0.02 0.56±0.03 0.64±0.01 0.61±0.04
+ARPL 0.66±0.02 0.68±0.02 0.64±0.03 0.62±0.03 0.63±0.04 0.65±0.04
+ZOC 0.81±0.01 0.81±0.00 0.70±0.02 0.81±0.00 0.82±0.01 0.79±0.05
+CAC 0.55±0.01 0.57±0.01 0.53±0.02 0.49±0.03 0.55±0.02 0.54±0.04
+PULSE 0.63±0.02 0.66±0.02 0.63±0.02 0.61±0.02 0.63±0.04 0.63±0.03
+CoLOR 0.65±0.02 0.60±0.03 0.59±0.05 0.63±0.04 0.63±0.06 0.62±0.04
+40
+Table 12: Amazon Reviews dataset with sentiment based distribution shift. AUROC and AUPRC represent
+the performance for the task of novel class detection while OSCR measures overall performance of the methods
+on both known and unknown classes.αis the mixture proportion column for the respective novel classes.
+Metric Method Novel Classes
+α= 0.32 α= 0.11 α= 0.07 α= 0.07 α= 0.22 α= 0.18
+Musical InstrumentsDigital MusicSoftware Luxury BeautyIndustrial & ScientificPrime PantrySummary
+AUROC
+DD 0.75±0.05 0.81±0.04 0.80±0.04 0.73±0.04 0.58±0.04 0.63±0.06 0.72±0.09
+uPU 0.79±0.04 0.85±0.06 0.79±0.03 0.76±0.03 0.67±0.04 0.67±0.09 0.76±0.08
+nnPU 0.79±0.04 0.85±0.06 0.79±0.03 0.76±0.03 0.67±0.04 0.67±0.09 0.76±0.08
+BODA 0.76±0.03 0.61±0.13 0.56±0.06 0.67±0.07 0.72±0.04 0.65±0.09 0.66±0.10
+ARPL 0.66±0.04 0.75±0.06 0.70±0.05 0.66±0.06 0.72±0.02 0.74±0.03 0.70±0.05
+CAC 0.70±0.03 0.72±0.05 0.70±0.03 0.56±0.08 0.74±0.05 0.74±0.02 0.70±0.07
+PULSE 0.60±0.03 0.57±0.07 0.65±0.06 0.58±0.03 0.70±0.02 0.75±0.02 0.63±0.08
+CoLOR 0.82±0.03 0.87±0.040.84±0.060.77±0.04 0.68±0.09 0.72±0.11 0.79±0.09
+AUPRC
+DD 0.68±0.06 0.62±0.08 0.32±0.12 0.27±0.09 0.33±0.05 0.38±0.07 0.43±0.18
+uPU 0.73±0.04 0.68±0.10 0.39±0.07 0.37±0.10 0.43±0.07 0.44±0.14 0.51±0.17
+nnPU 0.73±0.04 0.68±0.10 0.39±0.07 0.37±0.10 0.43±0.07 0.44±0.14 0.51±0.17
+BODA 0.67±0.07 0.19±0.11 0.07±0.01 0.14±0.04 0.38±0.06 0.25±0.07 0.28±0.21
+ARPL 0.43±0.04 0.27±0.13 0.14±0.04 0.12±0.03 0.36±0.04 0.33±0.03 0.27±0.13
+CAC 0.50±0.04 0.24±0.06 0.14±0.02 0.08±0.01 0.41±0.07 0.38±0.03 0.30±0.16
+PULSE 0.38±0.02 0.14±0.04 0.10±0.02 0.09±0.01 0.33±0.03 0.36±0.03 0.21±0.13
+CoLOR 0.76±0.04 0.69±0.070.49±0.120.35±0.14 0.44±0.12 0.50±0.150.54±0.18
+OSCR
+DD 0.54±0.04 0.54±0.05 0.53±0.05 0.47±0.02 0.43±0.03 0.46±0.04 0.50±0.06
+uPU 0.59±0.03 0.59±0.060.53±0.04 0.49±0.02 0.52±0.03 0.51±0.03 0.54±0.05
+nnPU 0.59±0.03 0.59±0.060.53±0.04 0.49±0.02 0.52±0.03 0.51±0.03 0.54±0.05
+BODA 0.50±0.01 0.53±0.05 0.56±0.040.51±0.03 0.62±0.01 0.62±0.06 0.56±0.06
+ARPL 0.55±0.04 0.53±0.02 0.54±0.04 0.51±0.03 0.62±0.04 0.60±0.02 0.56±0.05
+CAC 0.50±0.02 0.47±0.04 0.46±0.03 0.37±0.04 0.57±0.05 0.56±0.03 0.49±0.07
+PULSE 0.52±0.03 0.47±0.04 0.54±0.04 0.49±0.03 0.63±0.03 0.64±0.06 0.53±0.07
+CoLOR 0.61±0.04 0.59±0.050.56±0.07 0.50±0.05 0.56±0.03 0.55±0.07 0.56±0.06
+Table 13: AUPRC scores with & w/o joint learning for novelty detection on CIFAR100 dataset with
+distribution shift.
+Novel Classα Absolute AUPRCDD w/o joint learningDD uPU w/o joint learninguPU nnPU w/o joint learningnnPUCoLoR w/o joint learningCoLORBaby 0.23±0.05 0.69±0.10 0.77±0.04 0.63±0.10 0.64±0.10 0.61±0.08 0.61±0.11 0.65±0.13 0.80±0.08Tulip 0.29±0.12 0.41±0.14 0.39±0.14 0.27±0.11 0.25±0.04 0.26±0.12 0.29±0.10 0.50±0.16 0.53±0.16Crocodile0.23±0.05 0.58±0.08 0.64±0.04 0.47±0.09 0.44±0.12 0.47±0.11 0.42±0.11 0.61±0.15 0.68±0.10Dolphin0.29±0.12 0.65±0.120.65±0.12 0.50±0.06 0.49±0.08 0.50±0.08 0.45±0.11 0.65±0.12 0.64±0.19Man 0.23±0.05 0.59±0.19 0.64±0.13 0.31±0.04 0.41±0.14 0.28±0.12 0.46±0.13 0.68±0.09 0.79±0.07
+Table 14: AUPRC scores with & w/o joint learning for novelty detection on Amazon Reviews dataset with
+distribution shift.
+Novel Classα Absolute AUPRCDD w/o joint learningDD uPU w/o joint learninguPU nnPU w/o joint learningnnPUCoLoR w/o joint learningCoLORMusical Instruments0.16 0.37±0.09 0.40±0.1 0.34±0.09 0.45±0.13 0.34±0.09 0.45±0.13 0.48±0.11 0.55±0.13Digital Music0.05 0.28±0.07 0.29±0.09 0.23±0.10 0.24±0.12 0.23±0.10 0.24±0.12 0.33±0.13 0.35±0.15Software 0.06 0.36±0.05 0.37±0.11 0.31±0.13 0.36±0.08 0.31±0.13 0.36±0.08 0.48±0.11 0.49±0.12Luxury Beauty0.07 0.27±0.15 0.25±0.08 0.28±0.12 0.35±0.11 0.28±0.12 0.35±0.11 0.35±0.14 0.36±0.13Industrial & Scientific0.12 0.13±0.01 0.14±0.03 0.11±0.02 0.16±0.05 0.11±0.02 0.16±0.05 0.17±0.02 0.21±0.08
+Table 15: MSP/Entropy based OOD detection on SUN397 with lowα= 0.05 ±0.01on three types of novel
+categories
+[water, ice, snow, etc.] [mountains, hills, desert, sky, etc.] [forest, field, jungle, etc.]
+AUROC AUPRC AUROC AUPRC AUROC AUPRC
+With Shift
+MSP 0.57±0.05 0.05±0.01 0.58±0.06 0.05±0.01 0.56±0.05 0.07±0.03
+Entropy 0.58±0.07 0.08±0.04 0.58±0.08 0.07±0.03 0.56±0.07 0.10±0.06
+Without Shift
+MSP 0.59±0.05 0.04±0.00 0.59±0.05 0.05±0.01 0.58±0.07 0.06±0.03
+Entropy 0.59±0.07 0.08±0.02 0.59±0.08 0.08±0.04 0.59±0.10 0.09±0.03
+41
+Table 16: MSP/Entropy based OOD detection on SUN397 with highα= 0.5 ±0.10on three types of novel
+categories
+[water, ice, snow, etc.] [mountains, hills, desert, sky, etc.] [forest, field, jungle, etc.]
+AUROC AUPRC AUROC AUPRC AUROC AUPRC
+With Shift
+MSP 0.52±0.06 0.55±0.05 0.61±0.06 0.28±0.04 0.60±0.08 0.50±0.09
+Entropy 0.52±0.06 0.58±0.05 0.63±0.06 0.45±0.07 0.62±0.09 0.67±0.04
+Without Shift
+MSP 0.59±0.06 0.47±0.04 0.61±0.08 0.27±0.04 0.58±0.08 0.50±0.05
+Entropy 0.59±0.08 0.59±0.07 0.63±0.10 0.41±0.10 0.59±0.10 0.63±0.09
+Table 17: Effect of background shift on Top-1 accuracies of remaining baselines. We do not expect any
+performance reduction of ZOC as it is a zero-shot method that does not utilize source data at all, rendering
+any distribution shift betweenPS and PT irrelevant. Such models are influenced only by target datasets that
+drift from their pretraining datasets.
+Methods w/ DS w/o DS
+BODA (ViT-L/14)0.75±0.130.94±0.00ARPL (custom default)0.75±0.030.91±0.01ZOC (custom default)0.62±0.050.59±0.00ANNA (custom default)0.65±0.040.87±0.01
+Table 18: CoLOR performance for different target recall constraints for the SUN397 dataset with novel
+identity as outdoor scenes from the group [water, ice, snow, etc.] and novel class sizeα = 0 .06 ±0.01
+using ResNet50 model. Note that out of∥α∥novelty detection heads each corresponding to a candidate
+value ˆα∈α, we select the head achieving highest recall in the validation set (argmaxwα
+ˆα:α∈α,ˆβ(wα
+ˆα)<βˆα(wα
+ˆα)).
+Consequently, the reported AUROC, AUPRC and OSCR performance correspond to that selected head.
+Scores of the selected novelty detection head for each seed are highlighted in bold below whereas the highest
+scores amongst all the novelty detection heads for each seed have been underlined. These heads having scores
+underlined were not selected besides having highest scores for a metric, because they simply did not satisfy
+the selection criteria, i.e. their validation recall values were not the highest for the corresponding seed among
+all the novelty detection heads.
+Target RecallValidation Recall across 5 seedsAUROC across 5 seedsAUPRC across 5 seedsOSCR across 5 seedsˆα 0 8 1057103 573 0 8 1057103 573 0 8 1057103 573 0 8 1057103 573
+0.02 0.180.06 0.10 0.08 0.08 0.980.97 0.95 0.990.94 0.930.87 0.87 0.940.43 0.820.82 0.75 0.840.670.05 0.18 0.06 0.00 0.08 0.15 0.99 0.96 0.48 1.00 0.99 0.94 0.82 0.05 0.95 0.95 0.83 0.81 0.25 0.85 0.780.10 0.17 0.02 0.140.06 0.09 0.98 0.82 0.951.00 0.93 0.93 0.13 0.850.96 0.38 0.81 0.66 0.760.85 0.650.15 0.16 0.10 0.01 0.06 0.04 0.99 0.95 0.42 0.99 0.95 0.95 0.80 0.05 0.92 0.64 0.84 0.80 0.23 0.84 0.650.20 0.12 0.120.14 0.05 0.03 0.97 0.970.95 0.99 0.93 0.79 0.900.86 0.94 0.42 0.76 0.850.78 0.84 0.640.25 0.07 0.00 0.07 0.03 0.18 0.99 0.68 0.47 0.98 0.99 0.83 0.08 0.05 0.80 0.97 0.77 0.52 0.27 0.81 0.820.30 0.12 0.01 0.00 0.07 0.00 0.99 0.81 0.44 1.00 0.86 0.92 0.13 0.05 0.95 0.29 0.77 0.65 0.25 0.85 0.610.35 0.11 0.04 0.02 0.01 0.04 0.97 0.81 0.47 0.84 0.83 0.55 0.13 0.05 0.21 0.25 0.74 0.65 0.26 0.69 0.590.40 0.06 0.00 0.09 0.01 0.00 0.94 0.84 0.43 0.87 0.78 0.41 0.16 0.05 0.25 0.18 0.73 0.69 0.23 0.71 0.570.45 0.04 0.00 0.00 0.07 0.00 0.99 0.74 0.54 0.97 0.79 0.89 0.11 0.06 0.82 0.22 0.77 0.58 0.34 0.82 0.57
+42

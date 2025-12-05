@@ -1,0 +1,750 @@
+2025-12-02
+CuES: A Curiosity-driven and Environment-grounded
+Synthesis Framework for Agentic RL
+Shinji Mai∗ Yunpeng Zhai∗ Ziqian Chen Cheng Chen Anni Zou Shuchang Tao
+Zhaoyang Liu† Bolin Ding†
+Tongyi Lab
+ , Alibaba Group
+{shinji, zhaiyunpeng.zyp, eric.czq, chengchen, zouanni.zan, taoshuchang.tsc,
+jingmu.lzy, bolin.ding}@alibaba-inc.com
+Abstract
+Large language model (LLM)–based agents are increasingly deployed in complex, tool-
+augmented environments. While reinforcement learning (RL) provides a principled
+mechanism for such agents to improve through interaction, its effectiveness critically
+depends on the availability of structured training tasks. In many realistic settings,
+however, no such tasks exist—a challenge we term task scarcity, which has become a key
+bottleneck for scaling agentic RL. Existing approaches typically assume predefined task
+collections, an assumption that fails in novel environments where tool semantics and
+affordances are initially unknown. To address this limitation, we formalize the problem of
+Task Generation for Agentic RL, where an agent must learn within a given environment
+that lacks predefined tasks. We proposeCuES, aCuriosity-driven andEnvironment-
+groundedSynthesis framework that autonomously generates diverse, executable, and
+meaningful tasks directly from the environment’s structure and affordances, without
+relying on handcrafted seeds or external corpora. CuES drives exploration through
+intrinsic curiosity, abstracts interaction patterns into reusable task schemas, and refines
+them through lightweight top-down guidance and memory-based quality control. Across
+three representative environments—AppWorld, BFCL, and WebShop—CuES produces
+task distributions that match or surpass manually curated datasets in both diversity
+and executability, yielding substantial downstream policy improvements. These results
+demonstrate that curiosity-driven, environment-grounded task generation provides a
+scalable foundation for agents that not only learn how to act, but also learn what to learn.
+The code is available at https://github.com/modelscope/AgentEvolver/research/CuES.
+1 Introduction
+Large language model (LLM)–based agents are increasingly deployed in complex, tool-augmented
+environments such as graphical user interfaces and open-ended web platforms (Shang et al., 2025; Li et al.,
+2025b). Reinforcement learning (RL) provides a principled mechanism for such agents to improve their
+policies through interaction and feedback (Mai et al., 2025; Lin et al., 2025). However, in many realistic
+environments,no explicit training tasks are available. The agent can interact with the environment, but
+it lacks a structured set of tasks on which it can sample experience and perform RL optimization (Cheng
+et al., 2024; Zhang et al., 2024). As a result, thistask scarcityhas become a major bottleneck for scaling
+RL-based agent learning.
+Existing approaches to agentic RL typically assume that a collection of training tasks is already provided
+(Gao et al., 2024; Yu et al., 2025; Chinta & Karaka, 2020). These assumptions hold in controlled benchmarks
+but fail in novel environments, where tool semantics and affordances are initially unknown. In such
+cases, constructing a sufficiently diverse and executable set of tasks by hand is both costly and brittle,
+and the absence of such tasks leaves the agent without a foundation for effective learning (Zhang et al.,
+2025; Zeng et al., 2025). Consequently, the lack of training tasks—not the lack of algorithms—often limits
+progress in agentic RL(Plaat et al., 2025; Singh et al., 2025; Sapkota et al., 2025).
+To address this fundamental limitation (Shi et al., 2025; Team et al., 2025), we focus on the overlooked
+yet essential setting oftraining an agent within a given environment when no tasks are predefined.
+∗ Equal contribution.
+† Corresponding authors.
+1
+arXiv:2512.01311v1  [cs.AI]  1 Dec 2025
+20
+40
+60Accuracy (%)
+AppWorldWebShopBFCLv3
+LLMQwen2.5 32 BQwen2.5 14 BQwen2.5 7 BQwen3 32 BQwen3 14 BQwen3 8 BCuES 14 B
+28.79
+1.25
+11.76
+45.24
+30.98
+17.76
+33.48%↑
+26.9225.7431.4624.62
+63.5537.81%↑
+39.58
+30.1335.9430.17
+17.7525.69
+43.0017.31%↑
+33.16 39.3040.17
+Figure 1: While performance on benchmarks(AppWorld,WebShop, andBFCLv3) continues to improve
+with larger LLMs, Qwen2.5 14B under the proposedCuESachieves a substantially higher accuracy across
+all benchmarks.
+Specifically, we aim to answer the following question:Given an interactive environment but no predefined
+training tasks, how can an agent autonomously generate diverse, solvable, and useful tasks that enable effective
+policy learning?To this end, we firstformulate and define the task generation problemfor such
+environment-conditioned learning. We conceptualizetask generationas the process of constructing a
+meaningful and solvable set of tasks directly from the environment’s structure and affordances, thereby
+bridging the gap between the environment and the agent’s learning process. This formulation establishes
+task generation as a first-class research problem in the development of self-improving LLM-based agents.
+Building on this formulation, we proposeCuES, aCuriosity-driven andEnvironment-groundedSynthesis
+framework for autonomous task generation. CuES operates without handcrafted seed goals or external
+corpora. It drives the agent to explore the environment under intrinsic curiosity, abstracts discovered
+interaction patterns into reusable task schemas, and refines them using lightweight top-down guidance
+and memory-based quality control. Through this process, CuES generates executable and diverse training
+tasks that are naturally aligned with the agent’s learning needs, thereby enabling continual and scalable
+improvement through RL.
+We evaluate CuES across three representative environments—AppWorld, BFCL, and WebShop—and find
+that the generated tasks match or surpass manually curated datasets in both diversity and executability.
+Moreover, when integrated into RL training, these tasks lead to substantial downstream policy improve-
+ment, demonstrating that curiosity-driven, environment-grounded task generation can effectively replace
+costly human task design.
+Our main contributions are threefold:
+• Problem Formulation.We systematically analyze and formalize the problem ofTask Generation
+for Agentic RL, where an agent must learn within a given environment that lacks predefined
+tasks.
+• Method.We proposeCuES, a curiosity-driven and environment-grounded framework via
+Bottom-Up ExplorationandTop-Down Guidance, which autonomously generates executable
+and diverse training tasks without relying on handcrafted seeds or external data.
+• Empirical validation.Across multiple environments, CuES produces high-quality task distribu-
+tions and strong downstream training performance,confirming the effectivenessof autonomous
+task generation for agentic learning.
+Together, these contributions advance a systematic understanding and practical solution for learning in
+task-scarce environments—toward agents that not only learnhowto act, but also learnwhatto learn.
+2 Related Work
+To address this data scarcity, existing work generally follows two complementary lines.Top-down ap-
+proachesstart from human-written seed goals or LLM proposals and expand them into task instructions.
+2
+This strategy benefits from clear goal specification and controllable semantics, but oftendecouples task
+generation from environment dynamics, producing instructions that look plausible in text yet fail during
+execution(Li et al., 2024; L `u et al., 2024; Lai et al., 2024). In contrast,bottom-up approachesexplore the
+environment first and then abstract tasks from discovered trajectories, ensuring that proposed problems
+are feasible in situ. While this improves executability and behavioral grounding, it typically suffers from
+weak goal alignment, inefficient exploration, and domain-specific heuristics that limit transferability.
+Moreover, the current exploration of bottom-up approaches only targets a few narrow areas such as web
+search, and the implementation is also highly coupled to specific tasks, which makes it difficult to be
+applied in practice(Sun et al., 2024).
+We organize related work into two threads: (i) top-down imitation-based synthesis that mimics existing
+data, (ii) bottom-up exploration that discovers tasks from interaction. CuES sits at the intersection: it is
+goal-free and bottom-up in how tasks emerge from interaction, while injecting lightweight top-down
+guidance via Environment Memory and Concept Pools, and enforcing executability with explicit judging.
+2.1 Top-down imitation-based synthesis: mimicking existing data
+Top-down pipelines typically rely on human-authored tasks or expand a small seed goal set using
+LLMs(Wu et al., 2025; Li et al., 2025a; Tao et al., 2025). Recent web and GUI agents illustrate both the
+promise and the pitfalls of this approach. Systems such as AutoWebGLM (Lai et al., 2024) and WebLINX
+(L `u et al., 2024) operate with explicit high-level goals or dialogue instructions and often imitate patterns
+present in existing benchmarks. While this improves goal clarity, it tends to decouple proposals from
+environment dynamics, leading to low executability when intermediate preconditions are missing or tool
+affordances are misidentified. Empirical analyses show that scale alone does not resolve these issues: UI
+control studies find that simply increasing dataset size does not guarantee coherent, solvable trajectories
+(Li et al., 2024), and self-improvement strategies without grounded verification may propagate subtle
+errors across steps (Patel et al., 2024).
+The core limitations of imitation-based synthesis are twofold. First, dependence on predefined high-level
+tasks restricts scalability and curtails diversity, since the proposal space is ultimately bounded by seed
+goal patterns (Lai et al., 2024). Second, quality is hard to ensure: early-step mistakes or mismatched goals
+can corrupt entire trajectories, yielding incomplete or incoherent data even when text instructions look
+plausible (Li et al., 2024; Patel et al., 2024). These issues form a bottleneck for advancing agents from
+scripted automation to robust autonomy in real environments.
+CuES differs by removing reliance on manual seed goals and decoupling quality from imitation. Tasks
+emerge bottom up from witnessed interactions, then pass through explicit execution and judgment before
+any rewriting. Lightweight top-down signals—requirement confirmation and concept pools—serve
+to shape coverage and reduce wasted exploration, not to prescribe solutions. The result is a synthe-
+sis pipeline that attains the clarity often associated with top-down methods while maintaining the
+executability and groundedness of bottom-up discovery.
+2.2 Bottom-up exploration: discovering tasks from interaction
+Recent research has attempted to synthesize data directly from environmental interactions under specific
+benchmarks, overturning the traditional process of ”specifying the task first, then collecting the trajectory”.
+OS-Genesis (Sun et al., 2024) exemplifies this reversal for GUI agents: an agent first explores the desktop
+and records raw traces, then retrospectively derives high-level tasks from the discovered behaviors,
+filtering trajectories to ensure quality and solvability. By grounding tasks in what the environment
+can actually support, this paradigm improves executability and increases variety relative to task-first
+scripting. These systems highlight a central advantage of bottom-up synthesis: proposals are feasible by
+construction because they originate from witnessed interactions.
+Despite these gains, bottom-up pipelines face key challenges. Without sufficient guidance, exploration
+can drift, producing many trajectories that lack clear purpose or fail midway, which lowers overall
+yield and inflates redundancy (Murty et al., 2024). Moreover, many implementations are tailored to
+specific domains (e.g., GUI/web navigation), raising concerns about cross-domain generalization and
+transferability of the synthesized corpora (Sun et al., 2024). In practice, the absence of simple mechanisms
+to align discovery with desired coverage or stage-specific training needs can lead to substantial ineffective
+exploration and narrow gains outside the source domain.
+CuES preserves the executability benefits of bottom-up discovery while addressing these limitations. It
+remains goal-free and interaction-driven but introduces requirement confirmation and concept pools
+to softly aim exploration toward salient regions of the environment without prescribing exact tasks.
+An environment-indexed memory stores compact state–action sketches, enabling the system to revisit
+informative frontiers and avoid redundant loops. Crucially, only validated successes proceed to rewriting,
+3
+Curious ExplorationTask AbstractionQuality ControlGoal RewriteRequirement ConfirmInformationTrajectoryTask Valid Task
+1. Go right2. Go upstairs3. Go upstairs4. Get treasure
+Guideline 
+QueryGet
+Task Agent
+1. Go right2. Go upstairs3. Go upstairs4. Get treasure
+Guideline 
+QueryGet
+Execute AgentEnvironment
+Can it be successfully re-execute?
+1. Go right2. Climb ladder3. Go right4. Get treasure
+Guideline 
+QueryGet
+In this environment, there are already two tasks: exploring trap locations and exploring monster locations.
+Task Memory
+Current Window
+1. Go right2. Go upstairs
+1 234
+3. Go upstairs4. Get treasure
+Exploration Trajectory 
+1. Go upstairs2. Climb up3. Climb downCandidate actions
+Visited stateUnvisitedstateInitstate
+Environment Memory Tree
+1. Valid Movement: Only moving on ladders or platforms is allowed.2. Repeat Penalty: Repeated back and forth movement.3. Ending Decision: Arrival at endings.
+Principles
+Concept Pool
+Target
+monster
+trap
+treasure
+treasure
+Environment
+Exploration Agent
+Information
+Prompt
+…
+Valid TaskInvalid Task
+…Trajectory
+Figure 2: CuES pipeline. (a) Requirement Confirm constructs the concept pool ˜C and principlePby
+extracting concepts from the environment description Tdes and seed goals Gseed and filtering them with
+the user need U. (b) Curious Exploration executes candidate actions conditioned on (P, Gseed ), consults
+the environment memory tree to prioritize unseen actions, and emits triples(s, a, o) (eq.4.2) as exploration
+trajectories. (c) Task Abstraction groups consecutive triples within a batch into executable goals with
+guidelines. (d) Quality Control re-executes each goal. (e) Goal Rewrite progressively exposes guideline
+hints in the goal text to lower difficulty.
+which broadens surface diversity while keeping the underlying behaviors executable.
+3 Formulation
+We consider the problem of enabling an LLM-based agent to learn in complex, interactive environments
+without access to predefined task distributions. To differentiate our setting from conventional RL, we
+introduce aninteraction sandboxthat specifies the observable state space, the executable action space, and
+transition dynamics, while deliberately omitting any predefined reward function or task objective.
+Interaction sandbox.Formally, the sandboxed environment is
+E= (S,A,P), (1)
+where S denotes the set of observable states, A the set of executable actions, and P(s ′ |s , a) the transition
+probability distribution. In contrast to a standard Markov Decision Process Emdp = (S, A, P, r, γ), the
+sandbox E omitsthe reward function, characterizing an open-ended and non-rewarded environment in
+which the agent must autonomously formulate learning signals and objectives.
+Target objective.Let g∈G ⊆Sdenote a desired terminal state or outcome, and ptarget(g) the (unknown)
+target goal distribution. For each g, Rg(s, a) is a goal-specific reward (unknown during training). Starting
+froms 0 ∼p 0, a goal-conditioned policyπ θ(a|s,g)aims to maximize
+Jtarget(θ) =Eg∼ptarget,s 0∼p0 [Vπθ (s0,g) ] ,V πθ (s0,g) =E
+"
+∞
+∑
+t=0
+γt Rg(st,a t)
+ s0,g,π θ
+#
+. (2)
+Becausep target andR g are unavailable during training, directly optimizingJ target is infeasible.
+Proxy goals.We induce atrainablegoal distribution from the environment by defining the task mapping
+Ftask :E →∆(G), wherep train =F task(E), (3)
+We then optimize the proxy objective onp train:
+Jtrain(θ) =Eg∼Ftask(E) [Vπθ (s0,g) ] , (4)
+which serves as theProxy Objective for Environment-Conditioned Agentic Learning.
+4
+Task mapping Design. Ftask fixes ptrain and thus the learning signal; to make Jtrain informative for Jtarget,
+we shapeF task along three requirements:
+• Executabilityensures proposed goals are admissible and terminate in recognizable outcomes;
+this suppresses noisy supervision and stabilizes updates.
+• Diversityspreads probability mass across distinct entities, actions, and constraints; this enlarges
+support and mitigates collapse to easy templates.
+• Relevancekeeps synthesized goals close in semantics and difficulty to the intended evaluation
+targets; this prevents drift toward off-topic but easy objectives.
+Taken together, these three requirements turn Ftask into a principled mapper that yields proxy goals
+which are valid (executability), broad (diversity), and faithful to evaluation (relevance). This improves
+stability, coverage, and transfer of the learning signal.
+4 Method
+Under the formulation, we clearly defined the Proxy Objective for Environment-Conditioned Agentic
+Learning, and we found that the most important core task mapping Eq. (3) limited Agentic Learning.
+Therefore, we need to implement the mappingF task to close the loop between data and policy.
+We operationalize Ftask viaCuES, aCuriosity-driven andEnvironment-grounded framework for agentic
+dataSynthesis mapping in goal-free or limited goal environments:
+Ftask :E,(T des ,T req,G seed ) CuES− − − → Gsynthesis, (5)
+where E is anExecutable environment including a finite tool set in CuES. Tdes is a structuredText of
+environmentdescription, Treq is an optionalText of userrequirement, and Gseed is an optionalseed-goal
+set.
+Based on the analysis and derivation in the formulation, implementing Ftask also requires the design rules
+of Executability, Diversity, and Relevance mentioned in Sec. 3. As illustrated in Fig. 2, CuES generates
+tasks withExecutability,Diversity, andRelevancethrough a five-stage design process.
+4.1 Requirement Confirmation
+To securerelevanceat the outset, before the agent begins exploring, it must build a structural under-
+standing of the environment, including the entities, the actions, and the admissible interactions under
+given constraints. Without this grounding, curiosity drifts into random or redundant behaviors that are
+executable but off target, weakening relevance. Therefore, CuES introduce Requirement Confirmation
+stage.
+As shown in Fig. 2(a), the requirement confirmation stage takes three inputs: an environment description
+Tdes , an optional filter agent U based on user requirement Treq, and an optional seed goal set Gseed . This
+also demonstrates a major advantage of CuES. Seed goal set is required for almost all synthesis methods,
+but in CuES, seed goal set and other requirements, including user requirement, are not mandatory and
+are not provided by default. They are only provided when users are only concerned with the use of a
+certain type of tool and want to provide strong constraints to improve exploration efficiency. Requirement
+confirmation stage produces two outputs: aconcept pool ˜C, which grounds subsequent exploration, and
+a set ofactionable principlesP, which is extracted by principle agent through environment description
+and concept pool and specify output schema and highlight priority actions. Both outputs are passed
+forward to guide the next stage.
+To initialize exploration, we construct a preliminary concept pool by combining concepts extracted from
+the environment and from the seed set:
+˜C=U (Φ(Tdes )∪Φ(G seed )). (6)
+Here, Φ(Tdes ) identifies entities and affordances from Tdes (e.g., categories, tools, admissible actions),
+while Φ(Gseed ) extracts noun phrases and action predicates when Gseed is provided. When filter agent
+U is specified, it filters the pool to obtain the final concept set; otherwise, the preliminary pool remains
+unchanged. Detailed examples refer to Fig.2(a).
+PrinciplesPare carried forward into the next stage’s prompt to specify the desired output format and
+to highlight the main action families to explore, while ˜C anchors exploration in the entities and actions
+admissible in the environment.
+5
+4.2 Curious Exploration
+Before meaningful task patterns can emerge, the agent must actively explore to reveal new state–action
+paths that are truly solvable. Random or unguided search quickly becomes inefficient, revisiting similar
+states and missing unseen affordances, which lowersdiversity. Thus, Curious Exploration stage is
+necessary.
+As shown in Fig.2(b), given the top-down gate formed by the principlesPand the concept pool ˜C, Curious
+Exploration stage conducts bottom-up interaction with an Explorer Agent that, at each state st, receives
+only the currently executable candidate actions A(st), together withPand a small, randomly sampled
+subset of concepts ˜Ct ⊂ ˜C.
+To avoid redundant exploration and preserve local know-how, we maintain an environment-indexed
+memory that reuses what was tried before. The key idea is simple: distinguish environments by an
+identifier env id, store the trajectories collected under each identifier together with concise summaries,
+and, upon re-entering the same identifier, retrieve these summaries to guide action selection.
+Letebe the environment identifierenv idextracted from the current environment states. We define the
+memory tree as
+M={(e,B e)},B e ={Summ(τ):τ∈ T e }, (7)
+where Te is the multiset of trajectories collected when env id=e , and Summ(·) compresses a trajectory
+τ= (s0, a0, o0, . . ., sT) into a lightweight record (e.g., executed actions, success/failure flags, brief outcome
+snippets, and counts).
+The Explorer queries an environment memory tree M using the current environment identifier st retriev-
+ing the set of actionsM(s t)previously executed at states similar tos t.
+The Explorer then decides at ∈ A(st), with a preference for actions not yet attempted at the local memory
+node (i.e.,a/∈M(s t), while taking into account the priorities expressed byPand the active concepts ˜Ct.
+After executing at, the environment returns an observation ot. The memory tree is updated at node ϕ(st)
+to record the attempt and its outcome via a compact sketch:
+M(st)←M(s t)∪ {at}(8)
+The Explorer emits a triple per step,
+zt = (st,a t,o t), (9)
+and the exploration trajectory is the sequence {zt}T
+t=0. These concept-aware, memory-informed trajecto-
+ries are forwarded to the next stage task abstraction in the pipeline, where low-level interactions are lifted
+into reusable task specifications while preserving the executability demonstrated during exploration.
+4.3 Task Abstraction
+After exploration produces a collection of raw interaction trajectories, the next challenge is to transform
+these low-level stepwise records into meaningful, reusable training tasks, which ensures thediversity
+andexecutabilityof the task. Refer to Fig.2(c), Task Abstraction stage takes aconsecutivemini-batch of
+exploration triples and lifts one or more multi-step tasks from it. Let a batch be
+n
+{(st,a t,o t)}i+B−1
+t=i
+ i∈ {1, 1+B, 1+2B, . . .}
+o
+, (10)
+where B=batch size denotes the sliding-window length. Each triple consists of the step state st, the
+executed action at, and the resulting observation ot. Rather than extracting a goal from every triple, we
+considercontiguous segmentsinside the batch.
+For each batch starting at tk, we then enumerate all consecutive subsegments within it, { [i:j] | tk ≤i<
+j≤t k+B−1 }, where each [i:j] corresponds to a contiguous slice of triples. For a candidate segment [i:j],
+Task Agent extracts a new goal valid action sequencezi:j which is also calledguidelineand executable goal
+gi:j which is a natural-language rendering of zi:j . For LLM judge, Directly judging whether a trajectory is
+correct and giving a reward close to Rg is too difficult, guideline is used to assist in the determination. It
+will be used as ˆRg =R(g i:j ,z i:j )to estimateR g.
+Each candidate (gi:j , zi:j ) receives a confidence σi:j ∈[ 0, 1] that reflects internal consistency of the ac-
+tion–effect chain, clarity of the goal, and alignment with current principles and concepts. We keep those
+Gthat pass the threshold.
+6
+Find and follow all reggae artists on Spotify with at least 21 followers.#step0passwords = apis.supervisor.show_account_passwords()spotify_password = next(p[\"password\"] for p in passwords if p[\"account_name\"] == \"spotify\")login_result = apis.spotify.login(username=\"morgan-harrison@gmail.com\", password=spotify_password)access_token = login_result[\"access_token\"]#step1print(apis.api_docs.show_api_descriptions('spotify’))#step2print(apis.api_docs.show_api_doc(app_name='spotify', api_name='search_artists'))# step3genres = apis.spotify.show_genres(access_token)#step4reggae_artists = []page_index = 0while True:result = apis.spotify.search_artists(query=\"reggae\", page_index=page_index, access_token=access_token)if not result: Breakfor artist in result: if artist[\"follower_count\"] >= 21: reggae_artists.append(artist)page_index += 1# step5for artist in reggae_artists: apis.spotify.follow_artist(artist_id=artist[\"artist_id\"], access_token=access_token)#step6apis.supervisor.complete_task()
+How many people follow the artist of the currently playing song on Spotify?#step0print(apis.spotify.login(username="allison-calhoun@gmail.com", password=spotify_password))#step1print(apis.spotify.get_now_playing(access_token=spotify_access_token))#step2print(apis.api_docs.show_api_descriptions(app_name="spotify"))#step3print(apis.api_docs.show_api_doc(app_name="spotify", api_name="show_current_song#step4print(apis.spotify.show_current_song(access_token=spotify_access_token))#step5print(apis.api_docs.show_api_doc(app_name="spotify", api_name="show_artist"))#step6print(apis.spotify.show_artist(artist_id=artist_id))#step7print(apis.supervisor.complete_task(answer=artist_details["follower_count"]))
+Validation set sampleSynthetic sample
+(a) AppWorld
+Perform a full vehicle diagnostic check and interact with key systems including locking doors, testing brakes, and adjusting climate control.# step0displayCarStatus(option='engine’)# step1displayCarStatus(option='fuel’)# step2check_tire_pressure()# step3displayCarStatus(option='battery’)# step4displayCarStatus(option='doors’)# step5lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right’])# step6displayCarStatus(option='headlights’ )# step7setHeadlights(mode='on’)# step8displayCarStatus(option='climate’)# step9adjustClimateControl(temperature=22, fanSpeed=60, mode='auto’)# step10displayCarStatus(option='parkingBrake’)# step11pressBrakePedal(pedalPosition=0.5)# step12releaseBrakePedal()# step13activateParkingBrake(mode='engage')",
+What‘s the name of the python file my current directory? There should be only one and Do not list hidden files.# step0ls(a=False)Use grep to find out the name of the function of the script.# step1grep(file_name='deploy.py', pattern='def ‘)And while we're diving into the deployments, let's pinpoint every mention of 'update' in this script and jot those lines down for scrutiny.# step2grep(file_name='deploy.py', pattern='update’)Once that's sewn up, it'd be helpful to buzz Catherine with the first update you have found, with message 'update the system'. If you need, my user_id is 'USR002’.# step3send_message(receiver_id='USR003', message='update the system’)Could you double check if the message is sent?# step4view_messages_sent()
+Validation set sampleSynthetic sample (b) BFCL v3 Multi-Turn Base
+Figure 3: Original (left) vs CuES-synthesized (right) data for AppWorld and BFCL v3 Multi-Turn Base.
+To avoid redundancy, for each environment identifier we maintain a memory list of previously generated
+goals. When proposing a new goal, we form a context and supply during goal generation so that
+duplicates are explicitly flagged as already generated.
+4.4 Quality Control
+Even after abstraction, not all synthesized tasks are guaranteed to be executable—some may contain
+invalid actions, incomplete goals, or inconsistencies between intent and behavior. Training on such noisy
+or unverified data would undermine the reliability of downstream learning. In Fig.2(d), Quality Control
+stage verifies theexecutabilityof each synthesized task using two agents. Let the input be the candidate
+set from task abstraction {(g k, zk}N
+k=1}, where gk is a natural-language goal, zk = [aik , . . ., ajk ] is the
+associated action guideline extracted from a contiguous segment.
+Execution Agent receives (gk, zk) and attempts to carry out the task in environment E, following the
+guideline actions in order while allowing minimal, environment-dependent deviations. The attempt
+yields an execution trace ((˜s0, ˜a0, ˜o0), . . ., (˜sTk , ˜aTk , ˜oTk )) with terminal observation. The trace, together
+with local outcomes (success messages, view changes), is returned for judgment.
+Judge Agent checks both goal satisfaction and path faithfulness and verifies that the observed actions
+respect the principlesPand guideline up to allowable, environment-specific insertions (for example, a
+short detour to grant permission). A candidate isacceptedifreward=1.0 andrejectedotherwise.
+For accepted tasks, we log both the successful goal and its execution trajectory, so that subsequent stages
+and future explorations have access to validated problem statements and their witnessed solutions.
+Rejected candidates are filtered out and do not proceed further. Only the accepted set Goriginal flows to
+goal rewrite) stage, ensuring that downstream diversification operates exclusively on tasks that have
+been explicitly executed to completion under their accompanying guidelines.
+(a) APPWORLD
+ (b) WEBSHOP
+ (c) BFCLV3 MULTI-TURNBASE
+Figure 4: Distribution comparison per environment.
+7
+Table 1: Model performance (%) on three interactive environments usingavg@8andgreedyunder the
+no-think and prompt configuration of Qwen2.5 and Qwen3
+Model Params AppWorld WebShop BFCLv3 Avg.
+avg@8 greedy avg@8 greedy avg@8 greedy avg@8 greedy
+Qwen2.5 3B 0.00% 0.23% 20.65% 23.94% 6.94% 7.00% 9.20% 10.39%
+Qwen2.5 7B 1.25% 1.87% 24.62% 22.07% 17.75% 20.00% 14.54% 14.65%
+Qwen2.5 14B 11.76% 14.29% 25.74% 23.74% 25.69% 31.50% 21.06% 23.18%
+Qwen2.5 32B 33.16 % 34.73 % 40.17 % 39.80 % 30.17% 30.50% 34.50% 35.01%
+Qwen3 4B 3.00% 3.25% 33.72% 33.17% 9.94% 10.00% 15.55% 15.47%
+Qwen3 8B 17.76% 21.43% 26.92% 30.01% 30.13% 27.50% 17.81% 19.98%
+Qwen3 14B 30.98% 28.48% 31.46% 30.70% 35.94% 30.70% 32.79% 29.96%
+Qwen3 32B 28.79% 32.12% 39.30% 36.69% 39.58 % 41.00 % 35.89 % 36.60 %
+CUES (ours) 14B 45.54% 45.24% 63.55% 64.10% 43.00% 44.15% 50.70% 51.16%
+4.5 Goal Rewrite
+Even after verification, the accepted tasks may vary greatly in complexity, making them unevenly useful
+for training. Some goals are overly concise or abstract, offering limited guidance for early-stage learning,
+while others are too detailed to challenge advanced policies. To build a balanced and curriculum-friendly
+dataset, we introduce the Goal Rewrite stage, which systematically adjusts task difficulty to ensure
+diversityandrelevanceby revealing the guideline portion into the goal.
+Ref to Fig. 2(e), the rewrite stage operates on the accepted set
+Goriginal = {(gk,z k)}N
+k=1.
+We use a rewrite-depth hyperparameter L shared by all goals. For each (gk, zk), let Γk be a pool of
+rewrite hints distilled from zk (e.g., action verbs, intermediate landmarks/views, parameter exemplars,
+precondition CuES). We generate a chain of exactlyLsteps:
+g(0)
+k =g k,g (1)
+k , . . . ,g (L)
+k ,
+via
+g(ℓ+1)
+k =AddHints (g(ℓ)
+k ;∆Γ (ℓ)
+k ),∆Γ (ℓ)
+k ⊆Γ k,∆Γ (ℓ)
+k ̸=∅,ℓ=0, . . . ,L−1. (11)
+Every goal is rewritten for exactlyLsteps under the same cap. Finally,
+Gsynthesis =
+n
+(g(ℓ)
+k ,z k):k=1, . . . ,N,ℓ=0, . . . ,L
+o
+. (12)
+5 Experiments
+5.1 Experimental Setup
+200
+400
+600Count
+AppWorldWebShopBFCLv3
+90
+625
+0
+689 618
+0
+Original Train SetSynthesis Train Set
+Figure 5:Comparison of original
+and CuES-synthesized data.
+We evaluate CuES on three interactive environments: AppWorld,
+WebShop, and BFCL v3 Multi-Turn Base. For each environment,
+we report the size of the original data and the amount synthesized
+by CuES under a matched interaction budget, alongside a brief de-
+scription of the core task. Unless otherwise noted, we use the same
+runtime across environments: model name = qwen-plus-latest,
+temperature = 0.7, max tokens = 20480; Curious Exploration Stage
+(4.2) rollout count = 500 with up to 30 steps per rollout; Stage
+Task Abstraction (4.3) uses batch size = 30 and min confidence
+= 0.7; Stage Quality Control (4.4) attempts up to 30 steps with
+retry attempts = 3; the environment service has a 30s timeout and
+30-step cap.
+For more information about the dataset, ref to Fig.5. For bench-
+marks that include validation sets, such as BFCL v3 and Web-
+Shop, we use the validation set directly. For AppWorld, we use
+test normal set as the test set. The reported results are equivalent
+to the TGC indicator on the leaderboard. In Fig.3, we also show samples of synthetic data and validation
+set data on the AppWorld and BFCL v3 datasets. It can be seen that the quality of our synthetic data is
+comparable to the original data, and we can synthesize more difficult data by adjusting the parameters.
+8
+5.2 Performance Comparison
+We compare CuES with representative baselines (Grattafiori et al., 2024; Guo et al., 2024; Yao et al., 2023)
+on APPWORLD, WEBSHOP, and BFCLV3 MULTI-TURNBASEunder the metrics ofgreedy.
+Table 2: Results onAppWorld LeaderBoard.
+Model Think LLM Params greedy
+FullCodeRefl✗GPT-4o / 33.9%
+FullCodeRefl✗GPT-4 Turbo / 25.6%
+FullCodeRefl✗LLaMA3 70B 24.4%
+FullCodeRefl✗DeepSeekCoder 33B 13.1%
+ReAct✗GPT-4o /48.8%
+ReAct✗GPT-4 Turbo / 26.8%
+ReAct✗LLaMA3 70B 7.1%
+ReAct✗DeepSeekCoder 33B 20.8%
+PlanExec✗GPT-4o / 44.6%
+PlanExec✗GPT-4 Turbo / 32.7%
+PlanExec✗LLaMA3 70B 8.9%
+PlanExec✗DeepSeekCoder 33B 1.8%
+CuES (ours) ✗ Qwen2.5 14B 45.24%
+In Table 2, 3 and 4, we compare CUES against recent baselines on AppWorld, WebShop, and BFCL v3
+Multi-Turn Base. We reportavg@8andgreedyunder the no-think and prompt configurations of Qwen2.5
+and Qwen3. Since the baseline performance of the Qwen3 series on the BFCL v3 was lower than expected,
+we report the baseline results of Qwen3 under the thinking mode on the BFCL v3. On AppWorld, CUES
+attains 45.24% greedy, which closes to that of the closed-source GPT-4o. The gain is most pronounced
+on WebShop, where CUES reaches 64.10% greedy versus 50.96% for qwen3-235b-a22b. On BFCL v3
+Multi-Turn Base, CUES achieves 44.15% greedy, edging out o3 at 44.0%. Looking at 1, CUES delivers a
+macro-average of roughly 51.2% greedy and 50.7% avg@8 across the three datasets, substantially higher
+than same-scale non-CUES backbones. These results indicate that environment-grounded synthesis with
+light top-down steering translates into consistent single-path and sampled execution gains across diverse
+domains. Notably, even when compared with models that have far more parameters or closed-source
+model than CUES (e.g., DeepSeek-V3(Liu et al., 2024), GPT-5, o3(Achiam et al., 2023) and Gemini-2.5
+Pro(Comanici et al., 2025)), CUES still outperforms by a large margin, underscoring the impact of our
+synthesis rather than raw scale.
+We also observe that CUES improves performance even under format shift on BFCL v3 Multi-Turn Base,
+where evaluation involves multi-turn follow-ups that do not strictly match the form of our synthesized
+goals. Despite this mismatch, CUES maintains a positive edge on greedy success, suggesting that the
+synthesized pool emphasizes executable, transferable intents rather than overfitting to any one prompt
+style.Together, these findings support the claim that bottom-up exploration anchored by a concept
+pool and requirement confirmation can raise executability and coverage in ways that persist across
+backbones, scales, and interaction protocols.
+5.3 Hyperparameter Ablations and Distribution Analysis
+For different benchmarks, we observed different changes in synthetic-quality with different settings. We
+believe that this may be closely related to the tasks. We selected the two benchmarks with the largest
+differences.
+Approximate metrics.Let X={x i} be TF–IDF+SVD embeddings oforiginal/targetintents and Y={y i}
+embeddings ofsynthesizedintents; all vectors are ℓ2-normalized so that ⟨xi, xj⟩ and ⟨yi, yj⟩ equal cosine
+similarity. We measure executability, diversity, and relevance by:
+PR= |Gpass|
+|G| , SR@k= 1
+|Y| ∑
+i
+1
+k ∑
+j∈kNNY (i)
+⟨yi,y j⟩, ED rel = ED(X,Y)
+Ei̸=i′ ∥xi −x i′ ∥2
+. (13)
+Here kNNY(i)are theknearest neighbors ofy i inYunder cosine distance. The energy distance is
+ED(X,Y) = 2
+|X||Y|
+|X|
+∑
+i=1
+|Y|
+∑
+j=1
+∥xi −y j∥2 − 1
+|X|2
+|X|
+∑
+i=1
+|X|
+∑
+i′=1
+∥xi −x i′ ∥2 − 1
+|Y|2
+|Y|
+∑
+j=1
+|Y|
+∑
+j′=1
+∥yj −y j′ ∥2. (14)
+Intuitively, higher PR indicates valid, verifiable goals; lower SR@k indicates non-redundant coverage;
+lower EDrel indicates distributional alignment to the target.
+Ref to 5, We assess synthesis quality with sentence embedding. It is worth noting that the step in the
+table here refers to the step generated by Quality Control re-executes. Executability is measured by Pass
+9
+Table 3: Results onWebShop LeaderBoard.
+Model Think LLM Params greedy
+qwen3-14b✗Qwen3 14B 30.70%
+qwen3-8b✗Qwen3 8B 30.01%
+qwen3-4b✗Qwen3 4B 33.17%
+qwen3-235b-a22b✗Qwen3 235B-A22B 50.96%
+deepseek-v3✗Deepseek / 26.91%
+qwen2.5-3b-instruct✗Qwen2.5 3B 23.94%
+qwen2.5-7b-instruct✗Qwen2.5 7B 22.07%
+qwen2.5-14b-instruct✗Qwen2.5 14B 23.74%
+CuES (ours) ✗ Qwen2.5 14B 64.10%
+Table 4: Results onBFCL v3 Multi-T urn Base LeaderBoard.
+Model Think LLM Params greedy
+GPT-5✗OpenAI / 33.5%
+GPT-5-mini✗OpenAI / 31.5%
+Gemini-2.5-Pro✔Gemini / 35.0%
+Gemini-2.5-Flash✔Gemini / 36.0%
+GPT-5-nano✗OpenAI / 33.5%
+Amazon-Nova-Lite-v1:0✗Amazon / 29.0%
+o3✔OpenAI o3 / 44.0%
+DeepSeek-V3✗DeepSeek / 43.5%
+GPT-4o-mini✗OpenAI / 43.5%
+Amazon-Nova-Pro-v1:0✔Amazon / 42.5%
+CuES (ours) ✔ Qwen2.5 14B 44.2%
+Rate, diversity by Self-Redundancy overknearest neighbors, and distributional alignment by a relative
+energy distance between original and synthesized intent embeddings.
+On APPWORLD, higher confidence improves executability with small costs to diversity and alignment.
+Raising the threshold from 0.7 to 0.9 lifts PR from 0.6159 to 0.6733, while SR and ED change only slightly
+and the average step count falls from 7.65 to 6.84. Larger batches are effective: batch 50 reaches PR
+0.7239 with controlled SR 0.6405 and ED 0.0385, outperforming batch 10 on PR while keeping alignment
+competitive. Extending the rollout depth from 20 to 40 steps increases PR to 0.6596 and reduces ED to
+0.0438.
+WEBSHOPfavors tighter alignment through smaller batches and shorter rollouts, while still gaining
+executability when needed.With min conf at 0.7, batch 10 improves ED to 0.0908 and reduces steps
+to 5.32 compared with batch 50, though PR is lower at 0.1354 versus 0.1064 for batch 50 the alignment
+gain is clear. Shorter rollouts also help alignment: max steps 20 attains ED 0.0899 and Step 4.91, whereas
+max steps 40 raises PR to 0.1475 with a mild ED increase to 0.0945 and a higher step cost. Enabling the
+concept pool strongly boosts PR from 0.1667 to 0.2111 and lowers SR from 0.6780 to 0.5571, yet shifts ED
+upward to 0.3429, reflecting targeted exploration toward salient subspaces.
+These conclusions indicate that the design of CuES conforms to the Sec.3 guiding Ftask . CuES performs
+well in terms of Executability, Diversity, and Relevance under different benchmarks and hyperparameters.
+Table 5: Synthesis-quality ablation with metrics.
+Setting AppWorld WebShop
+min conf batch max steps Pool PR SR ED Step PR SR ED Step
+0.7 30 30✗0.6159 0.6477 0.0442 7.6500 0.1667 0.6780 0.1213 7.7812
+Varying min confidence (batch=30, max steps=30, Req+Pool)
+0.5 30 30✗0.5868 0.6653 0.0450 7.8979 0.1481 0.6668 0.1143 8.6786
+0.9 30 30✗0.6733 0.6622 0.0467 6.8415 0.1040 0.6772 0.1101 9.7619
+Varying batch size (min conf=0.7, max steps=30, Req+Pool)
+0.7 10 30✗0.63590.69030.0369 7.1637 0.13540.72400.0908 5.3191
+0.7 50 30✗0.72390.6405 0.0385 7.7474 0.1064 0.6864 0.1129 7.6500
+Varying max steps (min conf=0.7, batch=30, Req+Pool)
+0.7 30 20✗0.6439 0.6105 0.0480 7.2000 0.1196 0.6507 0.0899 4.9090
+0.7 30 40✗0.6596 0.6136 0.04387.97410.1475 0.6897 0.094510.5938
+Requirement / Concept Pool toggles (min conf=0.7, batch=20, max steps=30)
+0.7 30 30 ✔ 0.6642 0.6479 0.0506 7.7184 0.2111 0.5571 0.3429 7.3934
+10
+(a) Similarity distribution across datasets.
+ (b) Step of guideline distribution across datasets.
+Figure 6:Distributions of similarity and step count across datasets.(Left) The similarity distribution
+reveals that AppWorld and BFCL v3 exhibit higher average cosine similarity compared to WebShop,
+suggesting more internally coherent samples. (Right) The step distribution indicates distinct task
+complexity patterns across environments, with WebShop containing longer interaction chains on average.
+Together, these distributions highlight the diversity and varying difficulty of the evaluation environments
+used in this study.
+5.4 Visualization of Synthesized and Original goals
+Figure 4 shows t-SNE projections of sentence embeddings for original and CUES-synthesized goals on
+AppWorld, WebShop, and BFCL v3. In AppWorld, the synthesized cloud envelops the sparse original
+points with nearly coincident centroids and small drift, indicating that CUES expands coverage around
+existing intent modes while remaining aligned. BFCL v3 exhibits the strongest agreement, with tightly
+interleaved clouds and very low relative energy distance, reflecting close intent matching. WebShop
+presents a deliberate shift: the synthesized cloud moves below the original cluster and ED rel increases,
+while self-redundancy decreases, revealing broader variety than the original set, which was concentrated
+in a narrow region.
+We complement the plots with concise qualitative samples. On both benchmark, the synthetic sample
+showed better quality and diversity than the original sample.Ref to Fig.3, in AppWorld, CUES surfaces
+executable workflows in the Spotify domain (login, enumerate genres, filter artists, follow), making
+affordances explicit and explaining the low drift and high pass rate. In BFCL v3, synthesized tasks
+articulate multi-system checks (vehicle states, controls, and brief terminal interactions), demonstrating
+precise tool grounding consistent with the tight embedding overlap.
+Figure 6 visualizes the distribution of maximum cosine similarity and step between each synthesized goal
+and the closest seed string. CuES preserves proximity to seeds in AppWorld and BFCL while expanding
+into novel regions; in WebShop it intentionally broadens coverage beyond a narrow seed cluster. And the
+overall distribution maintains a certain distance from the validation set.
+6 Conclusion
+We introduce CUES, a curiosity-guided, environment-grounded synthesis framework that unifies bottom-
+up exploration with top-down guidance to generate high-quality, executable agent data in goal-free
+settings. Unlike prior methods that either decouple tasks from environment dynamics or drift under un-
+constrained exploration, CUES integrates lightweight top-down guidance—via requirement confirmation
+and concept pools—with bottom-up discovery powered by environment memory and intrinsic curiosity,
+yielding diverse yet solvable trajectories while sharply reducing ineffective exploration.Experiments
+on AppWorld, WebShop, and BFCL v3 show that CUES-synthesized data not only match but surpass orig-
+inal datasets, outperform strong baselines by an average of over 30 points on avg@8 and greedy metrics,
+and remain effective even against models with far larger parameter scales. These results demonstrate that
+curiosity-driven bottom-up synthesis, when coupled with minimal but strategic top-down control, tying
+executability, diversity, and distributional alignment to controllable hyperparameters, provides a scalable
+recipe for robust agent training in real environments. We view this top-down–meets–bottom-up design
+as a step toward reliable agent training corpora that adapt across domains and interaction protocols, and
+as a foundation for future on-policy synthesis and environment-specific reward modeling.
+11
+References
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report.
+arXiv preprint arXiv:2303.08774, 2023.
+Kanzhi Cheng, Qiushi Sun, Yougang Chu, Fangzhi Xu, Yantao Li, Jianbing Zhang, and Zhiyong Wu.
+Seeclick: Harnessing gui grounding for advanced visual gui agents. InProceedings of the 62nd An-
+nual Meeting of the Association for Computational Linguistics (ACL), pp. 9313–9332, Bangkok, Thai-
+land, 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.505. URL
+https://aclanthology.org/2024.acl-long.505/.
+Purna Chandra Rao Chinta and Laxmana Murthy Karaka. Agentic ai and reinforcement learning: Towards
+more autonomous and adaptive ai systems.Journal for Educators, Teachers and Trainers https://jett. labosfor.
+com/index. php/jett/article/view/2699, 2020.
+Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit Dhillon,
+Marcel Blistein, Ori Ram, Dan Zhang, Evan Rosen, et al. Gemini 2.5: Pushing the frontier with
+advanced reasoning, multimodality, long context, and next generation agentic capabilities.arXiv
+preprint arXiv:2507.06261, 2025.
+Dawei Gao, Zitao Li, Xuchen Pan, Weirui Kuang, Zhijian Ma, Bingchen Qian, Fei Wei, Wenhao Zhang,
+Yuexiang Xie, Daoyuan Chen, et al. Agentscope: A flexible yet robust multi-agent platform.arXiv
+preprint arXiv:2402.14034, 2024.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of
+models.arXiv preprint arXiv:2407.21783, 2024.
+Daya Guo, Qihao Zhu, Dejian Yang, Zhenda Xie, Kai Dong, Wentao Zhang, Guanting Chen, Xiao Bi,
+Yu Wu, YK Li, et al. Deepseek-coder: When the large language model meets programming–the rise of
+code intelligence.arXiv preprint arXiv:2401.14196, 2024.
+Hanyu Lai, Xiao Liu, Iat Long Iong, Shuntian Yao, Yuxuan Chen, Pengbo Shen, Hao Yu, Hanchen
+Zhang, Xiaohan Zhang, Yuxiao Dong, and Jie Tang. Autowebglm: A large language model-based
+web navigating agent. InProceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining, pp. 5295–5306, Barcelona, Spain, 2024. doi: 10.1145/3637528.3671620. URL https:
+//dl.acm.org/doi/10.1145/3637528.3671620.
+Kuan Li, Zhongwang Zhang, Huifeng Yin, Liwen Zhang, Litu Ou, Jialong Wu, Wenbiao Yin, Baixuan Li,
+Zhengwei Tao, Xinyu Wang, et al. Websailor: Navigating super-human reasoning for web agent.arXiv
+preprint arXiv:2507.02592, 2025a.
+Wei Li, William E. Bishop, Alice Li, Christopher Rawles, Folawiyo Campbell-Ajala, Divya Tyama-
+gundlu, and Oriana Riva. On the effects of data scale on ui control agents. InNeurIPS 2024 Datasets
+and Benchmarks Track, 2024. URL https://proceedings.neurips.cc/paper files/paper/2024/file/
+a79f3ef3b445fd4659f44648f7ea8ffd-Paper-Datasets and Benchmarks Track.pdf.
+Zhong-Zhi Li, Duzhen Zhang, Ming-Liang Zhang, Jiaxin Zhang, Zengyan Liu, Yuxuan Yao, Haotian Xu,
+Junhao Zheng, Pei-Jie Wang, Xiuyi Chen, et al. From system 1 to system 2: A survey of reasoning large
+language models.arXiv preprint arXiv:2502.17419, 2025b.
+Minhua Lin, Zongyu Wu, Zhichao Xu, Hui Liu, Xianfeng Tang, Qi He, Charu Aggarwal, Xiang Zhang, and
+Suhang Wang. A comprehensive survey on reinforcement learning-based agentic search: Foundations,
+roles, optimizations, evaluations, and applications.arXiv preprint arXiv:2510.16724, 2025.
+Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi
+Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report.arXiv preprint arXiv:2412.19437,
+2024.
+Xing Han L `u, Zdenˇek Kasner, and Siva Reddy. Weblinx: Real-world website navigation with multi-turn
+dialogue, 2024. URLhttps://arxiv.org/abs/2402.05930.
+Xinji Mai, Haotian Xu, Weinong Wang, Jian Hu, Yingying Zhang, Wenqiang Zhang, et al. Agent rl scaling
+law: Agent rl with spontaneous code execution for mathematical problem solving.arXiv preprint
+arXiv:2505.07773, 2025.
+12
+Shikhar Murty, Christopher D. Manning, Peter Shaw, Mandar Joshi, and Kenton Lee. BAGEL: Bootstrap-
+ping agents by guiding exploration with language. InProceedings of the 41st International Conference on
+Machine Learning, volume 235 ofProceedings of Machine Learning Research, pp. 36894–36910. PMLR, Jul
+2024. URLhttps://proceedings.mlr.press/v235/murty24a.html.
+Ajay Patel, Markus Hofmarcher, Claudiu Leoveanu-Condrei, Marius-Constantin Dinu, Chris Callison-
+Burch, and Sepp Hochreiter. Large language models can self-improve at web agent tasks.arXiv preprint
+arXiv:2405.20309, 2024. URLhttps://arxiv.org/abs/2405.20309.
+Aske Plaat, Max van Duijn, Niki van Stein, Mike Preuss, Peter van der Putten, and Kees Joost Batenburg.
+Agentic large language models, a survey.arXiv preprint arXiv:2503.23037, 2025.
+Ranjan Sapkota, Konstantinos I Roumeliotis, and Manoj Karkee. Ai agents vs. agentic ai: A conceptual
+taxonomy, applications and challenges.arXiv preprint arXiv:2505.10468, 2025.
+Ning Shang, Yifei Liu, Yi Zhu, Li Lyna Zhang, Weijiang Xu, Xinyu Guan, Buze Zhang, Bingcheng Dong,
+Xudong Zhou, Bowen Zhang, et al. rstar2-agent: Agentic reasoning technical report.arXiv preprint
+arXiv:2508.20722, 2025.
+Dingfeng Shi, Jingyi Cao, Qianben Chen, Weichen Sun, Weizhen Li, Hongxuan Lu, Fangchen Dong,
+Tianrui Qin, King Zhu, Minghao Liu, et al. Taskcraft: Automated generation of agentic tasks.arXiv
+preprint arXiv:2506.10055, 2025.
+Joykirat Singh, Raghav Magazine, Yash Pandya, and Akshay Nambi. Agentic reasoning and tool
+integration for llms via reinforcement learning.arXiv preprint arXiv:2505.01441, 2025.
+Qiushi Sun, Kanzhi Cheng, Zichen Ding, Chuanyang Jin, Yian Wang, Fangzhi Xu, Zhenyu Wu, Chengyou
+Jia, Liheng Chen, Zhoumianze Liu, Ben Kao, Guohao Li, Junxian He, Yu Qiao, and Zhiyong Wu.
+Os-genesis: Automating gui agent trajectory construction via reverse task synthesis.arXiv preprint
+arXiv:2412.19723, 2024. URLhttps://arxiv.org/abs/2412.19723.
+Zhengwei Tao, Jialong Wu, Wenbiao Yin, Junkai Zhang, Baixuan Li, Haiyang Shen, Kuan Li, Liwen Zhang,
+Xinyu Wang, Yong Jiang, et al. Webshaper: Agentically data synthesizing via information-seeking
+formalization.arXiv preprint arXiv:2507.15061, 2025.
+Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Jiahao Chen, Ningxin Chen, Ruijue Chen, Yanru Chen,
+Yuankun Chen, Yutian Chen, et al. Kimi k2: Open agentic intelligence.arXiv preprint arXiv:2507.20534,
+2025.
+Jialong Wu, Baixuan Li, Runnan Fang, Wenbiao Yin, Liwen Zhang, Zhengwei Tao, Dingchu Zhang, Zekun
+Xi, Gang Fu, Yong Jiang, et al. Webdancer: Towards autonomous information seeking agency.arXiv
+preprint arXiv:2505.22648, 2025.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. Re-
+act: Synergizing reasoning and acting in language models. InInternational Conference on Learning
+Representations (ICLR), 2023.
+Zhaochen Yu, Ling Yang, Jiaru Zou, Shuicheng Yan, and Mengdi Wang. Demystifying reinforcement
+learning in agentic reasoning.arXiv preprint arXiv:2510.11701, 2025.
+Aohan Zeng, Xin Lv, Qinkai Zheng, Zhenyu Hou, Bin Chen, Chengxing Xie, Cunxiang Wang, Da Yin,
+Hao Zeng, Jiajie Zhang, et al. Glm-4.5: Agentic, reasoning, and coding (arc) foundation models.arXiv
+preprint arXiv:2508.06471, 2025.
+Hanchen Zhang, Xiao Liu, Bowen Lv, Xueqiao Sun, Bohao Jing, Iat Long Iong, Zhenyu Hou, Zehan
+Qi, Hanyu Lai, Yifan Xu, et al. Agentrl: Scaling agentic reinforcement learning with a multi-turn,
+multi-task framework.arXiv preprint arXiv:2510.04206, 2025.
+Jianguo Zhang, Tian Lan, Rithesh Murthy, Zhiwei Liu, Weiran Yao, Juntao Tan, Thai Hoang, Liangwei
+Yang, Yihao Feng, Zuxin Liu, et al. Agentohana: Design unified data and training pipeline for effective
+agent learning.arXiv preprint arXiv:2402.15506, 2024. URLhttps://arxiv.org/abs/2402.15506.
+13

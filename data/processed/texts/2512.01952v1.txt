@@ -1,0 +1,1122 @@
+GrndCtrl: Grounding World Models via Self-Supervised Reward Alignment
+https://rlwg-grndctrl.github.io/
+Haoyang He1,2 Jay Patrikar2 Dong-Ki Kim2 Max Smith2 Daniel McGann2
+Ali-akbar Agha-mohammadi2 Shayegan Omidshafiei2 Sebastian Scherer1,2
+1Carnegie Mellon University 2FieldAI
+Ground-Truth TrajectoryGrndCtrl Future TrajectoryBaseline Future Trajectory
+RL with World Grounding
+Figure 1.Reinforcement Learning with World Grounding (RLWG)addresses geometric inconsistencies in pretrained video world
+models through self-supervised post-training with verifiable rewards. Instead of reconstruction losses, RLWG grounds models using
+geometric and perceptual rewards from frozen evaluators.GrndCtrlinstantiates RLWG using Group Relative Policy Optimization (GRPO),
+enabling physically consistent rollouts essential for reliable world generation.
+Abstract
+Recent advances in video world modeling have enabled
+large-scale generative models to simulate embodied envi-
+ronments with high visual fidelity, providing strong priors
+for prediction, planning, and control. Yet, despite their re-
+alism, these models often lack geometric grounding, limit-
+ing their use in navigation tasks that require spatial coher-
+ence and long-horizon stability. We introduceReinforce-
+ment Learning with World Grounding (RLWG), a self-
+supervised post-training framework that aligns pretrained
+world models with a physically verifiable structure through
+geometric and perceptual rewards. Analogous to rein-
+forcement learning from verifiable feedback (RLVR) in lan-
+guage models, RLWG can use multiple rewards that mea-
+sure pose cycle-consistency, depth reprojection, and tempo-
+ral coherence. We instantiate this framework withGrnd-
+Ctrl, a reward-aligned adaptation method based on Group
+Relative Policy Optimization (GRPO), yielding world mod-
+els that maintain stable trajectories, consistent geometry,
+and reliable rollouts for embodied navigation. Like post-
+training alignment in large language models,GrndCtrl
+leverages verifiable rewards to bridge generative pretrain-
+ing and grounded behavior, achieving superior spatial co-
+herence and navigation stability over supervised fine-tuning
+in outdoor environments.
+1
+arXiv:2512.01952v1  [cs.CV]  1 Dec 2025
+1. Introduction
+Large-scale video world models have emerged as power-
+ful priors for modeling perception and control for embod-
+ied agents [2, 4, 9, 17, 19]. By learning to predict future
+observations from past frames and actions, these models
+approximate the transition dynamics of the physical world,
+enabling simulation, planning, and policy evaluation. Oper-
+ating in the pixel domain aligns them with real-world sen-
+sors and exploits the vast implicit supervision available in
+video, allowing unified modeling across domains such as
+manipulation, driving, and navigation. Yet despite their im-
+pressive generative fidelity, these models are often incen-
+tivized to capture the appearance of motion more than its
+structure. Their rollouts remain visually plausible but geo-
+metrically and temporally inconsistent: poses drift, depths
+wobble, and trajectories lose alignment over time. Even
+subtle deviations in inferred geometry accumulate into com-
+pounding spatial errors corrupting metric structure. These
+instabilities limit the use of current models for closed-loop
+tasks such as localization, mapping, and planning, where
+physically consistent representation is essential.
+We defineworld model groundingas aligning learned
+dynamics with physically verifiable spatial and temporal in-
+variants, so that rollouts honor geometry and time in addi-
+tion to reproducing surface appearance. Grounding shifts
+the objective of world modeling from visual plausibility
+to structural consistency, ensuring that the model’s internal
+dynamics respect the constraints of real motion and scene
+structure. To this end, we introduceReinforcement Learn-
+ing with World Grounding (RLWG), a self-supervised
+post-training framework that refines pretrained world mod-
+els using verifiable geometric and perceptual rewards de-
+rived from model rollouts. RLWG extends the principle of
+Reinforcement Learning with Verifiable Rewards (RLVR)
+from language models [14] to the embodied domain, replac-
+ing text-based logical verification with geometric and tem-
+poral verification. In RLWG, a pretrained world model is
+treated as a policy that generates multiple candidate rollouts
+from the same context; each rollout is automatically scored
+using verifiable grounding rewards that quantify spatial and
+temporal coherence, such as pose cycle-consistency, depth
+reprojection agreement and action adherence. Unlike recon-
+struction losses that only penalize pixel error, these rewards
+measure physical correctness of the rollouts.
+To optimize these verifiable rewards efficiently, we adopt
+Group Relative Policy Optimization (GRPO) [21] as our
+training mechanism, yielding our algorithm,GrndCtrl. For
+each context (and actions when available), the model gen-
+erates a group of rollouts that are ranked by their ground-
+ing rewards; relative advantages are computed within the
+group, and the latent transition operator is updated using
+a clipped policy gradient objective regularized toward the
+pretrained model. This formulation preserves visual qual-
+ity while progressively aligning the model’s dynamics with
+measurable structure in the real world. The process requires
+no human annotations or external simulators, operating en-
+tirely through self-supervised reinforcement grounded in
+the model’s own predictions. Conceptually,GrndCtrlex-
+tends the success of GRPO-based alignment in generative
+modeling to the geometric domain, grounding visual world
+models in verifiable 3D and temporal coherence.
+This paradigm reframes the role of post-training in world
+modeling. Rather than optimizing for perceptual fidelity or
+next-frame likelihood, RLWG drives the model toward in-
+ternal representations that are self-consistent and physically
+grounded. It establishes a structural analogue to the self-
+alignment processes that have improved reasoning in large
+language models: where RLVR grounds language in logic,
+RLWG grounds world models in geometry. The result-
+ing models are self-grounded, spatially coherent, and dy-
+namically stable—capable not only of rendering the world
+vividly, but of representing it in actionable, physically con-
+sistent form. Through this lens, we move beyond visually
+coherent generation toward structurally consistent simula-
+tion, bridging the gap between generative video modeling
+and physical world understanding, and opening a path to-
+ward world models that can both imagine and inhabit the
+real world.
+The main contributions of this work are:
+1. We introduceReinforcement Learning with World
+Grounding (RLWG), a self-supervised grounding
+framework using verifiable geometric and temporal re-
+wards from frozen evaluators without labels or simula-
+tors.
+2. We constructGrndCtrl, a method that extends GRPO
+to the RLWG regime by multi-reward alignment over
+stochastic rollouts optimizing Translation, Rotation,
+Depth Temporal Reprojection Inlier ratio, and percep-
+tual quality with pretrained frozen evaluators.
+3. We provide a comprehensive evaluation ofGrndCtrl
+across multiple datasets showing reduced pose error
+means and variances, with strong gains under counter-
+factual rollouts and generalization to unseen inputs.
+2. Related Work
+2.1. Controlling World Models
+Recent progress in large-scale video foundation models
+has transformed video prediction into controllable world
+simulation. Models such as Cosmos-Predict [17], and V-
+JEPA [2] unify multi-modal conditioning for long-horizon
+prediction and control. These models achieve impressive
+simulation fidelity but still exhibit spatial drift, geomet-
+ric misalignment, and temporal incoherence over extended
+rollouts, revealing limitations in geometric grounding. Ar-
+chitectural innovations like flow matching, conditional dif-
+2
+fusion transformers, and masked latent prediction have im-
+proved realism but not physical consistency.
+Controlling these models can be categorized intoaction-
+conditionedandcamera-conditionedparadigms. The first
+paradigm trains models to predict futures from discrete ac-
+tions, and can be further defined by the nature of the ac-
+tion and observation frame. Some methods [29, 30] as-
+sume a static camera observing an embodiment perform-
+ing actions, while others [3, 4, 6, 23] assume a fixed cam-
+era on the embodiment and train models to predict ego-
+centric views. Jointly, they aim to enable model-predictive
+control, but face challenges with physical realism. The
+second paradigm explicitly decouples viewpoint from em-
+bodiment, allowing the model to generate future observa-
+tions from arbitrary camera poses. Early works [7, 25] in-
+jected pose embeddings into diffusion models to achieve
+this control, but lacked explicit geometric alignment. Sub-
+sequent methods [9, 19] improved consistency via self-
+supervised warping, 3D-informed point cloud conditioning,
+achieving more precise viewpoint control. Recent work [5]
+bridges the two paradigms by jointly training on multi-
+ple viewpoints, and improved spatial-temporal consistency
+with pose-conditioned memory retrieval. Despite these ad-
+vances, most approaches rely on supervised learning or one-
+step consistency objectives and remain open-loop, with no
+mechanism to evaluate or optimize physical correctness.
+2.2. Reward Learning for Post-Training
+Reinforcement-based post-training has become central to
+aligning large generative models. In language sys-
+tems, Reinforcement Learning from Human Feedback
+(RLHF) [18] and Reinforcement Learning with Verifiable
+Rewards (RLVR) [14] replace imitation with objective-
+driven alignment, while Group Relative Policy Optimiza-
+tion (GRPO) [21] stabilizes learning via stochastic rollouts
+comparative updates. Extensions to vision, such as Dance-
+GRPO [27], demonstrate that rewards on visual quality can
+fine-tune video diffusion models effectively.
+Building on this foundation, RLWG adapts RLVR to
+world modeling, optimizing pretrained world models using
+physically verifiable rewards including cycle-consistency,
+depth reprojection, and trajectory stability.GrndCtrlin-
+stantiates RLWG as a multi-objective GRPO over grounded
+rewards. This process enforces geometric coherence with-
+out human supervision, significantly reducing long-horizon
+drift. Parallel advances in 3D perception emphasize simi-
+lar constraints: VGGT [24] and MapAnything [13] predict
+depth and camera pose for consistent scene reconstruction,
+while SpaTracker [26] integrates rigidity priors for robust
+3D tracking. Together, these efforts point toward reward-
+informed geometry as a unifying principle, where physical
+correctness acts as an alignment signal bridging generative
+modeling, simulation, and control.
+3. GrndCtrl
+3.1. Problem Definition
+We consider a pretrainedvideo world modelW θ, a policy
+parameterized byθ, that predicts future observations con-
+ditioned on a visual history and optionally actions. Letx 0
+denote the observed frame anda 0:T−1 = (a 0, . . . , aT−1 )
+the associated control inputs. The model samples a rollout
+ˆx1:T ∼W θ(· |x0, a0:T−1 ), wherea t = (Rt,t t)controls
+translationt t ∈R 3 and rotationR t ∈SO(3). Our goal is to
+post-trainW θ using self-supervised reinforcement learning
+to improve thespatial coherenceandembodied reliability
+of its rollouts.
+To obtainverifiablefeedback without supervision, we
+use a frozenfeed-forward 3D evaluatorEthat provides rel-
+ative pose estimates(∆R 1:T ,∆t 1:T )and per-frame depth
+mapsD t, where∆R t ∈SO(3)and∆t t ∈R 3. Addition-
+ally, we obtain feedback on the visual and motion quality of
+the overall video using a frozenfeed-forward video evalua-
+torVthat provides overall visual quality scoring.
+Our objective is to optimizeθsuch that sampled rollouts
+maximize a set of verifiable rewardsU(ˆx 1:T )comprising
+translation (rtrans), rotation (r rot), depth temporal reprojec-
+tion (rdtr), and video quality (r v). These rewards are con-
+structed from the 3D evaluatorEand video evaluatorV, and
+are defined in detail in Section 3.2.
+3.2. Verifiable Self-Supervised Rewards
+LetTdenote the set of evaluated timesteps. Each reward
+term measures a distinct aspect of spatial and temporal con-
+sistency.
+(1) Translation Reward.We compute the Euclidean de-
+viation in translation:
+etrans
+t = ∆tt −t t.(1)
+and define the sum of mean squared trajectory error and
+squared final error as translation reward:
+rtrans =−
+ 
+1
+|T |
+X
+t∈T
+∥etrans
+t ∥2
+2 +∥e trans
+|T |∥2
+2
+!
+.(2)
+When metric scale is ambiguous, a normalization factor is
+applied from the evaluator’s scale estimate.
+(2) Rotation Reward.We compute the minimum angular
+deviation between predicted and evaluator rotations:
+erot
+t = arccos
+ 
+tr
+ 
+∆Rt ·R t
+T 
+−1
+2
+!
+,(3)
+and define the axis-angle cumulative error as rotation re-
+ward:
+rrot =−
+X
+t∈T
+erot
+t .(4)
+3
++
+Input Image
+Control Inputs
+World Model𝑾𝜽
+GrndCtrl Framework
+Self-supervised RewardsInputs Translation Error
+Rollouts
+Rotation Error
+Depth Reproj. Inlier Ratio
+…
+VideoAlign
+3D Evaluator
+Video EvaluatorScore:2.07 Score:  1.54 Score: -1.86…
+Enc Dec
+GRPO
+Figure 2.GrndCtrlframework architecture. Given conditioning contextc= (x 0, a0:T−1 ), the world model generates multiple stochastic
+rollouts{ˆx(i)
+1:T }G
+i=1. Frozen evaluators compute verifiable rewards for each rollout. Relative advantages are calculated within each group,
+and GRPO updates model parameters using a clipped policy gradient objective regularized toward the pretrained model, favoring physically
+consistent rollouts.
+(3) Depth Temporal Reprojection Reward.We adopt
+thedepth inlier ratiofrom MapAnything [13] evaluations
+as a verifiable geometric reward for depth temporal repro-
+jection. For each pixelp∈Ω, define the reprojected corre-
+spondence and expected depth via the evaluator geometry
+(ˆp, dexp
+t→t+1(p)) = Φ
+ 
+p;D t,∆R t,∆t t, Kt, Kt+1
+
+,(5)
+whereΦback-projectspusingD t, applies(∆R t,∆t t), and
+projects into framet+1. The per-pair depth inlier ratio
+(thresholdγ=0.0103) is
+DTRI(γ)
+t = 1
+|Ω|
+X
+p∈Ω
+1
+"Dt+1(ˆp)−dexp
+t→t+1(p)
+
+dexp
+t→t+1(p) < γ
+#
+.
+(6)
+We use the average inlier ratio as the reward:
+rdtr = 1
+|T |
+X
+t∈T
+DTRI(γ)
+t .(7)
+(4) Video Quality Reward.We use the frozen
+VideoAlign [15] as evaluatorV, which returns three
+sequence-level scores in[0,1]—visual qualitys vis, motion
+qualitys mot, and text alignments txt—for a rolloutˆx 1:T
+(optionally conditioned on a prompty):
+(svis, smot, stxt) =V(ˆx 1:T ;y).(8)
+Our visual reward uses only visual and motion quality as a
+convex combination,
+rv =α svis +β smot, α, β≥0, α+β= 1,(9)
+withα=β= 1
+2 by default.
+3.3. GRPO for RLWG Post-Training
+For eachconditioning contextc= (x 0, a0:T−1 ), a group
+ofGcandidate rollouts{ˆx (i)
+1:T }G
+i=1 is sampled fromW θ.
+Each rollout is evaluated by every reward from the verifi-
+able reward setU(ˆx1:T ), obtaining{r (i)
+trans, r(i)
+rot , r(i)
+dtr , r(i)
+v }=
+U(ˆx(i)
+1:T ). We compute the normalized reward for every ver-
+ifiable reward˜r(i), and obtain a multi-objective normalized
+group advantageA i:
+˜r(i) = r(i)−mean(r(1),...,r(G))
+std(r(1),...,r(G)) , A i = ˜r(i)−mean(˜r(1),...,˜r(G))
+std(˜r(1),...,˜r(G)) ,
+(10)
+The GRPO objective optimizesθusing the clipped sur-
+rogate:
+J(θ) =E
+h 1
+G
+GX
+i=1
+1
+T
+TX
+t=1
+min
+ 
+ρt,iAi,clip(ρ t,i,1−ϵ,1+ϵ)A i
+i
+,
+(11)
+whereϵis the clip ratio,ρ t,i is the per-step likelihood ratio
+under the current and reference policies. This formulation
+4
+stabilizes policy optimization for continuous video genera-
+tion tasks. An illustration of the detailedGrndCtrlframe-
+work is shown in Figure 2. To form each group for GRPO
+in practice, we generate multiple stochastic rollouts.
+Groups are instantiated by sampling multiple candi-
+date rollouts from the diffusion generator under controlled
+stochasticity. Diffusion sampling can be formulated as
+a reverse-timestochastic differential equation(SDE) or,
+equivalently in time-marginals, as aprobability–flow ordi-
+nary differential equation(ODE) [1, 22]. Letx t ∈R d de-
+note the latent state at timet∈[0,1](noisiest att=1, data
+manifold att→0). A standard variance–preserving forward
+SDE is
+dxt =− 1
+2 β(t)xtdt+
+p
+β(t)dwt,(12)
+withw t as a standard Brownian motion andβ(t)>0as the
+noise rate. The correspondingreverseSDE is
+dxt =
+ 
+− 1
+2 β(t)xt −β(t)∇ x logp t(xt)
+
+dt+
+p
+β(t)d ¯wt,
+(13)
+which is stochastic due to thed ¯wt term and uses the learned
+score∇ x logp t, wherep t is the forward SDE solution dis-
+tribution ofx t. Theprobability–flow ODE, which shares
+the samep t as (13) but is deterministic, is
+dxt
+dt =− 1
+2 β(t)xt − 1
+2 β(t)∇x logp t(xt).(14)
+In practice, sampler stochasticity is controlled byη∈
+[0,1](ODE limit atη=0; SDE-style sampling with per-
+step Gaussian perturbations atη=1). For each contextc,
+we drawGrollouts{ˆx (i)
+1:T }G
+i=1 with identical conditioning
+and independent noise governed byη, providing the within-
+group diversity required by GRPO.
+4. Experimental Setup
+4.1. Datasets
+We train and evaluate our methods on three datasets span-
+ning diverse embodiments and scenarios.CODa[28] is
+a campus navigation dataset collected on wheeled robots
+with pseudo-ground truth poses.SCAND[10] is a social
+navigation dataset also collected on campus, featuring em-
+bodiments of both a wheeled robot and a quadruped.City-
+Walk[16] is an egocentric urban navigation dataset of a
+person walking in crowded city streets, collected from in-
+the-wild YouTube city walking videos and reprocessed with
+MapAnything [13] to obtain pose estimates. We subsample
+each dataset to 2k non-overlapping 13-frame sequences of
+pose-action pairs for training, ensuring temporal diversity
+and avoiding data leakage.
+4.2. Baseline Model
+We obtain the baseline pretrained world modelW θ
+via supervised fine-tuning (SFT) on Cosmos-Predict2-2B-
+Video2World [17], a diffusion model with a latent V AE
+backbone and temporal attention. We use a modified
+version of its action-conditioned video predictor post-
+training pipeline, adapting the action space from 7 to
+6 degrees of freedom to match our navigation setting:
+(x, y, z,roll,pitch,yaw)as 6×12 action embeddings. We
+initialize the action embeddings randomly while fine-tuning
+the entire DiT backbone for 20k steps with an effec-
+tive batch size of 64. Training follows the EDM frame-
+work [11, 12], using the weighted expectation of denois-
+ing score matching loss over noise levels. We perform full
+SFT over all DiT backbone parameters keeping the visual
+encoder and decoder frozen, as our experiments showed
+that only full SFT or full-size LoRA yielded meaningful
+changes in motion dynamics. Additional implementation
+details are provided in Appendix.
+4.3. GRPO Post-Training
+Post-training applies GRPO with self-supervised verifi-
+able rewards as described in Sec. 3.3. We use MapAny-
+thing [13] asEto obtain rewardsr trans,r rot, andr dtr. We use
+VideoAlign [15] asVto obtain the rewardr v. We perform
+an ablation study of combinatorial rewards as defined in
+Sec. 3.2 to evaluate multi-objective GRPO. For each reward
+configuration, we train for 100 steps with an effective batch
+size of 8, generatingG= 8stochastic rollouts{ˆx (i)
+1:T }G
+i=1
+per conditioning contextc= (x 0, a0:T−1 ). To obtain di-
+verse rollouts, we use the same initial noise for reverse-SDE
+diffusion with the same starting framex 0 and action trajec-
+torya 0:T−1 , but inject stochastic Brownian noise at each
+diffusion step as described in Sec. 3.3. We compute per-
+step likelihood ratios only over the first 60% of diffusion
+timesteps to focus training on the most relevant denoising
+steps to improve training stability. Additional training de-
+tails are provided in Appendix.
+4.4. Evaluation Regimes
+We evaluate on three regimes that progressively test gener-
+alization capabilities:
+•Seen: Start frames and scene domains seen during SFT
+with matching action distributions. This regime tests in-
+distribution performance.
+•Counterfactual: Scenes seen during SFT but with coun-
+terfactual actions (e.g., mirrored or directionally inverted
+action sequences). This regime tests the model’s ability to
+extrapolate geometric structure to novel motion patterns.
+•Unseen: Both scenes and actions novel at test time, with
+scenes from different domains and action sequences with
+different motion characteristics. This regime tests full
+generalization to unseen scenarios.
+4.5. Metrics
+We report four metrics averaged across an evaluation set
+of 200 non-overlapping sequences for each regime: Trans-
+5
+GT
+…
+…
+Baseline
+Initial Image 8th Image
+…
+9th Image 10th Image Final Image
+GrndCtrl
+…
+…
+…
+(a)
+GT
+…
+…
+Baseline
+Initial Image 8th Image
+…
+9th Image 10th Image Final Image
+GrndCtrl
+……
+…
+(b)
+Figure 3. Qualitative results: (a)GrndCtrlmitigates scene drift on counterfactual rollouts, maintaining spatial coherence where baseline
+diverges. (b)GrndCtrlsuccessfully follows directionally inverted actions, generating geometrically consistent rollouts where baseline fails.
+lation error (T=−r trans) in meters, Rotation error (R=
+−rrot) in radians, Video Quality (V=r v) combining visual
+and motion quality scores, and Depth Temporal Reprojec-
+tion Inlier Ratio (DTRI=r dtr) as a percentage. Lower val-
+ues indicate better performance for T and R, while higher
+values are better for V and DTRI.
+5. Analysis and Discussion
+5.1. Impact ofGrndCtrlon World Model Failures
+O1: Baselines show poor counterfactual performance
+but good generalization within familiar motion man-
+ifolds.Table 1 reports quantitative results on CODa,
+SCAND, and CityWalk datasets across three evaluation
+regimes. Across all datasets, the baseline performs well in
+Seen but degrades significantly in Counterfactual, indicat-
+ing limited transfer to out-of-distribution action sequences.
+On CODa, baseline translation error increases by24%from
+Seen to Counterfactual, while on SCAND the degradation is
+more severe, increasing by70%. On CityWalk, the increase
+is more modest at12%. Unseen performance, however, re-
+mains comparable to Seen across datasets, suggesting that
+the pretrained model does generalize within familiar motion
+manifolds. This contrast in performance between Counter-
+factual and Unseen indicates a fundamental limitation in
+pretrained video world model’s ability to extrapolate geo-
+metric structure to counterfactual rollouts, a key property
+expected of grounded world simulators.
+O2: Translation and rotation rewards improve spa-
+tial alignment with largest gains under counterfac-
+tual motion.Introducing translation and rotation rewards
+rtrans andr rot (T+R) improves spatial alignment across all
+datasets. On CODa, T+R decreases translation error by
+20%in Seen and by29%in Counterfactual relative to base-
+line, while rotation error improves by19%in Seen. On
+SCAND, the improvements are substantial: translation er-
+ror decreases by15%in Seen and by20%in Counterfac-
+tual, with rotation error improving by4%in Seen. CityWalk
+shows the strongest counterfactual gains, with Counterfac-
+tual translation error dropping by63%relative to baseline,
+while Seen improves by24%. These results demonstrate
+that explicit pose-based feedback enhances motion consis-
+tency and stabilizes rolloutsˆx 1:T across diverse embodi-
+ments. Notably, the improvement in Counterfactual high-
+lights that verifiable motion alignment encourages general-
+6
+Seen Counterfactual Unseen
+MethodT↓R↓V↑DTRI↑T↓R↓V↑DTRI↑T↓R↓V↑DTRI↑
+CODa[28]
+Baseline [17]57.8 1.77 7.40 38.9 71.5 1.55 7.41 39.1 56.9 1.71 7.40 38.3
++T+R46.4 1.44 7.32 38.4 50.5 1.53 7.34 38.7 54.3 1.75 7.36 39.3
++T+R+DTRI65.7 1.74 7.43 37.0 57.7 1.86 7.42 36.8 42.6 1.74 7.40 37.1
++T+R+DTRI+V 39.9 1.27 7.35 37.5 40.7 1.42 7.34 37.4 31.0 1.53 7.37 38.0
+SCAND[10]
+Baseline [17]186.3 3.76 7.16 23.6 315.9 4.24 7.13 21.4 117.0 4.02 6.99 18.4
++T+R158.2 3.61 7.19 23.7 251.2 4.34 7.18 21.7 131.1 3.95 7.04 19.1
++T+R+DTRI157.9 3.65 7.10 22.1 288.6 4.45 7.17 20.1 118.6 4.07 7.03 17.9
++T+R+DTRI+V 133.4 3.30 7.11 24.5 220.1 4.23 7.08 22.8 123.4 3.62 6.98 19.4
+CityWalk[16]
+Baseline [17]11.7 3.13 7.96 46.9 13.1 3.27 7.94 47.4 20.8 4.47 7.90 44.5
++T+R8.9 3.31 7.90 44.9 4.8 4.42 7.91 45.6 10.2 3.47 7.87 42.8
++T+R+DTRI8.4 3.36 7.84 43.5 4.7 4.40 7.83 44.1 10.9 3.68 7.79 41.4
++T+R+DTRI+V 8.8 3.37 7.84 42.6 4.7 4.37 7.85 43.3 9.9 3.74 7.80 40.8
+Table 1. Quantitative evaluation across three datasets (CODa,SCAND,CityWalk) and three regimes:Seen,Counterfactual, andUn-
+seen. We compare baseline against progressive reward combinations (T+R, T+R+DTRI, T+R+DTRI+V).GrndCtrlachieves substantial
+improvements. Metrics: T (Translation Error, m), R (Rotation Error, rad), V (Video Quality), DTRI (Depth Temporal Reprojection
+Inliers).
+ization to directionally inverted action sequencesa0:T−1 , an
+essential feature for embodied reasoning.
+Table 2 further demonstrates that GRPO training sys-
+tematically improves model reliability: the baseline model
+shows high variance across both translation and rotation
+errors, indicating unstable rollouts sensitive to diffusion
+noise. WithGrndCtrltraining, both mean errors and vari-
+ance decrease substantially: at 200 iterations, translation
+error means reduce by77%relative to baseline across ex-
+periments, with standard deviations reduced by75%. Rota-
+tion error also improves, with means reducing by 39% and
+standard deviations reduced by32%, achieving reliable and
+consistent rollouts across all evaluation regimes.
+O3: Depth reward enforces local coherence but trades
+off global alignment.Adding the depth reprojection re-
+wardr dtr (T+R+DTRI) enforces local geometric coherence
+but introduces a trade-off in global rollout alignment. On
+CODa, compared to T+R, translation error increases by
+42%in Seen and by14%in Counterfactual, while Un-
+seen benefits substantially with a22%improvement. On
+SCAND, Seen shows minimal change, Counterfactual de-
+grades by15%, while Unseen improves by10%. CityWalk
+shows a different pattern where DTRI maintains or slightly
+improves performance across most regimes. This suggests
+the depth reward enforces short-horizon consistency and lo-
+cal geometric smoothness, with benefits most apparent in
+unseen scenarios.
+O4: Full reward set produces most balanced and robust
+performance.Incorporating perceptual feedback through
+the full reward set (T+R+DTRI+V) produces the most
+balanced and robust performance across all datasets. On
+CODa, the full objective achieves translation error reduc-
+tions of31%(Seen),43%(Counterfactual), and45%(Un-
+seen) relative to baseline, with rotation error improving by
+28%(Seen),8%(Counterfactual), and11%(Unseen). On
+SCAND, translation error reduces by28%(Seen),30%
+(Counterfactual), and5%(Unseen), while CityWalk shows
+consistent improvements with Counterfactual achieving a
+64%reduction. The full objective recovers and extends
+the rollout accuracy of T+R while preserving local stabil-
+ity from DTRI. Perceptual alignment via video-based eval-
+uators acts as a long-horizon stabilizer, promoting rollouts
+that are both physically consistent and visually coherent.
+Figure 3 showcases qualitative comparisons ofGrndCtrl
+rolloutsˆx1:T against the baseline.GrndCtrlsignificantly
+mitigates the scene drift failures frequently observed when
+queried with mirrored input action sequencesa 0:T−1 , and
+improves rollout consistency.
+7
+Seen Counterfactual Unseen
+MethodT↓R↓T↓R↓T↓R↓
+Baseline [17]73.2±243.7 2.38±3.88 75.8±253.9 2.38±3.90 71.2±251.2 2.88±4.28
+GrndCtrlT+R 10072.0±283.6 1.95±3.38 75.9±311.7 1.85±3.22 58.4±231.1 2.57±4.08
+GrndCtrlT+R 15026.7±101.5 1.54±2.84 24.8±99.1 1.53±2.80 26.5±104.3 2.08±3.33
+GrndCtrlT+R 200 18.4±68.1 1.40±2.49 16.8±63.0 1.36±2.57 16.3±56.5 1.97±3.11
+Table 2. Reliability analysis showing error statistics (mean±standard deviation) across multiple stochastic rollouts for different GRPO
+iterations. Baseline exhibits high variance, while GRPO training progressively reduces both mean errors and variance, achieving con-
+sistent rollouts. Metrics: T (Translation Error, m), R (Rotation Error, rad).
+5.2. Training Insights and Stability
+I1: Pretraining bias requires full fine-tuning for mean-
+ingful motion adaptation.Cosmos-Predict2’s pretrain-
+ing on videos with mostly short clips and slight forward
+movements biases the model toward scene stability over
+dynamics. This pretraining bias explains why we ob-
+served negligible changes in motion behavior when us-
+ing parameter-efficient methods like LoRA (except full-size
+variants), suggesting that pretrained world models may re-
+quire substantial capacity updates to adapt to navigation-
+specific action distributions.
+I2: Early diffusion timesteps are most critical for GRPO
+training stability.GrndCtrltraining is significantly more
+memory intensive than SFT, as it requires maintaining
+computation graphs over all diffusion steps to track per-
+timestep log-probabilities for likelihood ratio computation.
+Early timesteps are primarily responsible for content de-
+noising while later timesteps refine details with exponen-
+tially smaller likelihood values, making the 60% timestep
+limitation both memory-efficient and beneficial for training
+stability by focusing on the most relevant denoising steps.
+I3:GrndCtrlrequires sufficient reward variance and
+careful checkpoint selection.Most critically,GrndCtrl
+training stability depends on having sufficient reward vari-
+ance across stochastic rollouts.GrndCtrlfocuses optimiza-
+tion on the reward component with highest variance within
+each group, which is beneficial for addressing scene drift
+when some rollouts fail visual odometry while others suc-
+ceed. However, when checkpoints are overfitted or un-
+dertrained, producing uniformly poor or uniformly good
+rollouts, the normalization step in advantage calculation
+can amplify subtle differences, leading to degraded training
+where the model learns arbitrary patterns that add noise to
+predictions. We mitigate this through KL regularization to-
+ward the pretrained model and careful checkpoint selection,
+ensuring the baseline checkpoint generates distinguishably
+good and bad rollouts before applying GRPO.
+6. Limitations
+RLWG introduces a new paradigm for grounding world
+models using verifiable rewards, and our study focuses on
+establishing core principles rather than exhaustively scal-
+ing the approach. Our experiments use moderate budgets
+and limited datasets, but already demonstrate that mean-
+ingful grounding can be achieved efficiently. A practical
+constraint ofGrndCtrlis its reliance on sufficient rollout
+variance for stable relative-policy optimization; understand-
+ing the variance dynamics of reward-aligned world model
+training remains an open direction. Additionally, while
+RLWG optimizes a multi-objective reward, we do not ex-
+plore alternative weighting strategies or adaptive weighting
+schemes, which could further shape the trade-off between
+global alignment, local consistency, and visual fidelity. In-
+vestigating principled multi-reward weighting and larger-
+scale training holds promise for pushing RLWG toward in-
+creasingly stable, generalizable, and physically grounded
+world models.
+7. Conclusions
+Our work demonstrates thatRLWGenables pretrained
+video world models to be effectively grounded in phys-
+ical structure through self-supervised post-training, with-
+out requiring human labels or external simulators. Instan-
+tiated asGrndCtrl, the key insight is that verifiable geo-
+metric and perceptual rewards, when optimized via relative
+policy methods, systematically improve spatial coherence
+while preserving the visual quality that makes these models
+powerful priors. The most significant improvements emerge
+under counterfactual scenarios.GrndCtrlachieves substan-
+tial improvements under counterfactual rollouts, with up
+to64%reduction in translation error, demonstrating that
+reward-based alignment addresses a fundamental limitation
+of current world models: their tendency to prioritize visual
+plausibility over structural consistency. By explicitly opti-
+mizing for both,RLWGenables models that are not only
+visually coherent but also geometrically consistent, open-
+ing new possibilities for reliable long-horizon planning and
+control in real-world environments.
+8
+Acknowledgements
+We thank NVIDIA and the authors of Cosmos-Predict2 [17]
+for publicly releasing their code and checkpoints, upon
+which we build our post-training pipeline. We thank Nikhil
+Keetha and collaborators for MapAnything [13], and the
+authors of VideoAlign [15], for making their code and
+checkpoints publicly available, enabling our verifiable self-
+supervised rewards and evaluation metrics. We also thank
+Amir Bar and collaborators for releasing Navigation World
+Models [4] code and checkpoints and for kindly respond-
+ing to our inquiry email. Finally, we thank Cherie Ho for
+early-stage discussions and Jay Karhade for discussions on
+geometric consistency.
+References
+[1] Michael S. Albergo, Nicholas M. Boffi, and Eric Vanden-
+Eijnden. Stochastic interpolants: A unifying framework for
+flows and diffusions, 2025. 5
+[2] Mahmoud Assran, Adrien Bardes, David Fan, Quentin Gar-
+rido, Russell Howes, Mojtaba Komeili, Matthew Muck-
+ley, Ammar Rizvi, Claire Roberts, Koustuv Sinha, Artem
+Zholus, Sergio Arnaud, Abha Gejji, Ada Martin, Francois
+Robert Hogan, Daniel Dugas, Piotr Bojanowski, Vasil Khali-
+dov, Patrick Labatut, Francisco Massa, Marc Szafraniec,
+Kapil Krishnakumar, Yong Li, Xiaodong Ma, Sarath Chan-
+dar, Franziska Meier, Yann LeCun, Michael Rabbat, and
+Nicolas Ballas. V-jepa 2: Self-supervised video models en-
+able understanding, prediction and planning.arXiv preprint
+arXiv:2506.09985, 2025. 2
+[3] Yutong Bai, Danny Tran, Amir Bar, Yann LeCun, Trevor
+Darrell, and Jitendra Malik. Whole-body conditioned ego-
+centric video prediction, 2025. 3
+[4] Amir Bar, Gaoyue Zhou, Danny Tran, Trevor Darrell, and
+Yann LeCun. Navigation world models, 2025. 2, 3, 9, 11
+[5] Yanjiang Guo, Lucy Xiaoyang Shi, Jianyu Chen, and
+Chelsea Finn. Ctrl-world: A controllable generative world
+model for robot manipulation, 2025. 3
+[6] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy
+Lillicrap. Mastering diverse domains through world models,
+2024. 3
+[7] Hao He, Yinghao Xu, Yuwei Guo, Gordon Wetzstein, Bo
+Dai, Hongsheng Li, and Ceyuan Yang. Cameractrl: Enabling
+camera control for text-to-video generation, 2025. 3
+[8] Noriaki Hirose, Dhruv Shah, Ajay Sridhar, and Sergey
+Levine. Sacson: Scalable autonomous control for social nav-
+igation.IEEE Robotics and Automation Letters, 9(1):49–56,
+2023. 11
+[9] Bu Jin, Weize Li, Baihan Yang, Zhenxin Zhu, Junpeng
+Jiang, Huan ang Gao, Haiyang Sun, Kun Zhan, Hengtong
+Hu, Xueyang Zhang, Peng Jia, and Hao Zhao. Posepilot:
+Steering camera pose for generative world models with self-
+supervised depth, 2025. 2, 3
+[10] Haresh Karnan, Anirudh Nair, Xuesu Xiao, Garrett War-
+nell, Soeren Pirk, Alexander Toshev, Justin Hart, Joydeep
+Biswas, and Peter Stone. Socially compliant navigation
+dataset (scand): A large-scale dataset of demonstrations for
+social navigation, 2022. 5, 7, 11
+[11] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine.
+Elucidating the design space of diffusion-based generative
+models, 2022. 5
+[12] Tero Karras, Miika Aittala, Jaakko Lehtinen, Janne Hellsten,
+Timo Aila, and Samuli Laine. Analyzing and improving the
+training dynamics of diffusion models, 2024. 5
+[13] Nikhil Keetha, Norman M ¨uller, Johannes Sch ¨onberger,
+Lorenzo Porzi, Yuchen Zhang, Tobias Fischer, Arno
+Knapitsch, Duncan Zauss, Ethan Weber, Nelson Antunes,
+Jonathon Luiten, Manuel Lopez-Antequera, Samuel Rota
+Bul`o, Christian Richardt, Deva Ramanan, Sebastian Scherer,
+and Peter Kontschieder. Mapanything: Universal feed-
+forward metric 3d reconstruction, 2025. 3, 4, 5, 9, 11, 15
+[14] Nathan Lambert, Jacob Morrison, Valentina Pyatkin,
+Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester
+James V . Miranda, Alisa Liu, Nouha Dziri, Shane Lyu,
+Yuling Gu, Saumya Malik, Victoria Graf, Jena D. Hwang,
+Jiangjiang Yang, Ronan Le Bras, Oyvind Tafjord, Chris
+Wilhelm, Luca Soldaini, Noah A. Smith, Yizhong Wang,
+Pradeep Dasigi, and Hannaneh Hajishirzi. Tulu 3: Pushing
+frontiers in open language model post-training, 2025. 2, 3
+[15] Jie Liu, Gongye Liu, Jiajun Liang, Ziyang Yuan, Xiaokun
+Liu, Mingwu Zheng, Xiele Wu, Qiulin Wang, Wenyu Qin,
+Menghan Xia, et al. Improving video generation with human
+feedback.arXiv preprint arXiv:2501.13918, 2025. 4, 5, 9,
+15
+[16] Xinhao Liu, Jintong Li, Yicheng Jiang, Niranjan Sujay,
+Zhicheng Yang, Juexiao Zhang, John Abanes, Jing Zhang,
+and Chen Feng. Citywalker: Learning embodied urban
+navigation from web-scale videos. InProceedings of the
+Computer Vision and Pattern Recognition Conference, pages
+6875–6885, 2025. 5, 7, 11
+[17] NVIDIA, :, Niket Agarwal, Arslan Ali, Maciej Bala, Yogesh
+Balaji, Erik Barker, Tiffany Cai, Prithvijit Chattopadhyay,
+Yongxin Chen, Yin Cui, Yifan Ding, Daniel Dworakowski,
+Jiaojiao Fan, Michele Fenzi, Francesco Ferroni, Sanja Fidler,
+Dieter Fox, Songwei Ge, Yunhao Ge, Jinwei Gu, Siddharth
+Gururani, Ethan He, Jiahui Huang, Jacob Huffman, Pooya
+Jannaty, Jingyi Jin, Seung Wook Kim, Gergely Kl ´ar, Grace
+Lam, Shiyi Lan, Laura Leal-Taixe, Anqi Li, Zhaoshuo Li,
+Chen-Hsuan Lin, Tsung-Yi Lin, Huan Ling, Ming-Yu Liu,
+Xian Liu, Alice Luo, Qianli Ma, Hanzi Mao, Kaichun Mo,
+Arsalan Mousavian, Seungjun Nah, Sriharsha Niverty, David
+Page, Despoina Paschalidou, Zeeshan Patel, Lindsey Pavao,
+Morteza Ramezanali, Fitsum Reda, Xiaowei Ren, Vasanth
+Rao Naik Sabavat, Ed Schmerling, Stella Shi, Bartosz Ste-
+faniak, Shitao Tang, Lyne Tchapmi, Przemek Tredak, Wei-
+Cheng Tseng, Jibin Varghese, Hao Wang, Haoxiang Wang,
+Heng Wang, Ting-Chun Wang, Fangyin Wei, Xinyue Wei,
+Jay Zhangjie Wu, Jiashu Xu, Wei Yang, Lin Yen-Chen, Xi-
+aohui Zeng, Yu Zeng, Jing Zhang, Qinsheng Zhang, Yuxuan
+Zhang, Qingqing Zhao, and Artur Zolkowski. Cosmos world
+foundation model platform for physical ai, 2025. 2, 5, 7, 8, 9
+[18] Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Car-
+roll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini
+Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob
+9
+Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda
+Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan
+Lowe. Training language models to follow instructions with
+human feedback, 2022. 3
+[19] Xuanchi Ren, Tianchang Shen, Jiahui Huang, Huan Ling,
+Yifan Lu, Merlin Nimier-David, Thomas M ¨uller, Alexan-
+der Keller, Sanja Fidler, and Jun Gao. Gen3c: 3d-informed
+world-consistent video generation with precise camera con-
+trol. InProceedings of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition, 2025. 2, 3
+[20] Dhruv Shah, Benjamin Eysenbach, Gregory Kahn, Nicholas
+Rhinehart, and Sergey Levine. Rapid exploration for open-
+world navigation with latent goal models.arXiv preprint
+arXiv:2104.05859, 2021. 11
+[21] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao
+Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y . K. Li,
+Y . Wu, and Daya Guo. Deepseekmath: Pushing the limits of
+mathematical reasoning in open language models, 2024. 2, 3
+[22] Yang Song, Jascha Sohl-Dickstein, Diederik P. Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equa-
+tions, 2021. 5
+[23] Dani Valevski, Yaniv Leviathan, Moab Arar, and Shlomi
+Fruchter. Diffusion models are real-time game engines,
+2025. 3
+[24] Jianyuan Wang, Minghao Chen, Nikita Karaev, Andrea
+Vedaldi, Christian Rupprecht, and David Novotny. Vggt:
+Visual geometry grounded transformer. InProceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2025. 3
+[25] Zhouxia Wang, Ziyang Yuan, Xintao Wang, Tianshui Chen,
+Menghan Xia, Ping Luo, and Ying Shan. Motionctrl: A
+unified and flexible motion controller for video generation,
+2024. 3
+[26] Yuxi Xiao, Jianyuan Wang, Nan Xue, Nikita Karaev, Yuri
+Makarov, Bingyi Kang, Xing Zhu, Hujun Bao, Yujun Shen,
+and Xiaowei Zhou. Spatialtrackerv2: 3d point tracking made
+easy, 2025. 3
+[27] Zeyue Xue, Jie Wu, Yu Gao, Fangyuan Kong, Lingting
+Zhu, Mengzhao Chen, Zhiheng Liu, Wei Liu, Qiushan Guo,
+Weilin Huang, and Ping Luo. Dancegrpo: Unleashing grpo
+on visual generation, 2025. 3
+[28] Arthur Zhang, Chaitanya Eranki, Christina Zhang, Ji-Hwan
+Park, Raymond Hong, Pranav Kalyani, Lochana Kalyanara-
+man, Arsh Gamare, Arnav Bagad, Maria Esteva, et al. To-
+wards robust robot 3d perception in urban environments: The
+ut campus object dataset.arXiv preprint arXiv:2309.13549,
+2023. 5, 7, 11
+[29] Gaoyue Zhou, Hengkai Pan, Yann LeCun, and Lerrel Pinto.
+Dino-wm: World models on pre-trained visual features en-
+able zero-shot planning, 2025. 3
+[30] Chuning Zhu, Raymond Yu, Siyuan Feng, Benjamin Burch-
+fiel, Paarth Shah, and Abhishek Gupta. Unified world mod-
+els: Coupling video and action diffusion for pretraining on
+large robotic datasets, 2025. 3
+10
+GrndCtrl: Grounding World Models via Self-Supervised Reward Alignment
+https://rlwg-grndctrl.github.io/
+Appendix
+A. Qualitative Results
+We include additional counterfactual generation results
+ofGrndCtrlagainst baseline and ground truths in
+SCAND [10] (Figure 4) and CityWalk [16] (Figure 5), in
+addition to CODa [28] (Figure 3). The counterfactual roll-
+outs ofGrndCtrland baseline are expected to mirror the
+trajectory shown in ground truths in each scene. We ob-
+serveGrndCtrlimproves trajectory-following and mitigates
+scene drift in counterfactual rollouts in all three datasets.
+B. Comparisons with NWM [4]
+While RLWG is a post-training framework agnostic to the
+baseline world model, and inGrndCtrlwe obtain the base-
+line with supervised fine-tuning, we acknowledge other
+potential candidates that perform similar tasks as an ex-
+perimental baseline. This is exemplified by NWM [4],
+which operates a similar world models scenario in naviga-
+tion tasks. However, significant differences in experimental
+settings betweenGrndCtrland NWM results in infeasible
+quantitative comparisons:
+• NWM is jointly-trained on multiple datasets, including
+RECON [20] and HuRoN [8], which are collected using
+fish-eye cameras. This results in frequent twisted arti-
+facts in rollouts conditioned on rectilinear images such
+as SCAND [10]. This biases NWM to perform poorly
+with visual odometry metrics based on afeed-forward 3D
+evaluatorsuch as MapAnything [13].
+•GrndCtrlis conditioned on actions defined in 6-DOF
+space(x, y, z,roll,pitch,yaw), whereas NWM’s actions
+are simplified to 3-DOF space(x, y,yaw).
+SinceGrndCtrladopts MapAnything as an evaluator to
+obtain rewards, we are unable to directly use NWM as our
+baseline pretrained world modelW θ. Nevertheless, we in-
+clude qualitative samples of NWM counterfactual rollouts
+in Figure 6. We used the same image-action sequences from
+Figures 4 in SCAND, the dataset shared by both our exper-
+iments and NWM. We used 3-DOF actions as conditions,
+then performed the same inversion for the rest of the trajec-
+tory in 3-DOF to generate counterfactual rollouts. We ob-
+serve similar failures in scene drift and trajectory-following.
+C. Failure Modes
+WhileGrndCtrldemonstrates meaningful grounding in
+world models, we identify three main failure modes.
+First, the lack of pixel-level supervision in our post-
+training results in gradual increase in pixel-level noises in
+our rollouts. While we mitigate this with KL-regularization
+towards the pretrained model, we still observe a gradual in-
+crease in visual noises as our post-training increases over-
+all rewards with by improving trajectory-following or miti-
+gating scene drift in rollouts. When unconstrained in post-
+training iterations, the added visual noise may eventually
+exceed the noise tolerance of thefeed-forward 3D evalua-
+tor, resulting in invalid rewards used for training, and the
+model rollouts gradually collapse to pure noises.
+Second, when a set of rollouts produce similarly good or
+similarly bad results, our multi-objective normalized group
+advantage treats the slightly worse good results as nega-
+tive samples, or the slightly better bad results as positive
+samples. This results in counterproductive learning in post-
+training, which causes training instability and gradual col-
+lapse to noises. We leave the investigation of rollout vari-
+ance in world models as future work.
+Third, we occasionally observe reward-hacking behav-
+iors, where rewards increase despite generating noises. Due
+to the black-box nature of the evaluators and our pipeline
+stochasticity, we mitigate this by retraining.
+D. Implementation Details
+We first describe supervised fine-tuning of the baseline
+world model, followed by GRPO post-training and the eval-
+uator setup. Table 3 summarizes the key hyperparameters
+used in both stages.
+D.1. Supervised Fine-Tuning
+We fine-tune the Cosmos-Predict2-2B Video2World back-
+bone starting from the released 2B-720p-16fps checkpoint.
+The visual encoder and decoder of the latent V AE are kept
+frozen, and we update all parameters in the DiT backbone.
+Before settling on this configuration, we experimented
+with several alternatives: (i) full supervised fine-tuning (all
+DiT parameters), (ii) LoRA with ranks16and64, (iii)
+a full-size LoRA configuration with2048×2048hidden
+states, and (iv) training only the action embeddings. Due
+to Cosmos-Predict2’s large-scale pretraining on short clips
+with mostly mild forward motion, the model is strongly bi-
+ased toward scene stability rather than rich trajectory dy-
+namics. In practice, only full SFT and the full-size LoRA
+variant produced meaningful changes in motion behavior;
+lower-rank LoRA and action-only updates had negligible
+11
+Initial Image
+GT
+Baseline
+GrndCtrl
+1
+5
+9
+1
+5
+9
+1
+5
+9
+Figure 4. Counterfactual generation example in SCAND. Baseline andGrndCtrlare conditioned on left-right mirrored actions, and the
+rollouts are expected to invert the movements of the ground truth. Baseline generation still follows similar left-forward movement as GT
+(trajectory-following failure), whileGrndCtrlgeneration successfully follow inverted right-forward movement.
+effect. For simplicity and robustness, we therefore adopt
+full SFT for all reported experiments.
+Supervision is applied in the latent space using an MSE
+loss with EDM regularization. During SFT, we perform
+single-step diffusion and backpropagate only through the
+DiT backbone, which keeps training computationally effi-
+cient. We train for20k steps with Fully Sharded Data Par-
+allel (FSDP) across eight A100 GPUs. All remaining opti-
+12
+Initial Image
+GT
+Baseline
+GrndCtrl
+1
+5
+9
+1
+5
+9
+1
+5
+9
+Figure 5. Counterfactual generation example in CityWalk. Baseline andGrndCtrlare conditioned on left-right mirrored actions, and the
+rollouts are expected to invert the movements of the ground truth. Baseline generation still follows similar left-turn movement as GT
+(trajectory-following failure), whileGrndCtrlgeneration successfully follow inverted right-turn movement.
+mization and diffusion hyperparameters follow the default
+action-conditioned Cosmos-Predict2 post-training configu-
+ration and are listed in Table 3.
+D.2. GRPO Post-Training
+GRPO post-training is substantially more GPU-memory in-
+tensive than SFT because it requires multiple full video roll-
+13
+Initial Image
+GT
+NWM
+GrndCtrl
+1
+5
+9
+1
+5
+9
+1
+5
+9
+Figure 6. Counterfactual generation example in SCAND. NWM andGrndCtrlare conditioned on left-right mirrored actions, and the
+rollouts are expected to invert the movements of the ground truth. NWM generation shows clear sign of scene drift in frames 1-3, ending
+in a more consistent but different scene than the conditional image.
+14
+Component Hyperparameter Value
+Optimization
+SFT/GRPO Optimizer fused AdamW
+SFT/GRPO Learning rate1.0×10 −4
+SFT/GRPO Weight decay0.1
+SFT/GRPO Betas(0.9,0.99)
+SFT/GRPO Epsilon1.0×10 −8
+SFT/GRPO LR schedule constant
+Diffusion and sampling
+SFT/GRPO Precision bfloat16
+SFT Classifier-free guidance7.0
+SFT/GRPO Diffusion timesteps35
+SFT EDM loss scale10.0
+SFT EDMσ cond 1.0×10 −4
+SFT EDMσ data 1.0
+SFT EDM high-σratio0.0
+GRPO Classifier-free guidance0.0
+GRPO Timesteps backpropagated21
+Batching and hardware
+SFT/GRPO GPUs8×A100
+SFT Batch size / GPU8
+SFT Effective batch size64
+GRPO Batch size / GPU1
+GRPO Effective batch size8
+GRPO Rollouts per contextG8
+Table 3. Key hyperparameters for supervised fine-tuning (SFT) and GRPO
+post-training.
+outsˆx1:T per conditioning context while maintaining com-
+putation graphs over all diffusion steps to track per-timestep
+log-probabilities. To fit within memory constraints, we train
+with a batch size of1per GPU on eight A100 GPUs and
+compensate by samplingG= 8stochastic rollouts for each
+contextc= (x 0, a0:T−1 ), which provides sufficient diver-
+sity for group-relative advantage estimation.
+A single GRPO update accumulates gradients through
+the diffusion trajectory to compute per-step likelihood ra-
+tios. However, diffusion timesteps do not contribute
+equally: early steps primarily denoise the main scene con-
+tent, whereas later steps refine fine-grained details and con-
+tribute exponentially smaller likelihood values. Computing
+likelihood ratios over all steps causes the cumulative log-
+likelihood to vanish and destabilizes training. In practice,
+we compute the per-step likelihood ratio only over the first
+60%of diffusion timesteps while still running the full sam-
+pler, which improves both numerical stability and memory
+efficiency.
+D.3. Counterfactual Actions
+We define the action conditioning of our model as
+(x, y, z,roll,pitch,yaw). In practice, we use the absolute
+poses with respect to the conditional image’s camera frame
+for each frame we generate. We follow the standard camera
+coordinate convention withxright,ydown, andzforward.
+We perform left-right mirroring of the ground truth ac-
+tions to obtain the counterfactual actions. Mirroring a tra-
+jectory with respect to the image center corresponds to re-
+flecting motion across the planex= 0and flipping the
+viewing direction around the optical axis. For the trans-
+lational part, this reflection is(x, y, z)⊤ 7→(−x, y, z)⊤,
+which inverts only the lateral component. For small angu-
+lar magnitudes, the viewing direction can be linearized as
+d(pitch,yaw)≈(yaw,pitch,1) ⊤, so mirroring around the
+optical axis sendsd7→(−yaw,−pitch,1) ⊤, correspond-
+ing to(pitch,yaw)7→(−pitch,−yaw). Combining these,
+a 6-DOF action(x, y, z,roll,pitch,yaw)has the counter-
+factual action(−x, y, z,roll,−pitch,−yaw), which is the
+mirror of the original motion with respect to the condition-
+ing image’s center axis.
+This method of obtaining counterfactual actions ensure
+realistic movement of the embodiment as those in the
+datasets. When conditioning using arbitrary actions, the
+model rollouts from the pretrained model are more likely
+to have poorer quality.
+D.4. Evaluators and Rewards
+MapAnything [13] serves as our frozen 3D evaluatorE,
+providing relative pose estimates(∆Rt,∆t t)and per-frame
+depth mapsD t for each rolloutˆx 1:T . VideoAlign [15]
+serves as our frozen video evaluatorV, providing sequence-
+level visual quality, motion quality, and text alignment
+scores. We use only visual and motion quality scores (with
+equal weightingα=β= 0.5) for the video quality reward
+rv, ignoring text alignment since our rollouts are not text-
+conditioned. When GPU memory is constrained, model pa-
+rameters of the evaluators are temporarily offloaded to CPU,
+and re-loaded only when used.
+15

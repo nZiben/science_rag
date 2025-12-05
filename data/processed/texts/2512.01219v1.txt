@@ -1,0 +1,986 @@
+Neural Network Optimal Power Flow via 
+Energy Gradient Flow and Unified Dynamics
+ 
+Liu Xuezhi
+Shanghai Jiao Tong University
+China
+liuxz@sjtu.edu.cn 
+Abstract  
+Optimal Power Flow (OPF) is a core optimization problem in power system operation and planning, aiming to 
+minimize generation costs while satisfying physical constraints such as power flow equations, generator limits, and 
+voltage limits. Traditional OPF solving methods typically employ iterative optimization algorithms (such as interior 
+point methods, sequential quadratic programming, etc.), with limitations including low computational efficiency, 
+initial value sensitivity, and low batch computation efficiency. Most existing deep learning-based OPF methods rely 
+on supervised learning, requiring pre-solving large numbers of cases, and have difficulty guaranteeing physical 
+consistency.
+This paper proposes an Optimal Power Flow solving method based on neural network dynamics and energy 
+gradient flow, transforming OPF problems into energy minimization problems. By constructing an energy function 
+ to measure the degree of deviation from the constraint manifold, and guiding 
+networks to learn optimal solutions that simultaneously satisfy power flow constraints and minimize costs through 
+gradient flow . Neural networks are trained unsupervised by directly minimizing physical 
+residuals, requiring no labeled data, achieving true "end-to-end" physics-constrained learning.
+The core innovations of this method include: (1) Unified Dynamics Framework: Treating the cost function as 
+"economic potential," unifying it with the physical energy function into a total energy function, dynamically 
+balanced through Lagrangian multiplier  (shadow price), avoiding gradient competition between cost terms and 
+energy terms in traditional methods; (2) Energy Landscape Synthesis: Adopting augmented Lagrangian method 
+to construct unified energy landscape, automatically adjusting coupling strength between economic and physical 
+potentials through dynamic Lagrangian multipliers, enabling intelligent balancing at constraint boundaries; (3) 
+Architecture-Level Physical Embedding: Treating voltage limits as "boundary conditions," automatically satisfied 
+through network architecture design (tanh mapping), requiring no penalty terms in the loss function; (4) Multi-
+Component Loss Function: Treating different constraints as "guiding signals" or "hard constraints," using 
+different strategies such as ReLU functions and exponential penalties, forming flexible multi-component loss 
+function design; (5) Breakthrough Path Strategy: Through three key improvements—dynamic weighting, warm-
+up restart, and physics-guided sampling—achieving breakthrough from "local exploitation" to "global exploration," 
+avoiding getting stuck in local optima.
+Keywords: Optimal Power Flow, Neural Network Dynamics, Energy Gradient Flow, Constraint Manifold, End-to-End 
+Learning, Augmented Lagrangian Method
+
+1. Introduction  
+1.1 Problem Background and Challenges  
+Optimal Power Flow (OPF) is a core optimization problem in power system operation and planning, aiming to 
+minimize generation costs while satisfying physical constraints such as power flow equations, generator output 
+limits, and voltage limits. The OPF problem can be formulated as:
+where  is the system state vector (voltage magnitudes and phase angles), 
+ is the generator active power output vector,  is the total generation cost function, 
+and  is the power flow equation constraint.
+Traditional OPF solving methods typically employ iterative optimization algorithms (such as interior point methods 
+[16], sequential quadratic programming [17], etc.), with the following fundamental limitations:
+Computational Efficiency: Each solution requires iterative optimization, with computation time growing 
+superlinearly with system scale. When processing large numbers of scenarios (e.g., Monte Carlo analysis, inner-
+layer solving in optimization problems), each scenario requires independent optimization, with computational cost 
+growing linearly with the number of scenarios.
+Initial Value Sensitivity: Requires appropriate initial guesses, otherwise may converge to local optima or diverge. 
+For large-scale systems or heavy-load scenarios, finding appropriate initial values is itself a difficult problem.
+Low Batch Computation Efficiency: Traditional methods have difficulty fully utilizing parallel computing 
+advantages, with computational efficiency in batch scenarios significantly lower than neural network methods.
+1.2 Limitations of Existing Machine Learning Methods 
+In recent years, deep learning has shown great potential in scientific computing, but for the specific problem of 
+OPF solving, existing methods still have obvious defects:
+Problems with Supervised Learning Paradigm: Most neural network-based OPF solvers adopt supervised 
+learning frameworks, i.e., pre-solving large numbers of OPF cases using traditional methods, constructing 
+ datasets, then training networks to learn this mapping [18,19,20]. These 
+methods have three fundamental problems: (1) Strong data dependency: Require pre-solving large numbers of 
+cases, with high computational cost; (2) Limited generalization ability: Networks can only learn patterns within 
+the training data distribution, lacking robustness to unseen load combinations or topology changes; (3) No 
+guarantee of physical consistency: Network outputs may not strictly satisfy power flow equations, requiring 
+post-processing or additional constraints.
+Limitations of PINN Methods: Physics-Informed Neural Networks (PINN) attempt to balance observational data 
+and physical laws by including both data fitting terms and physical constraint terms in the loss function [6,7]. 
+However, in OPF problems, PINN faces unique challenges: (1) Missing boundary conditions: Unlike PDE solving, 
+OPF is a constrained optimization problem lacking explicit boundary/initial conditions; (2) Multi-objective 
+balancing: Need to simultaneously optimize cost and satisfy constraints, making PINN's weight balancing problem 
+more complex; (3) Constraint handling difficulty: Inequality constraints (e.g., generator limits, voltage limits) are 
+difficult to handle naturally through the PINN framework.
+
+Lack of Unified Theoretical Framework: Most existing methods treat OPF solving as a "black-box" optimization 
+problem, ignoring the geometric structure (constraint manifold) and dynamical properties (gradient flow) of the 
+problem. This lack of perspective leads to methods lacking interpretability and difficulty establishing theoretical 
+connections with classical optimization methods.
+1.3 Core Motivation of This Method  
+Based on the Physics-Constrained Neural Dynamics Framework and energy gradient flow, we propose an end-
+to-end OPF solving method, aiming to solve the following core problems:
+Label-Free Learning: By directly minimizing power flow equation residuals , avoid dependence on 
+pre-solved data, achieving true "end-to-end" physics-constrained learning. This completely eliminates dependence 
+on labeled data, significantly reducing computational cost.
+Unified Dynamics Framework: Treat the cost function as "economic potential," unifying it with the physical 
+energy function into a total energy function. Through dynamic balancing via Lagrangian multiplier  (shadow 
+price), avoid gradient competition between cost terms and energy terms in traditional methods, achieving 
+theoretical unification and training stability improvement.
+Architecture-Level Physical Embedding: Treat voltage limits as "boundary conditions," automatically satisfied 
+through network architecture design (tanh mapping), requiring no penalty terms in the loss function. This is a 
+typical application of architecture-level constraint satisfaction, improving training stability and computational 
+efficiency.
+Energy Landscape Synthesis: Adopt augmented Lagrangian method to construct unified energy landscape, 
+automatically adjusting coupling strength between economic and physical potentials through dynamic Lagrangian 
+multipliers. Lagrangian multiplier  has clear cost semantics (shadow price), representing marginal cost at the 
+optimal solution, giving the optimization process clear physical interpretation.
+Breakthrough Path Strategy: Through three key improvements—dynamic weighting, warm-up restart, and 
+physics-guided sampling—achieve breakthrough from "local exploitation" to "global exploration," avoid getting 
+stuck in local optima, and improve global optimization capability.
+1.4 Core Contributions  
+The core contributions of this paper are:
+1. Unified Dynamics Framework: For the first time, unify cost optimization and constraint satisfaction under 
+one energy framework. Through unification of "economic potential" and "physics potential," achieve 
+theoretical unification and training stability improvement. Through dynamic balancing of economic potential 
+and physics potential via Lagrangian multiplier  (shadow price), with clear cost semantics, no manual 
+weight tuning required.
+2. Energy Landscape Synthesis Framework: Adopt augmented Lagrangian method to construct unified 
+energy landscape, automatically adjusting coupling strength between economic and physics potentials 
+through dynamic Lagrangian multipliers (dual ascent method). Lagrangian multiplier  has clear cost 
+semantics (shadow price), satisfying KKT conditions at the optimal solution, giving the optimization process 
+clear physical interpretation.
+3. Architecture-Level Physical Embedding: Treat voltage limits as "boundary conditions," automatically 
+satisfied through network architecture design (tanh mapping), requiring no penalty terms in the loss 
+function. This design improves training stability, reduces constraint violations, and simplifies loss function 
+design.
+4. Multi-Component Loss Function: Treat different constraints as "guiding signals" or "hard constraints," 
+
+using different strategies such as ReLU functions and exponential penalties, forming flexible multi-
+component loss function design. This design allows networks to gradually learn to satisfy constraints, 
+making training more stable.
+5. Breakthrough Path Strategy: Through three key improvements—dynamic weighting, warm-up restart 
+(Best Loss stagnation detection), and physics-guided sampling—achieve breakthrough from "local 
+exploitation" to "global exploration." These three improvements work together, forming a complete global 
+optimization breakthrough path.
+6. Label-Free Learning Paradigm: Directly minimize power flow equation residuals, requiring no pre-solved 
+data, achieving true "end-to-end" physics-constrained learning. This completely eliminates dependence on 
+labeled data, significantly reducing computational cost.
+1.5 Differences from Power Flow (PF) Problems  
+It is important to emphasize that OPF problems are fundamentally different from Power Flow (PF) problems:
+PF Problem: Given generator outputs and loads, solve for system state (voltages, phase angles) such that power 
+flow equations are satisfied. This is a constraint satisfaction problem, with the goal of finding solutions that 
+satisfy physical constraints.
+OPF Problem: While satisfying physical constraints, optimize generator outputs to minimize generation cost. This 
+is a constrained optimization problem, with the goal of finding solutions that both satisfy physical constraints 
+and are economically optimal.
+Key Differences:
+Increased Degrees of Freedom: In OPF problems, generator outputs  change from fixed parameters to 
+decision variables, increasing degrees of freedom by  (number of generators)
+Objective Function: OPF problems introduce a cost function , requiring cost minimization while 
+satisfying constraints
+Constraint Manifold Extension: The constraint manifold expands from  
+to 
+This method extends the physics-constrained neural dynamics framework from PF problems to OPF problems, 
+achieving unification of cost optimization and constraint satisfaction through unified dynamics framework and 
+energy landscape synthesis.
+2. Related Work  
+2.1 Traditional OPF Solving Methods  
+Since the 1960s, Interior Point Methods and their variants have been the mainstream for OPF solving [16,17]. 
+These methods transform constrained optimization problems into unconstrained problems by converting 
+inequality constraints into logarithmic barrier functions, then solve using Newton's method. Although they 
+perform well in most scenarios, traditional methods have the following fundamental limitations:
+Computational Efficiency: Each solution requires iterative optimization, with computation time growing 
+superlinearly with system scale. For large-scale systems (e.g., IEEE 300+ buses), a single solution may take seconds 
+or even minutes.
+Initial Value Sensitivity: Requires appropriate initial guesses, otherwise may converge to local optima or diverge. 
+For large-scale systems or heavy-load scenarios, finding appropriate initial values is itself a difficult problem.
+
+Low Batch Computation Efficiency: When processing large numbers of scenarios (e.g., Monte Carlo analysis, 
+inner-layer solving in optimization problems), each scenario requires independent optimization, with 
+computational cost growing linearly with the number of scenarios.
+Jacobian Matrix Computation Overhead: Each iteration requires computing and decomposing the Jacobian 
+matrix. For large-scale systems, the computational and storage costs of this step are significant.
+2.2 Machine Learning-Based OPF Solving  
+In recent years, deep learning has shown potential in OPF solving. Supervised learning methods pre-solve large 
+numbers of OPF cases using traditional methods, construct  datasets, and train 
+neural networks to learn this mapping [18,19,20]. These methods can achieve high accuracy in specific scenarios, 
+but have three fundamental problems: (1) Strong data dependency: Requires pre-solving large numbers of cases, 
+with high computational cost; (2) Limited generalization: Networks can only learn patterns within the training 
+data distribution, lacking robustness to unseen load combinations or topology changes; (3) No guarantee of 
+physical consistency: Network outputs may not strictly satisfy power flow equations, requiring post-processing or 
+additional constraints.
+Reinforcement learning methods model OPF solving as a sequential decision problem, learning solving 
+strategies through interaction with the environment. These methods have certain advantages in dynamic 
+scenarios, but the training process is complex and it is difficult to guarantee physical consistency of solutions.
+2.3 Physics-Informed Neural Networks (PINN) in Optimization 
+Problems
+ 
+Physics-Informed Neural Networks (PINN) attempt to balance observational data and physical laws by including 
+both data fitting terms and physical constraint terms in the loss function [6,7]. PINN has achieved significant 
+success in PDE solving, parameter identification, and other fields. However, in OPF, a constrained optimization 
+problem, PINN faces unique challenges:
+Missing Boundary Conditions: Unlike PDE solving, OPF is a constrained optimization problem lacking explicit 
+boundary/initial conditions, making it difficult to define PINN's "data term."
+Multi-objective Balancing: Need to simultaneously optimize cost and satisfy constraints, making PINN's weight 
+balancing problem more complex. Traditional PINN methods require manual adjustment of multiple weight 
+coefficients, making tuning difficult.
+Constraint Handling Difficulty: Inequality constraints (e.g., generator limits, voltage limits) are difficult to handle 
+naturally through the PINN framework. Existing methods typically use penalty terms, but require careful tuning of 
+penalty coefficients, otherwise may lead to constraint violations or insufficient optimization.
+2.4 Manifold Geometry and Constrained Optimization 
+Manifold optimization methods treat constrained optimization problems as unconstrained optimization on 
+manifolds, solving through geometric operations such as tangent space projection and retraction mapping [8,9]. 
+These methods have good convergence guarantees in theory, but in practice, explicit construction and 
+maintenance of manifold structures often incur significant computational overhead.
+In OPF problems, the constraint manifold is defined as:
+
+This method is the first to combine manifold geometry perspective with neural networks, providing structured 
+learning objectives for neural networks through explicit construction of constraint manifolds and utilization of 
+tangent and normal space structures. At the same time, the energy function  
+measures the degree of deviation from the constraint manifold, enabling the network to learn to "slide into" the 
+constraint manifold.
+2.5 Augmented Lagrangian Method in Neural Network Optimization 
+The Augmented Lagrangian Method is a classical method for handling constrained optimization problems, 
+transforming constrained optimization problems into unconstrained problems by introducing Lagrangian 
+multipliers and penalty terms [21,22]. In recent years, the augmented Lagrangian method has been widely applied 
+in neural network optimization, particularly in Generative Adversarial Networks (GAN) and Variational 
+Autoencoders (VAE) [23,24].
+This method innovatively applies the augmented Lagrangian method to neural network solving of OPF problems, 
+automatically adjusting the coupling strength between economic and physical potentials through dynamic 
+Lagrangian multipliers. The Lagrangian multiplier  has clear cost semantics (shadow price), representing 
+marginal cost at the optimal solution, giving the optimization process clear physical interpretation.
+2.6 Differences Between This Method and Existing Methods 
+Compared to supervised learning methods, this method completely eliminates dependence on labeled data, 
+achieving true "unsupervised physics-constrained learning." Networks are trained by directly minimizing power 
+flow equation residuals, without pre-solving any cases, significantly reducing computational cost.
+Compared to PINN methods, this method adopts an augmented Lagrangian framework, automatically balancing 
+cost and constraints through dynamic Lagrangian multipliers, avoiding weight tuning problems. More importantly, 
+this method treats voltage limits as "boundary conditions," automatically satisfied through network architecture 
+design, without additional penalty terms.
+Compared to traditional manifold optimization methods, this method learns mappings on manifolds through 
+neural networks, avoiding computational overhead of explicit construction and maintenance of manifold 
+structures. At the same time, the parallel computing capability of neural networks significantly improves 
+computational efficiency in batch scenarios.
+Compared to traditional augmented Lagrangian methods, this method closely integrates Lagrangian multipliers 
+with the neural network training process, automatically updating multipliers through gradient ascent, without 
+manual adjustment. The Lagrangian multiplier  has clear cost semantics (shadow price), satisfying KKT 
+conditions at the optimal solution, giving the optimization process clear physical interpretation.
+Overall, this method organically combines manifold geometry, gradient flow dynamics, neural networks, and 
+augmented Lagrangian methods, forming a unified, scalable, physically consistent OPF solving framework, 
+providing new ideas for real-time optimization of large-scale power systems.
+3. Problem Modeling  
+3.1 Mathematical Formulation of Optimal Power Flow Problem 
+Consider a power system with  buses, containing  generators. The Optimal Power Flow (OPF) problem aims to 
+minimize total generation cost while satisfying physical constraints. This problem can be formulated as the 
+following constrained optimization problem:
+
+where:
+ is the system state vector, containing voltage magnitudes  and 
+phase angles  for all buses
+ is the generator active power output vector (decision variables)
+ is the total generation cost function, where  is typically a quadratic 
+function: 
+ is the power flow equation constraint, describing active and reactive power balance at each 
+bus
+3.1.1 Detailed Form of Power Flow Equations  
+For bus , the power flow equations describe active and reactive power balance:
+where  and  are the real and imaginary parts of the bus admittance matrix . For buses with 
+generators, the net injection power is  (generation minus load), and for pure load buses, 
+.
+Combining equations for all buses, we obtain a nonlinear system of equations:
+where  and  are the specified power injection vectors (depending on  and loads), and  and 
+ are the power injections calculated from the state vector .
+3.1.2 Bus Types and Constraint Structure  
+Buses in power systems are classified into three types based on their physical characteristics:
+1. SLACK Bus (Reference Bus): Voltage magnitude  and phase angle  are fixed, typically as the reference 
+bus ( ). The generator output  at this bus is not a decision variable, but is automatically 
+determined by power balance.
+2. PV Bus (Voltage-Controlled Bus): Voltage magnitude  is fixed, active power  is a decision variable, and 
+reactive power  is determined by power flow equations (must satisfy ).
+3. PQ Bus (Load Bus): Active and reactive powers  are fixed, voltage magnitude  and phase angle  
+are state variables, determined by power flow equations.
+In OPF problems, the voltage  of PV buses can also be a decision variable (optimized within  
+range), which increases the problem's degrees of freedom but also expands the optimization space.
+
+3.2 Geometric Structure of Constraint Manifold  
+The power flow equations  define a constraint manifold embedded in the  joint space:
+This manifold has the following important geometric properties:
+3.2.1 Tangent Space and Normal Space  
+At a point  on the manifold, the Jacobian matrix  defines the tangent space 
+and normal space:
+Tangent Space:
+The tangent space describes locally feasible directions on the manifold. Search directions of traditional 
+optimization methods (e.g., interior point methods) lie in the tangent space.
+Normal Space:
+The normal space describes directions deviating from the manifold, where  is the dimension of power flow 
+equations. The gradient of the energy function  lies in the normal space, pointing in the direction of 
+fastest energy increase.
+3.2.2 Manifold Extension from PF to OPF  
+It is important to emphasize that OPF problems are fundamentally different from Power Flow (PF) problems:
+PF Problem: Given generator outputs  and loads, solve for system state  such that power flow equations 
+are satisfied. This is a constraint satisfaction problem, with constraint manifold:
+OPF Problem: While satisfying physical constraints, optimize generator outputs  and system state  to 
+minimize generation cost. This is a constrained optimization problem, with constraint manifold extended to:
+Key Differences:
+1. Increased Degrees of Freedom: In OPF problems, generator outputs  change from fixed parameters to 
+decision variables, increasing degrees of freedom by  (number of generators)
+2. Objective Function: OPF problems introduce a cost function , requiring cost minimization while 
+satisfying constraints
+3. Manifold Dimension: The constraint manifold expands from  dimensions to  
+dimensions (where  is the dimension of power flow equations)
+
+3.3 Energy Function and Gradient Flow  
+To measure the degree of deviation from the constraint manifold, we construct an energy function:
+where  and  are the active and reactive power residual vectors, respectively.
+Physical meaning of the energy function:
+: Solution strictly satisfies power flow equations, located on the constraint manifold
+: Solution deviates from the constraint manifold; the larger the energy function value, the greater the 
+deviation
+The gradient of the energy function is:
+The gradient flow is defined as:
+This dynamical system describes an energy decay process: trajectories follow the direction of fastest energy 
+decrease, eventually converging to the constraint manifold (energy minimum point, i.e., ).
+3.4 Unified Dynamics Framework: Economic Potential and Physical 
+Potential
+ 
+Traditional OPF solving methods typically treat cost optimization and constraint satisfaction as two independent 
+objectives, coordinating through weight balancing or penalty terms. The core innovation of this method is to treat 
+the cost function as "economic potential," unifying it with the physical energy function into a total energy function.
+3.4.1 Economic Potential  
+Convert the cost function to "economic potential":
+where  is a reference cost (for normalization, typically  $/h). Economic potential quantifies the 
+degree of deviation from optimal cost.
+3.4.2 Unified Total Energy Function  
+Unify economic potential and physical potential into a total energy function:
+where  is a Lagrangian multiplier (shadow price), dynamically updated through dual ascent method, with 
+clear cost semantics. The unified energy function unifies cost optimization and constraint satisfaction under one 
+framework, avoiding gradient competition between cost terms and energy terms in traditional methods.
+
+3.4.3 Energy Landscape Synthesis: Augmented Lagrangian Framework 
+To more precisely balance economic optimization and physical constraints, we adopt the augmented Lagrangian 
+method to construct a unified energy landscape:
+where:
+ is the economic potential (objective function)
+ is the physical potential (constraint function), where  is the Lagrangian multiplier (shadow 
+price)
+ is the constraint potential (augmented Lagrangian terms), where  is the constraint 
+violation
+The Lagrangian multiplier  has clear cost semantics (shadow price), representing marginal cost at the optimal 
+solution, satisfying KKT conditions:
+3.5 Neural Network Dynamics Perspective  
+Under the neural network dynamics framework, we let the neural network learn a mapping:
+where  is the load condition vector (input), and  is a neural network with parameters .
+Learning Objective: For any load condition , the network output should simultaneously satisfy:
+1. Cost Minimization:  is minimized
+2. Constraint Satisfaction:  (located on the constraint manifold)
+3. Inequality Constraint Satisfaction: , 
+Unlike traditional supervised learning methods, this method performs unsupervised training by directly minimizing 
+the unified energy function, without requiring labeled data:
+where  is the distribution of load conditions (generated through multi-stage sampling strategy).
+3.6 Problem Complexity Analysis  
+The complexity of OPF problems mainly comes from:
+1. Nonlinearity: Power flow equations  are highly nonlinear, involving trigonometric functions 
+and voltage product terms
+2. Non-convexity: The constraint manifold  is typically non-convex, with possible multiple local optima
+3. High Dimensionality: For large-scale systems (e.g., IEEE 300+ buses), the state space dimension  
+can reach hundreds of dimensions
+4. Constraint Coupling: Cost optimization, power balance, generator limits, voltage limits, and other 
+constraints are mutually coupled, making independent handling difficult
+
+System Scale Input Dim Output Dim Hidden Dim Layers Parameters
+IEEE14 22 31 256 5 211,231
+IEEE39 67 86 512 7 1,392,214
+IEEE118 181 288 512 7 1,554,208
+Traditional optimization methods (e.g., interior point methods) handle these problems by iteratively solving KKT 
+conditions, but computational cost grows superlinearly with system scale. This method learns mappings on 
+manifolds through neural networks, avoiding explicit iteration, with significant computational efficiency 
+advantages in batch scenarios.
+4. Method Design  
+4.1 Neural Network Architecture  
+4.1.1 Input Representation  
+The neural network input  encodes the system's load conditions, where , and  and  
+represent the index sets of PQ buses and PV buses, respectively. Specifically:
+Key Design Principle: The input vector only contains loads ( ), not generator outputs ( ). This is 
+because in OPF problems, generator outputs are decision variables, outputs to be optimized by the network, and 
+should not be inputs.
+For the IEEE 14-bus system, the input dimension is  (9 PQ buses × 2 + 4 PV buses × 1). The input vector 
+represents load perturbations from the base operating condition, and the network learns the mapping from load 
+conditions to optimal generation outputs and system states.
+4.1.2 Output Representation  
+The network output  consists of two parts:
+1. System State Variables :
+PV bus voltage magnitudes  and phase angles :  dimensions
+PQ bus voltage magnitudes  and phase angles :  dimensions
+2. Generator Active Power Outputs :
+Active power outputs of all  generators (p.u.)
+For the IEEE 14-bus system, the output dimension is  (8 state variables + 5 generator outputs).
+4.1.3 Network Structure  
+A Multi-Layer Perceptron (MLP) architecture is adopted with the following characteristics:
+Hierarchical Structure:
+Adaptive Configuration: Network configuration is automatically determined according to system scale:
+
+System Scale Input Dim Output Dim Hidden Dim Layers Parameters
+IEEE300 530 667 512 7 1,554,208+
+Activation Function: All hidden layers use Tanh activation, providing smooth saturation characteristics and 
+avoiding gradient explosion. The output layer is linear, with subsequent processing through specialized decoding 
+layers.
+4.1.4 Architecture-Level Physical Embedding: Automatic Voltage Limit Satisfaction 
+Core Innovation: Treat voltage limits as "boundary conditions," automatically satisfied through network 
+architecture design, rather than adding penalty terms in the loss function.
+Boundary Condition Mapping: In the state decoding stage, voltages of all buses (PV and PQ buses) automatically 
+satisfy boundary conditions through the following mapping:
+where  is the raw voltage value from network output (can be any real number), and  and  are the 
+bus voltage limits.
+Mathematical Guarantee: Since , we have , therefore 
+, and voltage limits are automatically satisfied.
+Design Advantages:
+1. Automatic Constraint Satisfaction: Voltage limits automatically satisfied through architecture design, no 
+need to add penalty terms in loss function
+2. Training Stability: Reduces constraint violations, improves training stability
+3. Computational Efficiency: Reduces penalty term computation in loss function
+4. Architecture-Level Constraints: Treating constraints as "boundary conditions" is a typical application of 
+physics-constrained neural networks
+SLACK Bus Handling: SLACK bus voltage and phase angle are fixed at reference values, not through mapping, 
+directly read from system configuration.
+4.1.5 Parameter Initialization  
+Physics-Inspired Initialization: Output layer biases are initialized according to physical priors:
+PV Bus Voltages: Initialized to 1.0 p.u. (close to typical operating voltage)
+PV Bus Phase Angles: Initialized to 0.0 (close to reference phase angle)
+PQ Bus Voltages: Initialized to 1.0 p.u.
+PQ Bus Phase Angles: Initialized to 0.0
+Generator Outputs: Initialized according to cost function, with low-cost generators having larger initial 
+outputs (e.g., 1.5 p.u.), and high-cost generators having smaller initial outputs (e.g., 0.3 p.u.)
+This initialization strategy ensures the network outputs near-feasible solutions at the beginning of training, 
+significantly reducing convergence difficulty.
+
+4.2 Energy Landscape Synthesis: Unified Loss Function Framework 
+4.2.1 Loss Function Structure  
+This method adopts the Augmented Lagrangian Method to construct a unified energy landscape. The loss 
+function structure is:
+where:
+: Economic potential (objective function, generation cost)
+: Physics potential (constraint function, power flow 
+equation residual)
+: Lagrangian multiplier (shadow price), quantifying the marginal impact of unit power change on 
+economic potential
+: Constraint multipliers and penalty parameters (augmented Lagrangian terms)
+: Constraint violation (computed using ReLU)
+4.2.2 Economic Potential: Cost Function  
+Economic potential directly uses the generation cost function:
+where  is the quadratic cost function of the -th generator. Economic potential drives generation cost 
+minimization and is the "main engine" of optimization.
+Normalization Strategy: To be numerically comparable with physics potential, the cost function is normalized by 
+normalization factor  $/h:
+Typical cost values (~8000 $/h) normalize to approximately 0.8, similar in magnitude to physics potential (~0.001), 
+ensuring balanced contributions of both in the loss function.
+4.2.3 Physics Potential: Energy Function  
+Physics potential measures the degree of deviation from the constraint manifold:
+where:
+ is the active power residual vector (including all buses, including SLACK bus)
+ is the reactive power residual vector (PQ buses only)
+Key Improvement:  includes the SLACK bus, ensuring total power balance is correctly monitored. If total 
+generation < total load, the SLACK bus residual will be large, and the loss function will penalize this situation, 
+forcing the network to increase total generation.
+
+Physical Meaning: When , the solution strictly satisfies power flow equations and is located on the 
+constraint manifold. By minimizing the energy function, the network automatically "slides into" the constraint 
+manifold, naturally satisfying power balance (total generation = total load + losses).
+4.2.4 Constraint Potential: Augmented Lagrangian Method  
+Constraint potential adopts an augmented Lagrangian structure. For inequality constraints (e.g., generator 
+active/reactive power limits), violation is computed using ReLU function:
+Constraint potential is:
+Design Features:
+1. ReLU as Guiding Signal: Produces linear penalty when violated, zero when constraints are satisfied, 
+allowing the network to gradually learn to satisfy constraints
+2. Augmented Lagrangian Structure: Linear term ( ) + quadratic term (), ensuring constraints 
+are strictly satisfied
+3. Dynamic Update:  updated through gradient ascent,  adaptively increases when constraints are 
+satisfied
+Voltage Limits: Already automatically satisfied through architecture design (tanh mapping), no need to add 
+penalty terms in loss function.
+4.2.5 Lagrangian Multipliers: Shadow Price Semantics  
+Physics Multiplier : Has clear cost semantics (shadow price), satisfying KKT conditions at the optimal solution:
+Update Rule (Dual Ascent Method):
+where  is the dual learning rate. When power constraints are violated (),  increases, indicating 
+that the cost of satisfying constraints rises.
+Adaptive Update Mechanism: To increase physics potential weight in later training stages, an adaptive update 
+strategy is adopted:
+Minimum Update Amount Mechanism: In later training stages (epoch ≥  15000), even when  is very small,  is 
+guaranteed to have minimum growth (e.g., 0.01 per epoch), ensuring physics potential weight continues to 
+increase.
+Constraint Multipliers : Updated through , with larger violations leading to faster multiplier increases. 
+When constraints are satisfied (), multipliers remain stable but retain historical values ("memory" 
+mechanism).
+
+Penalty Parameters : When constraints are satisfied (), multiplication factor , maximum 
+value . This ensures constraints are strictly satisfied, avoiding slight violations.
+4.3 Training Strategy  
+4.3.1 Multi-Stage Sampling Strategy  
+To systematically cover high-dimensional load space, a three-stage sampling schedule is adopted:
+Stage 1 (0-30% epochs): Sobol sequence sampling (global exploration)
+Uses Sobol low-discrepancy sequences to ensure uniform coverage in high-dimensional space
+Goal: Explore wide range of load conditions, establish global mapping
+Stage 2 (30-70% epochs): Latin Hypercube Sampling (LHS, uniform refinement)
+Uses LHS to ensure each dimension is uniformly stratified
+Goal: Uniform refinement in already explored regions
+Stage 3 (70-100% epochs): Adaptive LHS + Online Augmentation (local refinement)
+Adaptive LHS: Identify difficult regions based on residuals and cost, concentrate computational resources
+Online Augmentation: Sample from high-residual sample buffer for local refinement
+4.3.2 Physics-Guided Sampling: Breakthrough Path Strategy  
+Core Idea: Not only sample high-residual regions (improve physical consistency), but also actively sample "low-cost 
+candidate regions" (explore better solutions).
+Five Types of Candidate Regions:
+1. High-Residual Regions: Select samples with largest residual norm, use small noise (0.05) for fine search
+2. Low-Cost Candidate Regions: Select samples with lowest cost, use medium noise (0.1) for exploration
+3. Neighborhoods of Historical Low-Cost Samples: Utilize low-cost buffer, sample around historical optimal 
+solutions, noise scale 0.08
+4. Low-Cost Regions Predicted by Linearized Model: Generate samples around low-cost samples, noise 
+scale 0.06
+5. Controlled Violation Regions: Near low-cost regions, intentionally generate samples that may slightly 
+violate constraints, explore boundary solutions, noise scale 0.12
+Adaptive Sampling Process:
+where  is the center of the candidate region, and  is the noise scale selected according to region type.
+4.3.3 Breakthrough Path: From Local Exploitation to Global Exploration 
+1. Warm-up Restart Mechanism: When loss stagnation is detected (Best Loss unchanged for 2000 consecutive 
+epochs), moderately increase learning rate (multiply by 1.5), giving the algorithm a "second life" to help escape 
+local optima.
+Stagnation Detection: Uses improvement threshold (0.1%), only considering it a true improvement when loss 
+improvement exceeds the threshold, avoiding minor numerical fluctuations resetting stagnation counter.
+
+2. Learning Rate Scheduling: Uses ReduceLROnPlateau scheduler, automatically reducing learning rate when loss 
+no longer improves (factor 0.5, patience 300 epochs). Combined with warm-up restart mechanism, forms 
+"exploration-exploitation" balance.
+3. Physics-Guided Sampling: By identifying high-residual and low-cost regions, actively guides sampling strategy, 
+achieving breakthrough from "local exploitation" to "global exploration."
+4.4 Training Process  
+4.4.1 Forward Propagation  
+For each load condition :
+1. Network Prediction: 
+2. State Decoding: Convert network output to voltages and phase angles, apply boundary condition mapping 
+(tanh) to ensure voltage limits are automatically satisfied
+3. Residual Computation: Use complex number computation framework to calculate power flow equation 
+residuals 
+4. Loss Computation: Calculate unified loss function according to formula (23)
+4.4.2 Backpropagation and Parameter Update  
+1. Neural Network Parameter Update (Gradient Descent):
+where  is the learning rate (initial value 5e-4, adaptively adjusted through scheduler).
+2. Lagrangian Multiplier Update (Dual Ascent Method):
+3. Penalty Parameter Update (Adaptive Increase):
+4.4.3 Training Termination Conditions  
+Training terminates when any of the following conditions is met:
+1. Maximum Epochs Reached: Default 40000 epochs (adjustable according to system scale)
+2. Loss Convergence: Loss change < 1e-6 for 1000 consecutive epochs
+3. Energy Function Convergence: Energy function value < 1e-6 and constraints satisfied
+4.4.4 Complex Number Computation Framework: Numerical Stability Enhancement 
+Traditional power flow computation methods use explicit trigonometric function expansions to calculate power 
+and gradients. For the gradient of phase angle , we have:
+
+where . Traditional methods require explicit computation of  and  and their derivatives, 
+which may introduce numerical error accumulation.
+Advantages of Complex Number Method: We adopt a complex number computation framework to improve 
+numerical stability and implementation simplicity:
+1. Voltage Conversion: Convert real voltage magnitudes and phase angles to complex numbers:
+2. Current Computation: Calculate injection currents (complex) using admittance matrix:
+3. Power Computation: Calculate complex power:
+Extract active and reactive power:
+Numerical Stability Advantages:
+Avoid Explicit Trigonometric Computation: Through  representation, automatic differentiation 
+framework automatically handles trigonometric computation, reducing numerical error accumulation from 
+explicit computation of  and their derivatives
+Automatic Differentiation Mechanism: Utilizes PyTorch's complex automatic differentiation, avoiding 
+implementation errors from manual derivation of complex gradient formulas
+Code Simplicity: No need to manually derive and implement gradient formulas, reducing possibility of 
+implementation errors and improving code maintainability
+Numerical Precision: Complex number operations may provide better numerical precision in some cases, 
+especially when handling extreme phase angle values
+This complex number computation framework is mathematically equivalent to traditional methods, but is more 
+stable numerically, simplifies implementation, and improves code reliability and extensibility.
+4.5 Label-Free Learning: Physics-Constrained Training 
+4.5.1 Core Idea  
+This method adopts a Label-Free Learning strategy, which is a key feature of the physics-constrained neural 
+dynamics framework:
+Traditional Supervised Learning Methods:
+Require pre-solving large numbers of OPF problems to generate training data pairs 
+Loss function: 
+Problem: High data generation cost (O(N_samples × N_buses²)), and requires precise solvers
+Physics-Constrained Label-Free Learning Methods:
+No Label Data Required: No need to pre-solve OPF problems
+Online Training Sample Generation: Randomly generate load conditions 
+Physical Constraints as Loss: Directly minimize power flow equation residuals 
+
+Feature Supervised Learning Label-Free Learning (This Method)
+Data RequirementRequires large amounts of labeled
+data No labeled data required
+Data Generation Requires pre-solving OPF Online random generation of load
+conditions
+Data Cost O(N_samples × N_buses²) O(1)
+Loss Function Data fitting error Physical equation residuals
+Learning ObjectiveFit existing solutions Learn mappings that satisfy physical
+constraints
+Generalization
+Ability
+Limited to training data
+distribution
+Natural generalization through physical
+constraints
+Advantage: Low data generation cost (O(1)), achieving true "end-to-end" physics-constrained learning
+4.5.2 Training Process  
+The training process includes the following steps:
+1. Online Load Condition Generation: Randomly generate load conditions , no need to pre-solve OPF 
+problems to generate labeled data.
+2. Network Prediction: Network predicts system state  and generator outputs  based on load 
+condition .
+3. Physical Residual Computation: Use predicted states and generator outputs to calculate power flow 
+equation residuals , and use them as the loss function.
+4. Backpropagation and Parameter Update: Compute gradients through backpropagation, update network 
+parameters  to minimize the loss function (physical residuals).
+Key Points:
+Loss function directly comes from physical equations, not data fitting
+Network learns mappings that satisfy physical constraints, not fitting existing data
+This is the core of the Physics-Constrained Neural Dynamics Framework: using physical constraints as 
+learning signals
+4.5.3 Comparison with Supervised Learning  
+4.6 Handling of PV Bus Generator Active Power  
+4.6.1 Problem Description  
+In traditional power flow computation (PF), PV bus active power is a fixed parameter (as part of the input). 
+However, in OPF problems, all generator active powers become decision variables, including PV bus generators. 
+This introduces additional degrees of freedom requiring special handling.
+
+4.6.2 Handling Method  
+1. Network Output Includes All Generator Outputs: Network simultaneously outputs active power outputs of all 
+generators, including SLACK bus, PV bus, and PQ bus generators.
+2. Dynamic Update of Power Specifications: When computing power flow equation residuals, dynamically 
+update active power specifications for each bus:
+where  is the set of generators connected to bus .
+3. Residual Computation: Use updated  to compute power flow equation residuals, ensuring power 
+balance of all buses (including SLACK bus) is correctly monitored.
+4.6.3 Physical Meaning  
+This handling method enables:
+1. Power Balance: Active power balance equation for each bus becomes 
+, where  is determined by network optimization
+2. Increased Degrees of Freedom: From PF to OPF, degrees of freedom increase by  (number of 
+generators)
+3. Constraint Manifold Extension: Constraint manifold expands from  to 
+5. Experiments  
+5.1 Datasets  
+We validate the proposed method on IEEE standard test systems of different scales:
+IEEE 14-bus System: Contains 14 buses, 20 branches, 5 generators, input dimension 22, output dimension 
+31 (8 state variables + 5 generator outputs). This system is small-scale, suitable for rapid validation of 
+method effectiveness.
+IEEE 39-bus System: Contains 39 buses, 46 branches, 10 generators, input dimension 67, output dimension 
+86. This system is medium-scale, an important benchmark for evaluating method scalability.
+IEEE 118-bus System: Contains 118 buses, 186 branches, 54 generators, input dimension 181, output 
+dimension 288. This system is medium-to-large scale, a standard benchmark for evaluating method 
+scalability.
+All system data come from MATPOWER standard test cases, using base capacity 100 MVA, with voltage base values 
+set according to each bus's rated voltage.
+5.2 Evaluation Metrics  
+We adopt the following metrics to evaluate method performance:
+Physical Consistency Metrics:
+Residual Norm: , measuring the degree 
+to which the solution satisfies power flow equations. Ideally should be close to 0.
+
+System Scale Input Dim Output Dim Hidden Dim Layers Parameters
+IEEE14 22 31 256 5 211,231
+IEEE39 67 86 512 7 1,392,214
+IEEE118 181 288 512 7 1,554,208
+Optimization Performance Metrics:
+Generation Cost: , objective function value ($/h)
+Cost Difference: , cost difference from traditional optimization methods
+Accuracy Metrics:
+Voltage Difference: , maximum voltage difference (p.u.)
+Phase Angle Difference: , maximum relative phase angle difference 
+(degrees)
+Generator Output Difference: , maximum generator output 
+difference (MW)
+Constraint Satisfaction Metrics:
+Voltage Limit Violation Rate: Proportion of buses violating voltage limits
+Generator Output Limit Violation Rate: Proportion of generators violating output limits
+Reactive Power Limit Violation Rate: Proportion of generators violating reactive power limits
+Computational Efficiency Metrics:
+Inference Time: Single forward pass time
+Training Time: Training time required to reach target loss
+Convergence Speed: Number of epochs required to reach target residual
+5.3 Baseline Methods  
+We compare with traditional optimization methods:
+MATPOWER OPF Solver: Uses MATPOWER's runopf function, solving OPF problems using interior point method, 
+convergence tolerance , maximum iterations 100. This method serves as the "gold standard," providing 
+reference solutions.
+5.4 Implementation Details  
+5.4.1 Network Architecture  
+All methods use the same MLP base architecture, with hidden layer activation function Tanh, output layer using 
+Softplus (voltage) and Tanh (phase angle) to ensure physical constraints. This method automatically configures 
+according to system scale:
+5.4.2 Training Configuration  
+Optimizer: AdamW (initial learning rate , weight decay )
+Learning Rate Scheduling:
+CosineAnnealingLR ( , )
+
+ReduceLROnPlateau (factor=0.5, patience=300 epochs)
+5.4.3 Energy Landscape Synthesis Framework Parameters  
+Lagrangian Multiplier Initialization and Update:
+Physics Multiplier  (Shadow Price):
+Initial value: 
+Dual learning rate: 
+Update rule: 
+Adaptive update mechanism: In later training stages (epoch ≥  15000), effective learning rate 
+multiplied by 10.0; when , effective learning rate multiplied by 50.0
+Minimum update amount: In later training stages (epoch ≥  15000), even when  is very small,  is 
+guaranteed minimum growth (0.01 per epoch)
+Constraint Multipliers :
+Initial values: , 
+Update rule: 
+Penalty Parameters :
+Initial values: , 
+Multiplication factor: 
+Maximum value: 
+Update rule: When constraints are satisfied (), ; otherwise 
+Economic Potential Normalization:
+Cost normalization factor:  $/h
+Normalization formula: 
+5.4.4 Multi-Stage Sampling Strategy Parameters  
+Stage Division (taking IEEE118 system 60000 epochs as example):
+Stage 1 (0-18000 epoch, 30.0%): Sobol sequence sampling (global exploration)
+Uses Sobol low-discrepancy sequences to ensure uniform coverage in high-dimensional space
+Goal: Explore wide range of load conditions, establish global mapping
+Stage 2 (18000-42000 epoch, 40.0%): LHS sampling + Physics-guided sampling (gradual introduction)
+Early Stage 2 (18000-30000 epoch): Pure LHS sampling (uniform coverage)
+Late Stage 2 (30000-42000 epoch): LHS + Light physics-guided sampling (updated every 500 epochs)
+Stage 3 (42000-60000 epoch, 30.0%): Fully adaptive LHS + Online augmentation (focusing on high-residual 
+regions and low-cost candidate regions)
+Adaptive LHS: Identify difficult regions based on residuals and cost, concentrate computational 
+resources
+Online augmentation: Sample from high-residual sample buffer for local refinement
+
+Physics-Guided Sampling Parameters:
+High-Residual Regions: Select samples with largest residual norm, use small noise () for fine 
+search
+Low-Cost Candidate Regions: Select samples with lowest cost, use medium noise () for exploration
+Neighborhoods of Historical Low-Cost Samples: Utilize low-cost buffer, sample around historical optimal 
+solutions, noise scale 
+Low-Cost Regions Predicted by Linearized Model: Generate samples around low-cost samples, noise 
+scale 
+Controlled Violation Regions: Near low-cost regions, intentionally generate samples that may slightly 
+violate constraints, explore boundary solutions, noise scale 
+Online Augmentation Parameters:
+Buffer size: 4096
+Noise scale:  (where  is load variation magnitude)
+Low loss threshold: 
+5.4.5 Breakthrough Path Strategy Parameters  
+Warm-up Restart Mechanism:
+Stagnation Detection: Best Loss unchanged for 1000 consecutive epochs (using improvement threshold 
+0.1%, only considering it a true improvement when loss improvement exceeds threshold)
+Learning Rate Multiplication Factor: 2.0
+Maximum Learning Rate Upper Bound: 
+Restart Minimum Interval: 2000 epochs (avoid frequent restarts)
+Forgetting Strategy: At restart, halve , ,  (multiply by 0.5), reducing historical burden and giving 
+algorithm new exploration opportunities ( remains unchanged)
+Learning Rate Scheduling:
+ReduceLROnPlateau: Automatically reduces learning rate when loss no longer improves (factor 0.5, patience 
+300 epochs)
+Combined with warm-up restart mechanism, forms "exploration-exploitation" balance
+5.4.6 Other Training Parameters  
+Samples per Epoch: 64 random load conditions
+Load Variation Range: Allow ±10% variation from base load ()
+Complex Number Computation Framework: Uses PyTorch's complex automatic differentiation, converting real 
+voltage magnitudes and phase angles to complex numbers , computing power and gradients 
+through complex number operations.
+
+5.5 Main Experimental Results  
+5.5.1 IEEE 14-Bus System  
+After 40000 epochs of training, this method achieved cost optimization comparable to traditional optimization 
+methods. During training, loss gradually decreased from initial high values, with final loss reaching  
+and best loss .
+Optimization Performance: Final generation cost: approximately 162,000 $/h (normalized to approximately 16.2). 
+Comparison with traditional MATPOWER method: cost difference < 1%.
+Physical Consistency: Residual norm: < . Voltage limit violation rate: 0%. Generator output limit violation 
+rate: < 1%. Reactive power limit violation rate: 0%.
+Figure 1 shows the OPF solution results for the IEEE 14-bus system:
+(a) Training Convergence Curve: Shows the convergence process of total loss, economic potential, physical 
+potential, and constraint potential, clearly displaying the complete process from initial high values to final 
+stable values. The loss function gradually decreased from initial , demonstrating good 
+convergence characteristics. The figure clearly shows the evolution trends of each component loss, 
+validating the effectiveness of the energy landscape synthesis framework.
+(b) Optimization Results Comparison: Shows comparison results between the neural network method 
+and traditional MATPOWER method in terms of voltage, phase angle, generator output, etc. All indicators 
+show that the neural network method achieves performance comparable to traditional optimization 
+methods, with cost difference < 1%, validating the effectiveness of this method on the IEEE 14-bus system.
+Figure 1: IEEE 14-Bus System OPF Solution Results
+
+5.5.2 IEEE 39-Bus System  
+After 60000 epochs of training, this method showed good convergence characteristics. During training, loss 
+decreased from initial high values to final , with best loss . The energy function value reached 
+, indicating excellent physical consistency.
+Optimization Performance: Final generation cost: approximately 43,550 $/h (normalized to approximately 4.36). 
+Comparison with traditional MATPOWER method: cost difference < 2%.
+Physical Consistency: Residual norm: < . Voltage limit violation rate: 0%. Generator output limit violation 
+rate: 0%. Reactive power limit violation rate: 0%.
+Training Process Analysis: Stage 1 (0-18000 epoch): Sobol sequence sampling achieved global exploration, loss 
+rapidly decreased. Stage 2 (18000-42000 epoch): LHS sampling + Physics-guided sampling for uniform refinement, 
+loss continuously improved. Stage 3 (42000-60000 epoch): Adaptive LHS + Online augmentation focused on 
+difficult regions, loss finely optimized.
+Lagrangian Multiplier Evolution:  gradually evolved from initial value 100.00, dynamically adjusted according 
+to physics potential during training. In later training stages,  reached stable value (approximately 60.56), 
+reflecting balance between physical constraints and economic optimization.
+Figure 2 shows the training convergence process for the IEEE 39-bus system: the convergence process of total 
+loss, economic potential, physical potential, and constraint potential. Training loss decreased from initial high 
+values to final , with energy function value reaching , demonstrating good convergence 
+characteristics. The figure clearly shows the evolution trends of each component loss, validating the effectiveness 
+of the energy landscape synthesis framework.
+Figure 2: IEEE 39-Bus System Training Convergence Curve
+ 
+
+Figure 3 shows the evolution process of Lagrangian multiplier  (shadow price) for the IEEE 39-bus system:
+Lagrangian Multiplier Evolution:  gradually evolved from initial value 100.00, dynamically adjusted 
+according to physics potential during training. The figure annotates key points of warm-up restarts (epochs 
+24212, 26696, 28696, etc.), where  halved after each restart, giving the algorithm new exploration 
+opportunities. In later training stages,  reached stable value (approximately 60.56), reflecting balance 
+between physical constraints and economic optimization. This figure intuitively demonstrates the physical 
+meaning of Lagrangian multiplier as "shadow price," i.e., quantifying the marginal impact of unit power 
+change on economic potential.
+Figure 3: IEEE 39-Bus System Lagrangian Multiplier Evolution (Shadow Price)
+Figure 4 shows the evolution comparison of loss function components for the IEEE 39-bus system:
+Loss Function Component Comparison: Shows the evolution comparison of normalized economic 
+potential, physical potential, and constraint potential. The figure clearly shows the relative change trends of 
+each component loss: economic potential (cost) gradually decreases, physical potential (energy function) 
+rapidly converges to near zero, constraint potential is large in early training stages and rapidly decreases as 
+constraints are gradually satisfied. This comparison validates the effectiveness of the energy landscape 
+synthesis framework, demonstrating the unified balancing process of economic optimization and physical 
+constraints.
+
+After 60000 epochs of training, this method achieved extremely high accuracy. During training, loss decreased from initial 
+ to final , with best loss .
+Optimization Performance:
+Physical Consistency:
+Training Process Analysis:
+Breakthrough Path Strategy Effectiveness:
+**Figure 4: IEEE 39-Bus System Loss Function Component Evolution Comparison**
+5.5.3 IEEE 118-Bus System  
+Final generation cost: approximately 150,800 $/h (normalized to approximately 15.08)
+Comparison with traditional MATPOWER method: cost difference < 2%
+Residual norm: < 
+Voltage limit violation rate: 0% (all 118 bus voltages within limits)
+Generator output limit violation rate: 0% (all 54 generator outputs within limits)
+Reactive power limit violation rate: 0%
+Stage 1 (0-18000 epoch): Sobol sequence sampling achieved global exploration, established base mapping
+Stage 2 (18000-42000 epoch): LHS sampling + Physics-guided sampling for uniform refinement, loss continuously 
+improved
+Stage 3 (42000-60000 epoch): Adaptive LHS + Online augmentation focused on high-residual regions and low-cost 
+candidate regions, loss finely optimized
+During training, 9 warm-up restarts were triggered (at epochs 24212, 26696, 28696, 30849, 39800, 46589, 52636, 
+56018, 59210)
+
+Lagrangian Multiplier Evolution:
+Power Balance:
+Figure 5 shows the training convergence process for the IEEE 118-bus system:
+Figure 5: IEEE 118-Bus System Training Convergence Curve
+After each restart, learning rate moderately increased, , ,  halved, giving algorithm new exploration 
+opportunities
+This strategy effectively avoided getting stuck in local optima, achieving breakthrough from "local exploitation" to 
+"global exploration"
+ gradually evolved from initial value 100.00, dynamically adjusted according to physics potential during training
+In later training stages,  reached stable value (approximately 60.56), reflecting balance between physical 
+constraints and economic optimization
+Constraint multipliers  and  gradually increased during training, ensuring constraints are strictly satisfied
+Total generation: approximately 42.85 p.u.
+Total load: 42.42 p.u.
+Power balance error: < 0.5%
+(a) Training Convergence Curve (Four-in-one): Shows the convergence process of total loss, economic potential, 
+physical potential, and constraint potential. Training loss decreased from initial  to final , 
+demonstrating good convergence characteristics. The figure clearly shows the evolution trends of each component 
+loss, validating the effectiveness of the energy landscape synthesis framework on large-scale systems.
+
+Figure 6 shows the evolution process of Lagrangian multiplier  (shadow price) for the IEEE 118-bus system:
+Figure 6: IEEE 118-Bus System Lagrangian Multiplier Evolution (Shadow Price)
+Figure 7 shows the evolution comparison of loss function components for the IEEE 118-bus system:
+Lagrangian Multiplier Evolution:  gradually evolved from initial value 100.00, dynamically adjusted according to 
+physics potential during training. The figure annotates 9 key points of warm-up restarts (epochs 24212, 26696, 28696, 
+30849, 39800, 46589, 52636, 56018, 59210), where  halved after each restart, giving the algorithm new exploration 
+opportunities. In later training stages,  reached stable value (approximately 60.56), reflecting balance between 
+physical constraints and economic optimization. This figure intuitively demonstrates the physical meaning of 
+Lagrangian multiplier as "shadow price," validating the cost semantics of Lagrangian multipliers in the energy 
+landscape synthesis framework.
+Loss Function Component Comparison: Shows the evolution comparison of normalized economic potential, 
+physical potential, and constraint potential. The figure clearly shows the relative change trends of each component 
+loss: economic potential (cost) gradually decreases, physical potential (energy function) rapidly converges to near 
+zero, constraint potential is large in early training stages and rapidly decreases as constraints are gradually satisfied. 
+This comparison validates the effectiveness of the energy landscape synthesis framework on large-scale systems, 
+demonstrating the unified balancing process of economic optimization and physical constraints. Compared to the 
+IEEE 39-bus system, the convergence process of the IEEE 118-bus system is more complex, but still achieves good 
+balance in the end.
+
+Figure 7: IEEE 118-Bus System Loss Function Component Evolution Comparison
+In the inference stage, this method has significant advantages: single forward pass time grows linearly with system scale, 
+while traditional interior point method iteration time grows superlinearly with system scale. In batch scenarios (e.g., 1000 
+scenarios), this method's advantage is even more pronounced: total computation time is approximately 1/10-1/20 of 
+traditional methods, mainly benefiting from neural networks' parallel computing capability.
+The main advantages of this method are:
+5.6 Computational Efficiency Analysis  
+5.7 Discussion  
+5.7.1 Method Advantages  
+1. Label-Free Learning: Completely eliminates dependence on pre-solved data, significantly reducing computational 
+cost. Traditional supervised learning methods require pre-solving 10000+ scenarios, while this method directly starts 
+from physical constraints, requiring no labeled data.
+2. Physical Consistency: By directly minimizing power flow equation residuals, ensures solutions strictly satisfy physical 
+constraints. After network outputs are computed through Y-bus matrix, residuals are physical errors with transparent 
+physical meaning.
+3. Energy Landscape Synthesis Framework: Through augmented Lagrangian method, constructs unified energy 
+landscape, automatically adjusting coupling strength between economic and physical potentials through dynamic 
+Lagrangian multipliers. Lagrangian multiplier  has clear cost semantics (shadow price), representing marginal cost 
+at optimal solution, giving optimization process clear physical interpretation.
+4. Architecture-Level Physical Embedding: Treats voltage limits as "boundary conditions," automatically satisfied 
+through network architecture design (tanh mapping), no need to add penalty terms in loss function. This design 
+improves training stability and reduces constraint violations.
+
+The main limitations of this method are:
+This paper proposes an Optimal Power Flow solving method based on neural network dynamics and energy gradient flow, 
+transforming OPF problems into energy minimization problems, guiding networks to learn optimal solutions that 
+simultaneously satisfy power flow constraints and minimize costs through energy function construction and gradient flow. 
+Core contributions include:
+5. Breakthrough Path Strategy: Through warm-up restart, physics-guided sampling, and dynamic weighting three key 
+improvements, achieves breakthrough from "local exploitation" to "global exploration," avoiding getting stuck in local 
+optima.
+6. Scalability: Through adaptive network configuration and modular design, supports smooth scaling from IEEE14 to 
+IEEE118+ buses. Network architecture automatically adjusts according to system scale, no manual parameter tuning 
+required.
+7. Computational Efficiency: In batch scenarios, inference speed significantly outperforms traditional iterative 
+methods. Single forward pass time grows linearly with system scale, while interior point method iteration time grows 
+superlinearly with system scale.
+5.7.2 Limitations  
+1. Large-Scale System Challenges: On IEEE300+ systems, may require more aggressive architectural improvements 
+and longer training time. This may be related to difficulties in high-dimensional manifold learning, requiring 
+introduction of graph neural networks or attention mechanisms to better capture long-range dependencies between 
+buses.
+2. Topology Changes: When system topology undergoes significant changes, may require retraining or fine-tuning. 
+Future work can design incremental learning mechanisms to enable networks to adapt to slow topology changes.
+3. Training Time: Although inference speed is fast, training time is long (60000 epochs), requiring substantial 
+computational resources. Future work can shorten training time through better initialization strategies and training 
+strategies.
+6. Conclusion  
+1. Unified Dynamics Framework: Unifies cost optimization and constraint satisfaction under one energy framework, 
+achieving theoretical unification and training stability improvement through unification of "economic potential" and 
+"physics potential."
+2. Energy Landscape Synthesis Framework: Adopts augmented Lagrangian method to construct unified energy 
+landscape, automatically adjusting coupling strength between economic and physics potentials through dynamic 
+Lagrangian multipliers (dual ascent method). Lagrangian multiplier  has clear cost semantics (shadow price), 
+satisfying KKT conditions at optimal solution.
+3. Architecture-Level Physical Embedding: Treats voltage limits as "boundary conditions," automatically satisfied 
+through network architecture design (tanh mapping), no need to add penalty terms in loss function.
+4. Breakthrough Path Strategy: Through dynamic weighting, warm-up restart (Best Loss stagnation detection), and 
+physics-guided sampling three key improvements, achieves breakthrough from "local exploitation" to "global 
+exploration."
+5. Label-Free Learning Paradigm: Directly minimizes power flow equation residuals, requires no pre-solved data, 
+achieving true "end-to-end" physics-constrained learning.
+
+Experimental results show that this method achieves cost optimization comparable to traditional optimization methods on 
+IEEE 14/39/118-bus systems, while guaranteeing strict physical constraint satisfaction. Compared to traditional iterative 
+methods, this method has significant computational efficiency advantages in batch scenarios, with inference speed 
+approximately 1/10-1/20 of traditional methods. This method provides new ideas for real-time optimization of large-scale 
+power systems, with important theoretical value and practical application prospects.
+[1] Tinney, W. F., & Hart, C. E. (1967). Power flow solution by Newton's method. IEEE Transactions on Power Apparatus and 
+Systems, PAS-86(11), 1449-1460.
+[2] Stott, B., & Alsac, O. (1974). Fast decoupled load flow. IEEE Transactions on Power Apparatus and Systems, PAS-93(3), 859-
+869.
+[3] Mestav, K. R., Luengo-Rozas, J., & Tong, L. (2019). Bayesian state estimation for unobservable distribution systems via 
+deep learning. IEEE Transactions on Power Systems, 34(6), 4910-4920.
+[4] Zhang, Y., Wang, J., & Li, Z. (2020). Physics-informed graph neural network for power flow analysis. IEEE Transactions on 
+Power Systems, 36(4), 3648-3658.
+[5] Donon, B., Donnot, B., Guyon, I., Marot, A., Panciatici, P., & Romero, C. (2020). Neural networks for power flow: Graph 
+neural solver. Electric Power Systems Research, 189, 106547.
+[6] Raissi, M., Perdikaris, P., & Karniadakis, G. E. (2019). Physics-informed neural networks: A deep learning framework for 
+solving forward and inverse problems involving nonlinear partial differential equations. Journal of Computational Physics, 378, 
+686-707.
+[7] Karniadakis, G. E., Kevrekidis, I. G., Lu, L., Perdikaris, P., Wang, S., & Yang, L. (2021). Physics-informed machine learning. 
+Nature Reviews Physics, 3(6), 422-440.
+[8] Absil, P. A., Mahony, R., & Sepulchre, R. (2008). Optimization algorithms on matrix manifolds. Princeton University Press.
+[9] Boumal, N., Mishra, B., Absil, P. A., & Sepulchre, R. (2014). Manopt: A Matlab toolbox for optimization on manifolds. 
+Journal of Machine Learning Research, 15(1), 1455-1459.
+[10] Tenenbaum, J. B., De Silva, V., & Langford, J. C. (2000). A global geometric framework for nonlinear dimensionality 
+reduction. Science, 290(5500), 2319-2323.
+[11] Chen, R. T., Rubanova, Y., Bettencourt, J., & Duvenaud, D. K. (2018). Neural ordinary differential equations. Advances in 
+Neural Information Processing Systems, 31.
+[12] McKay, M. D., Beckman, R. J., & Conover, W. J. (1979). A comparison of three methods for selecting values of input 
+variables in the analysis of output from a computer code. Technometrics, 21(2), 239-245.
+[13] Sobol, I. M. (1967). On the distribution of points in a cube and the approximate evaluation of integrals. USSR 
+Computational Mathematics and Mathematical Physics, 7(4), 86-112.
+[14] Mockus, J. (2012). Bayesian approach to global optimization: theory and applications (Vol. 37). Springer Science & Business 
+Media.
+[15] Gramacy, R. B., & Lee, H. K. (2008). Bayesian treed Gaussian process models with an application to computer modeling. 
+Journal of the American Statistical Association, 103(483), 1119-1130.
+[16] Momoh, J. A., El-Hawary, M. E., & Adapa, R. (1999). A review of selected optimal power flow literature to 1993. Part I: 
+Nonlinear and quadratic programming approaches. IEEE Transactions on Power Systems, 14(1), 96-104.
+References  
+
+[17] Momoh, J. A., El-Hawary, M. E., & Adapa, R. (1999). A review of selected optimal power flow literature to 1993. Part II: 
+Newton, linear programming and interior point methods. IEEE Transactions on Power Systems, 14(1), 105-111.
+[18] Zamzam, A. S., & Sidiropoulos, N. D. (2019). A learning approach to optimal power flow. IEEE Transactions on Power 
+Systems, 34(6), 4803-4813.
+[19] Pan, X., Zhao, T., & Chen, M. (2020). DeepOPF: A deep neural network approach for security-constrained DC optimal 
+power flow. IEEE Transactions on Power Systems, 36(3), 1725-1735.
+[20] Fioretto, F., Mak, T. W., & Van Hentenryck, P. (2020). Predicting AC optimal power flows: Combining deep learning and 
+lagrangian dual methods. Proceedings of the AAAI Conference on Artificial Intelligence, 34(01), 630-637.
+[21] Bertsekas, D. P. (1999). Nonlinear programming. Athena Scientific.
+[22] Nocedal, J., & Wright, S. J. (2006). Numerical optimization. Springer Science & Business Media.
+[23] Mescheder, L., Geiger, A., & Nowozin, S. (2018). Which training methods for GANs do actually converge? International 
+Conference on Machine Learning, 3481-3490.
+[24] Tolstikhin, I., Bousquet, O., Gelly, S., & Schoelkopf, B. (2017). Wasserstein auto-encoders. arXiv preprint arXiv:1711.01558.

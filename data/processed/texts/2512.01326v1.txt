@@ -1,0 +1,321 @@
+Securing Large Language Models (LLMs) from
+Prompt Injection Attacks
+Omar Farooq Khan Suri1 and John McCrae2
+1 University of Galway, Ireland
+2 University of Galway, Ireland
+Abstract.Large Language Models (LLMs) are increasingly being de-
+ployed in real-world applications, but their flexibility exposes them to
+prompt injectionattacks. These attacks leverage model’s instruction fol-
+lowing ability to make it perform malicious tasks. Recent work has pro-
+posedJATMO,atask-specificfine-tuningapproachthattrainsnon–instruction-
+tuned base models to perform a single function, thereby reducing sus-
+ceptibility to adversarial instructions. In this study, we evaluate the ro-
+bustness of JATMO against HOUYI, a genetic attack framework that
+systematically mutates and optimizes adversarial prompts. We adapt
+HOUYI by introducing custom fitness scoring, modified mutation logic,
+and a new harness for local model testing, enabling a more accurate as-
+sessment of defense effectiveness. We fine-tuned LLaMA 2-7B, Qwen1.5-
+4B and Qwen1.5-0.5B models under the JATMO methodology and com-
+pared them with a fine-tuned GPT-3.5-Turbo baseline. Results show that
+while JATMO reduces attack success rates relative to instruction-tuned
+models, it does not fully prevent injections; adversaries exploiting multi-
+lingual cues or code-related disruptors still bypass defenses. We also ob-
+serve a trade-off between generation quality and injection vulnerability,
+suggesting that better task performance often correlates with increased
+susceptibility. Our results highlight both the promise and limitations of
+fine-tuning-based defenses and point toward the need for layered, adver-
+sarially informed mitigation strategies.
+Keywords:Large Language Models·Prompt Injection·Adversarial
+Attacks
+1 Introduction
+Large Language Models (LLMs) have rapidly become a core component of to-
+day’s digital ecosystem [11]. They power everything from conversational chat-
+bots and coding assistants to decision support tools in high-stake domains. Their
+remarkable fluency and versatility have made them a natural choice for integrat-
+ing natural language capabilities into real-world applications [3]. However, this
+same versatility makes them vulnerable to a serious and emerging security risk
+of prompt injection.
+Prompt injection attacks exploit the fact that LLMs are trained to follow
+instructions present anywhere in their input.[5] An attacker can embed mali-
+cious commands inside a benign prompt, causing the model to ignore its original
+arXiv:2512.01326v1  [cs.CR]  1 Dec 2025
+2 O. F. K. Suri and J. McCrae
+task and produce unintended or harmful outputs. For example, a summarization
+model could be tricked into leaking confidential data or generating unrelated
+code simply because the attacker included a hidden instruction. Since LLMs
+are increasingly embedded in production pipelines, where they may have access
+to private data, external tools, or decision-making authority, this vulnerability
+poses a critical security concern.
+Several defense strategies have been proposed, including prompt filtering,
+runtime guardrails, and adversarial training. Yet many of these solutions re-
+main incomplete. They often fail against sophisticated adversarial prompts or
+struggle to generalize across different attack types. One recent approach, known
+as JATMO (Jack of All Trades, Master of One), takes a different perspective:
+rather than trying to detect or block malicious instructions, JATMO fine-tunes
+a non–instruction-tuned base model to perform only a single narrow task. Be-
+cause the model is never trained to follow arbitrary instructions, it is expected
+to inherently ignore injected prompts[9].
+While promising, the robustness of JATMO has not yet been thoroughly
+evaluated against strong and structured adversarial frameworks. To address this
+gap, our work tests JATMO-based models using HOUYI, a genetic attack frame-
+work that automatically mutates and optimizes adversarial prompts until they
+successfully bypass a model’s guardrails. We further adapt HOUYI for this study
+by improving its fitness scoring logic, rewriting its mutation pipeline to produce
+more meaningful disruptors, and implementing a custom harness for local model
+evaluation [6].
+Our study aims to answer two key research questions:
+1. Canfine-tuningnon–instruction-tunedbasemodelsmeaningfullyreducetheir
+tendency to follow adversarial instructions?
+2. What effect does this specialization have on the quality of their natural
+generation?
+To explore these questions, we fine-tuned two non–instruction-tuned base models
+like LLaMA 2 (7B), Qwen-1.5 (4B) and Qwen-1.5 (0.5B), on a summarization
+task and compared them to a fine-tuned GPT-3.5-Turbo baseline [10,2,1]. We
+then launched HOUYI-driven attacks using two intentions: content manipulation
+and information gathering.
+Our findings reveal that, while JATMO substantially reduces attack success
+rates compared to instruction-tuned models, it does not completely prevent in-
+jections. We also observe a clear trade-off between model quality and security.
+Models that generate better summaries tend to be easier to hijack.
+2 Related Work
+The growing use of Large Language Models (LLMs) in critical applications
+has sparked significant research into their security vulnerabilities, particularly
+prompt injection attacks. These attacks exploit the instruction-following nature
+of LLMs to override intended tasks, leading to unintended behaviors such as data
+Securing Large Language Models (LLMs) from Prompt Injection Attacks 3
+exfiltration, content manipulation, or policy bypassing[12]. Early approaches to
+mitigating such attacks primarily relied on prompt filtering or keyword-based
+detection, but these often fail against obfuscated or novel attack patterns and
+struggle to scale as models and attack methods evolve[7].
+To address these shortcomings, more adaptive strategies have been proposed.
+One notable line of work is Moving Target Defense (MTD)[8], which introduces
+dynamic randomness into model execution by periodically altering parameters
+or runtime environments. By preventing attackers from targeting a stable deci-
+sion boundary, MTD reduces the success rate of deterministic prompt injections,
+though at the cost of added computational overhead and potential performance
+drift. Another approach is middleware-based validation layers, where an aux-
+iliary LLM, such as GPT-4, acts as a real-time gatekeeper[7]. It screens user
+prompts for signs of manipulation (e.g., override commands, conflicting instruc-
+tions) before they reach the target model. This improves safety but can introduce
+latency and still relies on heuristics that adversaries can learn to bypass.
+A fundamentally different strategy is JATMO (Jack of All Trades, Master
+of One)[9], which proposes fine-tuning non–instruction-tuned base models on a
+single narrowly defined task. Because such models are never trained to inter-
+pret arbitrary instructions, they are hypothesized to inherently ignore malicious
+prompts. Initial studies showed that JATMO-trained models could maintain
+task performance comparable to instruction-tuned models while drastically low-
+ering injection success rates. However, these evaluations used simple adversarial
+prompts and lacked stress-testing under systematic attack frameworks.
+HOUYI addresses this gap by providing a structured, automated framework
+for evaluating LLM robustness against prompt injection[6]. It uses genetic algo-
+rithms to iteratively mutate and optimize adversarial prompts, achieving high
+success rates even against aligned instruction-following models like Vicuna and
+LLaMA-2. Yet, HOUYI has not previously been used to evaluate JATMO-based
+defenses.
+Our work builds directly on these threads by combining JATMO-style fine-
+tuningwithamodifiedHOUYIattackpipelinetofindtheanswerstoourresearch
+questions.
+3 Methodology
+This section outlines how we implemented the JATMO methodology to fine-
+tune non–instruction-tuned base models, and how we evaluated their robustness
+using a modified HOUYI prompt injection attack framework. Our aim was to
+measure the extent to which task-specific fine-tuning can reduce vulnerability
+to adversarial instructions, and to assess the trade-offs it introduces in model
+performance.
+4 O. F. K. Suri and J. McCrae
+3.1 Dataset and Task
+We chose the publicly availableAmazon All-Beauty reviews dataset, which
+contains real-world customer feedback on a variety of beauty and personal care
+products[4]. Each record includes a review body, star rating, and metadata.
+To create a task-specific dataset aligned with the JATMO methodology, we
+grouped reviews into sets of three and generated concise human-like summaries
+for each group using GPT-3.5 as a teacher model. This process ensured that
+each training example contained onlytask content(reviews and summaries)
+andno explicit instructions.
+The resulting dataset contained 1,500 input–output pairs, totaling roughly
+400k tokens. Each example was formatted in OpenAI’s chat fine-tuning schema
+and saved in.jsonlformat. This setup simulated a realistic summarization task
+while adhering to JATMO’s principle of removing instruction-following signals
+from the data.
+3.2 JATMO Fine-Tuning
+JATMO (Jack of All Trades, Master of One) aims to mitigate prompt injection
+by fine-tuningnon–instruction-tuned base modelsso they perform only a
+single defined task. Because these models are never trained to interpret arbitrary
+instructions, they are expected to ignore injected prompts and treat all inputs
+purely as data.
+We fine-tuned two base models:
+– LLaMA 2–7B(Meta AI): a 7 billion parameter general language model.
+– Qwen 1.5–0.5B(Alibaba Cloud): a smaller 0.5 billion parameter model.
+To make fine-tuning feasible within limited computational resources, we used
+LoRA (Low-Rank Adaptation), a parameter-efficient method that trains
+small rank-decomposition matrices while keeping the base model weights frozen.
+Training was run for several epochs with tuned learning rates and batch sizes,
+monitored using a held-out validation split to prevent overfitting. All fine-tuning
+experiments were performed using LoRA due to hardware constraints, ensuring
+reproducibility on consumer-grade GPUs.
+For comparison, we also fine-tunedGPT-3.5-Turbo, an instruction-tuned
+model, on the same dataset using the OpenAI fine-tuning API. This served as a
+baselinetoillustratethevulnerabilityofinstruction-followingmodelstoprompt
+injection.
+3.3 HOUYI Attack Framework
+To evaluate the security of the models, we usedHOUYI, an automated prompt
+injection framework that appliesgenetic algorithmsto generate, mutate, and
+optimize adversarial prompts. HOUYI combines three components into each
+adversarial prompt:
+Securing Large Language Models (LLMs) from Prompt Injection Attacks 5
+– Framework— the legitimate user task (e.g., three product reviews to sum-
+marize).
+– Separator— formatting elements separating task from the attack (e.g.,
+newline, special tokens).
+– Disruptor— the injected malicious instruction (e.g., “append the word
+‘pwned’ at the end”).
+The framework evolves prompts over multiple generations, performing crossover
+and mutation to discover variants that successfully override the model’s intended
+behavior.
+3.4 Our Modifications to HOUYI
+The original HOUYI framework had limitations for our setup, especially its
+reliance on OpenAI’s API for fitness scoring and mutation, which was costly
+and often inaccurate. We introduced several modifications:
+1.Custom fitness scoring.
+–For content manipulation attacks, we detected the appearance of the
+token“pwned”at theendof the response (instead of anywhere in the
+text).
+–For information-gathering attacks, we detecteddate-like formatsor
+keywords such as “current date” in responses.
+2.Improved mutation logic.
+–InsteadofOpenAI-basedmutations,wemanuallygenerateddiverserephrased
+disruptor variants using ChatGPT and combined them systematically
+with separators and framework prompts.
+–This allowed wider coverage while staying task-relevant.
+3.Custom harness module.
+–We replaced HOUYI’s OpenAI-specific harness with our own implemen-
+tation that can call locally fine-tuned models (LLaMA 2 and Qwen) and
+collect outputs.
+These changes made the attack process more reproducible, cost-efficient, and
+directly compatible with local models.
+3.5 Attack Setup and Evaluation Metrics
+We evaluated the robustness of all three fine-tuned models using the HOUYI
+attack framework:
+– GPT-3.5-Turbo(instruction-tuned baseline)
+– LLaMA 2–7B(JATMO fine-tuned)
+– Qwen 1.5–0.5B(JATMO fine-tuned)
+Two categories of adversarial intents were used:
+6 O. F. K. Suri and J. McCrae
+Table 1.Model Performance and Vulnerability Metrics Under HOUYI Attacks
+Model Params ROUGE-L CM (%) IG (%) Avg ASR (%)
+Qwen 0.5B (JATMO) 0.5B 0.29 13.80 5.55 9.68
+Qwen 4B (JATMO) 4B 0.43 26.38 23.61 25.00
+LLaMA-2 7B (JATMO) 7B 0.33 16.66 5.55 11.11
+GPT-3.5 Turbo (Baseline) 175B 0.88 100.00 100.00 100.00
+– Content Manipulation:the disruptor instructed the model to append
+“pwned” to its output.
+– Information Gathering:the disruptor instructed the model to reveal the
+current date.
+Each model was tested using72 unique injection prompts per attack
+type, generated through HOUYI’s mutation and crossover process.
+To assess vulnerability and task performance, we report two primary metrics:
+– Attack Success Rate (ASR):the percentage of adversarial prompts that
+successfully induced the model to perform the injected instruction.
+– ROUGE-L:a measure of summary–reference overlap used to estimate task
+fidelity under adversarial pressure.
+4 Results
+4.1 Quantitative Findings
+Table 1 summarises the performance and vulnerability metrics for all evaluated
+models under HOUYI attacks. The ROUGE-L score is used to estimate task
+fidelity, while Content Manipulation (CM) and Information Gathering (IG) suc-
+cess rates indicate the susceptibility to prompt injection.
+Key Observations
+–The instruction-tuned GPT-3.5 Turbo model is fully compromised by both
+attack categories, reaching a 100% success rate.
+–JATMO fine-tuned models exhibitsignificantly reduced vulnerability, low-
+ering average ASR by roughly 4×to 10×relative to GPT-3.5.
+–Despite this improvement, JATMO models are not immune: mid-sized mod-
+els (e.g., Qwen 4B) remain susceptible to adversarial phrasing, multilingual
+mutations, and code-related triggers.
+Trade-off: Quality vs. VulnerabilityA consistent trend emerges depicting
+models with higher ROUGE-L scores also exhibit higher injection success rates.
+In other words:
+Securing Large Language Models (LLMs) from Prompt Injection Attacks 7
+Fig. 1.Injection Success Rates for Attack Types
+Models that are better at following instructions are also better at following
+malicious instructions.
+This suggests a natural tension between task performance and adversarial
+robustness in instruction-like contexts.
+5 Qualitative Analysis
+1.Residual Instruction-Following Abilities.Even non–instruction-tuned
+models showed latent tendencies to obey imperative phrasing like “append”,
+“ignore”, or “rewrite”. Pretraining on web-scale corpora (StackOverflow, wik-
+iHow, tutorials) embeds these behavioural priors.
+2.Vulnerability to Non-English or Mixed-Language Prompts.Multi-
+lingual or partially obfuscated HOUYI-generated instructions occasionally
+bypassed the model’s learned patterns. When encountering unfamiliar to-
+kens, models sometimes over-weighted them, elevating the adversarial com-
+ponents of the prompt.
+3.Code-GenerationBias.Injectedpromptscontainingwordssuchas“python”,
+“script”, or code-fence delimiters (e.g.,“‘) often triggered a code-generation
+mode. Once activated, the model ignored the summarisation task and pro-
+duced irrelevant code blocks, showing how pretrained coding priors can be
+exploited.
+6 Conclusion
+ThisstudyexaminedwhetherJATMO-stylefine-tuningcanhardenLLMsagainst
+promptinjectionwhensubjectedtosystematicadversarialpressureusingHOUYI.
+While JATMO significantly lowers attack success rates compared to instruction-
+tuned baselines, it does not fully eliminate injection vulnerabilities.
+8 O. F. K. Suri and J. McCrae
+Answering the Research Questions RQ1:JATMO does improve robust-
+ness, reducing attack success by up to90%relative to GPT-3.5, but models
+remain vulnerable to sophisticated or obfuscated injections.
+RQ2:While JATMO reduces instruction-following behaviour, models with
+highergenerativequalityshowacorrespondingincreaseinsusceptibility—indicating
+a correlation between helpfulness and vulnerability.
+7 Future Work
+Future work on strengthening prompt-injection resilience should move beyond
+task-specificfine-tuningandtowardlayered,system-leveldefenses.WhileJATMO
+reduces a model’s tendency to follow adversarial instructions, it remains vulner-
+able to multilingual overrides, code-triggered behavioural shifts, and subtle in-
+struction phrasings embedded late in the prompt. A more comprehensive defense
+willrequirecombiningJATMO-stylespecializationwithupstreaminputfiltering,
+prompt firewalls, and semantic validators that can detect override phrases, sus-
+picious role-playing cues, or formatting patterns commonly used in jailbreaks.
+Downstream, output-constrained decoding methods—such as schema enforce-
+ment, strict stop sequences, or grammar-guided generation—can help limit the
+degree to which a compromised generation can cause harm. Additionally, fu-
+ture research should explore large-scale adversarial supervision, where models
+are trained on multilingual, multi-intent attack datasets and explicitly rewarded
+for producing terse, safe refusals. Finally, evaluation should move toward risk-
+weighted scoring, where the severity of an attack (e.g., data leakage or tool-use
+escalation) is measured alongside binary success. Together, these directions point
+toward a holistic defense framework where fine-tuning, adversarial training, and
+runtime safeguards collectively reduce the likelihood and impact of prompt in-
+jection attacks.
+References
+1. Achiam, J., Adler, S., Agarwal, S., Ahmad, L., et al.: GPT-4 technical report.
+arXiv preprint arXiv:2303.08774 (2023)
+2. Bai, Y., Du, T., Dong, Z., Ding, L., et al.: Qwen: Open-source large language model
+family. arXiv preprint arXiv:2309.16609 (2023)
+3. Brown, T.B., Mann, B., Ryder, N., Subbiah, M., Kaplan, J., Dhariwal, P., Nee-
+lakantan, A., Shyam, P., Sastry, G., Askell, A., et al.: Language models are few-shot
+learners. Advances in Neural Information Processing Systems33, 1877–1901 (2020)
+4. Hou, Y., Li, J., He, Z., Yan, A., Chen, X., McAuley, J.: Bridging language and
+items for retrieval and recommendation. arXiv preprint arXiv:2403.03952 (2024)
+5. Liu, X., Xu, N., Chen, M., Xiao, C.: AutoDAN: Generating stealthy jailbreak
+prompts on aligned large language models. arXiv preprint arXiv:2310.04451 (2023)
+6. Liu, Y., Deng, G., Li, Y., Wang, K., Wang, Z., et al.: Prompt injection attacks
+against LLM-integrated applications. arXiv preprint arXiv:2306.05499 (2023)
+Securing Large Language Models (LLMs) from Prompt Injection Attacks 9
+7. Muliarevych, O.: Enhancing system security: LLM-driven defense against prompt
+injection vulnerabilities. In: 2024 IEEE 17th International Conference on Advanced
+Trends in Radioelectronics, Telecommunications and Computer Engineering (TC-
+SET). pp. 420–423 (2024)
+8. Panterino, S., Fellington, M.: Dynamic moving target defense for mitigating tar-
+geted LLM prompt injection. Authorea Preprints (2024)
+9. Piet, J., Alrashed, M., Sitawarin, C., Chen, S., Wei, Z., Sun, E., Alomair, B.,
+Wagner, D.: JATMO: Prompt injection defense by task-specific finetuning. In:
+European Symposium on Research in Computer Security (ESORICS) (2024)
+10. Touvron, H., Martin, L., Stone, K., Albert, P., et al.: LLaMA 2: Open foundation
+and fine-tuned chat models (2023), https://ai.meta.com/llama
+11. Vaswani,A.,Shazeer,N.,Parmar,N.,Uszkoreit,J.,Jones,L.,Gomez,A.N.,Kaiser,
+L., Polosukhin, I.: Attention is all you need. In: Advances in Neural Information
+Processing Systems (NeurIPS) (2017)
+12. Yu, J., Lin, X., Yu, Z., Xing, X.: GPTFuzzer: Red teaming large language models
+with auto-generated jailbreak prompts. arXiv preprint arXiv:2309.10253 (2024)

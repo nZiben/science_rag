@@ -1,0 +1,1458 @@
+World Model Robustness via Surprise Recognition
+Geigh Zollicoffer∗, Tanush Chopra∗, Mingkuan Yan, Xiaoxu Ma, Kenneth Eaton, Mark Riedl
+Georgia Institute of Technology
+{gzollicoffer3, tchopra32, myan71, xma394, keaton30, riedl}@gatech.edu *
+Abstract
+AI systems deployed in the real world must contend with
+distractions and out-of-distribution (OOD) noise that can
+destabilize their policies and lead to unsafe behavior. While
+robust training can reduce sensitivity to some forms of
+noise, it is infeasible to anticipate all possible OOD con-
+ditions. To mitigate this issue, we develop an algorithm
+that leverages a world model’s inherent measure of sur-
+prise to reduce the impact of noise in world model–based
+reinforcement learning agents. We introduce both multi-
+representation and single-representation rejection sam-
+pling, enabling robustness to settings with multiple faulty
+sensors or a single faulty sensor. While the introduction
+of noise typically degrades agent performance, we show
+that our techniques preserve performance relative to base-
+lines under varying types and levels of noise across mul-
+tiple environments within self-driving simulation domains
+(CARLA and Safety Gymnasium). Furthermore, we demon-
+strate that our methods enhance the stability of two state-
+of-the-art world models with markedly different underlying
+architectures: Cosmos and DreamerV3. Together, these re-
+sults highlight the robustness of our approach across world
+modeling domains. We release our code athttps://
+github.com/Bluefin-Tuna/WISER.
+1. Introduction
+AI systems that operate in the real world can often en-
+counter noise, distractions, environmental interference,
+transmission errors, or new semantic classes of objects.
+When these occur, AI policies—the part of the AI system
+that translates from observation to action—can become un-
+predictable, unreliable, or unsafe. When observations con-
+tain out-of-distribution noise, the policy may respond inap-
+propriately to the noise, resulting in execution that is unsafe
+to the agent or to any human operators in the vicinity.
+At the heart of the challenge, an AI system cannot know
+what is noise and what is actionable information in the ob-
+*∗Equal contribution
+servation. While AI system developers may do their best
+to train systems that are robust to as many types of noise
+as possible, in real-world settings, it is impossible to an-
+ticipate all possible ways in which sensor information may
+be corrupted. That is: AI systems can always encounter
+noise and distractors that are interpreted incorrectly. Yet,
+we may be able to design AI systems that degrade grace-
+fully by being able to (a) identify when parts of their obser-
+vations are likely to be noise versus actionable information
+and (b) learn how to make smarter decisions despite the lack
+of actionable information.
+In the context of world model-based deep reinforcement
+learning agents, we present a technique for improving the
+resilience of an agent whenpartsof an observation are
+likely to be noise and/or completely corrupted. We use the
+agent’s world model to evaluate the amount ofsurprisein
+the observational data. We apply this to multi-sensor and
+single-sensor agent settings. Multi-sensor settings are those
+in which an agent has multiple sensors to which a policy
+model responds, or has multiple representations of the same
+raw observational data. For example, in automated driving,
+a policy may integrate inputs from cameras, LiDAR, and
+radar, or fuse both pixel-level images and semantic maps
+derived from the same visual stream. It is likely that the
+underlying cause of the noise does not affect all sensors or
+representations equally. In this setting, the surprise measure
+is used to help identify which sensors are likely to distract
+the agent and to disable those sensors.
+While the above is useful for agents that have multiple
+sensors, such as self-driving cars, some agents may only
+have a single sensor. In the single-sensor setting, we use the
+world model’s abnormal reconstruction of the observation
+as a signal to help avoid making decisions on observations
+that are likely to be distractions or misinterpreted by the
+agent. In both settings, we show that our technique is able to
+reduce the amount of noise introduced to the world model’s
+internal state.
+Although the introduction or removal of noise typically
+degrades agent performance, we show that our techniques
+preserve performance relative to baselines under varying
+types and levels of noise across multiple environments
+1
+arXiv:2512.01119v1  [cs.LG]  30 Nov 2025
+within self-driving simulation domains (CARLA [6] and
+Safety Gymnasium [18]). Furthermore, we demonstrate
+that our methods enhance the stability of two state-of-the-
+art world models with markedly different underlying archi-
+tectures: Cosmos [24] and DreamerV3 [13]. Together, these
+results demonstrate the robustness of our approach across
+world modeling domains.
+Figure 1. The change in the world model’s measure of sur-
+prise as noise increases in all tested CARLA [6] and Safety-
+Gymnasium [6] environments over 15000 sampled steps per in-
+tensity. We leverage this insight to understand the degree to which
+surprise signal can help identify noise given the absence of ground
+truth.
+2. Related Work
+Improving the robustness of reinforcement learning (RL)
+agents against noise capabilities largely remains a difficult
+challenge [30]. Procedural generation has been employed to
+improve agent robustness to novel scenarios [5], often rely-
+ing on data augmentation techniques [31]. However, these
+approaches can lead to high sample complexity [22]. A fur-
+ther complication is the burden on the policy to learn a wide
+range of representations for rapid adaptation [7].
+Recent work has also focused on identifying irrelevant
+components of the observation space to enhance generaliza-
+tion [3, 16, 28, 34]. Such methods often rely on foundation
+models or Siamese-like architectures during the training
+process, which can significantly increase training time [9].
+Moreover, these frameworks may require an augmented
+dataset for initial training on similar OOD situations to the
+target domain, or are tested in cases where the task-relevant
+information is always present. Simple Gaussian noise, de-
+spite the OOD situation, has been proposed to help models
+learn OOD scenarios, but might not be effective in certain
+situations [25].
+A promising approach for improving model robustness
+is the use of dropouts across various sensors or multimodal
+representations [21, 26, 27, 32]. However, these meth-
+ods typically ignore the issue of determining which sen-
+sors to mask out or assume that the agent can already iden-
+tify which sensors have failed or have become corrupted—a
+challenging problem in itself [20]. Another limitation is that
+such dropout techniques often provide limited insight into
+how accurately an agent can predict actions using only the
+remaining modalities, and often leave the dropout strategy
+unchanged in the evaluation domain [27].
+World models [11] have recently been shown to have
+some success in out-of-distribution scenarios [36] that can-
+not be taken into account during training. Specifically, re-
+sults have shown that utilizing the world model’s measure of
+surprise does appear to be a useful heuristic in detecting if
+an agent’s observation is out of distribution. We investigate
+whether world models can mitigate the issues seen in previ-
+ous dropout-related frameworks in RL from the perspective
+of state representation for novel situations.
+Fault Detection, Isolation, Recovery (FDIR) [2, 29] is
+a common technique for removing noise, which, at a high
+level, aims to shut off or mitigate the impact of known faulty
+sensors. For physical systems, such as automotive appli-
+cations, this typically manifests through the deployment of
+multiple redundant sensors that measure the same physical
+state. This redundancy is typically used to enable potential
+cross-validation among sensors, allowing faulty readings to
+be detected and suppressed while preserving overall system
+integrity [4].
+In our work, we do not assume access to redundant sen-
+sors, as they would experience the same OOD noisy fail-
+ures. Instead, we assume the potential of having different
+data per sensor or a single sensor with different representa-
+tions of the data. We design an FDIR algorithm centered on
+world models so the agent can focus on consistent and infor-
+mative inputs when noise or sensor failures are observed.
+3. Preliminaries
+Partially observable Markov Decision ProcessesWe
+study sequential Partially Observable Markov decision
+processes (POMDPs) denoted by the tupleM=
+(S,A,T, r,Ω, O), whereSis the state space,Ais the ac-
+tion space,Tis the transition distributionT(s t|st−1, at−1),
+r is the reward function,Ωis an emissions model from
+ground truth states to sensor information, andO(s ′, a)is
+the sensory information distribution which emits an obser-
+vationx ∗ ∼O(s ′, a)at each step [1].
+DreamerV3 World ModelWe conduct experiments us-
+ing our methods primarily within the DreamerV3 frame-
+work [13], which is based on a Recurrent State-Space
+Model (RSSM). A typical RSSM incorporates both a Varia-
+tional Autoencoder (V AE) and a Recurrent Neural Network
+(RNN) [10, 11]. DreamerV3 first learns a world model and
+then uses it to simulate rollouts for training a policy model.
+Note that:
+2
+•x ∗ is the set of sensory information emitted from the state.
+•x t is theencodedset of sensory information emitted from
+the state.
+•h t is the encoded history/hidden state of the agent.
+•z t is an encoding of the current sensory informationx t
+andh t that incorporates the learned dynamics of the
+world.
+•s t = (zt, ht)is the agent’s compact model state.
+• At each step, the agent takes an action based on the com-
+pact model state (i.eπ(s t) =π((z t, ht)))
+For each representation of states t, DreamerV3 defines six
+additional learned transition distributions—each condition-
+ally independent—based on the trained world model:
+DreamerV3:
+
+
+
+Sequence model:h t =f ϕ(ht−1, zt−1, at−1)
+Representation model:q ϕ(zt|ht, xt)
+Dynamics predictor:p ϕ( ˆzt|ht)
+Image prediction model:p ϕ( ˆxt|ht, zt)
+Reward prediction model:p ϕ( ˆrt|ht, zt)
+Continue prediction model:p ϕ( ˆct|ht, zt)
+(1)
+whereϕdescribes the parameter vector for all distributions
+optimized. The loss function during training [13] is:
+L(ϕ) .=E qϕ
+h TX
+t=1
+(βpredLpred(ϕ)+
+βdynLdyn(ϕ) +β repLrep(ϕ))
+i
+.
+where:
+Lpred(ϕ) .=−lnp ϕ(xt |z t, ht)
+−lnp ϕ(rt |z t, ht)−lnp ϕ(ct |z t, ht)
+Ldyn(ϕ) .= max
+
+1, KL
+
+sg(qϕ(zt |h t, xt))
+ pϕ(zt |h t)
+
+Lrep(ϕ) .= max
+
+1, KL
+
+qϕ(zt |h t, xt)
+ sg(pϕ(zt |h t))
+
+andsg(·)is a stop gradient operator.
+4. Multiple Sensor Representation Selection
+In this section, we address the multiple-sensor representa-
+tion setting and describe how a surprise measure on the
+world model identifies and eliminates sensor representa-
+tions that are likely to distract the agent with noisy data.
+The multiple sensor setting could mean that an agent has
+multiple sensors that collect different data, such as in the
+case of an autonomous vehicle with cameras with different
+views. It could also mean an agent with a single sensor but
+representing that sensor data in different ways.
+We assume aworld model, such as that used in Dream-
+erV3 [13]. The world model learns the world transition dy-
+namics and is used to more efficiently train the policy model
+by predicting state-action-state transitions, effectively sepa-
+rating the agent from the true environment. Although many
+of the world model’s learned predictors are rarely used at
+inference time, we find that the model’s surprise grows pro-
+portionally with the intensity of injected noise. This rela-
+tionship is shown in Figure 1 for two domains The trained
+world model’s measure of Bayesian surprise [17] is the di-
+vergence between the world model’s learned posterior and
+prior of the next state:
+KL
+
+qϕ(zt |h t, xt)
+pϕ(zt |h t)
+
+(2)
+This measure naturally provides a correlated signal for de-
+tecting unexpected noise. When the model consistently reg-
+isters unusually high surprise without corresponding struc-
+ture in the environment, it may indicate that the observa-
+tions are dominated by noise rather than meaningful dynam-
+ics. Building on this hypothesis, we introduce a surprise-
+guided rejection sampling method that mitigates corruption
+in the world model’s predicted latent state while maintain-
+ing anO(nlogn)computational cost. during inference
+time.
+Surprise-Guided Multi-Representation Rejection Sam-
+pling for Confident Decision MakingWe investigate the
+world model’s ability toadaptively switch representations
+in an online failure setting, where sensor failures occur
+without prior knowledge. In the multi-sensor setting, the
+agent samples a set ofMhigh-dimensional sensory obser-
+vations at each time step,
+x∗ ={y (1)
+t , y(2)
+t , . . . , y(M)
+t },
+from which it forms a fused observation
+xt =f enc(x∗),
+wheref enc denotes the encoder or sensor-fusion module.x t
+is then used to sample the latent statez t via the representa-
+tion model (Eq. 1).
+During evaluation, if any subset of sensory inputsy t ∈
+x∗ exhibits abnormally high surprise, indicating a potential
+corruption or failure, the model avoids relying on the full
+fused observationx t. Instead, it samples a latent state pre-
+dictionz (i)
+t conditioned on a fused observationx (i)
+t formed
+by a subset of uncorrupted inputsx (i)
+∗ ⊆x ∗. This selec-
+tion is formulated as an optimization that chooses the input
+subset minimizing the Bayesian surprise between the repre-
+sentation model and the dynamics predictor (Eq 1):
+arg min
+x(i)
+∗ ⊆x∗
+KL
+h
+qϕ(z(i)
+t |h t, x(i)
+t )∥p ϕ(zt |h t)
+i
+.(3)
+The resulting sampled latentz (i)
+t serves as analternative
+latent state representation, which is then used to select an
+actiona t ∼π((z (i)
+t , ht)).1
+1Optionally, the optimization can be relaxed to respect a set of required
+sensors (see Algorithm 2).
+3
+Policy
+Latent State
+Encoder
+World Model
+Rejected
+Noisy
+Accepted
+Environment
+Figure 2. Multi-Sensor Rejection Sampling. In practice, we utilize
+Algorithm 2 to simulate this behavior in the agent.
+Multi-Representation Dropout TrainingTo simulate
+the removal of sensory inputs, we apply a mask-based sen-
+sor dropout. Naturally, the absence of expected sensory
+inputs induces increased surprise within the world model.
+Therefore, to prepare the agent for dropout variation in its
+sensors, we expose it to projections onto random subspaces
+of the full representation space via random dropout of repre-
+sentations—a form of state representation learning [7]. As
+shown in Algorithm 1, this encourages the world model to
+learn a latent distribution that remains robust even when
+some components of the sensory inputs are missing. By ex-
+periencing these partial views during training, we observe
+(Figure 16 Appendix E.3) that the world model is still ca-
+pable of inferring consistent and informative latent states
+despite variability in the available representations.
+5. Multiple Sensor Experiments
+For our main results, we primarily focus on settings that
+naturally involve multiple sensors, such as automated driv-
+ing tasks. Unless stated otherwise, we use the default sen-
+sors and reward functions provided by each environment for
+each respective task.
+EnvironmentsWe show the generalization of our pro-
+posed method through experiments conducted primarily in
+the following domains:
+•Safety Gymnasium[18] is a benchmark suite designed
+to evaluate the trade-off between performance and safety
+in reinforcement learning, extending the traditional RL
+paradigm by introducing environments where agents
+must complete goal-oriented tasks while simultaneously
+minimizing safety violations such as collisions or enter-
+ing hazardous regions. The environments include a vari-
+ety of robotic control and navigation tasks that simulate
+real-world constraints, providing explicit cost signals as-
+sociated with unsafe behaviors. Our experiments use the
+default camera sensors given by the environment (see Ap-
+pendix A for details). Safety Gymnasium and the Safe-
+Dreamer [15] baseline assume that the training and eval-
+uation environments are identical. In practice, this as-
+sumption may not hold, and our experiments test this by
+injecting out-of-distribution data..
+•CARLA[6] is an open-source urban driving simulator. It
+was developed as a free platform for autonomous driving
+research. Alongside the core simulator code and APIs,
+CARLA includes a library of custom-designed urban en-
+vironments and digital assets (e.g., buildings, vehicles,
+pedestrians) that are freely available for use. The simu-
+lator supports flexible configuration of sensor suites, such
+as RGB cameras, Bird Eye view, LiDAR, GPS, and colli-
+sion detectors.
+We list each utilized sensor in detail in Appendix A. In each
+environment, we simulate sensor failures by injecting vari-
+ous types of structured and unstructured out-of-distribution
+noise into the sensor data. Examples include gaussian, oc-
+clusion, glare, jitter, chromatic aberration (chrome), and la-
+tency. We provide example visualizations of noises applied
+to the CARLA Bird Eye View (BEV) sensor in 7. Addition-
+ally, all noises are described in Appendix B.2. The agent is
+never notified of any properties of the failure scenario. In
+all experiments, there is always at least one sensor that is
+unaffected.
+Agent ModelsIn this setting, we focus our experiments
+on the State-of-the-Art DreamerV3 world model [13]. For
+each experiment, theBaseagent is a model trained nor-
+mally. AnAugmentedagent is the base model trained on
+a dataset augmented with Gaussian noise. TheRandom
+Masked Encoder(RME) [27], is a technique that also em-
+ploys masked based sensor dropout, however does not pro-
+vide a means to decide which sensors should be masked
+out. For the multi-sensor domain, our rejection sampling
+technique is labeled asConfident Representation(as to
+not be confused with single-sensor results), which consists
+of agents equipped with the surprise mechanism, dropout
+training, and multi-sensor selection technique described in
+Section 4. For all experiments during inference time, we
+deploy Algorithm 2, as our proposed multi-sensor selec-
+tion algorithm, designed to run inO(nlogn)without par-
+allel optimizations. Unless otherwise specified, each exper-
+iment data point represents an accumulation of 15,000 steps
+across multiple independent and identically distributed en-
+vironments for a particular method within the given task and
+noise scenario. We evaluate each method in a fully closed-
+loop setting, where the agent’s actions directly influence
+subsequent observations. For both Safety Gymnasium and
+CARLA, we focus on the agent’s reward in all tasks. In ad-
+dition, for the Safety Gymnasium domain, we also focus on
+cost, an empirical safety score that the Safety Gymnasium
+domain provides.
+4
+(a) PointGoal Average Score
+ (b) PointButton Average Score
+ (c) CarGoal Average Score
+(d) PointGoal Score-Cost Ratio
+ (e) PointButton Score-Cost Ratio
+ (f) CarGoal Score-Cost Ratio
+Figure 3. Performance (top) and Score-Cost ratio (bottom) across three Safety Gymnasium tasks. We display the Score-Cost ratio to
+measure how safely the task can be accomplished with respect to the score. Each column corresponds to a noise type, with clean being the
+nominal setting.
+Carla: Stop Sign Task
+Figure 4. Agent performance as the number of sensor failures (from 0-5 sensors) during the stop sign task. We observe that as the sensors
+begin to become affected, we are able to reduce the effect that noise has on the main policy. For all 72 tested settings over the Stop Sign,
+Right Turn, and Four Lane Driving Tasks, see Appendix 10.
+ResultsFigure 3 illustrates our results on the Safety Gym-
+nasium environment. Our Confident Representation method
+is capable of consistently achieving the highest level of ro-
+bustness on a variety of simulated sensor failures. It is also
+able to capable of accomplishing said tasks with a competi-
+tive score to cost ratio compared to other methods tested in
+failure scenarios.
+In CARLA, we can have up to 5 sensor failures. Results
+are shown in Figure 4. We observe that our Confident Rep-
+resentation method is capable of identifying failed sensors
+to shut off during inference time. In comparison to other
+methods, as sensors begin to fail, the agent is able to iden-
+tify and use representations that provide meaningful signals
+and achieve high rewards.
+Also, despite not being trained on the exact Gaussian
+noise that the Gaussian failure was trained on, Confident
+5
+Representation selection is capable of mirroring the perfor-
+mance of the Augmented baseline in Figure 4. Finally, we
+compare ourO(nlogn)sensor selection technique (Algo-
+rithm 2 in Appendix E.4) to an exhaustive search of sensors
+and show in Figure 9 that our technique can expect similar
+performance despite being magnitudes lower in computa-
+tional complexity.
+6. Single Sensor Representation Selection
+We next consider a setting where the agent samples a sin-
+gle high-dimensional observationx ∗ ∈ Xat each decision
+step from the environment, which may vary from a clean,
+informative signal to a heavily corrupted input with limited
+recoverable information. As with the previous multi-sensor
+setting, the OOD noise resulting from potential sensor fail-
+ure may cause the agent to take the wrong action, or may
+have no effect on action choice.
+To design an algorithm capable of improving robustness,
+we first categorize the possible forms ofx∗ into three cases:
+1.x ∗ =x t: The observation is clean, and the agent can
+directly encode and rely on it for decision-making.
+2.x ∗ =x light: The observation contains some noise, but
+the underlying informative signal can still be recovered
+or emphasized through selective processing or denois-
+ing.
+3.x ∗ =x heavy: The observation is dominated by noise to
+the extent that the true signal is no longer recoverable
+and should therefore be ignored.
+Given the possible classes ofx ∗, we enable the agent to
+switch between two modalities during inference: apredic-
+tive mode, wherein the agent rejectsx heavy and the agent
+instead relies on its internally predicted next state from the
+world model, and aground-truth mode, wherein the agent
+accepts the sampled observationx t or its denoised version
+xlight =D(x ∗), for some choice of denoiserD(·). In
+essence, when the agent determines that the input data is
+sufficiently corrupted such that it jeopardizes action selec-
+tion, it prefers its internal predictions of the world dynamics
+over what it observes.
+To decide if a observationx∗ should be rejected, a rejec-
+tion score is assigned by a function,M(x ∗), and is rejected
+if it reaches a thresholdτ. For our experiments we em-
+ployM(·)as an expected reconstruction loss of the uncon-
+ditioned (ht =h 0) observations: 1
+|N|
+P
+i∈N
+x(i)
+t −ˆx(i)
+t
+
+whereˆxt =E pϕ(xt|zt,h0)[xt], and employD(·)to be the
+predicted posterior representation generated by the world
+model variational autoencoder:E pϕ(xt|zt,ht)[xt], as proof
+of concept to identify abnormal sensory input. Intuitively,
+M(·)andτare defined to indicate the presence of a failed
+sensor, signaling that directly processingx ∗ would likely
+lead to unpredictable behavior. The objective of our rejec-
+tion sampling mechanism is to enable the agent to produce
+predictable and conservative responsesin the presence of
+unknown sensor failures. Since the purpose of rejection
+sampling is to preserve the predicted latent state from cor-
+ruption, downstream policies can then implement conserva-
+tive strategies—such as pulling over—minimizing the risk
+of unpredictable behavior occurring during their execution.
+Aligning ContextDuring predictive mode, the agent re-
+lies on its own imagined or simulated dynamics, which can
+gradually drift from the true environment state. The agent
+transitions from predictive mode to ground-truth mode
+when an observation is accepted as beingx t orx n. When
+the agent has been in predictive mode for a period, it be-
+comes necessary to reconcile the incoming sensory input
+with the agent’s internal context or trajectoryh t. Upon
+re-entering ground-truth mode, the agent performs acon-
+text reset—realigning its latent representation or belief state
+to ensure consistency between the accepted observationx ∗
+and its previously predicted trajectory. This step prevents
+discontinuities in state estimation and allows the agent to
+resume grounded interaction with the environment.
+Conversely, when an observation is rejected after operat-
+ing in ground-truth mode, the agent retains its most recent
+valid internal context as a persistent residual. This residual
+serves as a stabilizing prior, allowing the agent to maintain
+coherent belief evolution during predictive inference until
+a new, trustworthy observation is accepted. In effect, the
+agent alternates between correcting drift upon acceptance
+and preserving continuity upon rejection, ensuring robust
+operation across varying observation qualities. We illustrate
+this interleaving of switching between modes in Figure 5.
+7. Single Sensor Experiments
+We focus our experiments on two types of world models: a
+V AE-based model (DreamerV3) [13] and a diffusion-based
+model (Cosmos Predict-2.5) [24]. For unmodified compo-
+nents of the world models, we use the exact hyperparam-
+eters recommended in [13], [15], [24], and [8]. For all
+other additional modifications, we list exact hyperparam-
+eters used and hardware details in Appendix D.
+In these experiments, the world model-based agent uses
+a single sensor and only receives a single representation at
+every time step. In the single representation setting, we con-
+sider the effect that different combinations of noise, inten-
+sity, and proportion have on an agent during the course of
+an episode. To empirically test the behavior of our pro-
+posed method, We empirically validate our results against
+the original world model (Base), Median Filtering (Fil-
+ter) [31], and Hybrid RSSM (HRSSM) [28], which aug-
+ments the RSSM framework to capture task-relevant dy-
+namics while suppressing noise. We setτto be 5 standard
+deviations from the average reconstruction loss during tran-
+sitions in the normal environment. Figure 6 shows results
+6
+Accept as 
+(clean)
+Step 1
+Initial Check
+?
+Input: 
+Step 2
+Denoise
+Step 3
+Final Check
+Accept as 
+(light noise)
+Denoise: 
+?
+Predictive
+Mode
+Ground Truth
+Mode
+Accept
+Reset Context
+Reject
+Retain Context
+Accept
+Retain Context
+Reject
+Retain Context
+Rejection Sampling
+State Machine
+Reject as 
+(heavy noise)
+Figure 5. Rejection sampling process for noise classification and
+context state machine for the world model’s latent state.
+from the Carla Four Lane task. Rejection Sampling con-
+sistently achieves the highest scores across all tested noise
+types, maintaining robustness as both the proportion and in-
+tensity of noise increase. Unlike other methods, it does not
+exhibit a decline toward lower negative scores under higher
+noise levels. We find that across all methods, the perfor-
+mance surfaces are generally skewed to the right, suggest-
+ing that increasing the proportion of corrupted observations
+has a stronger detrimental effect than increasing noise in-
+tensity.
+7.1. Cosmos World Model
+To further verify that the proposed rejection-based filter-
+ing mechanism generalizes beyond latent-state world mod-
+els, we extend our study to the Cosmos Predict 2.5 world
+model—a Diffusion-based video world model that per-
+forms pixel-space prediction through large-scale diffusion
+and spatio-temporal self-attention.
+We experiment with utilizing theRejection Sampling
+Table 1. Average PAI Quality score [35], between the base model
+and our proposed Rejection Sampling technique. Separated by
+noise type.
+Aug Type Base Model Rejection Sampling Avg Diff Rel %
+Chrome 0.774 0.808 0.034 3.13
+Gaussian 0.767 0.810 0.043 5.00
+Glare 0.726 0.809 0.083 11.98
+Jitter 0.719 0.812 0.093 12.25
+Occlusion 0.787 0.810 0.023 3.18
+Overall 0.755 0.810 0.055 7.11
+process displayed in Figure 5 in an alternative world model
+setting. We utilize each of the noises discussed in Ap-
+pendix B.2 at a proportion of 75% to distort input videos,
+and monitor Cosmos-Predict 2.5’s generation quality. In
+this setting, we apply our proposed Rejection Sampling
+process on the Robot Pouring Task (See Appendix E.1
+for prompt, visualization, and implementation details), and
+compare with the base Cosmos generation procedure.
+For comparison with the standard Cosmos generation
+procedure, we monitor the PAI-Bench quality score [35]:
+An overall summary of eight scores pertaining to quality,
+consistency, and smoothness (Explicit descriptions can be
+found in Appendix E.1.2). We defineM(x ∗)as the metric
+score measuring reconstruction quality:
+M(x∗) = 1
+CHW
+X
+c,h,w
+(xc,h,w
+∗ −ˆxc,h,w
+∗ )2
+whereˆx∗ =f θ(x∗)is the immediate next frame generated
+by the model from conditioning only on the previous frame
+x∗, andC,H,Wdenotes the channel, height, and width
+dimensions. We evaluate each of the lastNinput framesx ∗
+by computing their corresponding rejection scoreM(x ∗)
+(See Figure 11 for a visual aid). Similar to denoising meth-
+ods found in unsupervised settings [19, 23, 37], we employ
+Dσ(x∗)as a noise-and-denoise operator that: (1) encodes
+reference framex ∗ to latent space, (2) corrupts the latent
+with Gaussian noise at strengthσ, and (3) applies reverse
+diffusion denoising for reconstruction. The reverse diffu-
+sion process leverages the model’s learned Gaussian noise
+characteristics to remove the corruption and recover the true
+image. We report our findings in Table 1. We find that Re-
+jection Sampling is capable of improving the relative PAI
+quality score by roughly 7% overall when the input video
+is corrupted. Additionally, we find that rejection sampling
+brings all augmentation types to a similar improved perfor-
+mance level (∼0.81), regardless of their initial degradation
+severity.
+8. Conclusion
+We introduced a surprise-driven filtering framework that
+leverages the world model’s internal uncertainty to selec-
+7
+(a) Chromatic Aberration corruption
+ (b) Jitter corruption
+(c) Glare corruption
+ (d) Gaussian noise
+Figure 6. Visualization of policy behavior in the CARLA four-lane environment under different visual corruptions, accounting for 192
+settings. Each subfigure shows the methods’ potential to safeguard the agent from a specific perturbation type. For results on other tasks
+see 8.
+tively suppress unreliable sensory inputs. Our approach in-
+troduces two variants of rejection sampling—multi-sensor
+and single-representation—that enable world models to
+remain stable and effective under diverse noisy, out-of-
+distribution sensor failures. Empirical evaluations across
+self-driving tasks in CARLA and Safety Gymnasium, as
+well as across both diffusion-based and V AE-based world
+models, demonstrate that our method achieves robust per-
+formance without compromising adaptability. These results
+highlight the potential of surprise-based mechanisms for
+building world-model-based systems that maintain safety
+and stability in the face of unknown failures.
+8
+References
+[1] Karl Johan ˚Astr¨om. Optimal control of markov processes
+with incomplete state information.Journal of Mathematical
+Analysis and Applications, 10:174–205, 1965. 2
+[2] Mogens Blanke, Michel Kinnaert, Jan Lunze, and Mar-
+cel Staroswiecki.Diagnosis and Fault-Tolerant Control.
+Springer, Berlin, Germany, 3rd edition, 2016. 2
+[3] Jen-Yen Chang, Thomas Westfechtel, Takayuki Osa, and
+Tatsuya Harada. Offline deep reinforcement learning for vi-
+sual distractions via domain adversarial training.Transac-
+tions on Machine Learning Research, 2024. 2
+[4] Jie Chen and Ronald J. Patton.Robust Model-Based Fault
+Diagnosis for Dynamic Systems. Kluwer Academic Publish-
+ers, Boston, MA, 1999. 2
+[5] Karl Cobbe, Christopher Hesse, Jacob Hilton, and John
+Schulman. Leveraging procedural generation to benchmark
+reinforcement learning.CoRR, abs/1912.01588, 2019. 2
+[6] Alexey Dosovitskiy, German Ros, Felipe Codevilla, Antonio
+Lopez, and Vladlen Koltun. CARLA: An open urban driving
+simulator. InProceedings of the 1st Annual Conference on
+Robot Learning, pages 1–16, 2017. 2, 4, 11
+[7] Zeki Doruk Erden, Donia Gasmi, and Boi Faltings. Contin-
+ual reinforcement learning via autoencoder-driven task and
+new environment recognition, 2025. 2
+[8] Dechen Gao, Shuangyu Cai, Hanchu Zhou, Hang Wang,
+Iman Soltani, and Junshan Zhang. Cardreamer: Open-source
+learning platform for world model based autonomous driv-
+ing.IEEE Internet of Things Journal, pages 1–1, 2024. 6
+[9] Bram Grooten, Tristan Tomilin, Gautham Vasan, Matthew E
+Taylor, A Rupam Mahmood, Meng Fang, Mykola Pech-
+enizkiy, and Decebal Constantin Mocanu. MaDi: Learn-
+ing to Mask Distractions for Generalization in Visual Deep
+Reinforcement Learning.The 23rd International Confer-
+ence on Autonomous Agents and Multiagent Systems (AA-
+MAS), 2024. URL:https://arxiv.org/abs/2312.
+15339. 2
+[10] David Ha and J ¨urgen Schmidhuber. Recurrent world models
+facilitate policy evolution. InAdvances in Neural Informa-
+tion Processing Systems 31, pages 2451–2463. Curran Asso-
+ciates, Inc., 2018.https://worldmodels.github.
+io. 2
+[11] David Ha and J ¨urgen Schmidhuber. World mod-
+els, 2018. Interactive version of the article at
+https://worldmodels.github.io. 2
+[12] Danijar Hafner. Benchmarking the spectrum of agent ca-
+pabilities. InProceedings of the International Conference
+on Learning Representations (ICLR), 2022. Originally pub-
+lished as arXiv:2109.06780. 16
+[13] Danijar Hafner, Julian Pasukonis, Jimmy Ba, et al. Mastering
+diverse control tasks through world models.Nature, 640:
+647–653, 2025. 2, 3, 4, 6, 15
+[14] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition, 2015. 18
+[15] Weidong Huang, Jiaming Ji, Borong Zhang, Chunhe Xia,
+and Yaodong Yang. Safedreamer: Safe reinforcement learn-
+ing with world models. InThe Twelfth International Confer-
+ence on Learning Representations, 2024. 4, 6
+[16] Miles Hutson, Isaac Kauvar, and Nick Haber. Policy-shaped
+prediction: avoiding distractions in model-based reinforce-
+ment learning. InAdvances in Neural Information Process-
+ing Systems, pages 13124–13148. Curran Associates, Inc.,
+2024. 2
+[17] Laurent Itti and Pierre Baldi. Bayesian surprise attracts hu-
+man attention. InAdvances in Neural Information Process-
+ing Systems. MIT Press, 2005. 3
+[18] Jiaming Ji, Borong Zhang, Jiayi Zhou, Xuehai Pan, Wei-
+dong Huang, Ruiyang Sun, Yiran Geng, Yifan Zhong, Josef
+Dai, and Yaodong Yang. Safety gymnasium: A unified safe
+reinforcement learning benchmark. InThirty-seventh Con-
+ference on Neural Information Processing Systems Datasets
+and Benchmarks Track, 2023. 2, 4, 11, 13
+[19] Minjong Lee and Dongwoo Kim. Robust evaluation of
+diffusion-based adversarial purification. In2023 IEEE/CVF
+International Conference on Computer Vision (ICCV), pages
+134–144, 2023. 7
+[20] Daoliang Li, Ying Wang, Jinxing Wang, Cong Wang, and
+Yanqing Duan. Recent advances in sensor fault diagnosis:
+A review.Sensors and Actuators A: Physical, 309:111990,
+2020. 2
+[21] Guan-Horng Liu, Avinash Siravuru, Sai Prabhakar, Manuela
+Veloso, and George Kantor. Learning end-to-end multimodal
+sensor policies for autonomous navigation. InProceedings
+of the 1st Annual Conference on Robot Learning, pages 249–
+261. PMLR, 2017. 2
+[22] Robert M ¨uller, Steffen Illium, Thomy Phan, Tom Haider,
+and Claudia Linnhoff-Popien. Towards anomaly detection
+in reinforcement learning. InProceedings of the 21st In-
+ternational Conference on Autonomous Agents and Multia-
+gent Systems, page 1799–1803, Richland, SC, 2022. Inter-
+national Foundation for Autonomous Agents and Multiagent
+Systems. 2
+[23] Weili Nie, Brandon Guo, Yujia Huang, Chaowei Xiao, Arash
+Vahdat, and Anima Anandkumar. Diffusion models for ad-
+versarial purification, 2022. 7
+[24] NVIDIA, :, Arslan Ali, Junjie Bai, Maciej Bala, Yogesh
+Balaji, Aaron Blakeman, Tiffany Cai, Jiaxin Cao, Tianshi
+Cao, Elizabeth Cha, Yu-Wei Chao, Prithvijit Chattopadhyay,
+Mike Chen, Yongxin Chen, Yu Chen, Shuai Cheng, Yin Cui,
+Jenna Diamond, Yifan Ding, Jiaojiao Fan, Linxi Fan, Liang
+Feng, Francesco Ferroni, Sanja Fidler, Xiao Fu, Ruiyuan
+Gao, Yunhao Ge, Jinwei Gu, Aryaman Gupta, Siddharth
+Gururani, Imad El Hanafi, Ali Hassani, Zekun Hao, Ja-
+cob Huffman, Joel Jang, Pooya Jannaty, Jan Kautz, Grace
+Lam, Xuan Li, Zhaoshuo Li, Maosheng Liao, Chen-Hsuan
+Lin, Tsung-Yi Lin, Yen-Chen Lin, Huan Ling, Ming-Yu
+Liu, Xian Liu, Yifan Lu, Alice Luo, Qianli Ma, Hanzi
+Mao, Kaichun Mo, Seungjun Nah, Yashraj Narang, Abhijeet
+Panaskar, Lindsey Pavao, Trung Pham, Morteza Ramezanali,
+Fitsum Reda, Scott Reed, Xuanchi Ren, Haonan Shao, Yue
+Shen, Stella Shi, Shuran Song, Bartosz Stefaniak, Shangkun
+Sun, Shitao Tang, Sameena Tasmeen, Lyne Tchapmi, Wei-
+Cheng Tseng, Jibin Varghese, Andrew Z. Wang, Hao Wang,
+Haoxiang Wang, Heng Wang, Ting-Chun Wang, Fangyin
+Wei, Jiashu Xu, Dinghao Yang, Xiaodong Yang, Haotian
+Ye, Seonghyeon Ye, Xiaohui Zeng, Jing Zhang, Qinsheng
+9
+Zhang, Kaiwen Zheng, Andrew Zhu, and Yuke Zhu. World
+simulation with video foundation models for physical ai,
+2025. 2, 6
+[25] Amartya Sanyal, Yaxi Hu, Yaodong Yu, Yian Ma, Yixin
+Wang, and Bernhard Sch ¨olkopf. Accuracy on the wrong
+line: On the pitfalls of noisy data for OOD generalisation. In
+ICML 2024 Next Generation of AI Safety Workshop, 2024. 2
+[26] Younggyo Seo, Danijar Hafner, Hao Liu, Fangchen Liu,
+Stephen James, Kimin Lee, and Pieter Abbeel. Masked
+world models for visual control, 2023. 2
+[27] Skand Skand, Bikram Pandit, Chanho Kim, Li Fuxin, and
+Stefan Lee. Simple masked training strategies yield control
+policies that are robust to sensor failure. In8th Annual Con-
+ference on Robot Learning, 2024. 2, 4
+[28] Ruixiang Sun, Hongyu Zang, Xin Li, and Riashat Islam.
+Learning latent dynamic robust representations for world
+models. InICML, 2024. 2, 6
+[29] The MathWorks, Inc. What is fault detection, isolation, and
+recovery (fdir)?https://www.mathworks.com/
+discovery/fdir.html, 2025. Accessed: 2025-08-12.
+2
+[30] Frederik Tr ¨auble, Andrea Dittadi, Manuel Wuthrich, Felix
+Widmaier, Peter Vincent Gehler, Ole Winther, Francesco Lo-
+catello, Olivier Bachem, Bernhard Sch ¨olkopf, and Stefan
+Bauer. The role of pretrained representations for the OOD
+generalization of RL agents. InInternational Conference on
+Learning Representations, 2022. 2
+[31] Zaitian Wang, Pengfei Wang, Kunpeng Liu, Pengyang
+Wang, Yanjie Fu, Chang-Tien Lu, Charu C. Aggarwal, Jian
+Pei, and Yuanchun Zhou. A comprehensive survey on data
+augmentation, 2024. 2, 6
+[32] Tao Yu, Zhizheng Zhang, Cuiling Lan, Yan Lu, and Zhibo
+Chen. Mask-based latent reconstruction for reinforcement
+learning. InAdvances in Neural Information Processing Sys-
+tems, 2022. 2
+[33] Syed Waqas Zamir, Aditya Arora, Salman Khan, Mu-
+nawar Hayat, Fahad Shahbaz Khan, and Ming-Hsuan Yang.
+Restormer: Efficient transformer for high-resolution image
+restoration. InCVPR, 2022. 18
+[34] Amy Zhang, Rowan Thomas McAllister, Roberto Calandra,
+Yarin Gal, and Sergey Levine. Learning invariant repre-
+sentations for reinforcement learning without reconstruction.
+InInternational Conference on Learning Representations,
+2021. 2
+[35] Fengzhe Zhou, Jiannan Huang, Jialuo Li, and Humphrey Shi.
+Physical ai bench: A comprehensive benchmark for physical
+ai generation and understanding, 2025. 7, 16
+[36] Geigh Zollicoffer, Kenneth Eaton, Jonathan C Balloch, Julia
+Kim, Wei Zhou, Robert Wright, and Mark Riedl. Novelty
+detection in reinforcement learning with world models. In
+Forty-second International Conference on Machine Learn-
+ing, 2025. 2
+[37] Geigh Zollicoffer, Minh N. Vu, Ben Nebgen, Juan Castorena,
+Boian Alexandrov, and Manish Bhattarai. Lorid: Low-rank
+iterative diffusion for adversarial purification.Proceedings
+of the AAAI Conference on Artificial Intelligence, 39(21):
+23081–23089, 2025. 7
+10
+A. Sensors
+CARLA [6]
+•Lidar: Captures a 3D point cloud of the surrounding en-
+vironment.
+•Camera: Provides a forward-facing RGB view from the
+vehicle.
+•Bird’s-Eye View (BEV) Raw: Displays the roadmap and
+surrounding vehicles from a top-down perspective.
+•Collision: Detects collisions with objects in the environ-
+ment.
+•Bird’s-Eye View with Traffic Signals: Renders traffic
+lights and signs directly on the BEV .
+•Bird’s-Eye View with Waypoints: Renders only waypoints
+on the BEV (GPS setting).
+•Bird’s-Eye View Full: Renders all available semantic in-
+formation on the BEV .
+Safety Gymnasium [18]
+•Bird Eye View: A view of the agent and the entire map
+from above.
+•Front Vehicle View: The immediate front view of the
+agent.
+•Dash Camera View: The immediate front view of the
+agent from the dash cam perspective.
+B. CARLA Noise Corruption and Sensor
+Degradation
+B.1. Environment and Representations
+In CARLA [6], an open-source urban driving simulator, the
+agent is equipped with a diverse sensor suite comprising
+seven modalities (see A). We evaluate performance on three
+representative scenarios—Stop Sign, Right Turn, and Four
+Lane Driving—which test the agent’s ability to perceive,
+plan, and act under different traffic configurations.
+B.2. Robustness under Visual Corruptions
+We evaluate the robustness of the driving agent in the
+CARLA simulator by subjecting input images to five types
+of visual corruptions:
+• Chromatic Aberration: introduces small spatial shifts be-
+tween RGB channels, producing color fringing and edge
+distortions similar to lens dispersion.
+• Gaussian Noise: adds pixel-level random variations,
+modeling low-light sensor interference.
+• Glare: causes extreme overexposure that whitens the
+whole frame, erasing most visual information.
+• Jitter: applies random shifts in contrast or brightness,
+simulating unstable or high-noise sensor conditions.
+• Occlusion: masks random regions of the frame, simulat-
+ing partial blockage of the camera view.
+The goal is to test how well the agent can still perform
+its task under degraded visual inputs. Quantitatively, we
+plot 3D surface graphs of the task performance metric as a
+function of corruption intensity and proportion. Each sur-
+face corresponds to one CARLA task—Stop Sign, Right
+Turn, and Four-Lane Driving—and compares four meth-
+ods: the baseline world-model agent, Median Filtering, our
+proposed Rejection Sampling, and HRSSM. For all tasks
+shown in Figure 8, our Rejection Sampling maintains a
+much smoother and higher performance surface, indicating
+stable behavior even under severe sensor degradation. This
+trend demonstrates that the proposed Filter not only delays
+the onset of failure but also preserves task continuity across
+extreme perturbations, achieving consistently superior ro-
+bustness and reliability in all CARLA environments.
+B.3. Efficiency of Surprise-Guided Filter
+Figure 9 illustrates the efficiency of our surprise-guided
+filtering approach by comparing theO(nlogn)sensor-
+selection strategy against the exhaustive2 N subset search
+across the three CARLA tasks—Right Turn, Four-Lane,
+and Stop Sign—under four corruption types: Gaussian,
+Glare, Jitter, and Lag. The specific perturbations applied
+to the camera view are defined as follows:
+• Gaussian Noise: adds pixel-level random variations,
+modeling low-light sensor interference.
+• Glare: causes extreme overexposure that whitens the
+whole frame, erasing most visual information.
+• Jitter: applies random shifts in contrast or brightness,
+simulating unstable or high-noise sensor conditions.
+• Latency (Lag): causes the observation to lag behind the
+true state by reusing stale frames for several steps, emu-
+lating delayed or frozen sensor updates.
+The evaluation spans a wide range of augmentation in-
+tensities to test how each method scales as visual degrada-
+tion increases. For Gaussian Noise and Jitter, both methods
+display non-monotonic trends: mild noise can be mitigated
+by masking high-surprise views, while stronger perturba-
+tions introduce sharp drops, particularly in the Four-Lane
+task at intensity level 4. Glare yields more stable perfor-
+mance because overexposed channels are consistently iden-
+tified and suppressed. Lag produces a near-monotonic de-
+cline across all tasks due to its strong disruption of temporal
+coherence. Crucially, the greenO(nlogn)curves typically
+track the red2 N curves closely, despite the exponential cost
+associated with the brute-force method. This demonstrates
+that the surprise-guided filter attains robustness compara-
+ble to exhaustive subset evaluation at only a fraction of the
+computational burden. The results confirm that the learned
+surprise signal provides a reliable ranking over sensor util-
+ity, making combinatorial search unnecessary and enabling
+practical, scalable deployment in multi-sensor RL settings.
+11
+(a) Chrome
+ (b) Gaussian
+ (c) Glare
+ (d) Jitter
+ (e) Occlusion
+Figure 7. Visual comparison of the clean and corrupted from the CARLA BEV perspective. The left frame is the corrupted observation,
+and the right frame is the ground truth observation.
+(a) Four-Lane Driving
+(b) Right Turn
+(c) Stop Sign
+Figure 8. Qualitative results across three CARLA tasks under five corruption types: Chrome, Gaussian, Glare, Jitter, and Occlusion.
+B.4. Sensor Failure Analysis
+Figure 10 provides a comprehensive breakdown of how in-
+creasing sensor failures affect agent performance across all
+three CARLA tasks—Right Turn, Stop Sign, and Four-Lane
+Driving—under four primary corruption types detailed in
+Section B.3: Gaussian Noise, Glare, Jitter, and Latency.
+Each subfigure in Figure 10 plots episodic score as a
+function of the number of failed sensors, comparing four
+methods: the Baseline world-model agent, the Augmented
+agent trained with Gaussian noise, the RME masked-
+encoder agent, and our Confident Representation approach.
+Across all tasks and corruption types, Baseline exhibits the
+steepest decline, often collapsing to near-zero or negative
+scores as failures accumulate. RME reduces variance but re-
+mains sensitive to structured failures such as Glare and La-
+tency. Augmented improves stability under moderate Gaus-
+sian noise, but still degrades noticeably when failures inten-
+sify.
+In contrast, Confident Representation consistently main-
+tains the highest performance curve, showing only mild
+degradation even with multiple failed sensors. Its advantage
+is particularly notable under Glare and Jitter, where cor-
+rupted visual channels severely mislead other methods. Un-
+der Latency, all agents experience some decline, yet Confi-
+dent Representation preserves stable, positive performance
+while avoiding the abrupt failures observed in Baseline and
+RME.
+Overall, these results show that surprise-guided repre-
+sentation selection remains effective across diverse CARLA
+configurations, enabling the agent to identify corrupted
+views, suppress unreliable inputs, and sustain robust con-
+trol even as sensor failures accumulate.
+12
+(a) Right Turn
+(b) Four Lane Driving
+(c) Stop Sign
+Figure 9. Comparison across three tasks under different noise conditions. We compare the2 N brute force variant against our proposed
+O(nlogn)Algorithm variant 2.
+C. Safety Gymnasium Experiments
+In the Safety Gymnasium domain [18], the agent’s goal
+is to navigate safely to objectives in an environment with
+obstacles. We provide three overlapping camera views as
+described in Section A, which capture similar scene con-
+tent from complementary perspectives. We evaluate per-
+formance on three tasks: PointGoal1, where a point-mass
+agent must reach a goal location while avoiding hazards;
+PointButton1, where a point-mass must press buttons scat-
+tered in the map while avoiding obstacles, and CarGoal1,
+where a car-like agent must reach a goal on a road with ob-
+stacles. Each task also penalizes unsafe collisions with a
+cost.
+Figure 3 in the main text summarizes performance un-
+der four visual corruption types—Gaussian, Jitter, Glare,
+and Occlusion—applied independently to each of the three
+camera views. Since these views are partially redundant,
+corruption in a single view does not immediately prevent
+task completion but can mislead the policy when the cor-
+rupted view dominates the latent inference. The surprise-
+guided filter addresses this by downweighting or suppress-
+ing views whose inferred representations deviate strongly
+from the world model’s predictive prior. As shown in the
+figure, this leads to consistent improvements in both per-
+formance and the Score–Cost ratio across all Safety Gym-
+nasium tasks. In particular, the method effectively han-
+dles Glare and Occlusion, where one view becomes unreli-
+able but the remaining views still convey meaningful struc-
+ture. The resulting gains in safety and stability demonstrate
+that even in environments with overlapping visual inputs,
+surprise-guided representation selection provides measur-
+able robustness against view-specific corruptions.
+D. Hardware Details and Hyperparameters
+CrafterAll experiments can be reproduced on a system
+equipped with two NVIDIA GeForce GTX 1080 GPUs with
+8 GB VRAM each to handle environment complexity, an
+AMD Ryzen 5 5600X 6-core processor, and at least 500 MB
+of storage for files (excluding training data, which depends
+on the environment and model hyperparameters).
+13
+(a) Right Turn
+(b) Stop Sign
+(c) Four-Lane Driving
+Figure 10. Agent performance as sensor failures increase.
+14
+Name Symbol Value
+General
+Replay capacity — 5×106
+Batch size B 16
+Batch length T 64
+Activation — RMSNorm + SiLU
+Learning rate — 4×10−5
+Gradient clipping — AGC(0.3)
+Optimizer — LaProp(ϵ= 10−20)
+World Model
+Reconstruction loss scaleβpred 1
+Dynamics loss scale βdyn 1
+Representation loss scaleβrep 0.1
+Latent unimix — 1%
+Free nats — 1
+Actor Critic
+Imagination horizon H 15
+Discount horizon 1/(1−γ) 333
+Return lambda λ 0.95
+Critic loss scale βval 1
+Critic replay loss scale βrepval 0.3
+Critic EMA regularizer — 1
+Critic EMA decay — 0.98
+Actor loss scale βpol 1
+Actor entropy regularizerη 3×10−4
+Actor unimix — 1%
+Actor RetNorm scale S Per(R,95)−Per(R,5)
+Actor RetNorm limit L 1
+Actor RetNorm decay — 0.99
+Table 2. Hyperparameters of the Dreamerv3 model. We use the
+exact same parameters as discussed in [13].
+CARLA and Safety GymnasiumAll reported experi-
+ments related to Safety-Gymnasium and CARLA domains
+can be conducted on a workstation equipped with an
+NVIDIA GeForce RTX 4090 GPU (24 GB VRAM), an
+AMD Ryzen 9 7950X (16-core, 32-thread) CPU, 128 GB
+DDR5 RAM, and running Ubuntu 22.04 LTS (CUDA 12.4).
+CosmosAll reported experiments relating to the Cosmos
+world model can be conducted on a workstation equipped
+with dual Intel Xeon 6737P CPUs (64 cores total), 2.0 TiB
+of DDR5 system memory, a NVIDIA RTX PRO 6000 uti-
+lizing driver version 580.82.07 (CUDA 13.0).
+E. Further Results
+E.1. Cosmos World Model
+To further verify that the proposed rejection-based filtering
+mechanism generalizes beyond latent-state world models,
+we abstract the process of Figure 5 and extend our study to
+the Cosmos world model—a Diffusion-based video world
+model that performs pixel-space prediction through large-
+scale diffusion and spatio-temporal self-attention. Unlike
+the DreamerV3 architecture used in our main experiments,
+which relies on a Variational Autoencoder with explicit la-
+tent variables and KL-based surprise, Cosmos models dy-
+namics directly in the image domain via autoregressive
+diffusion-based video prediction. This enables high-fidelity
+frame synthesis but also makes it highly sensitive to corrup-
+tion in its first-frame conditioning.
+We evaluate Cosmos on the robot pouring video, where
+a robotic manipulator pours liquid between jars on a table-
+top. In our experiments, 75% of the input video is ran-
+domly perturbed with one of the noises discussed in B.2.
+Because Cosmos conditions its rollout on the last N frames
+of the input video, this corruption propagates through im-
+mediate subsequent predictions, as shown in the top row
+of Figure 11. After enabling our rejection mechanism, the
+system detects the corrupted immediate next frame as high-
+surprise and instead relies on internally predicted latent tra-
+jectories to reconstruct the scene. The bottom row shows
+markedly improved geometry and color fidelity around the
+robot arm and jars, indicating a safer frame to accept,
+demonstrating that selective rejection of corrupted condi-
+tioning frames can effectively suppress artifact propagation
+even in Transformer-based video world models.
+E.1.1. Video Prompt: Robotic Arm Pouring Sequence
+Scene Description
+A robotic arm, primarily white with black joints and
+cables, is shown in a clean, modern indoor setting
+with a white tabletop. The arm, equipped with a
+gripper holding a small, light green pitcher, is po-
+sitioned above a clear glass containing a reddish-
+brown liquid and a spoon. The robotic arm is in
+the process of pouring a transparent liquid into the
+glass. To the left of the pitcher, there is an open
+jar with a similar reddish-brown substance visible
+through its transparent body. In the background, a
+vase with white flowers and a brown couch are par-
+tially visible, adding to the contemporary ambiance.
+The lighting is bright, casting soft shadows on the
+table. The robotic arm’s movements are smooth and
+controlled, demonstrating precision in its task. As
+the video progresses, the robotic arm completes the
+pour, leaving the glass half-filled with the reddish-
+brown liquid. The jar remains untouched throughout
+the sequence, and the spoon inside the glass remains
+stationary. The other robotic arm on the right side
+also stays stationary throughout the video. The final
+frame captures the robotic arm with the pitcher fin-
+ishing the pour, with the glass now filled to a higher
+level, while the pitcher is slightly tilted but still held
+securely by the gripper.
+15
+(a) Chromatic Aberration Frame 1
+ (b) Chromatic Aberration Frame 2
+(c) Clean Observation Frame 1
+ (d) Clean Observation Frame 2
+Figure 11. First-frame conditioning comparison under the Cos-
+mos model: the first column shows the input frame, and the sec-
+ond column shows the corresponding generated frame that was
+conditioned by the first frame. We utilize the Mean Squared error
+between two frames as our rejection scoreM(x ∗).
+E.1.2. Cosmos Evaluation Metrics
+We evaluate the denoised and base Cosmos generations
+using metrics from the PAI-Bench [35], a comprehensive
+benchmark for assessing physical-world video generation
+and prediction quality. Following the official protocol, we
+use the last frame of the ground truth clean input video as
+the reference image to compute the image-to-video (i2v) fi-
+delity scores. The metrics are described as follows:
+•Aesthetic Quality.Measures the visual appeal and per-
+ceptual realism of the generated video, including compo-
+sition, color balance, and absence of artefacts.
+•Background Consistency.Evaluates the temporal sta-
+bility of background regions across frames—high scores
+indicate minimal flicker or spatial drift.
+•Imaging Quality.Quantifies camera-like clarity, sharp-
+ness, and signal-to-noise ratio of the generated video
+frames.
+•Motion Smoothness.Assesses the temporal coherence
+of motion; low values indicate jitter or unnatural frame
+transitions.
+•Overall Consistency.Aggregates spatial and temporal
+coherence into a single holistic quality measure of the en-
+tire video.
+•Subject Consistency.Examines whether the primary ob-
+ject or agent remains stable in shape, color, and identity
+over time.
+•i2v Background.Image-to-video fidelity for background
+regions, comparing each frame to the last frame of the
+input video.
+•i2v Subject.Image-to-video fidelity for the subject
+region, capturing how faithfully the generated subject
+matches the reference frame.
+Hidden
+Enemy
+Deceptive
+Enemy
+Novel
+Colors
+0
+1
+2
+3
+4
+5
+6Mean Score
+Baseline Isolation Only Isolation + Recursive Masking
+Figure 12. Crafter: Baseline vs Confident Representation Perfor-
+mance. Scores improve as the agent utilizes masking in Algorithm
+2 to adapt to different types of novelties.
+Higher scores across these dimensions indicate
+smoother, more coherent, and visually faithful video
+synthesis. In our experiments shown in Table 1, the
+proposed rejection sampling consistently improves both the
+i2v metrics and overall perceptual quality compared to the
+baseline generations.
+E.2. Semantic Noise Experiments
+Although outside the main scope of our work, we briefly
+consider experimentation with semantic noise.
+We choose the Crafter domain [12] due to its utility in
+embedding abstract skins and unknown colors during infer-
+ence time, primarily meant to distract the agent.
+(a) Hidden Enemy
+ (b) Deceptive Enemy
+ (c) Novel Colors
+Figure 13. Qualitative visualization of agents’ behavior in dif-
+ferent semantic novelty scenarios. Figure 13a shows theHidden
+Enemyscenario, where a yellow blob attacks the agent like zom-
+bies despite appearing harmless on the danger map. Figure 13b
+shows theDeceptive Enemyscenario, where certain cows are re-
+programmed to behave like zombies. Figure 13c shows theNovel
+Colors, in which all grass blocks turn bright yellow, creating a
+purely visual domain shift.
+To furnish the agent with a rich state representation, we
+provide and train with six complementary observation chan-
+nels (visualizations provided in Figure 14):
+16
+•Bird’s Eye View: A top-down, default view of the Crafter
+gameplay centered on the agent and a few blocks around
+it.
+•Grayscale: A grayscale version of Bird’s Eye View.
+•Semantic View: A top-down view of the entire game map
+showing object locations; built-in Crafter.
+•Danger Heatmap: Shows sources of danger (zombies,
+skeletons, lava) as red with Gaussian decay; player rep-
+resented with a green dot.
+•Health Trail: Records agent health at its location through
+pixel intensity, widened to a 3x3 region to improve train-
+ing.
+•Proximity Grid: A 3x3 grid representing the eight car-
+dinal directions around the agent; intensities reflect the
+presence of objects cumulatively, scaled up to 64x64 for
+training.
+(a) Bird’s Eye View
+ (b) Grayscale
+ (c) Semantic View
+(d) Danger Heatmap
+ (e) Health Trail
+ (f) Proximity Grid
+Figure 14. Six different representations of the Crafter environ-
+ment, capturing a diverse range of data, were used to train the
+agent.
+Unlike Safety Gymnasium and CARLA, the Crafter exper-
+iments use a single sensor (top down local view) but with
+multiple representations (grayscale, danger heatmap, prox-
+imity heatmap, etc.).
+We first train the world model in the Crafter domain with
+Algorithm 1 to prepare for missing representations. To sim-
+ulate unknown semantic noise, we inject unfamiliar con-
+texts (invisible enemies, different enemy skins, visual color
+shifts) during inference time. In this setting, we create al-
+terations that have the potential to conditionally affect mul-
+tiple representations at once rather than independently (see
+Table 15 for a brief summary of expected representations
+affected given the semantic noise introduced).
+We monitor the performance of a (1) Base agent, (2) an
+agent that only implements Step 1Isolation(an agent only
+selects a single representation) and (3) an agent that imple-
+Hidden
+Deceptive
+Colors
+BEV
+Gray
+Sem
+Dng
+HT
+ProxNovelty Focus
+Low
+Low
+High
+Figure 15. Representation modalities affected by each novelty
+type. Large circles indicate representations directly modified by
+the novelty, while small circles indicate representations indirectly
+affected through downstream effects. The Focus column indicates
+whether the novelty’s impact is concentrated (High) or distributed
+across multiple modalities (Low).
+ments Step 1 and Step 3Recursive Masking(an agent that
+recursively masks the observations in order of surprise). We
+include hardware details in Appendix D.
+We report our findings in Figure 13. We hypothesize
+that the level of depth generally affects the performance of
+the agent, depending on how focused the semantic noise is
+on a subset of representations. Recursive masking appears
+to improve the performance on changes that are expected
+to focus on a single representation, such as color based al-
+terations that primarily affect the image representation of
+the state (Novel Colors). Whereas representation isolation
+tends to be more useful towards returning the agent towards
+a predictable policy when many of the representations are
+affected (Hidden Enemy, Deceptive Enemy, Invert Health).
+Although we primarily test with out-of-distribution sensor
+failures, we find agents equipped with Algorithm 2 appear
+to show some potential towards exhibiting improved stabil-
+ity through automated selection of representations in this
+setting, potentially opening avenues for future research.
+E.3. Ablations
+E.3.1. Representation Dropout Training
+We further conduct an ablation study shown as Figure 16 to
+evaluate the effect of representation-dropout training on the
+stability and robustness of the world model. In this setting,
+a random subset of input modalities or encoded features is
+masked during each training step, encouraging the model to
+infer consistent latent dynamics even under partial observa-
+tions.
+Across all six tasks— PointGoal2, CarGoal1, PointBut-
+ton1, Four-Lane Driving, Right Turn, and Stop Sign —we
+observe that the dropout-trained agents achieve comparable
+or slightly higher final scores than normal training while ex-
+hibiting smoother and more stable learning dynamics. Al-
+though the early stages of training progress more slowly due
+to random masking, the representation-dropout models con-
+verge to similar or better performance with noticeably re-
+17
+duced variance. This demonstrates that exposing the world
+model to incomplete or corrupted representations during
+training improves its ability to maintain coherent latent dy-
+namics under missing-sensor or noisy conditions. The re-
+sults validate that representation dropout enhances general-
+ization and forms the foundation for the robust filtering and
+rejection mechanisms used in later experiments.
+E.3.2. Alternative Rejection ScoresM(x ∗)
+We test additional choices ofM(x∗)that a user may provide
+on the Carla Four Lane Task (Denoising is still determined
+byD(x ∗)used in the main results):
+• Surprise: To decide whether to enter predictive mode, we
+experiment with utilizing the Bayesian surprise measure
+discussed in Eq 2.
+• Resnet-18 [14]: To decide whether to enter predictive
+mode, we train a Binary Resnet-18 classifier on a syn-
+thetic dataset of observations (200,000) with and without
+Gaussian noise, the goal of the classifier is to reject or
+accept the observation given to the agent.
+We report our results across two levels of noiseproportion
+in Table 3.
+MethodGaussian Chromatic Jitter Glare Occlusion
+Res-18. (.75) 571.9±223.6−188.4±359.9−466.1±474.7−578.1±633.9483.5±285.9
+Surp. (.75) 241.7±287.7 105.5±191.3 71.7±194.9 100.4±130.7 275.6±332.8
+Res-18. (.875) 391.2±191.4−439.1±421.7−1237.0±638.3−717.2±622.4228.6±199.5
+Surp. (.875) 164.1±259.1−18.14±250.139.18±104.38 55.1±96.93 257.5±281.4
+Table 3. Comparison of surprise and trained ResNet-18 rejectors
+across five noise types with different proportions (.75 and .875).
+E.3.3. Alternative Denoising MethodsD(x ∗)
+We test additional choices ofD(x∗)that a user may provide
+on the Carla Four Lane Task (Acceptance is still determined
+byM(x ∗)used in the main results):
+• Prior Interpolation: We experiment with a linear interpo-
+lation between the world model’s expected observation
+and the current observation.
+• Restormer [33]: We leverage an off-the-shelf denoiser
+with a transformer architecture.
+We report our results across two levels of noiseintensityin
+Table 4.
+MethodGaussian Chromatic Jitter Glare Occclusion
+Interp (.625) 316.7±256.1 228.2±194.6 265.3±295.0 466.4±242.9 334.8±163.0
+Restormer (.625) 262.7±221.1 180.1±177.3 196.1±170.1 308.8±211.7 305.7±185.4
+Interp (.75) 258.3±288.6 205.6±273.4 183.8±401.4 448.2±274.3 255.9±189.9
+Restormer (.75) 237.0±299.1 144.7±218.4 186.9±193.3 256.6±217.4 215.4±185.4
+Table 4. Comparison of Interpolation and Restormer denoising
+methods across five noises types with different intensities (.625
+and .75).
+E.4. Additional Algorithms
+Figure 16. We compare the original world model training in Safety
+Gymnasium and Carla Domains to the representation dropout
+training.
+18
+Algorithm 1:Random Multi-Representation
+Dropout Training
+Input:Data dictionaryDwith image keysK, mask valuem
+Output:Masked data dictionaryD ′
+Step 1: Select available images;
+K′ ← {k∈K:k∈ D};
+n← |K′|;
+ifn= 0then
+returnD
+Step 2: Sample images to mask each step;
+For each batchband timestept:;
+Drawu b,t ∼Uniform{0, . . . , n−1};
+Step 3: Assign random rankings to images;
+For each(b, t):;
+Draw random valuesr b,t,1, . . . , rb,t,n;
+Compute rankingsπ b,t by sorting these values;
+Step 4: Construct masking matrix;
+For each(b, t, i):;
+Setmask[b, t, i]←1ifπ b,t(i)< ub,t, else0;
+Step 5: Apply masking;
+For eachk i ∈K ′:;
+D′[ki][b, t]←
+(
+m,if mask[b, t, i] = 1
+D[ki][b, t],otherwise ;
+returnD ′;
+Algorithm 2:O(nlogn)Surprise-Guided Repre-
+sentation Selection
+Input:Observation dictionaryobs t, sensor keysK, world modelWM,
+prev statez t−1, prev actiona t−1, Optional DepthD
+Output:Surprise valuesS, latentsZ
+Step 1: Compute surprise for each sensor individually;
+foreachk∈Kdo
+Initialize empty observation:;
+obst′ ←0;
+Isolate observation sensor:;
+obsk
+t′ ←obs k
+t ;
+Encode:e t ←Encoder(obs t′);
+Predict posterior distribution:;
+Pϕ(zk
+t |et, ht)←WM(z t−1, at−1, et);
+Surprise:;
+Sk ←KL
+h
+Pϕ(zk
+t |et, ht)∥P ϕ(zk
+t |ht)
+i
+;
+AppendS k toSandz k
+t ∼P ϕ(zk
+t |et, ht)toZ;
+Step 2: Sort sensors by decreasing surprise;
+π←argsort
+ 
+[Sk]k∈K
+
+;
+Step 3: Iteratively mask sensors in sorted order;
+obst′ ←obs t;
+fori←1tomin(|K|, D)do
+Mask sensorπ i:;
+obs
+πi
+t′ ←0;
+Encode:e t ←Encoder(obs t′);
+Predict posterior distribution:;
+Pϕ(zk
+t |et, ht)←WM(z t−1, at−1, et);
+Surprise:;
+Sk ←KL
+h
+Pϕ(zk
+t |et, ht)∥P ϕ(zk
+t |ht)
+i
+;
+AppendS k toSandz k
+t ∼P ϕ(zk
+t |et, ht)toZ;
+Z∗ ←arg minZ S(Z)
+returnZ ∗
+19

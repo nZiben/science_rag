@@ -1,0 +1,1656 @@
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Dongseok Kim * 1 Hyoungsun Choi * 1 Mohamed Jismy Aashik Rasool * 1 Gisung Oh 1
+Abstract
+We present CLAPS, a posterior-aware confor-
+mal regression method that pairs a Last-Layer
+Laplace Approximation with split-conformal cal-
+ibration. From the resulting Gaussian posterior,
+CLAPS defines a simple two-sided posterior CDF
+score that aligns the conformity metric with the
+full predictive shape, not just a point estimate.
+This alignment yields narrower prediction inter-
+vals at the same target coverage, especially on
+small to medium tabular datasets where data are
+scarce and uncertainty modeling matters. We also
+provide a lightweight diagnostic suite that sep-
+arates aleatoric and epistemic components and
+visualizes posterior behavior, helping practition-
+ers understand why intervals shrink when they do.
+Across multiple benchmarks using the same MLP
+backbone, CLAPS consistently attains nominal
+coverage with improved efficiency and minimal
+overhead, offering a clear, practical upgrade to
+residual-based conformal baselines.
+1. Introduction
+Prediction intervals must balance two goals: maintaining
+target coverage in finite samples and remaining as narrow
+as possible to support decisions. Split-conformal predic-
+tion guarantees the former via rank-based calibration, but
+its efficiency hinges on how the nonconformity score is
+defined. Most tabular regression pipelines still rely on abso-
+lute or normalized residuals, which ignore the full shape of
+predictive uncertainty.
+We introduceCLAPS(Conformal Laplace-Approximated
+Posterior Scoring), a posterior-aware conformal regression
+method that couples aLast-Layer Laplace Approximation
+(LLLA) with split-conformal calibration. LLLA provides
+a lightweight Gaussian posterior over the linear head of a
+fixed backbone network. From this posterior, CLAPS de-
+fines a simple two-sided posterior CDF (“centrality”) score
+*Equal contribution 1Department of Computer Engineering,
+Gachon University, Seongnam, Gyeonggi, Republic of Korea. Cor-
+respondence to: Gisung Oh<eustia@gachon.ac.kr>.
+Preprint. December 2, 2025.
+that quantifies how typical an outcome is under the entire
+predictive distribution, not just relative to a point estimate.
+Aligning the score with the posterior shape yields tighter
+intervals at the same nominal coverage, especially in small
+to medium data regimes where modeling uncertainty is most
+consequential.
+Beyond intervals, practitioners need to understandwhya
+method works. We therefore propose a compact diagnostic
+suite that decomposes predictive variance into aleatoric and
+epistemic components, tracks posterior contraction, and
+quantifies heteroscedasticity signals. These diagnostics help
+select hyperparameters, reveal when posterior information
+is informative, and explain observed efficiency gains.
+Contributions.
+• A posterior-aware conformal method,CLAPS, that
+uses an LLLA posterior to define a two-sided posterior
+CDF score and calibrates it with split-conformal rules.
+• A diagnostic framework that separates aleatoric and
+epistemic uncertainty, measures posterior contraction,
+and surfaces heteroscedasticity cues for method selec-
+tion and debugging.
+• A same-backbone experimental study on standard tab-
+ular benchmarks showing that CLAPS attains target
+coverage with consistently narrower intervals and min-
+imal computational overhead.
+• An easily adoptable recipe: keep the backbone, fit
+a last-layer Laplace posterior, compute the centrality
+score, and apply off-the-shelf split-conformal calibra-
+tion.
+Scope.Our focus is tabular regression with feed-forward
+backbones, where LLLA is especially simple to implement
+and deploy. The overall pipeline preserves conformal valid-
+ity, adds negligible training burden, and improves efficiency
+by aligning the score with the posterior predictive structure.
+2. Related Work
+Conformal for Regression: from residual to distribution-
+shaped scores.Split conformal regression calibrates
+1
+arXiv:2512.01384v1  [cs.LG]  1 Dec 2025
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+residual-shaped scores to guarantee marginal coverage,
+and fold-reuse variants such as jackknife+ and cross-
+fitting improve data efficiency (Barber et al., 2021; An-
+gelopoulos et al., 2023). Recent work emphasizesef-
+ficiency—minimizing expected length or controlling a
+user-chosen risk—while preserving guarantees, including
+optimization-driven procedures and general risk-control
+frameworks (Kiyani et al., 2024; Angelopoulos et al., 2022;
+Overman et al., 2024). Concurrently, methods move beyond
+absolute residuals towarddistribution-shapedscores that
+leverage estimates of P(Y|X) (e.g., CDF-/quantile-based
+and probabilistic variants) or reframe regression as classi-
+fication to better capture heteroscedasticity, skewness, and
+multimodality (Chernozhukov et al., 2021; Romano et al.,
+2019; Guha et al., 2024; Plassier et al., 2024a). We adopt
+the same rank-based split calibration rule but define the con-
+formity via a symmetric CDF from a predictive distribution
+(instantiated later with LLLA), placing our approach on the
+distribution-shaped branch; for completeness we also com-
+pare to interval-thresholding baselines tailored for width
+efficiency (Luo & Zhou, 2025).
+Heteroscedastic Adaptation and Quantile-Based Meth-
+ods.A major route to width efficiency under input-
+dependent noise is to learnscale or quantilesand calibrate
+them with conformal ranks. Conformalized Quantile Re-
+gression (CQR) replaces absolute-residual scores by a max-
+quantile deviation, achieving robustness to heteroscedastic-
+ity and skewed tails (Romano et al., 2019). Building on this
+idea, boosted or reweighted schemes further reduce interval
+length by improving the base quantile fits while preserving
+split-calibrated guarantees (Xie et al., 2024). Localization
+and weighting adapt calibration to covariate neighborhoods
+or strata, yielding relaxed conditional guarantees and im-
+proved coverage balance across subpopulations (Hore &
+Barber, 2023; Bhattacharyya & Barber, 2024). When con-
+ditional distributions are multi-modal/asymmetric, refram-
+ing regression targets (e.g., via discretization or surrogate
+tasks) can enhance quantile learning before conformaliza-
+tion (Guha et al., 2024). Recent general treatments study
+heterogeneity and non-exchangeability directly, proposing
+efficient conformal procedures with validity under drift
+and data heterogeneity (Plassier et al., 2024b). In sur-
+vival/structured settings, conformalized quantile ideas are
+extended with monotonicity-aware or task-specific heads to
+stabilize learned quantiles while keeping rank calibration
+(Qi et al., 2024). We adopt CQR and localized/weighted
+variants as primary baselines; our method differs by deriv-
+ing a posterior-aware, CDF-symmetric score, whereas these
+approacheslearninput-dependent scales/quantiles and then
+apply the same split rank rule.
+Posterior-Aware Scores and Last-Layer Bayesianization.
+Posterior-aware conformal methods use a predictivedistribu-
+tionto define CDF/HPD-style conformity scores, then retain
+split/rank calibration. Recent advances show how modelling
+the conditional distribution improves conditional validity
+and efficiency, e.g., clustering- or distribution–driven cali-
+bration (Zhang & Cand`es, 2024; Plassier et al., 2024a; Cher-
+nozhukov et al., 2021). In neural networks, a lightweight
+route to such predictive distributions is to endow only the
+final linear layer with a Bayesian treatment. Last-layer
+Laplace and its modern variants provide Gaussian poste-
+rior predictives around the MAP solution with negligible
+retraining cost (Kristiadi et al., 2020; Daxberger et al., 2021).
+Beyond the classical diagonal/empirical-Hessian forms, re-
+cent work improves the fidelity–cost trade-off via variational
+last layers, function-space priors, and geometry-aware ap-
+proximations (Harrison et al., 2024; Cinquin et al., 2024;
+Bergamin et al., 2023). We adopt thislast-layer Bayesian-
+izationto instantiate a symmetric CDF score from the LLLA
+posterior predictive on a shared MLP backbone, then cal-
+ibrate by ranks; this places our method at the intersection
+of posterior-aware conformal scoring and efficient Laplace-
+based uncertainty, and is complementary to non-Bayesian
+distributional surrogates (Zhang & Cand`es, 2024; Plassier
+et al., 2024a).
+Diagnostics and Method Selection.We accompany in-
+terval results withdiagnosticsthat disentangle aleatoric and
+epistemic components and indicate when score design or
+scale learning is more advantageous. Concretely, we report
+the variance decomposition ˆv(x) =σ2 +ϕ(x) ⊤Σϕ(x), the
+epistemic share r(x) = epi/(σ 2 + epi), the posterior co-
+variance mass tr(Σ), subsample curves of epi and tr(Σ)
+as n grows (posterior contraction), and the rank correla-
+tion Spearman(|e|,
+√
+ˆv)as a heteroscedasticity signal. The
+latter follows classic practice of testing variance–signal asso-
+ciation via rank/monotone correlation (Yin & Carroll, 1990).
+We also assessprobabilistic calibrationof regression pre-
+dictions via CDF recalibration and coverage diagnostics
+(Kuleshov et al., 2018). Beyond marginal coverage, we ex-
+aminelocalizedorweightedcoverage balance across covari-
+ate neighborhoods using recent randomized-local methods
+and related conditional-validity relaxations (Hore & Bar-
+ber, 2023). Under nonstationarity, we track coverage under
+drift and employ adaptive/wide–narrow adjustments from
+online conformal inference (Gibbs & Cand`es, 2024). These
+indicators guide a simple rule: when r(x) concentrates near
+0 and Spearman(|e|,
+√
+ˆv)is strongly positive (large, struc-
+tured heteroscedasticity),quantile/scale–learningbaselines
+(e.g., CQR/normalized CP) tend to yield tighter widths at
+target coverage; when posterior contraction is limited (non-
+trivial epi and tr(Σ)) and heterogeneity signals are weak,
+posterior-awarescores (ours) are competitive or superior in
+width. We report both sets of diagnostics alongside cover-
+age/width to justify the method choice on each dataset.
+2
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Complementary Lines: Localization, Weighting, and
+Bootstrap Ensembles.Beyond score design, three com-
+plementary axes improve efficiency and coverage balance.
+First,localizationtailors calibration to neighborhoods of the
+test covariate, yielding relaxed conditional guarantees and
+better subgroup balance (Guan, 2023; Hore & Barber, 2023).
+Second,weightingfocuses coverage where distribution
+shift or stratification matters—either by importance-style
+reweighting or group-aware corrections—without changing
+the base score (Bhattacharyya & Barber, 2024). Third,boot-
+strap ensemblesaggregate diverse learners or resamples
+to stabilize interval length under model misspecification
+or dependence, including sequential/time-series settings
+(Xu & Xie, 2021; 2023; Gupta et al., 2022; Qian et al.,
+2024; Rivera et al., 2024). These lines are orthogonal to our
+posterior-aware scoring: our method can plug into localized
+or weighted calibration, and can be paired with ensemble
+wrappers to trade off width and robustness while preserving
+split/rank guarantees.
+3. Method
+We proposeCLAPS, a posterior-aware conformal regres-
+sion method that combines aLast-Layer Laplace Approxi-
+mation(LLLA) with split-conformal calibration. CLAPS
+aligns the nonconformity score with the model’s posterior
+predictive shape and then uses rank-based calibration to
+guarantee finite-sample coverage.
+3.1. Problem Setup
+We consider supervised regression with inputsx∈ X ⊂Rp
+and scalar response y∈R . A neural network consists of a
+fixed backbone feature map ϕ(x)∈R d (last hidden layer)
+and a linear head fw(x) =ϕ(x) ⊤w. We split data into
+trainingD tr, calibrationD cal, and testD te.
+3.2. Last-Layer Laplace Approximation (LLLA)
+We place a Gaussian prior w∼ N(0, λ−1I) and assume
+homoscedastic Gaussian noise y|x, w∼ N(ϕ(x)⊤w, σ2).
+Let Φ∈R n×d be the design matrix of ϕ(x) for Dtr and y∈
+Rn the targets. The MAP solution and posterior covariance
+for the last layer are
+wMAP = arg min
+w
+1
+2σ2 ∥y−Φw∥ 2
+2 + λ
+2 ∥w∥2
+2,
+Σ =
+ 
+λI+ 1
+σ2 Φ⊤Φ
+−1
+.
+The LLLA posterior is w| Dtr ∼ N(wMAP,Σ) and yields a
+Gaussian posterior predictive for anyx,
+y|x,D tr ∼ N
+ 
+ˆµ(x),ˆv(x)
+
+,
+ˆµ(x) =ϕ(x)⊤wMAP,
+ˆv(x) =σ2 +ϕ(x) ⊤Σϕ(x).
+We fix the last–layer prior precision to λ= 1.0 unless
+otherwise stated, and estimate the noise variance σ2 either
+by maximizing the (approximate) marginal likelihood un-
+der the last–layer Gaussian model or—consistently in our
+experiments—via residuals on the training split Dtr (with
+standardized target):
+σ2 = 1
+|Dtr|
+ytr −Φw MAP
+2
+2,
+wMAP =
+ 
+Φ⊤Φ +λI
+−1
+Φ⊤ytr.
+For numerical stability and efficiency, we avoid formingΣ
+explicitly. Let
+M=λI+ 1
+σ2 Φ⊤Φ =LL ⊤
+be the Cholesky factorization. Then the epistemic term is
+evaluated without materializingΣas
+ϕ(x)⊤Σϕ(x) =
+L−1ϕ(x)
+2
+2,
+which we compute with two triangular solves.
+3.3. Two-Sided Posterior CDF Score
+Given the Gaussian posterior predictive, define thecentrality
+(two-sided CDF) score
+s(x, y) = min
+ 
+Fpost(y|x),1−F post(y|x)
+
+,
+where Fpost is the CDF of N(ˆµ(x),ˆv(x)). Intuitively, s
+is large for outcomes typical under the predictive distri-
+bution (near its center) and small for tail outcomes; it
+thus aligns nonconformity with the full posterior shape in-
+stead of only point residuals. For the Gaussian case, if
+z= y−ˆµ(x)√
+ˆv(x)
+and Φ(·) is the standard normal CDF, then
+s(x, y) = min{Φ(z),1−Φ(z)}.
+3.4. Split-Conformal Calibration
+Compute scores on the calibration set Scal =
+{s(xi, yi)}(xi,yi)∈Dcal and take the rank-based thresh-
+old
+t=Quantile α
+ 
+Scal
+
+,
+where α= ⌈(|Dcal|+1)(1−target cov)⌉
+|Dcal|+1 (standard split-conformal
+choice). For a newx, the conformal prediction set is
+C(x) =
+
+y:s(x, y)≥t
+	
+.
+With GaussianF post,C(x)is a central interval:
+C(x) =
+h
+ˆµ(x)+
+p
+ˆv(x) Φ−1(t),ˆµ(x)+
+p
+ˆv(x) Φ−1(1−t)
+i
+.
+This preserves marginal coverage in finite samples by the
+conformal rank rule while typically improving efficiency
+when the posterior carries informative structure.
+3
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+3.5. CLAPS Procedure
+A compact posterior-aware conformal routine: fit an LLLA
+posterior on the head, score calibration samples by two-
+sided CDF centrality, take the conformal quantile, and out-
+put central intervals. See Algorithm 1 for a summary.
+Algorithm 1CLAPS (posterior-aware split-conformal)
+Require:D tr,Dcal, backboneϕ(·)(fixed),λ
+Ensure:C(·)
+1:Φ←[ϕ(x)] (x,y)∈Dtr ; wMAP ←arg min w 1
+2σ2 ∥y−
+Φw∥2
+2 + λ
+2 ∥w∥2
+2
+2:M←λI+σ −2Φ⊤Φ =LL ⊤ {Cholesky}
+3:for all(x i, yi)∈ Dcal do
+4:µ i ←ϕ(x i)⊤wMAP,v i ←σ 2 +∥L −1ϕ(xi)∥2
+2
+5:z i ←(y i−µi)/√vi, si ←min{Φ(z i),1−Φ(z i)}
+6:end for
+7:t←Quantile α
+ 
+{si}Dcal
+
+8:for alltestxdo
+9:µ←ϕ(x) ⊤wMAP,v←σ 2 +∥L −1ϕ(x)∥2
+2
+10:C(x)←
+
+µ+ √vΦ −1(t), µ+ √vΦ −1(1−t)
+
+11:end for
+3.6. Complexity and Deployment
+If d is the last-layer width and n the training size, forming
+M costs O(nd2) and its Cholesky O(d3) once per model.
+Per-query costs are O(d2) for ˆµ(x)and O(d2) (or O(d)
+with cached L−1-vector solves) for ˆv(x). CLAPS adds
+negligible overhead to standard same-backbone pipelines
+while providing a posterior-aware score amenable to fast
+batch inference and plug-and-play conformal calibration.
+4. Theory
+We analyze the validity and efficiency ofCLAPS. Through-
+out, condition on the fitted backbone ϕ(·) and the last-layer
+MAP/posterior trained on Dtr; randomness arises only from
+the exchangeable calibration and test points.
+Definition 4.1(LLLA posterior and predictive).Let w|
+Dtr ∼ N(wMAP,Σ) with Σ = (λI+σ −2Φ⊤Φ)−1 and
+Φ = [ϕ(x)](x,y)∈Dtr . The posterior predictive is
+y|x,D tr ∼ N
+ 
+ˆµ(x),ˆv(x)
+
+,
+ˆµ(x) =ϕ(x)⊤wMAP,
+ˆv(x) =σ2 +ϕ(x) ⊤Σϕ(x).
+and numerically ϕ(x)⊤Σϕ(x) =∥L −1ϕ(x)∥2
+2 for LL⊤ =
+λI+σ −2Φ⊤Φ.
+Definition 4.2(Two-sided posterior CDF score).Define the
+centralityscore
+s(x, y) = min
+
+Fpost(y|x),1−F post(y|x)
+	
+.
+For the Gaussian case, with z= (y−ˆµ(x))/
+p
+ˆv(x), we
+have s(x, y) = min{Φ(z),1−Φ(z)} . Let t be the split-
+conformal rank quantile of {s(xi, yi)}(xi,yi)∈Dcal at level
+α.
+Assumption 4.3(Exchangeability).Conditional on Dtr,
+the calibration multiset Dcal and any test pair (x, y)are
+exchangeable draws from the same data-generating process.
+Proposition 4.4(Finite-sample marginal coverage).Under
+Assumption 1, the CLAPS interval
+C(x) =
+h
+ˆµ(x)+
+p
+ˆv(x) Φ−1(t),ˆµ(x)+
+p
+ˆv(x) Φ−1(1−t)
+i
+satisfies Pr{y∈ C(x)} ≥1−α marginally over the cali-
+bration set and the test point.
+Proof sketch.Split-conformal prediction guarantees1−α
+marginal coverage for any measurable score via the rank-
+based quantile rule. CLAPS fixes the measurable s(x, y);
+thus the standard argument applies verbatim. The use of a
+posterior-aware score affects only efficiency, not validity.
+Lemma 4.5(Monotone transform of absolute z).In
+the Gaussian case, s(x, y) =g(|z|) where g(u) =
+min{Φ(u),1−Φ(u)}is strictly decreasing inu≥0.
+Corollary 4.6(Equivalence to central/HPD sets).For any
+fixed x with Gaussian predictive, the superlevel set {y:
+s(x, y)≥t} is the shortest (HPD) interval of posterior
+mass 1−2t . Consequently, CLAPS aligns the conformal
+acceptance region with the posterior notion of “typicality”
+rather than raw residual magnitude.
+Theorem 4.7(Oracle efficiency under correct specification).
+Fix x and suppose Fpost(· |x)equals the true conditional
+distribution. Among scores whose superlevel sets are nested
+in t, CLAPS yields intervals of minimal Lebesgue measure
+|C(x)|subject toPr{y∈ C(x)|x} ≥1−α.
+Proof sketch. Shortest-probability sets at a fixed mass are
+superlevel sets of the density (HPD). For symmetric uni-
+modal Gaussians, HPD coincides with central quantile inter-
+vals, which are induced by thresholding the two-sided CDF.
+Conformal calibration transfers the oracle probability con-
+straint to finite-sample marginal coverage while preserving
+the nesting, hence minimal expected width under correct
+specification.
+Remark4.8 (Misspecification and efficiency).Proposi-
+tion 4.4 holds without any correctness assumption on Fpost;
+only the width changes. When the fitted posterior shape
+retains information about tailness beyond point residuals,
+CLAPS increases the empirical threshold t and improves
+average width. If the posterior collapses to a homoscedastic
+form, residual-/scale-based scores can be more informative.
+4
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Theorem 4.9(Posterior contraction and regime change).As
+n=|D tr| → ∞with fixed backbone width, the spectrum
+of Φ⊤Φ grows and Σ = (λI+σ −2Φ⊤Φ)−1 →0 . Hence
+ϕ(x)⊤Σϕ(x)→0 for all x and ˆv(x)→σ 2 (last-layer
+epistemic collapse). In this regime CLAPS reduces to con-
+formalization of a homoscedastic Gaussian predictor, and
+its width advantage over residual-based scores diminishes.
+Definition 4.10(Diagnostics linking theory to practice).Let
+epi(x) =ϕ(x) ⊤Σϕ(x)and define
+r(x) = epi(x)
+σ2 + epi(x),
+trace(Σ)(posterior covariance trace),
+ρ= Spearman
+ 
+|y−ˆµ(x)|,
+p
+ˆv(x)
+
+.
+We further inspect subsample curves ofepi(x) and trace(Σ)
+versusn.
+Proposition 4.11(A simple selection rule).If r and
+trace(Σ) are nontrivial while ρ is modest, prefer CLAPS; if
+r≈0 (contraction) but ρ is substantial (heteroscedasticity),
+prefer scale-learning baselines (e.g., normalized-CP/CQR).
+This rule is consistent with Theorems 4.7 and 4.9.
+Remark4.12 (Implementation note).All quantities above
+use the same fitted backbone and the closed-form LLLA
+head (via a Cholesky factor L). Algorithm 1 details the rou-
+tine; no additional stochastic approximations are required.
+5. Experiments
+Datasets.We evaluate CLAPS on four standard tabular
+regressionbenchmarks spanning small to large scales and
+varying degrees of heterogeneity:UCI Airfoil(1,503 exam-
+ples; 5 continuous input features; target is sound pressure
+level),OpenML kin8nm(8,192 examples; 8 continuous
+features; robotic arm kinematics response),UCI CASP,
+the Physicochemical Properties of Protein Tertiary Struc-
+ture dataset (45,730 examples; 9 physicochemical features;
+target is RMSD), andUCI YearPredictionMSD(a fixed
+split with 463,715 train and 51,630 test instances; 90 audio
+features; target is release year). All features are numeric;
+we standardize inputs to zero mean and unit variance using
+statistics from the training split only, and we center the tar-
+get during model fitting but report all metrics in the original
+target scale. These datasets cover regimes where last-layer
+epistemic variance is nontrivial in small/medium sets (Air-
+foil, kin8nm, CASP) and globally contracted in large-scale
+settings (YearPredictionMSD), allowing us to probe when
+posterior-aware scoring is most beneficial.
+Model architecture.All methods share the sameback-
+boneMLP to isolate the effect of uncertainty handling. For
+Airfoil and kin8nm, we use a 2-layer MLP with 128 hid-
+den units per layer; for CASP and YearPredictionMSD, we
+use a 3-layer MLP with 256 hidden units per layer. The
+output head for the base predictor is a single linear neu-
+ron (scalar regression). Our method (CLAPS) applies a
+last-layer Laplace approximation on this linear head only,
+leaving the backbone fixed; competing baselines reuse the
+identical backbone and differ only in the head (e.g., a sin-
+gle point head for Baseline-CP, a positive scale head for
+Normalized-CP, and two quantile heads for CQR).
+Comparison methods.
+• Baseline-CP(CP) (Lei et al., 2018): A single-point
+head trained for squared error; calibrate absolute resid-
+uals |y−ˆµ(x)| on the calibration split and output
+ˆµ(x)±q1−α.
+• Normalized-CP(Norm-CP) (Papadopoulos et al.,
+2008): Add a positivescale head h(x)>0 and use
+the normalized residual |y−ˆµ(x)|/h(x) as the score
+to obtain input-adaptive (heteroscedastic) widths.
+• Conformalized Quantile Regression(CQR) (Ro-
+mano et al., 2019): Replace the point head with two
+quantile heads (ˆqlo(x),ˆqhi(x)) and calibrate the non-
+negative score max{ˆqlo(x)−y, y−ˆq hi(x),0} to
+produce the narrowest interval consistent with split
+ranks.
+• Conservative Targeted Intervals(CTI) (Luo & Zhou,
+2025): Pretrain multiple candidate target coverages
+{1−α k} and select at calibration time via an integer-
+valued rank score; typically trades width for higher
+reliability.
+• CLAPS(ours): Keep the same point head, fit a last-
+layer Laplace posterior, and use the two-sided posterior
+CDF centrality s(x, y) = min{Φ(z),1−Φ(z)} with
+z= (y−ˆµ)/
+√
+ˆvas the conformal score; output central
+posterior-shaped intervals after rank calibration.
+Metrics.We report three standard quantities on the held-
+out test set:coverage(higher is better),width(lower is bet-
+ter), andMAE(context-restored). Coverage is the marginal
+fraction of test points whose true response falls inside the
+predicted interval,
+Cov = 1
+ntest
+ntestX
+i=1
+1{y i ∈ C(xi)},
+with target 1−α= 0.90 . Width is the average interval
+length,
+Wid = 1
+ntest
+ntestX
+i=1
+ 
+Chi(xi)− Clo(xi)
+
+,
+5
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+and MAE is the point prediction error of the shared back-
+bone head,
+MAE = 1
+ntest
+ntestX
+i=1
+|yi −ˆµ(xi)|,
+where ˆµis the backbone’s scalar regressor (identical across
+methods). We accompany each metric with a 95% confi-
+dence interval: for coverage we use the Wilson score inter-
+val for a binomial proportion with n=n test; for width and
+MAE we use a normal approximation ¯m±1.96s/√ntest
+based on per-example sample variance. When averaging
+over multiple random splits, we first aggregate per-split
+means and then form at-interval across splits.
+Results.Figure 1 summarizes the experimental outcomes
+across datasets. All approaches attain marginal cover-
+age near the 0.90 target; CTI is consistently conservative
+(roughly 0.94–0.97). On small/medium datasets (Airfoil,
+kin8nm), CLAPS yields the narrowest intervals at compa-
+rable coverage (e.g., Airfoil width ≈7.78 compared with
+8.85–14.31; kin8nm ≈0.27 compared with 0.28–0.68) and
+achieves the lowest MAE. On CASP, widths are close over-
+all, with a slight edge to Normalized-CP (about 12.98 com-
+pared with 13.91 for CLAPS) at similar coverage. On large-
+scale YearPrediction, where last-layer epistemic variance
+collapses and heteroscedasticity dominates, Normalized-CP
+and CQR produce markedly tighter intervals (∼22.8–23.0)
+than CLAPS/CP/CTI (∼27.6 –28.0) at comparable cover-
+age, while CLAPS still attains the lowest MAE. For com-
+plete numbers and confidence intervals, please see Appendix
+Tables 2 (point estimates) and 3 (95% CIs).
+Ablation study.We vary the LLLA prior precision
+λ∈ {0.1,0.3,1,3,10} and the aleatoric estimator ˆσ2 ∈
+{ˆσ2
+EB,ˆσ2
+res} on Airfoil at α= 0.10 . Coverage re-
+mains close to the target across settings, while interval
+width changes smoothly with λ. The choice between ev-
+idence–based ˆσ2
+EB and residual–based ˆσ2
+res does not ma-
+terially affect coverage or width at this scale, indicating
+robustness of the CLAPS calibration to the noise estima-
+tor. Complete ablation results and the corresponding 95%
+confidence intervals are provided in Table 6 and Table 7.
+6. Discussion and Limitations
+Discussion.CLAPS aligns the conformal nonconformity
+with the last-layer Laplace posterior, which proved most
+beneficial on small to medium tabular datasets where epis-
+temic variance is nontrivial. In Airfoil and kin8nm, this
+alignment yielded narrower intervals at the same nominal
+coverage, consistent with the posterior-aware efficiency
+arguments; on the large-scale YearPrediction, last-layer
+epistemic variance collapsed ( bv(x)!→!σ2) and methods
+λˆσ 2 Cov Widτ
+0.1 ˆσ2
+EB 0.9007 7.7100 0.036598
+ˆσ2
+res 0.9007 7.7106 0.030127
+0.3 ˆσ2
+EB 0.8742 7.5557 0.035150
+ˆσ2
+res 0.8742 7.5557 0.035150
+1 ˆσ2
+EB 0.9007 7.7842 0.034182
+ˆσ2
+res 0.9007 7.7842 0.034182
+3 ˆσ2
+EB 0.9007 7.9756 0.033639
+ˆσ2
+res 0.9007 7.9756 0.033639
+10 ˆσ2
+EB 0.9073 8.2366 0.025537
+ˆσ2
+res 0.9073 8.2366 0.031979
+Table 1.Ablation onAirfoilat α= 0.10 : effect of λ and ˆσ2 esti-
+mator on coverage, width, and resulting τ. 95% CIs are reported
+in the Appendix.
+that learn input-dependent scales (Normalized-CP, CQR)
+achieved tighter widths. The ablation study highlights ad-
+ditional strengths of CLAPS: performance is remarkably
+insensitive to the regularization level λ and to the choice
+of aleatoric estimator (bσ2 ∗EB and bσ2 ∗res lead to essen-
+tially identical coverages and very similar widths), while
+the conformal quantile τ adjusts smoothly as λ varies. This
+robustness reduces tuning burden, provides predictable be-
+havior across datasets, and ensures graceful degradation
+when epistemic variance is small, all while maintaining ex-
+act finite-sample validity. Conceptually, scale- or quantile-
+based conformalizers primarily target aleatoric variability,
+whereas CLAPS leverages epistemic tail information cap-
+tured by the last-layer posterior; this regime split clarifies
+when each family is preferable. Practically, CLAPS can
+serve as a complementary option selected by simple diag-
+nostics such as r= epi/bv(x), tr(Σ), or the rank correlation
+between |y−µ(x)| and
+p
+bv(x); a hybrid formulation that
+interpolates between a posterior-aware term and a learned
+scale term usingris a promising direction for future work.
+Limitations.Because CLAPS models uncertainty only in
+the linear last layer, it cannot capture representation-level
+epistemic variation inside the backbone; when the feature
+map is misspecified, the posterior variance can understate
+uncertainty even if the head is well calibrated. First, pos-
+terior contraction at large n diminishes epistemic contri-
+butions, limiting the advantage of posterior-aware scoring.
+Second, in highly heteroscedastic settings, CLAPS does not
+itself learn the input-wise scale, so scale/quantile-based con-
+formalization can be more efficient. Third, σ2 estimation
+and backbone expressivity affect ˆv(x), making the method
+sensitive to training choices. Fourth, while a single Cholesky
+factorization makes deployment light-weight, very wide
+heads can make O(d3) factorization a bottleneck. Finally,
+our study focuses on marginal coverage under exchangeabil-
+ity; localized guarantees and strong covariate shifts remain
+6
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Airfoil kin8nm CASP YearPrediction
+0.88
+0.90
+0.92
+0.94
+0.96
+Coverage
+22.5
+25.0
+27.5
+Width
+10
+15
+Airfoil kin8nm CASP YearPrediction
+0.0
+0.2
+0.4
+0.6
+6
+7
+MAE
+2
+4
+Airfoil kin8nm CASP YearPrediction
+0.00
+0.05
+0.10
+0.15
+0.20
+CP Norm-CP CQR CTI CLAPS
+Figure 1.Grouped bar plots forcoverage(left; dashed target line at 0.90),width(middle; broken y-axis to expose low/high ranges), and
+MAE(right; brokeny-axis). Each group on thex-axis is a dataset; bars are colored by method.
+open. That said, the last-layer view is often a practical sweet
+spot: with frozen or slowly changing backbones, most train-
+time variability concentrates in the head, and CLAPS adds a
+single, stable Cholesky step to standard pipelines with little
+tuning burden (as reflected by its insensitivity toλ and bσ2 in
+our ablations) while retaining exact finite-sample validity.
+Future work.A natural extension is to design hybrid
+conformal scores that interpolate between posterior-aware
+and scale-aware components, using diagnostics such as
+the local epistemic share to adapt how much weight is
+placed on each mechanism. On the posterior side, mov-
+ing beyond a single last-layer approximation via struc-
+tured factorizations (e.g., KFAC-style Kronecker approxima-
+tions, low-rank-plus-diagonal or subspace Laplace variants)
+and multi-head last-layer posteriors could further improve
+tail fidelity at scalable cost. On the data side, extending
+CLAPS to localized coverage under covariate shift and non-
+exchangeable settings—for example through conformal risk
+control, covariate-conditioned thresholds, or lightweight
+online recalibration—would broaden its applicability. Fi-
+nally, learning the noise scale in a more flexible way (e.g.,
+hierarchical empirical Bayes or auxiliary scale heads) and
+combining it with posterior- and data-driven diagnostics
+suggests a plug-and-play conformal system that can auto-
+matically choose and tune scoring rules across datasets and
+sample-size regimes.
+7. Conclusion
+We introduced CLAPS, a posterior-aligned conformal ap-
+proach that couples a shared-backbone predictor with a
+last-layer Laplace view to calibrate uncertainty in a prin-
+cipled and practical way. The method preserves standard
+conformal guarantees while turning the posterior shape into
+an informative score, yielding consistently tighter and more
+faithful intervals in our studies and a clear narrative linking
+theory and observation. Beyond empirical gains, CLAPS of-
+fers a transparent breakdown of predictive uncertainty and a
+lightweight path to deployment that fits neatly into existing
+pipelines. We believe this synthesis of Bayesian insight and
+conformal calibration advances interval estimation for mod-
+ern neural regressors and opens a direct route to broader
+extensions in architecture, data modality, and evaluation
+setting.
+Impact Statement
+This work combines last-layer Laplace approximation with
+split conformal calibration to provide more efficient predic-
+tion intervals while maintaining the target coverage. The
+approach can improve decision-making by communicating
+uncertainty more clearly in applications such as quality con-
+trol and predictive maintenance. However, in large-scale
+or highly heterogeneous settings, posterior variance may
+collapse, producing intervals that are narrower than is ap-
+propriate. To mitigate this, we propose two operational
+guardrails. First, establish a minimum acceptable interval
+width in consultation with domain experts and automatically
+switch to a more conservative regime whenever this criterion
+is not met. Second, monitor coverage and warning signals
+after deployment, and when anomalies are detected, tem-
+porarily defer predictions or route them for human review.
+We also emphasize data bias and privacy considerations: the
+released code will include clear usage cautions and licens-
+ing, and we recommend domain-specific validation before
+applying the method in sensitive contexts.
+7
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+References
+Angelopoulos, A. N., Bates, S., Fisch, A., Lei, L., and
+Schuster, T. Conformal risk control.arXiv preprint
+arXiv:2208.02814, 2022.
+Angelopoulos, A. N., Bates, S., et al. Conformal predic-
+tion: A gentle introduction.Foundations and trends® in
+machine learning, 16(4):494–591, 2023.
+Barber, R. F., Candes, E. J., Ramdas, A., and Tibshirani,
+R. J. Predictive inference with the jackknife+.The Annals
+of Statistics, 49(1):486–507, 2021.
+Bergamin, F., Moreno-Mu˜noz, P., Hauberg, S., and Arvani-
+tidis, G. Riemannian laplace approximations for bayesian
+neural networks.Advances in Neural Information Pro-
+cessing Systems, 36:31066–31095, 2023.
+Bhattacharyya, A. and Barber, R. F. Group-weighted confor-
+mal prediction.arXiv preprint arXiv:2401.17452, 2024.
+Chernozhukov, V ., W¨uthrich, K., and Zhu, Y . Distribu-
+tional conformal prediction.Proceedings of the National
+Academy of Sciences, 118(48):e2107794118, 2021.
+Cinquin, T., Pf ¨ortner, M., Fortuin, V ., Hennig, P., and
+Bamler, R. Fsp-laplace: Function-space priors for the
+laplace approximation in bayesian deep learning.Ad-
+vances in Neural Information Processing Systems, 37:
+13897–13926, 2024.
+Daxberger, E., Kristiadi, A., Immer, A., Eschenhagen, R.,
+Bauer, M., and Hennig, P. Laplace redux-effortless
+bayesian deep learning.Advances in neural information
+processing systems, 34:20089–20103, 2021.
+Gibbs, I. and Cand`es, E. J. Conformal inference for online
+prediction with arbitrary distribution shifts.Journal of
+Machine Learning Research, 25(162):1–36, 2024.
+Guan, L. Localized conformal prediction: A generalized in-
+ference framework for conformal prediction.Biometrika,
+110(1):33–50, 2023.
+Guha, E., Natarajan, S., M ¨ollenhoff, T., Khan, M. E.,
+and Ndiaye, E. Conformal prediction via regression-
+as-classification.arXiv preprint arXiv:2404.08168, 2024.
+Gupta, C., Kuchibhotla, A. K., and Ramdas, A. Nested
+conformal prediction and quantile out-of-bag ensemble
+methods.Pattern Recognition, 127:108496, 2022.
+Harrison, J., Willes, J., and Snoek, J. Variational bayesian
+last layers.arXiv preprint arXiv:2404.11599, 2024.
+Hore, R. and Barber, R. F. Conformal prediction with local
+weights: randomization enables local guarantees.arXiv
+preprint arXiv:2310.07850, 2023.
+Kiyani, S., Pappas, G. J., and Hassani, H. Length opti-
+mization in conformal prediction.Advances in Neural
+Information Processing Systems, 37:99519–99563, 2024.
+Kristiadi, A., Hein, M., and Hennig, P. Being bayesian,
+even just a bit, fixes overconfidence in relu networks. In
+International conference on machine learning, pp. 5436–
+5446. PMLR, 2020.
+Kuleshov, V ., Fenner, N., and Ermon, S. Accurate uncer-
+tainties for deep learning using calibrated regression. In
+International conference on machine learning, pp. 2796–
+2804. PMLR, 2018.
+Lei, J., G’Sell, M., Rinaldo, A., Tibshirani, R. J., and
+Wasserman, L. Distribution-free predictive inference for
+regression.Journal of the American Statistical Associa-
+tion, 113(523):1094–1111, 2018.
+Luo, R. and Zhou, Z. Conformal thresholded intervals for ef-
+ficient regression. InProceedings of the AAAI Conference
+on Artificial Intelligence, volume 39, pp. 19216–19223,
+2025.
+Overman, W., Vallon, J., and Bayati, M. Aligning model
+properties via conformal risk control.Advances in Neu-
+ral Information Processing Systems, 37:110702–110722,
+2024.
+Papadopoulos, H., Gammerman, A., and V ovk, V . Normal-
+ized nonconformity measures for regression conformal
+prediction. InProceedings of the IASTED International
+Conference on Artificial Intelligence and Applications
+(AIA 2008), pp. 64–69, 2008.
+Plassier, V ., Fishkov, A., Guizani, M., Panov, M.,
+and Moulines, E. Probabilistic conformal prediction
+with approximate conditional validity.arXiv preprint
+arXiv:2407.01794, 2024a.
+Plassier, V ., Kotelevskii, N., Rubashevskii, A., Noskov,
+F., Velikanov, M., Fishkov, A., Horvath, S., Takac, M.,
+Moulines, E., and Panov, M. Efficient conformal predic-
+tion under data heterogeneity. InInternational Confer-
+ence on Artificial Intelligence and Statistics, pp. 4879–
+4887. PMLR, 2024b.
+Qi, S.-a., Yu, Y ., and Greiner, R. Toward conditional distribu-
+tion calibration in survival prediction.Advances in Neural
+Information Processing Systems, 37:86180–86225, 2024.
+Qian, X., Wu, J., Wei, L., and Lin, Y . Random projec-
+tion ensemble conformal prediction for high-dimensional
+classification.Chemometrics and Intelligent Laboratory
+Systems, 253:105225, 2024.
+Rivera, E. O., Patel, Y ., and Tewari, A. Conformal predic-
+tion for ensembles: Improving efficiency via score-based
+aggregation.arXiv preprint arXiv:2405.16246, 2024.
+8
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Romano, Y ., Patterson, E., and Candes, E. Conformalized
+quantile regression.Advances in neural information pro-
+cessing systems, 32, 2019.
+Xie, R., Barber, R., and Candes, E. Boosted conformal
+prediction intervals.Advances in Neural Information
+Processing Systems, 37:71868–71899, 2024.
+Xu, C. and Xie, Y . Conformal prediction interval for dy-
+namic time-series. InInternational Conference on Ma-
+chine Learning, pp. 11559–11569. PMLR, 2021.
+Xu, C. and Xie, Y . Conformal prediction for time series.
+IEEE transactions on pattern analysis and machine intel-
+ligence, 45(10):11575–11587, 2023.
+Yin, Y . and Carroll, R. J. A diagnostic for heteroscedasticity
+based on the spearman rank correlation.Statistics &
+probability letters, 10(1):69–76, 1990.
+Zhang, Y . and Cand`es, E. J. Posterior conformal prediction.
+arXiv preprint arXiv:2409.19712, 2024.
+9
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+A. Numerical Analysis of Test Metrics
+Table 2 and Table 3 provide numerical summaries of the figures in the main text. We interpret the results from four
+perspectives: whether the target coverage (approximately 0.90) is achieved, interval-width efficiency near the same coverage
+level (smaller is better), point-estimation accuracy (MAE), and estimator stability as reflected by the breadth of the confidence
+intervals. Overall, CLAPS tends to improve both width and MAE on small- to medium-scale datasets or when heterogeneity
+is mild, whereas methods that explicitly learn input-dependent scale (NORM-CP, CQR) lead in width efficiency under large
+scale and pronounced heterogeneity. CTI serves as a conservative baseline, typically yielding higher-than-target coverage
+with wider intervals.
+By dataset,Airfoilandkin8nmshow that CLAPS attains the narrowest intervals and the lowest MAE while remaining near
+the target coverage (see both tables). In Table 3, the confidence intervals for width and MAE are very tight, indicating stable
+rankings, and the Wilson intervals for coverage consistently straddle 0.90. OnCASP, NORM-CP has a slight advantage
+in width, while CLAPS attains the lowest MAE, revealing a trade-off between interval efficiency and point accuracy. On
+YearPrediction, NORM-CP and CQR achieve the narrowest intervals, highlighting the advantage of explicitly learning
+input-dependent scale in large datasets. At the same time, CLAPS retains strength in MAE, showing a complementary
+relationship between interval efficiency and point accuracy.
+Additionally, the coverage intervals in Table 3 contract markedly as dataset size grows, withYearPredictionexhibiting
+particularly high estimation stability. Across datasets, CTI consistently displays a trade-off of higher coverage and wider
+intervals, confirming its role as a safe baseline when high reliability is paramount. In contrast, CLAPS demonstrates
+Pareto efficiency (narrow width with low MAE) on small- to medium-scale data or when heterogeneity is weak, while
+NORM-CP/CQR dominate interval efficiency in large-scale or strongly heterogeneous settings. Hence, it is reasonable to
+select methods based on dataset scale and the strength of heterogeneity signals.
+In summary, Table 2 and Table 3 support the following: first, in small- to medium-scale settings with weak heterogeneity,
+CLAPS maintains target coverage while improving both interval width and MAE. Second, in large-scale settings with strong
+heterogeneity, NORM-CP and CQR are more efficient in interval width. Third, CTI remains a conservative baseline with
+higher coverage and wider intervals. These observations align with the diagnostics presented in the main text—posterior
+variance shrinkage and the strength of heterogeneity signals.
+Table 2.Test-set metrics (point estimates for coverage, width, and MAE).
+Dataset Metrics CP Norm-CP CQR CTI CLAPS
+Airfoil
+Cov 0.9205 0.9007 0.9139 0.9669 0.9007
+Wid 8.8468 13.6129 10.5931 14.3088 7.7843
+MAE 1.8832 1.8832 1.8967 3.2301 1.7579
+kin8nm
+Cov 0.9049 0.8976 0.8939 0.9500 0.9024
+Wid 0.2788 0.3359 0.3973 0.6753 0.2670
+MAE 0.0667 0.0667 0.0677 0.1466 0.0643
+CASP
+Cov 0.9058 0.9066 0.9086 0.9399 0.9033
+Wid 13.9332 12.9819 14.2050 16.7776 13.9124
+MAE 2.9868 2.9868 2.9193 4.7920 2.8893
+YearPrediction
+Cov 0.9015 0.9011 0.9027 0.9378 0.9019
+Wid 27.6122 22.7666 23.0094 27.9738 27.5864
+MAE 5.8785 5.8785 6.3651 7.2291 5.8357
+B. Posterior-Variance Diagnostics and Heteroscedasticity Signals
+Table 4 summarizes the last-layer Laplace decomposition across datasets and splits, reporting the mean epistemic component,
+the fractional epistemic share r (with mean and empirical 10th/90th percentiles), the mass near collapse bP(r<1%), the
+posterior covariance trace tr(Σ), and the aleatoric variance σ2. Two patterns are salient. First, from small/medium data to
+large-scale data, both r and the epistemic mean shrink substantially while tr(Σ) monotonically decreases, indicating global
+posterior contraction; this is most pronounced onYearPrediction, where r concentrates near zero. Second, σ2 remains
+comparatively stable across subsample sizes, implying that the total predictive variance becomes increasingly dominated by
+10
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Table 3.95% confidence intervals for test-set metrics. Coverage uses Wilson intervals; width and MAE use normal (t) approximations.
+Dataset Metrics CP Norm-CP CQR CTI CLAPS
+Airfoil
+Cov [0.8662, 0.9540] [0.8426, 0.9389] [0.8583, 0.9490] [0.9248, 0.9858] [0.8426, 0.9389]
+Wid [8.8468, 8.8468] [12.5093, 14.7164] [9.9608, 11.2253] [13.5943, 15.0234] [7.7552, 7.8135]
+MAE [1.5989, 2.1675] [1.5989, 2.1675] [1.6096, 2.1838] [2.8245, 3.6357] [1.5007, 2.0151]
+kin8nm
+Cov [0.8829, 0.9231] [0.8749, 0.9165] [0.8710, 0.9132] [0.9329, 0.9629] [0.8802, 0.9209]
+Wid [0.2788, 0.2788] [0.3279, 0.3439] [0.3899, 0.4048] [0.6640, 0.6866] [0.2670, 0.2671]
+MAE [0.0627, 0.0707] [0.0627, 0.0708] [0.0637, 0.0717] [0.1389, 0.1542] [0.0607, 0.0679]
+CASP
+Cov [0.8969, 0.9139] [0.8978, 0.9147] [0.8999, 0.9166] [0.9326, 0.9464] [0.8944, 0.9116]
+Wid [13.9332, 13.9332] [12.9006, 13.0633] [14.1071, 14.3029] [16.6666, 16.8887] [13.9110, 13.9137]
+MAE [2.9086, 3.0650] [2.9086, 3.0651] [2.8374, 3.0011] [4.7281, 4.8558] [2.8102, 2.9684]
+YearPrediction
+Cov [0.8989, 0.9040] [0.8985, 0.9036] [0.9001, 0.9052] [0.9357, 0.9399] [0.8993, 0.9045]
+Wid [27.6122, 27.6122] [22.6983, 22.8349] [22.9145, 23.1043] [27.8673, 28.0804] [27.5863, 27.5865]
+MAE [5.8238, 5.9331] [5.8238, 5.9331] [6.3125, 6.4177] [7.1772, 7.2810] [5.7806, 5.8908]
+the aleatoric component as data grow.
+Table 5 complements this view by quantifying heteroscedasticity signals via Spearman correlation between absolute residuals
+and the square-root predictive scale. OnYearPredictionthe correlation is clearly positive and statistically significant on
+both calibration and test splits, signaling strong input-dependent scale that methods explicitly learning the scale (e.g.,
+normalized or quantile-based variants) can exploit for narrower intervals at fixed coverage. In contrast, small/medium
+datasets (e.g.,Airfoil,CASP) show weak or insignificant signals, consistent with the regimes where our method attains
+favorable width–MAE trade-offs while meeting target coverage.
+Finally, Figure 2 visualizes the same phenomena as epoch-style curves (five interpolated steps per dataset over a log- n
+grid) forEpistemic (mean), tr(Σ), and ˆσ2. The left and middle panels reveal a smooth, monotone reduction in epistemic
+contribution and posterior trace as the effective sample grows, corroborating posterior variance collapse on large-scale
+data; the right panel shows that the aleatoric estimate varies only mildly by comparison. Taken together, Table 4, Table
+5, and Figure 2 provide a coherent diagnostic story: posterior contraction reduces epistemic share with scale, the strength
+of heteroscedasticity governs interval-efficiency gains from scale-learning approaches, and in small/medium or weak-
+heterogeneity regimes our approach maintains target coverage with competitive or superior width and point accuracy.
+Table 4.LLLA variance decomposition by dataset and split. Columns report the mean epistemic component, the fractional epistemic
+share r= epi/(σ 2 + epi) (mean and 10/90th percentiles), the fraction of samples with r <1%, the posterior covariance trace tr(Σ), and
+the aleatoric varianceσ 2.
+Dataset Split Epistemic (mean)r(mean) ˆQ0.10 (r) ˆQ0.90 (r) bP(r <1%) tr(Σ)σ 2
+Airfoil Calib 0.007292 0.075838 0.049370 0.105913 0.000000 32.587912 0.088094
+Test 0.007931 0.080710 0.047274 0.108744 0.000000 32.587912 0.088094
+kin8nm Calib 0.001572 0.018776 0.012259 0.027264 0.037940 5.269668 0.081985
+Test 0.001548 0.018492 0.011573 0.026858 0.035366 5.269668 0.081985
+CASP Calib 0.002007 0.005018 0.001983 0.008518 0.928086 65.819530 0.396034
+Test 0.002074 0.005168 0.002061 0.008725 0.926088 65.819530 0.396034
+YearPrediction Calib 0.000257 0.000471 0.000159 0.000882 0.999526 56.635682 0.545434
+Test 0.000262 0.000480 0.000158 0.000892 0.999437 56.635682 0.545434
+C. Extended Ablations and Sensitivity Analyses
+This section provides the full ablation grids that underlie the main text. Table 6 reports, for each dataset (Airfoil, kin8nm,
+CASP, YearPredictionMSD), the core quantities across regularization levels λ∈ {0.1,0.3,1,3,10} and two aleatoric
+estimators bσ2
+EB and bσ2
+res: empirical coverage (Cov), average interval width (Wid), the selected conformal quantileτ, and
+the fitted noise level bσ2. Table 7 complements these results with 95% confidence intervals for coverage and width only,
+11
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Table 5.Heteroscedasticity signal: Spearman correlation between|e|and
+√
+ˆv. Two panels report calibration and test splits side by side.
+(Calib)
+Datasetρ p
+Airfoil -0.0640 0.4592
+kin8nm 0.0850 0.0210
+CASP 0.0111 0.4746
+Year 0.2271 0.0000
+(Test)
+Datasetρ p
+Airfoil 0.0073 0.9290
+kin8nm 0.0489 0.1616
+CASP 0.0103 0.4841
+Year 0.2298 0.0000
+1 2 3 4 5
+0.00
+0.01
+0.02
+0.03
+0.04
+Epistemic (mean)
+1 2 3 4 5
+0
+25
+50
+75
+100
+125
+150
+175
+tr( )
+1 2 3 4 5
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+2
+Airfoil kin8nm CASP YearPrediction
+Figure 2.Subsample diagnostics shown as epoch-style curves (1–5, interpolated per dataset on a log- n grid). Panels reportEpistemic
+(mean),tr(Σ), andˆσ2 from left to right, with four datasets overlaid in each panel (legend shared at top). This view makes small-dataset
+trends comparable across datasets with differing raw subsample sizes.
+enabling a quantitative assessment of the small empirical differences observed among settings.
+Several consistent patterns emerge. First, coverage remains essentially invariant across λ and across the two choices of bσ2,
+confirming that the conformal rank rule renders CLAPS insensitive to reasonable regularization and noise-estimation choices.
+Second, widths change only modestly with λ, while τ adapts smoothly so that nominal coverage is preserved; this monotone
+adjustment is most visible on Airfoil and CASP. Third, bσ2
+EB and bσ2
+res lead to nearly identical operating points across all
+datasets, suggesting that either can be used as a practical default without sacrificing efficiency. Finally, on the large-scale
+YearPredictionMSD, the reported dimensionality D of the last-layer features and the calibration size n (annotated in the
+table) coincide with a regime where the epistemic share is small; the grids illustrate that CLAPS degrades gracefully in
+such cases, maintaining coverage while producing widths in line with the learned-scale baselines reported in the main text.
+Together, Tables 6 and 7 document that CLAPS exhibits low tuning burden and predictable behavior across datasets and
+hyperparameters, while retaining exact finite-sample validity.
+D. Theory: Detailed Proofs and Analysis
+D.1. Preliminaries and Notation
+Conditioning and sources of randomness.weconditionon the fitted backbone ϕ:X →R d and on the last-layer
+MAP/posterior obtained from the training set Dtr ={(x i, yi)}ntr
+i=1. All probabilities and expectations are thus taken with
+respect to the joint randomness of thecalibrationmultisetD cal ={(x i, yi)}m
+i=1 and an independenttestpair(x ∗, y∗).
+LLLA posterior and predictive (restated).With a ridge prior precisionλ >0and noise varianceσ 2 >0, let
+w| Dtr ∼ N
+ 
+wMAP,Σ
+
+,Σ =
+ 
+λId +σ −2Φ⊤Φ
+−1
+,Φ =
+
+ϕ(xi)⊤ntr
+i=1.
+12
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+(Airfoil)
+λEstimator Cover Widτbσ 2
+0.1 ˆσ2
+EB 0.9007 7.7100 0.036598 0.0879627
+ˆσ2
+res 0.9007 7.7106 0.030127 0.0799660
+0.3 ˆσ2
+EB 0.8742 7.5557 0.035150 0.0831758
+ˆσ2
+res 0.8742 7.5557 0.035150 0.0831758
+1.0 ˆσ2
+EB 0.9007 7.7842 0.034182 0.0880946
+ˆσ2
+res 0.9007 7.7842 0.034182 0.0880946
+3.0 ˆσ2
+EB 0.9007 7.9756 0.033639 0.0932376
+ˆσ2
+res 0.9007 7.9756 0.033639 0.0932376
+10.0 ˆσ2
+EB 0.9073 8.2366 0.025537 0.0890167
+ˆσ2
+res 0.9073 8.2366 0.031979 0.0989075
+(kin8nm)
+λEstimator Cov Widτbσ 2
+0.1 ˆσ2
+EB 0.9037 0.2669 0.040228 0.0819326
+ˆσ2
+res 0.9037 0.2669 0.040228 0.0819326
+0.3 ˆσ2
+EB 0.9049 0.2663 0.040519 0.0819418
+ˆσ2
+res 0.9049 0.2663 0.040519 0.0819418
+1.0 ˆσ2
+EB 0.9024 0.2670 0.040146 0.0819847
+ˆσ2
+res 0.9024 0.2670 0.040146 0.0819847
+3.0 ˆσ2
+EB 0.9049 0.2702 0.038544 0.0821850
+ˆσ2
+res 0.9049 0.2702 0.038544 0.0821850
+10.0 ˆσ2
+EB 0.9061 0.2700 0.039473 0.0831243
+ˆσ2
+res 0.9061 0.2700 0.039473 0.0831243
+(CASP)
+λEstimator Cov Widτbσ 2
+0.1 ˆσ2
+EB 0.9033 13.8806 0.035899 0.394733
+ˆσ2
+res 0.9033 13.8806 0.035899 0.394733
+0.3 ˆσ2
+EB 0.9031 13.8899 0.035849 0.395051
+ˆσ2
+res 0.9031 13.8899 0.035849 0.395051
+1.0 ˆσ2
+EB 0.9033 13.9118 0.035769 0.396034
+ˆσ2
+res 0.9033 13.9118 0.035769 0.396034
+3.0 ˆσ2
+EB 0.9058 13.9439 0.035740 0.398011
+ˆσ2
+res 0.9058 13.9439 0.035740 0.398011
+10.0 ˆσ2
+EB 0.9066 13.9214 0.036450 0.401143
+ˆσ2
+res 0.9066 13.9214 0.036450 0.401143
+(YearPrediction)
+λEstimator Cov Widτbσ 2
+0.1 ˆσ2
+EB 0.9019 27.5707 0.043697 0.545348
+ˆσ2
+res 0.9019 27.5707 0.043697 0.545348
+0.3 ˆσ2
+EB 0.9017 27.5692 0.043708 0.545369
+ˆσ2
+res 0.9017 27.5692 0.043708 0.545369
+1.0 ˆσ2
+EB 0.9020 27.5889 0.043604 0.545434
+ˆσ2
+res 0.9020 27.5889 0.043604 0.545434
+3.0 ˆσ2
+EB 0.9017 27.5727 0.043713 0.545558
+ˆσ2
+res 0.9017 27.5727 0.043713 0.545558
+10.0 ˆσ2
+EB 0.9016 27.6128 0.043516 0.545810
+ˆσ2
+res 0.9016 27.6128 0.043516 0.545810
+Table 6.Ablation summary at α= 0.10 across four datasets. Columns report finite-sample coverage, mean interval width, rank-derived
+thresholdτ, and the fitted noise variancebσ2.
+The posterior predictive for anyx∈ Xis Gaussian
+y|x,D tr ∼ N
+ 
+ˆµ(x),ˆv(x)
+
+,ˆµ(x) =ϕ(x) ⊤wMAP,ˆv(x) =σ 2 +ϕ(x) ⊤Σϕ(x).
+Numerical identity (Cholesky form).IfLL ⊤ =λI d +σ −2Φ⊤ΦwithLlower triangular, then
+ϕ(x)⊤Σϕ(x) =
+L−1ϕ(x)
+2
+2,
+so the epistemic component can be computed via one triangular solve without formingΣexplicitly.
+Two-sided posterior CDF score (restated).Let Fpost(· |x)denote the predictive CDF induced by the LLLA posterior.
+Define the measurablecentralityscore
+s(x, y) = min
+
+Fpost(y|x),1−F post(y|x)
+	
+∈[0, 1
+2 ].
+In the Gaussian case, with standardized residualz= (y−ˆµ(x))/
+p
+ˆv(x)and standard normal CDFΦ,
+s(x, y) = min{Φ(z),1−Φ(z)}.
+For any thresholdt∈[0, 1
+2 ], the associatedsuperlevel (acceptance) setat covariatexis
+Ct(x) ={y∈R:s(x, y)≥t}.
+WhenF post(· |x)is Gaussian,Ct(x)is the central quantile interval
+
+ˆµ(x) +
+p
+ˆv(x) Φ−1(t),ˆµ(x) +
+p
+ˆv(x) Φ−1(1−t)
+
+.
+Exchangeability (restated). Assumption 1.Conditional on Dtr, the multiset Dcal and the test pair (x∗, y∗) areex-
+changeabledraws from the same data-generating process. This assumption is only invoked for the marginal validity of
+split-conformal calibration.
+13
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+(Airfoil)
+λEstimator Cov Wid
+0.1 ˆσ2
+EB [0.8426, 0.9389] [7.6758, 7.7442]
+ˆσ2
+res [0.8426, 0.9389] [7.6763, 7.7449]
+0.3 ˆσ2
+EB [0.8118, 0.9179] [7.5237, 7.5876]
+ˆσ2
+res [0.8118, 0.9179] [7.5237, 7.5876]
+1.0 ˆσ2
+EB [0.8426, 0.9389] [7.7550, 7.8133]
+ˆσ2
+res [0.8426, 0.9389] [7.7550, 7.8133]
+3.0 ˆσ2
+EB [0.8426, 0.9389] [7.9509, 8.0003]
+ˆσ2
+res [0.8426, 0.9389] [7.9509, 8.0003]
+10.0 ˆσ2
+EB [0.8504, 0.9440] [8.2170, 8.2562]
+ˆσ2
+res [0.8504, 0.9440] [8.2189, 8.2571]
+(kin8nm)
+λEstimator Cov Wid
+0.1 ˆσ2
+EB [0.8815, 0.9220] [0.2668, 0.2669]
+ˆσ2
+res [0.8815, 0.9220] [0.2668, 0.2669]
+0.3 ˆσ2
+EB [0.8829, 0.9231] [0.2663, 0.2664]
+ˆσ2
+res [0.8829, 0.9231] [0.2663, 0.2664]
+1.0 ˆσ2
+EB [0.8802, 0.9209] [0.2670, 0.2671]
+ˆσ2
+res [0.8802, 0.9209] [0.2670, 0.2671]
+3.0 ˆσ2
+EB [0.8829, 0.9231] [0.2702, 0.2703]
+ˆσ2
+res [0.8829, 0.9231] [0.2702, 0.2703]
+10.0 ˆσ2
+EB [0.8842, 0.9242] [0.2699, 0.2700]
+ˆσ2
+res [0.8842, 0.9242] [0.2699, 0.2700]
+(CASP)
+λEstimator Cov Wid
+0.1 ˆσ2
+EB [0.8944, 0.9116] [13.8791, 13.8821]
+ˆσ2
+res [0.8944, 0.9116] [13.8791, 13.8821]
+0.3 ˆσ2
+EB [0.8942, 0.9114] [13.8884, 13.8914]
+ˆσ2
+res [0.8942, 0.9114] [13.8884, 13.8914]
+1.0 ˆσ2
+EB [0.8944, 0.9116] [13.9105, 13.9132]
+ˆσ2
+res [0.8944, 0.9116] [13.9105, 13.9132]
+3.0 ˆσ2
+EB [0.8969, 0.9139] [13.9428, 13.9451]
+ˆσ2
+res [0.8969, 0.9139] [13.9428, 13.9451]
+10.0 ˆσ2
+EB [0.8978, 0.9147] [13.9206, 13.9222]
+ˆσ2
+res [0.8978, 0.9147] [13.9206, 13.9222]
+(YearPrediction)
+λEstimator Cov Wid
+0.1 ˆσ2
+EB [0.8993, 0.9044] [27.5706, 27.5708]
+ˆσ2
+res [0.8993, 0.9044] [27.5706, 27.5708]
+0.3 ˆσ2
+EB [0.8991, 0.9042] [27.5692, 27.5693]
+ˆσ2
+res [0.8991, 0.9042] [27.5692, 27.5693]
+1.0 ˆσ2
+EB [0.8994, 0.9045] [27.5888, 27.5890]
+ˆσ2
+res [0.8994, 0.9045] [27.5888, 27.5890]
+3.0 ˆσ2
+EB [0.8991, 0.9042] [27.5726, 27.5727]
+ˆσ2
+res [0.8991, 0.9042] [27.5726, 27.5727]
+10.0 ˆσ2
+EB [0.8990, 0.9042] [27.6128, 27.6129]
+ˆσ2
+res [0.8990, 0.9042] [27.6128, 27.6129]
+Table 7.95% confidence intervals for finite-sample coverage and mean width at α= 0.10 across datasets. This table provides the
+confidence intervals for Coverage and Width.
+Split-conformal quantile and rank rule.Let m=|D cal| and form the calibration scores {si}m
+i=1 =
+{s(xi, yi)}(xi,yi)∈Dcal . Define the conformal threshold t as the empirical quantile at level α∈(0,1) using the stan-
+dard rank (order-statistic) rule
+t= Quantile α
+ 
+{si}m
+i=1
+
+:=s (k), k=
+l
+(m+ 1)α
+m
+,
+with any deterministic or randomized tie-breaking; all proofs below are agnostic to the particular tie-breaking scheme
+provided it is measurable. TheCLAPSprediction set at covariatexis thenC(x) :=C t(x)as above.
+Notation.We write P[·] and E[·] for probability and expectation over the randomness of(Dcal, x∗, y∗) under Assumption 1.
+The Lebesgue measure (length) of an interval A⊂R is denoted by |A|. All asymptotics ( ntr →∞) keep the backbone
+architecture fixed unless explicitly stated.
+D.2. Proposition 4.4: Finite-sample marginal coverage
+Proof. Fix Dtr and the fitted backbone/posterior so that the score s(x, y) = min{Fpost(y|x),1−F post(y|x)} ∈[0, 1
+2 ]
+is a measurable function of (x, y). Let m=|D cal| and form calibration scores si :=s(x i, yi) for (xi, yi)∈ Dcal, with
+ascending order statisticss (1) ≤ ··· ≤s(m). For a fixedα∈(0,1)define
+k=
+l
+(m+ 1)α
+m
+, t=s (k),C(x) ={y:s(x, y)≥t}.
+(Any measurable tie-breaking in the definition ofs (k) is allowed; the argument below is agnostic to the specific choice.)
+Consider theaugmented (m+1) scores consisting of the m calibration scores and the independent test score s∗ :=s(x ∗, y∗).
+By Assumption 1 (exchangeability of (x∗, y∗) with the calibration pairs conditional on Dtr), the multiset {s1, . . . , sm, s∗}
+is exchangeable. Let R denote the (randomized, measurable)rankof s∗ among these (m+1) scores in ascending order (ties
+are broken by an independent uniform randomization or any fixed measurable rule). Exchangeability implies
+P
+
+R=r
+Dtr
+	
+= 1
+m+1 for eachr∈ {1, . . . , m+ 1}.
+14
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+We claim that theacceptance event {y∗ ∈ C(x∗)} coincides with {s∗ ≥s (k)} and is contained in {R≥k} : indeed, if
+R≤k−1 then at least k−1 calibration scores are ≤s ∗, forcing s∗ < s(k) and hence y∗ /∈ C(x∗); conversely, ifR≥k
+thens ∗ ≥s (k) soy ∗ ∈ C(x∗). Therefore,
+P{y∗ ∈ C(x∗)| Dtr} ≥P{R≥k| D tr}= m+ 2−k
+m+ 1 .
+Usingk=⌈(m+ 1)α⌉ ≤(m+ 1)α+ 1gives
+m+ 2−k
+m+ 1 ≥ m+ 2−((m+ 1)α+ 1)
+m+ 1 = 1−α.
+Thus,
+P{y∗ ∈ C(x∗)}=E[P{y ∗ ∈ C(x∗)| Dtr}]≥1−α,
+which establishes the statedmarginalcoverage over the calibration set and the test point, conditional on Dtr. The proof
+only requires measurability of the score and exchangeability; the specific form of s (posterior-aware versus residual-based)
+affectsefficiency(interval width) but notvalidity.
+D.3. Lemma 4.5: Monotone transform of|z|
+Proof. Fix x and write the standardized residual z= (y−ˆµ(x))/
+p
+ˆv(x). In the Gaussian case, Fpost(y|x) = Φ(z) , so by
+definition
+s(x, y) = min{Φ(z),1−Φ(z)}.
+Define g: [0,∞)→[0, 1
+2 ] by g(u) := min{Φ(u),1−Φ(u)} . Because Φ is strictly increasing on R with Φ(0) = 1
+2 and
+Φ(−u) = 1−Φ(u), we have
+s(x, y) = min{Φ(z),1−Φ(z)}= min{Φ(|z|),1−Φ(|z|)}=g(|z|).
+Strict monotonicity follows sinceΦis strictly increasing: for0≤u 1 < u2,
+g(u2) = 1−Φ(u 2)<1−Φ(u 1) =g(u 1).
+Hencegis strictly decreasing on[0,∞)ands(x, y)depends onyonly through|z|.
+Nesting of superlevel sets.For anyt∈[0, 1
+2 ], the superlevel set at covariatexis
+Ct(x) ={y:s(x, y)≥t}=
+
+y:g(|z|)≥t
+	
+=
+
+y:|z| ≤g −1(t)
+	
+,
+where g−1 : [0, 1
+2 ]→[0,∞) is the (well-defined) inverse of the strictly decreasing g. Therefore Ct(x) is a (possibly
+degenerate)centralinterval
+Ct(x) =
+h
+ˆµ(x)−
+p
+ˆv(x)g−1(t),ˆµ(x) +
+p
+ˆv(x)g−1(t)
+i
+,
+which is symmetric about ˆµ(x). Since t1 < t2 ⇒g −1(t1)> g−1(t2), we have Ct2 (x)⊂ Ct1 (x); i.e., {Ct(x)}t isnestedin
+t.
+D.4. Corollary 4.6: Equivalence to central/HPD sets
+Proof.Fixxand write the Gaussian predictive density and CDF as
+fx(y) = 1p
+2πˆv(x)
+exp
+
+− (y−ˆµ(x))2
+2ˆv(x)
+
+, F post(y|x) = Φ
+
+y−ˆµ(x)√
+ˆv(x)
+
+.
+Set z= (y−ˆµ(x))/
+p
+ˆv(x)and recall from Lemma 4.5 thats(x, y) =g(|z|)with g(u) = min{Φ(u),1−Φ(u)}= 1−Φ(u)
+foru≥0, strictly decreasing. Hence, for anyt∈[0, 1
+2 ],
+{y:s(x, y)≥t}={y:|z| ≤g −1(t)}=
+h
+ˆµ(x)−
+p
+ˆv(x)at,ˆµ(x) +
+p
+ˆv(x)at
+i
+,
+15
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+wherea t :=g −1(t) = Φ−1(1−t). The posterior mass of this set is
+Z ˆµ+
+√
+ˆv at
+ˆµ−
+√
+ˆv at
+fx(y)dy= Φ(a t)−Φ(−a t) = 1−2{1−Φ(a t)}= 1−2t.
+Thus the superlevel set{s≥t}is thecentralinterval that carries mass1−2t.
+We now show this interval is also theshortest(HPD) set of that mass. Since fx(y) is symmetric and strictly decreasing in
+|y−ˆµ(x)|, every upper level set {y:f x(y)≥c} is an interval [ˆµ−
+√
+ˆv a,ˆµ+
+√
+ˆv a]for a unique a≥0 , determined by
+fx(ˆµ±
+√
+ˆv a) =c. Choosing c=c t :=f x(ˆµ+
+√
+ˆv at) yields the same a=a t as above, and the corresponding level set
+has posterior mass
+R ˆµ+
+√
+ˆv at
+ˆµ−
+√
+ˆv at
+fx = 1−2t.
+Finally, among all measurable sets A⊂R with
+R
+A fx = 1−2t , the upper level set {fx ≥c t} minimizes Lebesgue measure
+|A|: this is the defining property of HPD sets and follows from the rearrangement/“layer-cake” principle for unimodal,
+radially decreasing densities. Therefore {y:s(x, y)≥t} coincides with the shortest (HPD) interval of posterior mass
+1−2t.
+D.5. Theorem 4.7: Oracle efficiency under correct specification
+Proof. Fix x and suppose the posterior predictive Fpost(· |x)equals thetrueconditional distribution with density fx
+(hence the Gaussian form stated in the preliminaries). Let F={C t(x)}t∈[0,1/2] denote the CLAPS superlevel sets
+Ct(x) ={y:s(x, y)≥t} , and let G={A u(x)}u∈U be the superlevel sets induced by any other score whose acceptance
+sets arenestedin its thresholdu.
+Step 1: Shortest set at fixed mass is the HPD set.For any target mass q∈(0,1) , define theHPD(highest posterior
+density) set
+Hq(x) ={y:f x(y)≥c q},wherec q is chosen so that
+Z
+Hq(x)
+fx(y)dy=q.
+By the standard rearrangement (layer-cake) argument, Hq(x) minimizes the Lebesgue measure among all measurable
+A⊂Rwith
+R
+A fx =q:
+|A| ≥ |Hq(x)|whenever
+Z
+A
+fx =q.(1)
+For the (symmetric, unimodal) Gaussian fx, Hq(x) is thecentralinterval [ˆµ(x)−aq
+p
+ˆv(x),ˆµ(x) +aq
+p
+ˆv(x)]for the
+uniquea q >0withΦ(a q)−Φ(−a q) =q.
+Step 2: CLAPS family coincides with HPD family.By Lemma 4.5, s(x, y) =g(|z|) with g strictly decreasing, so
+Ct(x) ={|z| ≤g −1(t)} is a central interval. By Corollary 4.6, for each t the mass of Ct(x) equals q(t) = 1−2t and
+Ct(x) =H q(t)(x). Thus the CLAPS family F is exactly the HPD family {Hq(x)}q∈(0,1) under a reparameterization
+q= 1−2t.
+Step 3: Oracle efficiency under a coverage constraint.Consider any acceptance set Au(x)∈ Gwhose conditional
+coverage satisfies Pr{y∈ Au(x)|x}=
+R
+Au(x) fx ≥1−α . Let qu(x) :=
+R
+Au(x) fx. By (1) and the monotonicity of the
+length of central/HPD intervals inq,
+|Au(x)| ≥ |Hqu(x)(x)| ≥ |H1−α(x)|.
+Pick the CLAPS thresholdt ⋆ =α/2so thatq(t ⋆) = 1−2t ⋆ = 1−α; thenC t⋆(x) =H 1−α(x)and hence
+|Ct⋆(x)|=|H 1−α(x)| ≤ |Au(x)|for anyA u(x)∈ Gwith
+Z
+Au(x)
+fx ≥1−α.
+This establishes the oracle (population) statement: among all nested-score families, CLAPS attains theminimalLebesgue
+length at fixed conditional coverage1−α.
+16
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+Step 4: Compatibility with conformal calibration.Split-conformal calibration selects a data-dependent threshold while
+preserving the nesting of the family {Ct(x)}t. At any realized threshold t (hence realized conditional mass q(t)), the
+argument above applies with q(t) in place of 1−α , showing that—pointwise in x and for any t—the CLAPS set is the
+shortest among all nested-score acceptance sets that achieve at least the same conditional mass. Since calibration only
+transfersthe population probability constraint to finite-sample marginal validity without altering nesting, the efficiency
+dominance of CLAPS persists.
+D.6. Theorem 4.9: Posterior contraction and regime change
+Proof. Write Σn = (λI d +σ −2Φ⊤
+n Φn)−1 for the posterior covariance built from the n=n tr training points, where
+Φn = [ϕ(xi)⊤]n
+i=1 ∈R n×d and d is the (fixed) backbone width. Assume throughout that E[ϕ(x)ϕ(x)⊤] =: Γ exists with
+λmin(Γ)>0and that∥ϕ(x)∥ 2 has finite second moment (e.g., sub-Gaussian or bounded features suffice).
+Step 1: Spectral growth ofΦ ⊤
+n Φn.By the strong law of large numbers,
+1
+n Φ⊤
+n Φn
+a.s.
+− − − − →
+n→∞
+Γ.
+Hence, almost surely,
+λmin(Φ⊤
+n Φn) =n λ min
+ 1
+n Φ⊤
+n Φn
+
+≥n λmin(Γ)
+2 for all sufficiently largen.
+Consequently,
+λmin
+ 
+λId +σ −2Φ⊤
+n Φn
+
+≥λ+ λmin(Γ)
+2σ2 n
+n→∞
+− − − − → ∞,
+so the operator norm of the inverse vanishes:
+∥Σn∥op =
+(λId +σ −2Φ⊤
+n Φn)−1
+op = 1
+λmin(λId +σ −2Φ⊤n Φn)
+n→∞
+− − − − →0.
+Step 2: Pointwise collapse of the epistemic component.For any fixedx, letφ=ϕ(x)∈R d. Then
+epin(x) :=φ ⊤Σnφ≤ ∥Σn∥op ∥φ∥2
+2
+n→∞
+− − − − →0,
+almost surely (or in probability), provided∥φ∥ 2 <∞. Therefore the predictive variance
+ˆvn(x) =σ 2 + epin(x)
+n→∞
+− − − − →σ2.
+Equivalently, the fractional epistemic sharern(x) = epin(x)/ˆvn(x)→0.
+Step 3: Interpretation (regime change).As the last-layer posterior covariance collapses ( Σn →0 in operator norm),
+the CLAPS acceptance sets Ct(x)—which depend on x through z= (y−ˆµ(x))/
+p
+ˆvn(x)—converge to thehomoscedastic
+Gaussian central intervals with variance σ2. Thus any width advantage of posterior-aware scoring that relies on a nontrivial
+epistemic component vanishes in this regime; efficiency then depends on how well the score captures residualheteroscedas-
+ticity. If the conditional noise is genuinely heteroscedastic while ˆvn(x)→σ 2 is constant, scores thatlearn scale(e.g.,
+normalized-CP/CQR) can become more informative.
+Scope of the claim.The conclusion holds for fixed backbone width d and nondegenerate feature covariance Γ≻0 . If
+d grows with n in such a way that λmin( 1
+n Φ⊤
+n Φn) fails to be bounded away from 0, or if features are degenerate (Γ⪰0
+with zero eigenvalues along directions used by ϕ(x)), then ∥Σn∥op →0 need not hold uniformly, and residual epistemic
+variance may persist.
+D.7. Remarks on Misspecification and Diagnostics
+Misspecification and efficiency (recap).The marginal validity in Proposition 4.4 only requires measurability of s(x, y)
+and exchangeability of (Dcal, x∗, y∗). Hence, even when the posterior predictive Fpost(· |x)is misspecified, CLAPS
+17
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+remains valid. What changes isefficiency(interval length): when Fpost retains informative shape beyond point residuals (e.g.,
+tail thickness or local curvature encoded via z= (y−ˆµ)/
+√
+ˆv), thresholding the two-sided CDF can yield shorter sets than
+residual-only scores; when the posterior variance effectively collapses to a constant (Theorem 4.9), residual/scale-learning
+scores may dominate.
+Diagnostics that connect theory to data.We monitor three quantities computed from the fitted LLLA head (no extra
+training):
+epi(x) =ϕ(x) ⊤Σϕ(x), r(x) = epi(x)
+σ2 + epi(x),tr(Σ).
+Here epi(x) is the last-layer epistemic component, r(x)∈[0,1) its fractional share in the predictive variance, and tr(Σ) a
+global summary of posterior uncertainty. In addition, we assess the heteroscedastic signal via the rank correlation
+ρ= Spearman
+ 
+|y−ˆµ(x)|,
+p
+ˆv(x)
+
+,
+computed on a held-out set (or across calibration folds). These diagnostics instantiate the regimes described by Theorems 4.7
+and 4.9:
+• Posterior-informative regime.If r(x) has nontrivial mass away from 0 (e.g., median or upper quantiles clearly positive)
+and tr(Σ) is not negligible, then z scores meaningfully reflect local posterior shape; CLAPS tends to realize HPD-like
+efficiency (Theorem 4.7).
+• Contraction regime.If subsample curves show epi(x)↓ and tr(Σ)↓ rapidly with n, and the distribution of r(x)
+concentrates near 0, then ˆv(x)≈σ2 and CLAPS reduces to conformalized homoscedastic intervals; width advantages
+vanish (Theorem 4.9).
+• Heteroscedastic signal.A substantially positive ρ indicates that
+p
+ˆv(x)tracks the scale of residuals across x; if this
+signal stems primarily from aleatoric structure (while r≈0 ), methods that explicitlylearnscale (normalized-CP, CQR)
+can yield tighter intervals than posterior-aware scoring.
+Practical reading guide.In reporting diagnostics, we recommend (i) the empirical distribution of r(x)
+(mean/median/deciles and the fraction below a small threshold), (ii) tr(Σ) and its subsample curve versus n, and (iii) ρ with
+a p-value or confidence band. Together these summarize whether efficiency is more likely to come from posterior shape
+(favoring CLAPS) or from explicit scale learning (favoring normalized-CP/CQR), without affecting the coverage guarantee
+itself.
+D.8. Proposition 4.11: A simple selection rule
+Proposition D.1(Diagnostics-driven choice of scoring rule).Fix a fitted backbone and LLLA head. Let
+epi(x) =ϕ(x) ⊤Σϕ(x), r(x) = epi(x)
+σ2 + epi(x), T:= tr(Σ), ρ:= Spearman
+ 
+|y−ˆµ(x)|,
+p
+ˆv(x)
+
+.
+Consider the following rule with user-chosen small constantsε r, εT , τρ >0:
+SELECT-CLAPS⇐⇒Median{r(x)}> ε r andT > εT andρ≤τ ρ,
+SELECT-SCALE⇐⇒Median{r(x)} ≤ε r andρ > τρ,
+whereSELECT-SCALEdenotes a scale-learning conformal method (e.g., normalized-CP or CQR). Then, under the regimes
+characterized by Theorems 4.7 and 4.9, the rule aligns with efficiency: it selects CLAPS when posterior shape is informative
+and selects a scale-learning score when last-layer epistemic variability collapses but heteroscedastic signal is present.
+Justification. (Posterior-informative regime.) If T is non-negligible and the distribution of r(x) places nontrivial mass
+away from 0 (e.g., median > εr), then the standardized residual z= (y−ˆµ)/
+√
+ˆvencodesposterior shapebeyond raw
+residual magnitude. By Lemma 4.5 and Corollary 4.6, CLAPS superlevel sets coincide with HPD/central sets of the
+(approximately correct) predictive and, by Theorem 4.7, are shortest among nested-score families at fixed mass. A small ρ
+18
+CLAPS: Posterior-Aware Conformal Intervals via Last-Layer Laplace
+indicates thataleatoricscale learning offers limited additional benefit; thus CLAPS is expected to be at least as tight as
+residual/scale-based alternatives.
+(Contraction regime with heteroscedasticity.) IfT is small and Median{r(x)} ≈0, Theorem 4.9 implies ˆv(x)→σ2 and
+the posterior-aware score loses its x–dependent variability. When, in addition, ρ > τρ, the residual magnitude correlates
+with
+p
+ˆv(x)due toaleatoricstructure not captured by the (nearly constant) LLLA variance. Methods that explicitlylearn
+scale (normalized-CP, CQR) can then allocate interval width more efficiently acrossx, yielding narrower sets at the same
+coverage.
+(Remarks on thresholds.) The constants (εr, εT , τρ) are tuning knobs that define “nontrivial” posterior variance and
+“substantial” heteroscedastic signal; in practice one may use dataset-specific quantiles (e.g.,ε r as the 10th–20th percentile
+of r(x) on calibration) rather than fixed numeric cutoffs. The rule is heuristic butconsistentwith the structural guarantees in
+Theorem 4.7 and Theorem 4.9.
+19

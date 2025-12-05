@@ -1,0 +1,2389 @@
+Forecasting in Offline Reinforcement Learning for
+Non-stationary Environments
+Suzan Ece Ada1,2 Georg Martius2 Emre Ugur1 Erhan Oztop3,4
+1Bogazici University, Türkiye 2University of Tübingen, Germany
+3Ozyegin University, Türkiye 4Osaka University, Japan
+ece.ada@bogazici.edu.tr
+Abstract
+Offline Reinforcement Learning (RL) provides a promising avenue for training poli-
+cies from pre-collected datasets when gathering additional interaction data is infea-
+sible. However, existing offline RL methods often assume stationarity or only con-
+sider synthetic perturbations at test time—assumptions that often fail in real-world
+scenarios characterized by abrupt, time-varying offsets. These offsets can lead to
+partial observability, causing agents to misperceive their true state and degrade per-
+formance. To overcome this challenge, we introduceForecasting in Non-stationary
+OfflineRL(FORL), a framework that unifies (i) conditional diffusion-based candi-
+date state generation, trained without presupposing any specific pattern of future
+non-stationarity, and (ii) zero-shot time-series foundation models. FORLtargets
+environments prone to unexpected, potentially non-Markovian offsets, requiring
+robust agent performance from the onset of each episode. Empirical evaluations on
+offline RL benchmarks, augmented with real-world time-series data to simulate
+realistic non-stationarity, demonstrate that FORLconsistently improves perfor-
+mance compared to competitive baselines. By integrating zero-shot forecasting
+with the agent’s experience we aim to bridge the gap between offline RL and the
+complexities of real-world, non-stationary environments.
+1 Introduction
+Episodes
+Offset time series
+Figure 1:Setting.The agent does not know
+its location in the environment because its
+perception is offset every episode j by an un-
+known offset bj (only vertical offsets are illus-
+trated). FORLleverages historical offset data
+and offline RL data (from a stationary phase)
+to forecast and correct for new offsets at test
+time. Ground-truth offsets (
+ ,
+ ) are hidden
+throughout the evaluation episodes.
+Offline Reinforcement Learning (RL) leverages static
+datasets to avoid costly or risky online interactions
+[1, 2]. Yet, agents trained on fully observable states
+often fail when deployed with noisy or corrupted ob-
+servations. While robust offline RL methods address
+test-time perturbations like sensor noise or adversar-
+ial attacks [ 3], a critical gap persists in addressing
+non-stationarity within the observation function—a
+challenge that fundamentally alters the agent’s per-
+ception of the environment over time.
+Prioronline algorithmsthat consider the scope of
+non-stationarity as the observation function focus
+on learning agent morphologies [4] and generaliza-
+tion in Block MDPs [ 5]. While this scope of non-
+stationarity holds significant potential for real-world
+applications [6], it remains underexplored. We focus
+on the episodic evolution of the observation function
+at test-time in offline RL. In our setup, each dimen-
+39th Conference on Neural Information Processing Systems (NeurIPS 2025).
+arXiv:2512.01987v1  [cs.LG]  1 Dec 2025
+sion of an agent’s state is influenced by an unknown, time-dependent constant additive offset that
+remains fixed within a single operational interval (an “episode”). This leads to a stream of evolving
+observation functions [ 7], extending across multiple future episodes,where the offsets remain
+hidden throughout the prediction window. For instance, industrial robots might apply a daily
+calibration offset to each joint, while sensors can exhibit a deviation until the next scheduled recalibra-
+tion. Similarly, in healthcare or finance, data may be partially aggregated or withheld to comply with
+regulations, effectively obscuring finer-grained variations and leaving a single offset as the dominant
+factor per episode. By only storing these representative offsets, we circumvent the challenges of
+continuous interaction buffers in bandwidth-constrained or privacy-sensitive environments. Because
+the offset can differ across state dimensions (e.g., different sensor or actuation channels), each state
+dimension can be affected by a different unknown bias that stays constant for that episode but evolves
+differently across episodes. Approaches that assume predefined perturbations can struggle with these
+abrupt, episodic shifts, because such offsets violate the typical assumption of smoothly varying obser-
+vation functions. Frequent retraining, hyperparameter optimization, or extensive online adaptation to
+new observation function evolution patterns are costly, risky (due to trial-and-error in safety-critical
+settings), and may be infeasible if these patterns no longer reflect assumptions made during training.
+By separating offset data (episodic calibration values) from the massive replay buffers, a zero-shot
+forecasting-based approach can anticipate each new offset from the beginning of the episode without
+requiring policy updates, or making assumptions on task evolution at test time [8]. Modeling these
+multidimensional additive offsets as stable, per-episode constants presents a robust and efficient way
+to handle time-varying conditions in non-stationary environments where the evolution of tasks follow
+a non-Markovian, time-series pattern [9], mitigating the risks of online exploration.
+Diffusion 
+Model
+Candidate 
+SelectionEnvironment
+Forecasting 
+Foundation
+Trajectory Buffer
+Policy
+Figure 2: Overview of the proposed FORLframe-
+work at test-time. The observations are processed
+by both the trajectory buffer and the time-series
+forecasting foundationmodule [ 10]. Observa-
+tion changes and actions sampled from thepol-
+icy (∆ot, a(0)
+t ), are stored in the trajectory buffer.
+Thediffusion modelgenerates candidate states
+{s(0)
+t }k conditioned on τ(t,w). Thecandidate se-
+lectionmodule then generates the estimated˜st.
+We consider an offline RL setting during training
+where we have only access to a standard offline
+RL dataset collected from a stationary environ-
+ment [3] with fully observable states. Initial
+data might be collected under near-ideal con-
+ditions, and then gradually affected by wear,
+tear, or other natural shifts—even as the under-
+lying physical laws (dynamics) remain the same.
+At test time, however, we evaluate in a non-
+stationary environment where both the observa-
+tion function and the observation space change
+due to time-dependent external factors. This
+setup can be interpreted as environments shift-
+ing along observation space dimensions while
+the initial state of the agent is sampled from a
+uniform distribution over the state space. A sim-
+plified version of this setup for an offset affect-
+ing only one dimension of the state is illustrated
+in Figure 1. Here, the agent “knows” it is in a
+maze but does not know where it is in the maze.
+Furthermore,it will remain uncertain of its
+location across all episodes at test-time, as in
+every episode, a new offset leads to a systematic
+misalignment between perceived and actual positions. Importantly, these offsets may not conform
+to Gaussian or Markovian assumptions; instead, they may stem directly from complex, real-world
+time-series data [9] and remain constant throughout each episode. As a result, standard noise-driven
+or parametric state-estimation techniques, which typically rely on smoothly varying or randomly
+perturbed functions, cannot reliably identify these persistent, episode-wide offsets that are not avail-
+able after the episode terminates. While zero-shot forecasting can adjust observation offsets, its
+performance depends on the forecaster’s accuracy. Similarly, integrating zero-shot forecasting into
+a model-based offline RL approach [ 3] can underperform when real-world offsets deviate from
+predefined assumptions about future observation functions. Our approach uses the insight that the
+belief of the true states can be refined from a sequence of actions and effects. For instance, in
+maze navigation, if an agent misjudges its location and hits a wall, analyzing its actions and delta
+observations leading to the collision can provide evidence for likely locations within the maze.
+2
+We propose theForecasting in Non-stationaryOfflineRL(FORL) framework (Figure 2) for test-time
+adaptation in non-stationary environments where the observation function is perturbed by an arbitrary
+time-series. Our framework has two main ingredients: forecasting offsets with a zero-shot time-series
+forecasting model [10] from past episode offsets (ground truth offsets after the episode terminates are
+not accessible at test-time) and a within-episode update of the state estimation using a conditional
+diffusion model [11] trained on offline stationary data.
+Contributions.We unify the strengths of probabilistic forecasting and decision-making under uncer-
+tainty to enable continuous adaptation when the environment diverges from predictions. Consequently,
+our framework:(1)accommodates future offsetswithout assuming specific non-stationarity patterns
+during training, eliminating the need for retraining and hyperparameter tuning when the agent en-
+counters new, unseen non-stationary patterns at test time, and(2) targets non-trivial non-stationarities
+at test time without requiring environment interaction or knowledge of POMDPs during training.
+(3)FORLintroduces a novel, modular framework combining a conditional diffusion model (FORL-
+DM) for multimodal belief generation with a lightweight Dimension-wise Closest Match (DCM)
+fusion strategy, validated by extensive experiments on no-access to past offsets, policy-agnostic
+plug-and-play, offset magnitude and inter/intra-episode drifts.(4)We propose a novel benchmark
+that integrates offsets from real-world time-series datasets with standard offline RL benchmarks, and
+demonstrate that FORLconsistently outperforms baseline methods.
+Background: Diffusion ModelsDenoising diffusion models [ 12, 13] aim to model the data dis-
+tribution with pθ(x0) :=
+R
+pθ(x0:N )dx1:N from samples x0 in the dataset. The joint distribution
+follows the Markov Chain pθ (x0:N ) :=N(x N ;0,I) QN
+n=1 pθ (xn−1 |x n) where xn is the noisy
+sample for diffusion timestep n and pθ (xn−1 |x n) :=N(x n−1;µθ (xn, n),Σθ (xn, n)). During
+training we use the samples from the distribution q(x n |x 0) =N(x n; √¯αnx0,(1−¯αn)I) where
+¯αn = Qn
+i=1 αi [11]. General information on diffusion models are given in Section B.3.
+2 Method
+In this section, we formulate our problem statement and describe our FORLdiffusion model trained
+on the offline RL dataset to predict plausible states. Then, we introduce our online state estimation
+method, Dimension-wise Closest Match that uses plausible states predicted by the multimodal
+FORLdiffusion model (DM) and the states predicted from past episodes by a probabilistic unimodal
+zero-shot time-series foundation model.
+2.1 Problem Statement
+Training (Offline Stationary MDP)We begin with an episodic, stationary Markov Decision Pro-
+cess (MDP) Mtrain = (S,A,T,R, ρ 0), where the initial state distributionρ0 is a uniform distribution
+over the state space S. We only have access to an offline RL datasetD={(s k
+t ,ak
+t ,sk
+t+1, rk
+t )} with k
+transitions collected from this MDP. Crucially, our FORLdiffusion model and a diffusion policy [ 14]
+are trained offline using this dataset, such as the standard D4RL benchmark [15], without making any
+assumptions on how the environment might become non-stationary at test time.
+Test Environment (Sequence of POMDPs)At test time, the agent faces an infinite sequence of
+POMDPs { ˆMj}∞
+j=1. Each POMDP is described by a 7-tuple [16] ˆMj =
+ 
+S,A,O j,T,R, ρ0,x j
+
+,
+where state space S, action space A, transition function T and the reward function R remain identical
+to the training MDP.x is the observation function, where we restrict ourselves to deterministic versions
+(x:S → O) [6, 17]. Non-stationary environments can be formulated in different ways. In Khetarpal
+et al. [6] ageneral non-stationary RLformulation is put forward, which allows each component
+of the underlying MDP or POMDP to evolve over time, i.e.
+ 
+S(t),A(t),T(t),R(t),x(t),O(t)
+
+.
+A set κ specifies which of these components vary, and adriverdetermines how they evolve. In
+particular,passivedrivers of non-stationarity imply that exogenous factors alone govern the evolution
+of the environment, independent of the agent’s actions. In this work, we consider the scope of
+non-stationarity [6] (Section B.2) to be the observation function and the observation space, i.e.
+κ={x,O}.
+We consider the case where the non-stationarity is unfolding over episodes and where the observation
+function xj is different at each episode j. The change in the observation function is assumed to
+3
+have an additive structure and is independent of the agent’s actions (passive non-stationarity [ 6]).
+Concretely, the functionx j offsets statess t by a fixed offsetb j ∈R n:
+Oj ={s+b j :s∈ S},x j(s) =s+b j.
+Importantly, the sequence {bj} can evolve under arbitrary real-world time-series data and the agent
+does not have access to the ground-truth information throughout the evaluation—similar to
+scenarios where observations are only available periodically, and shifts occur between these intervals.
+Thus, the episodes have a temporal order, relating to Non-Stationary Decision Processes (NSDP)
+defining a sequence of POMDPs [7] (Section B.2).
+Partial Observability and Historical ContextSince bj isnever directly observedfor P episodes
+into the future, each ˆMj is a POMDP. The agent receives only the offset-shifted observations{ot},
+where ot =s t +b j without any noise. Moreover, the agent may have access to a limited historical
+context of previous offsets{bj−C , . . . , bj−1} at discrete intervals P, butno direct informationabout
+future offsets {bj, bj+1, . . . bj+P−1 }. Hence, the agent must forecast and/or adapt to unknown future
+offsets without prior non-stationary training.
+Partial IdentifiabilityDespite observing ot =s t +b j, the agent cannot generally disentangle st
+from bj. For any single observation, there are infinite possible pairs of state and offset that yield
+ot =s ′ +b ′. Additionally, the initial state distribution ρ is uniform and not providing information
+about b. Thus, we can only form a belief over st and refine that belief based on two sources of
+information:a)the sequence of actions and effects observed within an episode andb)the sequence of
+past identified offsets. To exploit sourcea, we use a predictive model of commonly expected outcomes
+using a diffusion model, which will be explained next. To make use of sourceb, we use a zero-shot
+forecasting model (see Section 2.3 for details). Afterwards, both information are fused (Section 2.4).
+state observation
+ {st
+(0)}k
+Figure 3: Candidate states generated by
+FORLDiffusion Model.
+2.2 FORLDiffusion Model
+In our setting, we assume that the offsets added to the
+states are unobservable at test time, while the transition dy-
+namics of the evaluation environment remains unchanged.
+To eventually reduce the uncertainty about the underlying
+state, we perform filtering or belief update using the se-
+quence of past interactions. To understand why the history
+of interactions is indicative of a particular ground truth
+state, consider the following example in a maze environ-
+ment illustrated in Fig. 3. When the agent is moving north
+for three steps and then bumps into a wall, possible ground
+truth states can only be those three steps south of any wall.
+The agent cannot observe the hidden green trajectory of
+ground-truth states; it only has access to the sequence of observation change (∆o) and action vectors,
+which narrows down the possible positions to four candidate regions—exactly those identified by
+our model. Clearly, the distribution of possible states is highly multimodal, such that we propose
+using a diffusion model as a flexible predictive model of plausible states given the observed actions
+and outcomes. Diffusion models excel at capturing multimodal distributions [ 14], making them
+well-suited for our task. We train the diffusion model on offline data without offsets (bj = 0) which
+we detail below.
+To distinguish between the trajectory timesteps in reinforcement learning (RL) and the timesteps in the
+diffusion process, we use the subscript t∈ {0, . . . , T}to refer to RL timesteps, and n∈ {0, . . . , N}
+for diffusion timesteps. We first begin by defining a subsequence of a trajectory
+τ(t,w) = [(∆ot−w+1, at−w),···,(∆o t, at−1)].(1)
+where delta observations ∆ot =o t −o t−1 =s t −s t−1 denote the state changes (effects), w is the
+window size. Using a conditional diffusion model, we aim to model the distribution p
+ 
+st |τ (t,w)
+
+.
+For that we define the reverse process (denoising) as
+p
+ 
+s(N)
+t
+ NY
+n=1
+pθ
+
+s(n−1)
+t |s (n)
+t ,τ (t,w)
+
+, p
+ 
+s(N)
+t
+
+=N(s (N)
+t ;0,I)(2)
+4
+and pθ is modeled as the distribution N(s(n−1)
+t ;µ θ(s(n)
+t ,τ (t,w), n),Σθ(s(n)
+t ,τ (t,w), n))with learn-
+able mean and variance. We could directly supervise the training of µθ using the forward (diffusion)
+process. Following Ho et al. [11], Song et al. [18], we compute a noisy sample s(n)
+t based on the true
+samples t =s (0)
+t :
+s(n)
+t =
+p
+¯α(n)st +
+p
+1−¯α(n)ϵ(3)
+where ϵ∼ N(0,I) is the noise, ¯α(n) = Qn
+i=1 α(i) and the weighting factors α(n) =
+e−(βmin( 1
+N )+(βmax−βmin) 2n−1
+2N2 ) where βmax = 10 and βmin = 0.1 are parameters introduced for empiri-
+cal reasons [19].
+We can equally learn to predict the true samples by learning a noise model [ 20]. Hence, we train
+a noise model ϵθ(s(n)
+t ,τ (t,w), n)that learns to predict the noise vector ϵ. By using the conditional
+version of the simplified surrogate objective from [11], we minimize
+Lp(θ) = E
+n,τ,st,ϵ
+ϵ−ϵ θ
+
+s(n),τ (t,w), n
+
+2
+(4)
+where st is the state sampled from the dataset D for t∼U T ({w, . . . , T−1}), s(n) is computed
+according to Eq. (3), ϵ is the noise, n∼U D({1, . . . , N})is the uniform distribution used for
+sampling diffusion timestep.
+We use the true data sample st from the offline RL dataset to obtain the noisy sample in Eq. (3).
+Leveraging our model’s capacity to learn multimodal distributions, we generate a set ofk samples
+{s(0)
+t } as ourpredicted state candidatesin parallel from the reverse diffusion chain. We use the
+noise prediction model [11] with reverse diffusion chains (n−1)
+t |s (n)
+t formulated as
+s(n)
+t
+√α(n)
+− 1−α (n)p
+α(n)(1−¯α(n))ϵθ(s(n)
+t ,τ (t,w), n) +p1−α (n)ϵ(5)
+where ϵ∼ N(0,I) for n=N, . . . ,1, and ϵ= 0 for n= 1 [11]. Below we detail how the state
+candidates are used during an episode.
+2.3 Forecasting using Zero-Shot Foundation Model
+Algorithm 1Candidate Selection
+1:Sample{{ ˆb}1
+l , . . . ,{ˆb}P
+l } ∼Zero-Shot FM
+2:foreach episodep= 1,···, Pdo
+3:t= 0
+4:Reset environmento 0 ∼ E
+5:˜s←o 0 − {ˆb}p
+l
+6:Initializeτ (t,w)
+7:whilenotdonedo
+8:Samplea (0) ∼π ϕ(a|˜s)
+9:Take actiona (0) inE, observeo t+1
+10:{ˆs b
+t+1}l ←o t+1 − {ˆb}p
+l
+11:τ (t+1,w) = PUSH
+ 
+τ(t,w),
+ 
+∆ot+1, a(0)
+12:τ (t+1,w) = POP
+ 
+τ(t+1,w),(∆o t−w+1, at−w)
+
+13:ift > wthen
+14:Sample{s (0)
+t+1}k from FORLby Eq. 5
+15:˜s←DCM({s (0)
+t+1}k,{ˆsb
+t+1}l)
+16:else
+17:˜s←o t+1 − {ˆb}p
+l
+18:end if
+19:t←t+ 1
+20:end while
+21:end for
+Because we assume that the offsets bj
+originate from a time series, we pro-
+pose to use a probabilistic zero-shot
+forecasting foundation model(Zero-
+Shot FM), (Lag-Llama [ 10]) to fore-
+cast future offsets from past ones. We
+are assuming that after P episodes
+the true offsets get revealed, and we
+predict the offsets for the follow-
+ing P episodes. Using the proba-
+bilisticZero-Shot FMwe generate
+(ˆbj
+l , . . . ,ˆbj+P−1
+l ), where ( l) denotes
+the number of samples generated for
+each episode (timestamp). Since
+LagLlama is a probabilistic model,
+it can generate multiple samples per
+timestamp, conditioned on C number
+of past contexts (bj−C , . . . , bj−1). In
+practice, we forecast every dimension
+of b independently since theZero-Shot
+FM(Lag-Llama [ 10]) is a univariate
+probabilistic model.
+2.4 FORLState Estimation
+The next step in our method is to fuse the information from the forecaster and the diffusion model
+into a state estimate used for control at test time.
+5
+At the beginning of an episode, no information can be obtained from the diffusion model, so for the
+first w steps we only rely on the forecaster’s mean prediction, i.e. ˜st =o t − ˆbj where the mean is
+taken over thelsamples.
+−4 −2 0 2
+p
+Dimension-wise Closest Match
+Multimodal
+Unimodal
+DCM samples Product PDF
+Figure 4: Distribution of samples produced by
+DCM (histograms for 10k samples for illustration).
+As soon as w steps are taken, our FORLState
+Estimationimproves on the inferred state as de-
+tailed below. Figure 2 offers an overview of
+the entire system and Algorithm 1 provides a
+detailed pseudocode.
+To recap, the diffusion model generates samples
+{s(0)
+t }k from the in-episode history τ, Eq. (1).
+These samples represent a multimodal distri-
+bution of plausible state regions. TheZero-
+Shot FMgenerates l samples of offsets {ˆb}l
+from which we compute forecasted states us-
+ing{ ˆst}l =o t − {ˆb}l.
+FORL: Dimension-wise Closest Match (DCM)We propose a lightweight approach to sample a
+good estimate based on the samples from the multimodal (diffusion model {s(0)
+t }k) and unimodal
+(Zero-Shot FM {ˆsb
+t}l) distributions. Let Ddiffusion ={x 1, . . . ,xk},D timeseries ={y 1, . . . ,yl},
+wherex i,y j ∈R n. Then DCM constructsz∈R n by
+zd =y j∗(d),d wherej ∗(d) = arg min
+j
+
+min
+i
+ xi,d −y j,d
+
+
+,
+where d= 1. . . n. In other words, for each dimension d, we choose the sample from Dtimeseries that
+has the closest sample in Ddiffusion. The process is straightforward yet effective, and under ideal
+sampling conditions for a toy dataset in Figure 4, DCM approximately samples from the product
+distribution. DCM uses a non-parametric search to find the forecast sample with the highest score,
+which corresponds to the minimum dimension-wise distance. DCM’s prediction error is governed by
+the accuracy of the forecast samples in the unimodal Dtimeseries that achieves this best score. As we
+will demonstrate in the experiments, this approach empirically yields lower maximum errors and is
+more stable compared to other methods.
+FORLAlgorithmAlgorithm 1 summarizes the entire inference process at test time. We begin the
+episode by relying on the forecasted states ˜s0. As more transitions (∆ot, at−1) become available,
+the FORLdiffusion model proposes candidate states {s(0)
+t }k throughretrospection—reasoning over
+the past in-episode experience to adapt state estimation on the fly when they begin to diverge from
+predictions. We then invoke DCM to blend the diffusion model’s candidates with the foundation
+model’s unimodal forecasts and obtain the final state estimate ˜st. We use an off-the-shelf offline RL
+policy such as Diffusion-QL (DQL) [14] to select the agent’s actiona t.
+0 100 200
+Episodes
+−10
+0
+10
+Offset
+real-data-A(Series 1)
+0 25 50 75
+Episodes
+−10
+0
+10
+Offset
+real-data-D(Series 1)
+Standard Deviation Time-series Forecast Mean
+Figure 5: Zero-shot forecasting results of Lag-
+Llama [10] for the first univariate series (plotted)
+from the real-data-A,D datasets; experiments
+use thefirst two series from each dataset.
+SummaryBy combining a powerfulzero-shot
+forecasting model with aconditional diffusion
+mechanism, FORLaddresses partial observabil-
+ity in continuous state and action space when
+ground-truth offsets are unavailable. This proce-
+dure is performed in theabsence of ground-truth
+offsets for past, current, and future episodes over
+the interval j:j+P at test time. DCM provides
+a computationally inexpensive yet effective way
+of using the multimodal diffusion candidates
+and unimodal time-series forecasts. This robust
+adaptation approach yields a state estimate ˜st,
+aligned with the agent’s retrospective experience in the stationary offline RL dataset with the prospec-
+tive external offset forecast.
+6
+3 Experiments Table 1:Normalized scores (mean ± std.) for
+FORLframework and the baselines.Bold are
+the best values, and those not significantly different
+(p >0.05, Welch’s t-test).
+maze2d-mediumDQL DQL+LAG-¯sDMBP+LAGFORL(ours)
+real-data-A30.2±6.530.2±8.625.1±9.863.3±6.7
+real-data-B14.1±12.153.4±14.641.2±21.166.5±18.2
+real-data-C-2.3±3.356.7±18.556.9±18.486.3±15.7
+real-data-D4.7±5.036.9±16.338.5±14.2103.4±11.9
+real-data-E3.5±8.88.7±6.011.4±2.851.2±13.7
+Average10.0 37.2 34.674.1
+maze2d-large
+real-data-A16.2±5.52.4±1.14.2±5.842.9±4.1
+real-data-B-0.5±2.95.5±9.015.0±14.634.9±9.2
+real-data-C0.9±1.716.6±7.526.8±8.445.6±4.1
+real-data-D3.0±6.68.6±3.213.4±4.158.4±6.5
+real-data-E-2.1±0.42.6±3.40.9±3.712.0±9.9
+Average3.5 7.1 12.138.8
+antmaze-umaze-diverse
+real-data-A22.7±3.041.0±5.245.7±4.865.3±8.7
+real-data-B24.2±3.548.3±7.062.5±13.274.2±10.8
+real-data-C21.7±3.550.4±8.360.4±3.978.8±8.5
+real-data-D5.8±2.326.7±6.329.2±5.975.8±8.0
+real-data-E6.0±6.858.0±16.659.3±7.681.3±6.9
+Average16.1 44.9 51.475.1
+antmaze-medium-diverse
+real-data-A31.0±6.540.0±5.739.7±4.044.0±7.9
+real-data-B23.3±4.848.3±4.843.3±16.055.8±7.0
+real-data-C10.0±2.348.3±3.449.6±3.752.9±9.5
+real-data-D11.7±5.446.7±7.541.7±6.664.2±8.6
+real-data-E18.7±4.527.3±8.626.0±5.526.7±4.7
+Average18.9 42.1 40.148.7
+antmaze-large-diverse
+real-data-A11.0±1.911.3±4.99.0±4.534.3±5.7
+real-data-B5.8±4.89.2±4.68.3±2.946.7±11.9
+real-data-C5.4±2.422.1±5.617.9±3.833.8±6.8
+real-data-D2.5±2.314.2±3.714.2±6.346.7±12.6
+real-data-E5.3±3.83.3±2.43.3±0.011.3±7.3
+Average6.0 12.0 10.534.6
+kitchen-complete
+real-data-A16.6±1.47.2±1.98.7±1.312.0±3.9
+real-data-B12.9±4.132.7±6.520.0±3.133.1±5.6
+real-data-C13.4±1.723.9±6.620.5±3.323.9±6.0
+real-data-D7.5±2.524.0±9.228.1±8.127.1±10.1
+real-data-E18.5±6.02.8±2.16.2±1.710.3±3.0
+Average13.8 18.1 16.721.3
+cube-single-playFQL FQL+LAG-¯sFORL-F (ours)
+real-data-A0.0±0.00.0±0.023.7±3.6
+real-data-B0.0±0.015.0±7.060.0±7.0
+real-data-C0.4±0.910.0±1.742.1±5.6
+real-data-D0.0±0.00.8±1.970.0±13.0
+real-data-E0.0±0.00.0±0.032.7±9.5
+Average0.1 5.245.7
+antmaze-large-navigate
+real-data-A22.7±2.21.3±0.724.3±4.3
+real-data-B21.7±5.429.2±8.840.0±7.6
+real-data-C5.0±1.134.6±6.755.8±3.7
+real-data-D0.8±1.937.5±5.175.8±5.4
+real-data-E10.0±4.13.3±0.015.3±8.7
+Average12.0 21.242.2
+We evaluate FORLacross navigation, and ma-
+nipulation tasks in D4RL [ 15] and OGBench
+[21] offline RL environments each augmented
+with five real-world non-stationarity domains
+sourced from [ 22]. Figure 5 presents the
+ground truth, forecast mean, and standard de-
+viation from Lag-Llama [ 10] for thefirst se-
+riesof real-data-A and real-data-D. Our
+experiments address the following questions:
+(1)Does FORL maintain state-of-the-art per-
+formance when confronted with unseen non-
+stationary offsets?(2)How can we use FORL
+when we have no access to delayed past ground
+truth offsets?(3)How does DCM compare to
+other fusion approaches?(4)Can FORLhan-
+dle intra-episode non-stationarity?(5)How
+gracefully does performance degrade as offset
+magnitude α is scaled from 0(no offset)→
+1(our evaluation setup) ?(6)Can FORLserve
+as a plug-and-play module for different offline
+RL algorithms without retraining? Extended re-
+sults, forecasts for the remaining series, and im-
+plementation details are provided in Appendix.
+Results average 5 seeds, unless noted.
+BaselinesWe compare our approach with
+the following baselines: DQL [ 14], Flow
+Q-learning (FQL) [ 23] are diffusion-based,
+and flow-based offline RL policies, respec-
+tively, that do not incorporate forecast infor-
+mation. DQL+LAG-¯s, FQL+LAG-¯s extend
+DQL, and FQL by using the sample mean of
+the forecasted states {ˆst}l at each time step,
+(using the constant per-episode predicted bj).
+DQL+LAG-˜ssimilarly extends DQL using the
+median. DMBP+LAGis a variant of Diffusion
+Model–Based Predictor (DMBP)[3] (a robust off-
+line RL algorithm designed to mitigate state-
+observation perturbations at test time detailed
+in Appendix D) that integrates forecasted states
+fromZero-Shot FM[ 10] into its state predic-
+tion module. By using the model learned from
+the offline data, DMBP+LAGaims to refine the
+forecasted states to make robust state estimation.
+The underlying policies throughout our experi-
+ments are identical policy checkpoints for both
+our method and the baselines.
+{st
+(0)}k observation state FORLDQL+LAG-s
+Figure 6: Visualization of states, predicted
+states as the agent navigates the environment.
+Illustrative ExampleFigures 6 and 18 illustrate
+an agent navigating the maze2d-large environment
+where the true position is labeled as “state”. The
+agent receives an observation, indicating where the
+agentbelievesit is located due to unknown time-
+dependent factors. The candidate states predicted
+by the FORLdiffusion model are shown as circles.
+Importantly, the agent’s(∆o, a)-trajectory can reveal
+possible states for the agent. FORL’s diffusion model
+7
+(DM) component predicts these candidate states by using observation changes(∆o) and corresponding
+actions (a). The possible candidate regions where the agent can be are limited, and our model
+successfully captures these locations. FORL’s candidate selection module (DCM) using the samples
+from the forecaster, and the diffusion model recovers a close estimate for the state. In contrast,
+the baseline DQL+LAG-¯s, relies on the forecaster [10] for state predictions which are significantly
+farther from the actual state. Consistent with the results in Fig. 7, FORLreduces prediction errors at
+test-time thereby improving performance.
+3.1 Results
+DQL
+DQL+LAG-¯sDQL+LAG-˜sDMBP+LAG
+FORL
+4
+6
+Prediction Error(↓)
+Figure 7: Prediction Error in
+recovering true agent state.
+FORL outperforms both pure forecasting (DQL+LAG-¯s) and the two-
+stage strategy that first predicts offsets with a time-series model and
+then applies a noise-robust offline RL algorithm (DMBP+LAG). Its
+advantage is consistent across previously unseen non-stationary per-
+turbations from five domains, each introducing a distinct univariate
+series into a separate state dimension at test time. We present the av-
+erage normalized scores over the prediction length P across multiple
+episodes run in the D4RL [ 15] and OGBench [ 21] for each time-series in Table 1. We conduct
+pairwise Welch’s t-tests across all settings. Figure 7 plots the L2 norm between the ground-truth
+states st and those predicted by FORLand the baselines in the antmaze and maze2d environments.
+Consistent with the average scores, FORLachieves the lowest prediction error on average.
+3.1.1 No Access to Past Offsets
+DQL
+MED+NOISEMED+DCM
+H-LAG
+H-LAG+DCM
+FORL-DM
+10
+15
+20
+25
+Score(↑)
+Figure 8: DM Ablations
+We evaluate different variants of using DMandZero-Shot FMwhen
+we do not have any access to past offsets in Figure 8.FORL-DM
+(DM):Diffusion Model utilizes the candidate states generated by
+the FORL’s diffusion model component (Section 2.2), which can
+be a multimodal distribution (Figure 3). Compared to DM, the
+full FORLframework yields a 97.8% relative performance improve-
+ment. Notably, DMperforms on par with our extended baselines
+that incorporate historical offsets and forecasting—DMBP+LAG,
+DQL+LAG-¯s, and DQL+LAG-˜s. Moreover, without access to historical offset information before
+evaluation, DMachieves a 151.4% improvement over DQL, demonstrating its efficacy as a standalone
+module trained solely on a standard, stationary offline RL dataset without offset labels. H-LAG :
+We maintain a history of offsets generated by DMover the most recent C episodes (excluding the
+evaluation interval P, since offsets are not revealed after episode termination at test-time). We
+then feed this history into theZero-Shot FMto generate offset samples for the next P evaluation
+episodes. These samples are applied directly at test time. H-LAG+DCM :We initially follow the
+same procedure in H-LAG to obtain predictions fromZero-Shot FM. Then, we applyDCMto these
+predicted offsets and the candidate states generated by FORL’s diffusion model. We also compare
+against MED+DCM and MED+NOISE , simpler median-based heuristics detailed in the Section G.
+Empirically, H-LAG+DCM outperforms H-LAG , demonstrating that DCM with FORL’s diffusion
+model can improve robustness. Overall, scores and prediction errors indicate that just using the
+samples from DMhas better scores on average, while H-LAG+DCMis more stable in Fig. 15.
+3.1.2 Dimension-wise Closest Match (DCM) Ablations
+DCM KDE
+DM-FS-¯sDM-FS-˜s
+MAX
+40
+45
+50
+55
+Score(↑)
+Figure 9: Candidate Selection
+We compare FORL(DCM) against four alternative fusion strategies.
+FORL(KDE): For each dimension, we fit a kernel density estimator
+(KDE) on Ddiffusion ={s (0)
+t }k and then we evaluate that probability
+density function for each point in Dtimeseries. Then, we take the
+product of these densities in each dimension to obtain the weight for
+each sample ˆsb
+t. We obtain a single representative sample by taking
+the weighted average of samples in Dtimeseries. To ensure stability,
+when the sum of the weights is near zero, we use the mean of the Dtimeseries as the states. We use
+Scott’s rule [24] to compute the bandwidth. DM-FS-¯s, DM-FS-˜sselect the closest prediction from
+DM to the mean and median of theZero-Shot FM’s predictions, respectively. FORL(MAX) constructs
+a diagonal multivariate distribution from the dimension-wise mean and standard deviation of the
+8
+Table 2:Normalized scores (mean ± std.) for FORL and baselines on maze2d-large.Bolds
+denote the best scores and those not significantly different (Welch’s t-test, p > 0.05). Suffixes -T and
+-R denote the use of TD3+BC [2] and RORL [25], respectively.
+Td3BcPolicyRorlPolicy
+maze2d-largeTD3BCTD3BC+LAG-¯sDMBP+LAG-T FORL(ours)-T RORLRORL+LAG-¯sDMBP+LAG-R FORL(ours)-R
+real-data-A14.7±5.72.5±2.74.8±3.920.7±3.512.2±2.313.0±2.04.3±5.056.9±3.0
+real-data-B-0.9±2.04.6±8.911.7±12.656.8±14.41.2±5.513.1±14.728.5±11.798.5±19.0
+real-data-C0.8±1.921.6±8.429.5±13.756.9±14.63.1±0.960.6±8.539.4±6.1139.0±15.1
+real-data-D2.5±4.414.9±4.314.4±6.829.5±10.3-1.6±0.717.9±6.817.5±6.033.1±2.3
+real-data-E-2.3±0.21.0±4.22.0±3.98.0±4.2-0.9±2.03.3±4.42.2±4.532.2±15.3
+Average3.0 8.9 12.534.42.8 21.6 18.471.9
+forecasted states, then selects the sample predicted by our diffusion model with the highest likelihood
+under that distribution. Although all baselines fuse information using the same two sets generated by
+the diffusion model andZero-Shot FM, DCM has higher performance. In Table 9 we compute the
+maximum, minimum, and mean prediction error values over the test episodes used in Figure 6. FORL
+(DCM) yields significantly stable prediction errors (Maximum Error↓ :2.40) for both maximum error
+and mean error compared to FORL(MAX) (Maximum Error↓:9.33) demonstrating its robustness.
+3.1.3 Intra-episode Non-stationarity
+DQL
+DQL+LAG-¯sFORL-DM
+FORL
+20
+40
+60
+Score f=50(↑)
+Figure 10: Intra-Episode
+Performance
+Our framework can natively handle intra-episode offsets, where the
+offset changes every f= 50 timesteps. In this setting, the offsets
+become available after the episode terminates, but the agent is subject
+to a time-dependent unknown offset within the episode. Zero-shot
+forecasting foundation module can generate samples before the episode
+begins. Our diffusion model (FORL-DM) itself does not rely on the
+forecasts of the foundation module and only tracks observation changes
+and actions which are invariant to the offsets. The DCM can adaptively
+fuse information from both models at each timestep without requiring
+any hyperparameters.Table 10 and Fig. 10 show the average scores for DQL vs. FORL-DMand
+DQL+LAG-¯svs. FORL. Among the algorithms that do not use any past ground truth offsets DQL
+and FORL-DM, only using the diffusion model of FORLsignificantly increases performance. When
+we have access to past offsets, FORLobtains a superior performance. This shows that our method
+covers both cases, when information is available and not available, even when offsets are not constant
+throughout the episode.
+3.1.4 Offset-Scaling
+0 0.25 0.5 0.75 1.0
+0
+50
+100
+Scaling parameter (α)
+score
+Forl Dmbp+Lag DQL+Lag-¯s DQL
+Figure 11: Impact of offset scaling (α)
+on average normalized scores.
+We scale the offsets with α across all maze experiments.
+We conduct experiments in 5 environments (all antmaze
+and maze2d used in Table 1) across 5 time-series datasets
+setups with α∈ {0, 0.25, 0.5, 0.75, 1.0}, where α= 0 is
+the standard offline RL dataset used during training and
+α= 1.0 is our evaluation setup. The results show that
+FORLoutperforms the baselines, confirming its robustness.
+Even a small scaling of 0.25 results in a sudden drop in
+performance whereas FORLonly experiences a gradual decrease in Figure 11. Detailed results, for
+each environment andαpairs are provided in Appendix Figure 13.
+3.1.5 Policy-Agnostic
+In the maze2d-large experiments (in Table 2, maze2d-medium in Appendix Table 3), we use
+Robust Offline RL (RORL) [ 25], and TD3BC[ 2] offline RL algorithms instead of DQL [ 14], to
+analyze the effect of offline RL policy choice during evaluation. RORL+LAG-¯s, and TD3BC+LAG-¯s
+extend RORL, and TD3BCby using the sample mean of the forecasted states {ˆst}l at each time step,
+(using the constant per-episode predictedbj). Results indicate that using a robust offline RL algorithm
+during training significantly increases performance (71.9) compared to DQL (38.8) and TD3BC
+(34.4) at test time when used with FORL, no increase when used alone, and a marginal increase with
+Lag-Llama and DMBP+LAG. We observe similar performance gains when applying FORLto other
+9
+policies (Section E), including Implicit Q-Leaning (IQL) [ 26] and FQL [ 23], as detailed in Table 4
+and Table 7.
+4 Related Work
+Reinforcement Learning in Non-Stationary EnvironmentsExisting works in non-stationary
+reinforcement learning (RL) predominantly focus on adapting to changing transition dynamics and
+reward functions. Ackermann et al. [27] propose an offline RL framework that incorporates structured
+non-stationarity in reward and transition functions by learning hidden task representations and
+predicting them at test time. Although our work also investigates the intersection of non-stationary
+environments and offline RL, we assume stationarity during training. To learn adaptive policiesonline,
+meta-learning algorithms have been proposed as a promising approach [28–30]. Al-Shedivat et al.
+[29] explores a competitive multi-agent environment where transition dynamics change. While these
+approaches provide valuable insights, they often require samples from the current environment and
+struggle in non-trivial non-stationarity, highlighting the need for more future-oriented methods [9, 31].
+Examples of such future oriented approaches include Proactively Synchronizing Tempo (ProST) [9]
+and Prognosticator [31], which address the evolution of transition and reward functions over time.
+ProST leverages a forecaster, namely, Auto-Regressive Integrated Moving Average (ARIMA), and a
+model predictor to optimize for future policies in environments to overcome the time-synchronization
+issue in time-elapsing MDPs. This approach aligns with our focus on time-varying environments
+and similarly utilizes real-world stock price time-series datasets to model non-stationarity. Both
+ProST and Prognosticator assume that states are fully observable during testing, and that online
+interaction with the environment is possible during training—conditions that are not always feasible
+in the real world. Instead, our approach assumes that states are not fully observable and that direct
+interaction with the environment during training is not feasible, necessitating that the policy be
+learned exclusively from a pre-collected dataset.
+Robust offline RLTesting-time robust offline RL methods DMBP[ 3], RORL[ 25] examine scenarios
+where a noise-free, stationary dataset is used for training, but corruption is introduced in testing. This
+is distinct from [ 3], training-time robust offline RL [ 32, 33], which assumes a corrupted training
+dataset. Both RORL[ 25] and DMBP[ 3] assume access only to a clean, uncorrupted offline RL dataset,
+as FORL, and they are evaluated in a perturbed environment. To the best of our knowledge, FORLis
+the first work to extend this setting to a non-Markovian, time-evolving, non-stationary deployment
+environment. We focus on time-dependent exogenous factors from real-data that are aligned with the
+definition of a non-stationary environment [6].
+Diffusion models in offline RLDiffusion models [ 12] have seen widespread adoption in RL
+[34, 35] due to their remarkable expressiveness, particularly in representing multimodal distributions,
+scalability, and stable training properties. In the context of offline RL, diffusion models have been
+used for representing policies [14, 36–38], planners [39, 40], data synthesizing [41, 42], and removing
+noise [3]. Notably, Diffusion Q-learning [14] leverages conditional diffusion model policies to learn
+from offline RL datasets, maintaining proximity to behavior policy while utilizing Q-value function
+guidance. In contrast, our method harnesses diffusion models to learn from a sequence of actions and
+effect tuples, leveraging the multimodal capabilities of diffusion models to identify diverse candidate
+locations of the hidden states.
+5 Conclusion
+We introduceForecasting in Non-stationaryOfflineRL(FORL), a novel framework designed to be
+robust to passive non-stationarities that arise at test time. This is crucial when an agent, trained on
+an offline RL dataset, is deployed in a non-stationary environment or when the environment begins
+to exhibit partial observability due to unknown, time-varying factors. FORLleverages diffusion
+probabilistic models and zero-shot time series foundation models to correct unknown offsets in obser-
+vations thereby enhancing the adaptability of learned policies. Our empirical results across diverse
+time-series datasets, OGBench [21] and D4RL [15] benchmarks demonstrate that FORLnot only
+bridges the gap between time-series forecasting and non-stationary offline RL but also consistently
+outperforms the baselines. Our approach is currently limited by assuming additive perturbations. For
+future work, we plan to extend our work to more general observation transformations.
+10
+Acknowledgments and Disclosure of Funding
+Georg Martius is a member of the Machine Learning Cluster of Excellence, EXC number 2064/1
+– Project number 390727645. Co-funded by the European Union (ERC, REAL-RL, 101045454).
+Views and opinions expressed are, however, those of the author(s) only and do not necessarily reflect
+those of the European Union or the European Research Council. Neither the European Union nor the
+granting authority can be held responsible for them. This work was supported by the German Federal
+Ministry of Education and Research (BMBF): Tübingen AI Center, FKZ: 01IS18039A. This work
+was in part supported by INVERSE project (101136067) funded by the European Union and JSPS
+KAKENHI Grant Numbers JP23K24926, JP25H01236. The numerical calculations reported in this
+paper were partially performed at TUBITAK ULAKBIM, High Performance and Grid Computing
+Center (TRUBA resources). The authors would like to thank Tomáš Daniš, René Geist, Ji Shi, and
+Leonard Franz for their valuable comments on the manuscript.
+References
+[1] Sergey Levine, Aviral Kumar, George Tucker, and Justin Fu. Offline reinforcement learning:
+Tutorial, review, and perspectives on open problems.CoRR, abs/2005.01643, 2020. URL
+https://arxiv.org/abs/2005.01643.
+[2] Scott Fujimoto and Shixiang Gu. A minimalist approach to offline reinforcement learning. In
+A. Beygelzimer, Y . Dauphin, P. Liang, and J. Wortman Vaughan, editors,Advances in Neural
+Information Processing Systems, 2021.
+[3] YANG Zhihe and Yunjian Xu. Dmbp: Diffusion model-based predictor for robust offline
+reinforcement learning against state observation perturbations. InThe Twelfth International
+Conference on Learning Representations, 2024.
+[4] Brandon Trabucco, Mariano Phielipp, and Glen Berseth. Anymorph: Learning transferable
+polices by inferring agent morphology. InInternational Conference on Machine Learning,
+pages 21677–21691. PMLR, 2022.
+[5] Amy Zhang, Clare Lyle, Shagun Sodhani, Angelos Filos, Marta Kwiatkowska, Joelle Pineau,
+Yarin Gal, and Doina Precup. Invariant causal prediction for block mdps. InInternational
+Conference on Machine Learning, pages 11214–11224. PMLR, 2020.
+[6] Khimya Khetarpal, Matthew Riemer, Irina Rish, and Doina Precup. Towards continual rein-
+forcement learning: A review and perspectives.Journal of Artificial Intelligence Research, 75:
+1401–1476, 2022.
+[7] Yash Chandak.Reinforcement Learning for Non-stationary problems. PhD thesis, PhD thesis,
+University of Massachusetts Amherst, 2022.
+[8] Annie Xie, James Harrison, and Chelsea Finn. Deep reinforcement learning amidst continual
+structured non-stationarity. InInternational Conference on Machine Learning, pages 11393–
+11403. PMLR, 2021.
+[9] Hyunin Lee, Yuhao Ding, Jongmin Lee, Ming Jin, Javad Lavaei, and Somayeh Sojoudi. Tempo
+adaptation in non-stationary reinforcement learning. InThirty-seventh Conference on Neural
+Information Processing Systems, 2023.
+[10] Kashif Rasul, Arjun Ashok, Andrew Robert Williams, Hena Ghonia, Rishika Bhagwatkar, Arian
+Khorasani, Mohammad Javad Darvishi Bayazi, George Adamopoulos, Roland Riachi, Nadhir
+Hassen, Marin Biloš, Sahil Garg, Anderson Schneider, Nicolas Chapados, Alexandre Drouin,
+Valentina Zantedeschi, Yuriy Nevmyvaka, and Irina Rish. Lag-llama: Towards foundation
+models for time series forecasting.arXiv preprint arXiv:2310.08278, 2023.
+[11] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In
+H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin, editors,Advances in Neural
+Information Processing Systems, volume 33, pages 6840–6851. Curran Associates, Inc., 2020.
+11
+[12] Jascha Sohl-Dickstein, Eric A. Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep
+unsupervised learning using nonequilibrium thermodynamics.CoRR, abs/1503.03585, 2015.
+URLhttps://arxiv.org/abs/1503.03585.
+[13] Calvin Luo. Understanding diffusion models: A unified perspective.arXiv preprint
+arXiv:2208.11970, 2022. URLhttps://arxiv.org/abs/2208.11970.
+[14] Zhendong Wang, Jonathan J Hunt, and Mingyuan Zhou. Diffusion policies as an expressive
+policy class for offline reinforcement learning. InThe Eleventh International Conference on
+Learning Representations, 2023.
+[15] Justin Fu, Aviral Kumar, Ofir Nachum, George Tucker, and Sergey Levine. D4rl: Datasets
+for deep data-driven reinforcement learning.arXiv preprint arXiv:2004.07219, 2020. URL
+https://arxiv.org/abs/2004.07219.
+[16] Leslie Pack Kaelbling, Michael L Littman, and Anthony R Cassandra. Planning and acting in
+partially observable stochastic domains.Artificial intelligence, 101(1-2):99–134, 1998.
+[17] Blai Bonet. Deterministic pomdps revisited.arXiv preprint arXiv:1205.2659, 2012. URL
+https://arxiv.org/abs/1205.2659.
+[18] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and
+Ben Poole. Score-based generative modeling through stochastic differential equations.arXiv
+preprint arXiv:2011.13456, 2020.
+[19] Zhisheng Xiao, Karsten Kreis, and Arash Vahdat. Tackling the generative learning trilemma
+with denoising diffusion gans.arXiv preprint arXiv:2112.07804, 2021.
+[20] Calvin Luo. Understanding diffusion models: A unified perspective, 2022. URL https:
+//arxiv.org/abs/2208.11970.
+[21] Seohong Park, Kevin Frans, Benjamin Eysenbach, and Sergey Levine. Ogbench: Benchmarking
+offline goal-conditioned rl. InInternational Conference on Learning Representations (ICLR),
+2025.
+[22] Alexander Alexandrov, Konstantinos Benidis, Michael Bohlke-Schneider, Valentin Flunkert,
+Jan Gasthaus, Tim Januschowski, Danielle C. Maddix, Syama Rangapuram, David Salinas,
+Jasper Schulz, Lorenzo Stella, Ali Caner Türkmen, and Yuyang Wang. GluonTS: Probabilistic
+and Neural Time Series Modeling in Python.Journal of Machine Learning Research, 21(116):
+1–6, 2020.
+[23] Seohong Park, Qiyang Li, and Sergey Levine. Flow q-learning. InInternational Conference on
+Machine Learning (ICML), 2025.
+[24] David W Scot. Multivariate density estimation, 1992.
+[25] Rui Yang, Chenjia Bai, Xiaoteng Ma, Zhaoran Wang, Chongjie Zhang, and Lei Han. Rorl: Ro-
+bust offline reinforcement learning via conservative smoothing.Advances in neural information
+processing systems, 35:23851–23866, 2022.
+[26] Ilya Kostrikov, Ashvin Nair, and Sergey Levine. Offline reinforcement learning with implicit
+q-learning.CoRR, abs/2110.06169, 2021. URLhttps://arxiv.org/abs/2110.06169.
+[27] Johannes Ackermann, Takayuki Osa, and Masashi Sugiyama. Offline reinforcement learning
+from datasets with structured non-stationarity. InReinforcement Learning Conference, 2024.
+[28] Chelsea Finn, Aravind Rajeswaran, Sham Kakade, and Sergey Levine. Online meta-learning.
+InInternational conference on machine learning, pages 1920–1930. PMLR, 2019.
+[29] Maruan Al-Shedivat, Trapit Bansal, Yura Burda, Ilya Sutskever, Igor Mordatch, and Pieter
+Abbeel. Continuous adaptation via meta-learning in nonstationary and competitive environments.
+InInternational Conference on Learning Representations, 2018.
+12
+[30] Suzan Ece Ada and Emre Ugur. Unsupervised meta-testing with conditional neural processes for
+hybrid meta-reinforcement learning.IEEE Robotics and Automation Letters, 9(10):8427–8434,
+2024. doi: 10.1109/LRA.2024.3443496.
+[31] Yash Chandak, Georgios Theocharous, Shiv Shankar, Martha White, Sridhar Mahadevan, and
+Philip Thomas. Optimizing for the future in non-stationary mdps. InInternational Conference
+on Machine Learning, pages 1414–1425. PMLR, 2020.
+[32] Chenlu Ye, Rui Yang, Quanquan Gu, and Tong Zhang. Corruption-robust offline reinforcement
+learning with general function approximation.Advances in Neural Information Processing
+Systems, 36:36208–36221, 2023.
+[33] Xuezhou Zhang, Yiding Chen, Xiaojin Zhu, and Wen Sun. Corruption-robust offline rein-
+forcement learning. InInternational Conference on Artificial Intelligence and Statistics, pages
+5757–5773. PMLR, 2022.
+[34] Zhengbang Zhu, Hanye Zhao, Haoran He, Yichao Zhong, Shenyu Zhang, Yong Yu, and
+Weinan Zhang. Diffusion models for reinforcement learning: A survey.arXiv preprint
+arXiv:2311.01223, 2023.
+[35] Jiayu Chen, Bhargav Ganguly, Yang Xu, Yongsheng Mei, Tian Lan, and Vaneet Aggarwal.
+Deep generative models for offline policy learning: Tutorial, survey, and perspectives on future
+directions.arXiv preprint arXiv:2402.13777, 2024.
+[36] Longxiang He, Linrui Zhang, Junbo Tan, and Xueqian Wang. Diffcps: Diffusion model based
+constrained policy search for offline reinforcement learning.arXiv preprint arXiv:2310.05333,
+2023.
+[37] Philippe Hansen-Estruch, Ilya Kostrikov, Michael Janner, Jakub Grudzien Kuba, and Sergey
+Levine. Idql: Implicit q-learning as an actor-critic method with diffusion policies.arXiv preprint
+arXiv:2304.10573, 2023. URLhttps://arxiv.org/abs/2304.10573.
+[38] Suzan Ece Ada, Erhan Oztop, and Emre Ugur. Diffusion policies for out-of-distribution
+generalization in offline reinforcement learning.IEEE Robotics and Automation Letters, 9(4):
+3116–3123, 2024. doi: 10.1109/LRA.2024.3363530.
+[39] Michael Janner, Yilun Du, Joshua Tenenbaum, and Sergey Levine. Planning with diffusion for
+flexible behavior synthesis. InInternational Conference on Machine Learning, 2022.
+[40] Matthew Coleman, Olga Russakovsky, Christine Allen-Blanchette, and Ye Zhu. Discrete
+diffusion reward guidance methods for offline reinforcement learning. InICML 2023 Workshop:
+Sampling and Optimization in Discrete Space, 2023.
+[41] Haoran He, Chenjia Bai, Kang Xu, Zhuoran Yang, Weinan Zhang, Dong Wang, Bin Zhao,
+and Xuelong Li. Diffusion model is an effective planner and data synthesizer for multi-task
+reinforcement learning. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and
+S. Levine, editors,Advances in Neural Information Processing Systems, volume 36, pages
+64896–64917. Curran Associates, Inc., 2023.
+[42] Zhixuan Liang, Yao Mu, Mingyu Ding, Fei Ni, Masayoshi Tomizuka, and Ping Luo. Adaptdif-
+fuser: Diffusion models as adaptive self-evolving planners.arXiv preprint arXiv:2302.01877,
+2023. URLhttps://arxiv.org/abs/2302.01877.
+[43] Scott Fujimoto, David Meger, and Doina Precup. Off-policy deep reinforcement learning
+without exploration. InInternational Conference on Machine Learning, 2018.
+[44] Noah Siegel, Jost Tobias Springenberg, Felix Berkenkamp, Abbas Abdolmaleki, Michael
+Neunert, Thomas Lampe, Roland Hafner, Nicolas Heess, and Martin Riedmiller. Keep doing
+what worked: Behavior modelling priors for offline reinforcement learning. InInternational
+Conference on Learning Representations, 2020.
+[45] Yecheng Jason Ma, Dinesh Jayaraman, and Osbert Bastani. Conservative offline distri-
+butional reinforcement learning. In A. Beygelzimer, Y . Dauphin, P. Liang, and J. Wort-
+man Vaughan, editors,Advances in Neural Information Processing Systems, 2021. URL
+https://openreview.net/forum?id=Z2vksUFuVst.
+13
+[46] Natasha Jaques, Asma Ghandeharioun, Judy Hanwen Shen, Craig Ferguson, Agata Lapedriza,
+Noah Jones, Shixiang Gu, and Rosalind Picard. Way off-policy batch deep reinforcement
+learning of implicit human preferences in dialog.arXiv preprint arXiv:1907.00456, 2019. URL
+https://arxiv.org/abs/1907.00456.
+[47] Yifan Wu, George Tucker, and Ofir Nachum. Behavior regularized offline reinforcement learning.
+arXiv preprint arXiv:1911.11361, 2019. URLhttps://arxiv.org/abs/1911.11361.
+[48] Xue Bin Peng, Aviral Kumar, Grace Zhang, and Sergey Levine. Advantage-weighted regression:
+Simple and scalable off-policy reinforcement learning.arXiv preprint arXiv:1910.00177, 2019.
+[49] Ashvin Nair, Abhishek Gupta, Murtaza Dalal, and Sergey Levine. Awac: Accelerating online
+reinforcement learning with offline datasets.arXiv preprint arXiv:2006.09359, 2020.
+[50] Sebastian Nowozin, Botond Cseke, and Ryota Tomioka. f-gan: Training generative neural
+samplers using variational divergence minimization.Advances in neural information processing
+systems, 29, 2016.
+[51] Aviral Kumar, Justin Fu, Matthew Soh, George Tucker, and Sergey Levine. Stabilizing off-
+policy q-learning via bootstrapping error reduction.Advances in neural information processing
+systems, 32, 2019.
+[52] Tianhe Yu, Aviral Kumar, Rafael Rafailov, Aravind Rajeswaran, Sergey Levine, and Chelsea
+Finn. COMBO: conservative offline model-based policy optimization.CoRR, abs/2102.08363,
+2021. URLhttps://arxiv.org/abs/2102.08363.
+[53] Seohong Park, Kevin Frans, Sergey Levine, and Aviral Kumar. Is value learning really the main
+bottleneck in offline rl?arXiv preprint arXiv:2406.09329, 2024. URL https://arxiv.org/
+abs/2406.09329.
+[54] Bogdan Mazoure, Ilya Kostrikov, Ofir Nachum, and Jonathan J Tompson. Improving zero-shot
+generalization in offline reinforcement learning using generalized similarity functions. In
+S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors,Advances in
+Neural Information Processing Systems, volume 35, pages 25088–25101. Curran Associates,
+Inc., 2022.
+[55] Martin L Puterman.Markov decision processes: discrete stochastic dynamic programming.
+John Wiley & Sons, 2014.
+[56] Zhihe Yang and Yunjian Xu. DMBP: Diffusion model-based predictor for robust offline
+reinforcement learning against state observation perturbations. https://github.com/
+zhyang2226/DMBP/tree/main, 2024.
+[57] Hado Van Hasselt, Arthur Guez, and David Silver. Deep reinforcement learning with double
+q-learning. InProceedings of the AAAI conference on artificial intelligence, volume 30, 2016.
+[58] Timothy P. Lillicrap, Jonathan J. Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval
+Tassa, David Silver, and Daan Wierstra. Continuous control with deep reinforcement learning.
+In Yoshua Bengio and Yann LeCun, editors,4th International Conference on Learning Repre-
+sentations, ICLR 2016, San Juan, Puerto Rico, May 2-4, 2016, Conference Track Proceedings,
+2016.
+[59] Scott Fujimoto, Herke Hoof, and David Meger. Addressing function approximation error
+in actor-critic methods. InInternational conference on machine learning, pages 1587–1596.
+PMLR, 2018.
+[60] Jan Peters and Stefan Schaal. Reinforcement learning by reward-weighted regression for
+operational space control. InProceedings of the 24th international conference on Machine
+learning, pages 745–750, 2007.
+[61] Qing Wang, Jiechao Xiong, Lei Han, Han Liu, Tong Zhang, et al. Exponentially weighted
+imitation learning for batched historical data.Advances in Neural Information Processing
+Systems, 31, 2018.
+14
+[62] Denis Tarasov, Alexander Nikulin, Dmitry Akimov, Vladislav Kurenkov, and Sergey Kolesnikov.
+CORL: Research-oriented deep offline reinforcement learning library. In3rd Offline RL
+Workshop: Offline RL as a ”Launchpad”, 2022.
+[63] Garrett Thomas. Implicit q-learning (iql) in pytorch. https://github.com/gwthomas/
+IQL-PyTorch, 2021.
+[64] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate
+and transfer data with rectified flow.arXiv preprint arXiv:2209.03003, 2022.
+[65] Xingchao Liu, Xiwen Zhang, Jianzhu Ma, Jian Peng, et al. Instaflow: One step is enough for
+high-quality diffusion-based text-to-image generation. InThe Twelfth International Conference
+on Learning Representations, 2023.
+[66] Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut
+models.arXiv preprint arXiv:2410.12557, 2024.
+[67] Zihan Ding, Chi Jin, Difan Liu, Haitian Zheng, Krishna Kumar Singh, Qiang Zhang, Yan Kang,
+Zhe Lin, and Yuchen Liu. Dollar: Few-step video generation via distillation and latent reward
+optimization.arXiv preprint arXiv:2412.15689, 2024.
+[68] Jiachen Li, Weixi Feng, Wenhu Chen, and William Yang Wang. Reward guided latent consis-
+tency distillation.arXiv preprint arXiv:2403.11027, 2024.
+[69] P.J. Huber, J. Wiley, and W. InterScience.Robust statistics. Wiley New York, 1981.
+[70] Martin A. Fischler and Robert C. Bolles. Random sample consensus: a paradigm for model
+fitting with applications to image analysis and automated cartography.Commun. ACM, 24(6):
+381–395, June 1981. ISSN 0001-0782.
+[71] B. P. Welford. Note on a method for calculating corrected sums of squares and products.
+Technometrics, 4:419–420, 1962.
+[72] Donald Ervin Knuth.The art of computer programming, volume 3. Pearson Education, 1997.
+[73] Rakshitha Wathsadini Godahewa, Christoph Bergmeir, Geoffrey I. Webb, Rob Hyndman, and
+Pablo Montero-Manso. Monash time series forecasting archive. InThirty-fifth Conference on
+Neural Information Processing Systems Datasets and Benchmarks Track (Round 2), 2021.
+[74] Dua Dheeru and Efi Karra Taniskidou. Uci machine learning repository. http://archive.
+ics.uci.edu/ml, 2017.
+[75] David Salinas, Michael Bohlke-Schneider, Laurent Callot, Roberto Medico, and Jan Gasthaus.
+High-dimensional multivariate forecasting with low-rank gaussian copula processes.Advances
+in neural information processing systems, 32, 2019.
+[76] Guokun Lai, Wei-Cheng Chang, Yiming Yang, and Hanxiao Liu. Modeling long-and short-term
+temporal patterns with deep neural networks. InThe 41st international ACM SIGIR conference
+on research & development in information retrieval, pages 95–104, 2018.
+[77] A. Alexandrov, K. Benidis, M. Bohlke-Schneider, V . Flunkert, J. Gasthaus, T. Januschowski,
+D. C. Maddix, S. Rangapuram, D. Salinas, J. Schulz, L. Stella, A. C. Türkmen, and Y . Wang.
+GluonTS: Probabilistic Time Series Modeling in Python.arXiv preprint arXiv:1906.05264,
+2019.
+[78] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: Convolutional networks
+for biomedical image segmentation. InMedical image computing and computer-assisted
+intervention–MICCAI 2015: 18th international conference, Munich, Germany, October 5-9,
+2015, proceedings, part III 18, pages 234–241. Springer, 2015.
+[79] Zhendong Wang. Diffusion policies for offline rl (code). https://github.com/
+Zhendong-Wang/Diffusion-Policies-for-Offline-RL, 2023.
+[80] Zhihe Yang. Dmbp: Diffusion model based predictor (code tree). https://github.com/
+zhyang2226/DMBP/tree/main, 2023.
+15
+[81] Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Yoshua
+Bengio and Yann LeCun, editors,ICLR (Poster), 2015. URL http://dblp.uni-trier.de/
+db/conf/iclr/iclr2015.html#KingmaB14.
+[82] Ilya Kostrikov. Implicit q-learning (official jax implementation). https://github.com/
+ikostrikov/implicit_q_learning, 2021.
+[83] Tinkoff AI. Corl: Clean offline reinforcement learning. https://github.com/tinkoff-ai/
+CORL, 2022.
+[84] Seohong Park. Fql: Flow q-learning — official implementation. https://github.com/
+seohongpark/fql, 2025.
+[85] Scott Fujimoto. Td3_bc.https://github.com/sfujim/TD3_BC, 2018.
+[86] Rui Yang. Rorl: Repository.https://github.com/YangRui2015/RORL, 2022.
+[87] Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based
+control. InIntelligent Robots and Systems (IROS), 2012 IEEE/RSJ International Conference on
+Intelligent Robots and Systems, pages 5026–5033. IEEE, 2012.
+[88] Artur Trindade. ElectricityLoadDiagrams20112014. UCI Machine Learning Repository, 2015.
+DOI: https://doi.org/10.24432/C58C86.
+[89] John D Hunter. Matplotlib: A 2d graphics environment.Computing in science & engineering,
+9(03):90–95, 2007.
+16
+A Related Work: Continued
+Offline Reinforcement LearningA high-level overview of existing work in offline reinforcement
+learning (RL) identifies three predominant strategies: policy constraint methods [ 14, 43, 44], pes-
+simistic value function methods which assign low values to OOD actions [ 45], and model-based
+offline RL methods. Policy constraint methods actively avoid querying OOD actions during training
+by leveraging probabilistic metrics which can be explicit [ 46, 47], implicit [48, 49] f-divergence
+[50], or integral probability metrics [51]. These metrics ensure that the learned policy πθ remains
+close to the behavior policy πβ that generated the offline RL dataset[1]. Similarly, pessimistic value
+function approaches regularize the value function or the Q-function to avoid overestimations in OOD
+regions. Model-based offline RL methods [52], on the other hand, focus on learning the environment’s
+dynamics benefiting from the strengths of supervised learning approaches. However, in the same
+vein, these methods are susceptible to the distribution shift problem in Offline RL [1]. We detail the
+offline RL algorithms used in our experiments in Section E.
+Park et al. [53] emphasize the challenges of generalizing policies to test-time states which are not in
+the support of the offline RL dataset. While prior works have investigated the issue of generalization
+[38, 54], in testing-time robust RL methods [3] this challenge is exacerbated through the introduction
+of noise into the states by an unknown adversary.
+B Background
+B.1 Reinforcement Learning
+Markov Decision Processes (MDPs) are often used to formalize Reinforcement Learning (RL). MDP
+is defined by the tuple M .=
+ 
+S,A,T,R, ρ 0, γ
+
+where S is the state space, A is the action space, T
+is the transition function (which may be deterministic or stochastic), R:S × A →Ris the reward
+function, ρ0 is the initial state distribution and γ∈[0,1) is the discount factor [55]. In online and
+off-policy RL algorithms an agent can interact with the environment using a parameterized policy
+πθ(a|s), to maximize the expected return Eπ [P
+t γtr(s t,at)]. In contrast, offline RL requires the
+agent to learn from a static dataset D={(s k,ak,s′
+k, rk)}N
+k=1 generated by a generally unknown
+behavior policyπ β(a|s)[1].
+B.2 Non-Stationary Environments
+We next review tangential definitions and formalisms used for non-stationary environments.
+Definition B.1(Partially Observable Markov Decision Processes [ 6, 7, 16]).A Partially Observable
+Markov Decision Process (POMDP) is given by the tuple
+ˆM=
+ 
+S,A,O,T,R,x, ρ 0, γ
+
+,
+where O is the observation space andx is the observation function. This function can be deterministic
+(x:S → O) [6, 17] or stochastic (x(o|s)) foro∈ O, s∈ S[7].
+To capture a broader range of non-stationary RL scenarios, Khetarpal et al. [6] present ageneral non-
+stationary RLformulation, which allows each component of the underlying MDP or POMDP to evolve
+over time. Concretely, this time-varying tuple is denoted as
+ 
+S(t),A(t),T(t),R(t),x(t),O(t)
+
+where each element is represented by a function φ(i, t), indicating its variation with time t and input
+i[6].Scope, denoted by a setκ, specifies which of these components vary.
+Definition B.2(Scope of Non-Stationarity [ 6]).Given the general non-stationary RL framework, the
+scope of non-stationarityis the subset
+κ⊆ {S,A,R,T,x,O},
+indicating which components of the environment evolve over time.
+Notably, Chandak [7] defines Non-Stationary Decision Process (NSDP) as a sequence of POMDPs,
+with non-stationarity confined to the subset κ⊆ {R,T,x}, where the initial state distribution ρ0,j
+varies between POMDPs. Existing research in non -stationary RL largely focus on the episodic
+evolution of transition dynamics and reward functions [27]. In contrast, the evolution of observation
+17
+functions remains underexplored, despite its potential for real-world applicability and thus demand
+further investigation [6]. Handling inaccurate state information, is crucial in non-stationary RL since
+an agent may encounter non-stationarity due to its own imperfect perception of the state while the
+underlying physics of the environment remains unchanged [6].
+B.3 Diffusion Models
+Diffusion models [12] aim to model the data distribution with pθ(x0) :=
+R
+pθ(x0:T )dx1:T from
+samples x0 in the dataset. The joint distribution pθ(x0:T ), is modeled as a Markov chain, where
+x1, ...,xT are the latent variables with the same dimensionality as the data samples. The joint
+distribution is given by
+pθ (x0:T ) :=N(x T ;0,I)
+TY
+t=1
+pθ (xt−1 |x t)(6)
+where pθ (xt−1 |x t) :=N(x t−1;µθ (xt, t),Σθ (xt, t)). The forward process q(x1:T |x 0) :=QT
+t=1 q(xt |x t−1) involves adding a small amount of Gaussian noise to the data sample at each diffu-
+sion timestep to obtain the latent variables following a variance schedule {βt = 1−α t ∈(0,1)} T
+t=1.
+Here, the encoder transitions are q(xt |x t−1) :=N
+ 
+xt; √αtxt−1,(1−α t)I
+
+[11]. Assuming we
+have access to the true data sample during training, using recursion and reparametrization trick we
+can obtain samples xt at any timestep t in closed form withq(x t |x 0) =N(x t; √¯αtx0,(1−¯αt)I)
+where ¯αt = Qt
+i=1 αi [11]. During training, the evidence lower bound is oftentimes maximized by
+a simplified surrogate objective [11]. After learning the parameters of the reverse process we can
+samplex T fromN(x T ;0,I)to start generating samples through an iterative denoising procedure.
+C Details on FORL
+C.1 Conditional Diffusion Model Details
+Our aim is to learn the reverse diffusion process, by modelingpθ
+
+s(n−1)
+t |s (n)
+t ,τ (t,w)
+
+as a Gaussian
+distribution N(s(n−1)
+t ;µ θ(s(n)
+t ,τ (t,w), n),Σθ(s(n)
+t ,τ (t,w), n))where n is the diffusion timestep and
+t is the RL timestep. We approximate this mean µθ(s(n)
+t ,τ (t,w), n)using a conditional noise model
+ϵθ with
+s(n)
+t
+√α(n)
+− 1−α (n)p1−¯α(n)
+√α(n)
+ϵθ(s(n)
+t ,τ (t,w), n)
+and fix the covarianceΣθ(s(n)
+t ,τ (t,w), n)with (1−α (n))I [11]. Selecting a large number of diffusion
+timesteps can significantly increase the computational complexity of our algorithm. Hence, we use
+variance preserving stochastic differential equations (SDE) [18] following the formulation in [19]
+α(n) =e −(βmin( 1
+N )+(βmax−βmin) 2n−1
+2N2 ) where βmax = 10 and βmin = 0.1. We use the noise prediction
+model [11] with reverse diffusion chain
+s(n−1)
+t |s (n)
+t = s(n)
+t
+√α(n)
+− 1−α (n)p
+α(n)(1−¯α(n))ϵθ(s(n)
+t ,τ (t,w), n) +p1−α (n)ϵ(7)
+whereϵ∼ N(0,I)forn=N, . . . ,1, andϵ= 0forn= 1[11].
+By using the conditional version of the simplified surrogate objective from [ 11] we minimize the
+FORLmodel lossL p(θ), with Eq. (4) in the main paper. We can train the noise prediction model by
+sampling s(n)
+t for any diffusion timestep in forward diffusion process, utilizing reparametrization and
+recursion [11]. We use the true data sample st from the offline RL dataset to obtain the noisy state
+s(n)
+t = p¯α(n)st + p1−¯α(n)ϵ. Leveraging our model’s capacity to learn multimodal distributions,
+we generate a set ofk samples (predicted state candidates){s(0)
+t } in parallel from the reverse diffusion
+chain using Eq. (5).
+18
+Algorithm 2Training
+Require: Offline RL datasetD
+Initialize:ϵ θ
+1:foreach iterationdo
+2:{(τ (t,w),st)} ∼ D
+3:n∼ U({1,2, . . . , N})
+4:ϵ∼ N(0,I)
+5:Take gradient descent step on
+∇θ
+ϵ−ϵ θ
+p¯α(n)st + p1−¯α(n)ϵ,τ (t,w), n
+
+2
+6:end for
+7:returnϵ θ
+{st
+(0)}k observation state FORLDQL+LAG-s
+Figure 12: As the agent navigates in the maze2d-large environment [15], illustrations of states;
+predicted states from FORL(ours); FORLdiffusion model predictions {s(0)
+t }k; observations; and
+predicted states from DQL+LAG-¯sare shown. Environment timesteps progress from left to right.
+D Baselines
+In this section we explain the baselines used in Table 1 and Figure 14. Diffusion Q-Learning (DQL)
+[14] serves as our base policy across all baselines and for our method in D4RL experiments [ 15].
+Details on DQL are provided in Section E
+D.1 DQL Extensions withZero-Shot FM
+For our baselines, we use a diffusion-based offline RL policy, DQL [14], with three variations:
+• DQL:DQL policy directly generates actions conditioned on the observations. We include
+it to demonstrate how large episodic offsets degrade policy performance, and its consistent
+poor performance underscores the difficulty introduced by our offset settings.
+•DQL+LAG-¯s :We applyZero-Shot FM(Lag-Llama [ 10]) to forecast episodic offsets
+over a horizon of P episodes using pre-deployment offset history, then subtract the mean
+predicted offset corresponding to that episode from the observations. DQL then generates
+actions conditioned on these forecasted states {ˆsb
+t}l. Although DQL+LAG-¯soutperforms
+DQL, straightforward application of forecasting and decision making reveals performance
+degradation when offsets lack adaptive correction.
+19
+•DQL+LAG-˜s :We use the sample median instead of the sample mean in DQL+LAG-¯s,
+to mitigate outlier effects. As shown in Figure 14, median-based bias removal yields no
+significant improvement over the mean-based approach.
+D.2 DMBP+LAG
+We extend the Diffusion Model–Based Predictor (DMBP) [3], a model-based robust offline RL method
+trained on unperturbed D4RL benchmarks, to correct test-time state observation perturbations. DMBP
+has proven robust under Gaussian noise (varying σ), uniform noise, and adversarial perturbations–
+including maximum action-difference (MAD) and minimum Q-value (Min-Q) attacks. Similar to our
+framework, perturbed states are passed to DMBP, which removes the perturbations; the generated
+state is then fed to the policy. For fair comparison, we adopt the policies also used in their work for
+our experiments, RORL[25] and TD3BC[2] alongside DQL.
+DMBP+LAGextends DMBPwith the forecasting module in our experiments. At each timestep, we
+remove offset biases using sample mean of forecasted states{ˆsb
+t}l (as in DQL+LAG-¯s) before DMBP
+correction. DMBP+LAGthus sequentially applies forecast-based offset compensation, followed by
+model based perturbation removal, and then queries the policy. DQL [14] remains the shared policy.
+A naive integration of DMBPrelies on initial ground-truth states and underperforms.
+For the evaluation of DMBPwe use the open source code and the suggested hyperparameters
+available in [56]. To improve the performance of DMBP, we conducted evaluations at test-time
+and reported the best-performing results for a range of different diffusion timesteps. DMBPre-
+quires that the diffusion timesteps to be manually defined based on different noise scales and types.
+Hence, we use the diffusion timesteps across a range of noise scales {0.15,0.25,0.5} for maze
+and {0.05,0.1,0.15,0.25} for kitchen environments, and identified that best performance required
+different noise scales across environment datasets. In particular, we report the best performing noise
+scale of 0.15 for the maze2d-medium environment, 0.25 for the maze2d-large environment, 0.5 for
+the antmaze-umaze-diverse environment, 0.15 for the antmaze-medium-diverse environment,
+0.25for theantmaze-large-diverseenvironment,0.05forkitchen-complete.
+E Offline Reinforcement Algorithms
+DQL [14]DQL [ 14] is an offline-RL algorithm that uses policy regularization via a conditional
+diffusion model [11]. Wang et al. [14] show that Gaussian policies lack the expressiveness needed to
+capture the possibly multimodal and skewed behavior policy in offline datasets, which in turn limits
+performance. To remedy this, DQL uses a conditional diffusion model for the behavior -cloning term,
+shown as the first part of Equation 8, based on a state-conditioned version of the simplified Denoising
+Diffusion Probabilistic Models (DDPM) objective[11]. To steer action generation toward high-reward
+regions, the policy improvement loss also includes a Q-value guidance, shown as the second term
+below [14]
+En∼U,(s,a)∼D,
+ϵ∼N(0,I)
+hϵ−ϵ ϕ
+ p¯α(n) a+ p1−¯α(n) ϵ, s, n
+2i
+−αE s∼D, a0∼πψ
+
+Qψ(s, a0)
+
+.(8)
+Here, a reverse diffusion process conditioned on state s denoted by πϕ
+ 
+a0:N |s
+
+represents the
+policy. The Q -networks are trained using the double -Q-learning trick[57] and Bellman -operator
+minimization[43, 58], with [14]
+E(s,a,st+1)∼D,a0
+t+1∼πϕ′
+"
+
+r(s,a) +γmin
+i=1,2
+Qψ′
+i
+(st+1,a0
+t+1)
+
+−Q ψi(s,a)
+
+2#
+(9)
+where a0
+t+1 is sampled from the diffusion policy conditioned on st+1, and Qψi, Qψ′
+i
+,ϕ′ denote the
+critic and target-critic networks, target policy network, respectively.
+TD3BC[ 2]TD3BC[ 2] extends Twin Delayed Deep Deterministic policy gradient algorithm (TD3)
+[59] to the offline RL setup. TD3BCincorporates a behavior cloning regularization term, normalizes
+20
+Table 3:Normalized scores (mean ± std.) for FORL and baselines with TD3BCand RORL
+on maze2d-medium.This table presents the mean and standard deviation of normalized scores
+for the proposed FORLframework and baseline algorithms evaluated on various time-series and
+D4RL datasets. Algorithms are grouped by their underlying policies—TD3 with Behavior Cloning
+(TD3+BC) [2] and Robust Offline Reinforcement Learning (RORL) [25]—to highlight that perfor-
+mance variations stem from the algorithms themselves rather than the policies employed. Suffixes -T
+and -R denote the use of TD3+BC and RORL policies, respectively.
+Td3BcPolicyRorlPolicy
+maze2d-mediumTD3BCTD3BC+LAG-¯sDMBP+LAG-T FORL(ours)-T RORLRORL+LAG-¯sDMBP+LAG-R FORL(ours)-R
+real-data-A37.4±9.516.2±5.116.2±7.322.1±6.680.7±14.257.9±8.647.8±10.252.7±5.0
+real-data-B3.6±2.36.1±4.414.4±8.128.6±19.037.8±7.585.9±19.891.0±21.6109.6±19.5
+real-data-C-2.3±1.330.0±10.019.3±6.224.5±10.233.7±4.689.2±15.893.4±16.3125.4±14.5
+real-data-D6.3±3.415.5±3.812.2±2.638.7±13.437.0±17.071.2±27.277.7±26.2136.1±11.9
+real-data-E-3.7±1.59.7±5.211.5±6.615.1±8.860.9±13.510.0±7.314.2±8.661.2±14.6
+Average8.3 15.5 14.725.850.0 62.8 64.897.0
+state features within the offline RL dataset, and scales Q-function using a hyperparameter with
+an added normalization term. TD3BC is a straightforward yet effective method, while also being
+computationally efficient. Results in Table 2 and Table 3 show that although extending TD3BCwith
+the forecasting module (TD3BC+LAG-¯s), and a combination of forecasting module and diffusion-
+model based predictor (DMBP+LAG-T) improves performance, FORL-T achieves better performance
+across a diverse range of non-stationarities.
+RORL[ 25]RORL [ 25] addresses adversarial perturbations of the observation function by learning
+a conservative policy that aims to be robust to out-of-distribution (OOD) state and action pairs. To
+achieve this, it introduces a conservative smoothing mechanism that balances mitigating abrupt
+changes in the value function for proximate states, and avoiding value overestimation in risky regions
+absent from the dataset. Concretely, RORL regularizes both the policy and the value function,
+leveraging bootstrapping Q-functions and conservative smoothing of the perturbed states. This
+formulation yields robust training under adversarial perturbations in the observation function, while
+preserving strong performance even in unperturbed environments. However, although using RORL
+as our base policy improved performance in maze2d environments, FORLsignificantly outperforms
+both its naive usage, extension with our forecasting module RORL+LAG-¯s, and DMBP+LAG-R in
+Table 2 and Table 3. These results demonstrate that policies designed to be robust to sensor noise or
+adversarial attacks fail to cope with evolving observation functions that introduce non-stationarity
+into the environment.
+IQL[ 26]Implicit Q-Leaning [ 26] first learns a value function by expectile loss and Q-function
+by Mean Squared Error (MSE) Loss without using the policy and instead using actions from the
+dataset. In doing so they avoid approximating the values of unseen actions. Then, it learns the
+policy using advantage weighted regression [48, 49, 60, 61] using the learned Q-funcion and value
+function. We use the open-source implementation of IQLfrom [ 62] which references the source [63].
+Results in 4 show FORL-I outperforms the baselines IQL, IQL+LAG-¯s, and DMBP+LAG-I across all
+environments.
+FQL [23]Flow Q-learning (FQL) [ 23] is a recent offline RL policy that shows strong performance
+on the OGBench [ 21]. We use FQL for the offline RL environments in OGBench and adopt the
+hyperparameters from the open-source implementation 1. Similar to DQL that uses diffusion models,
+FQL can learn an expressive policy. FQL trains two policies: (i) a flow policy trained with flow
+matching on the offline RL dataset for behavior cloning conditioned on the state, and (ii) a one-step
+policy trained with a distillation loss using the flow policy [64–68] and a critic loss. This approach
+avoids expensive backpropagation through time; thus, it is fast during inference and training. Results
+in Tables 1 and 7 show FORL(also referred to as FORL(DCM)) outperforms the baselines, when all
+baselines use FQL policy.
+21
+Table 4:Normalized scores (mean ± std.) for FORL and baselines with IQL.Suffix -I denote the
+use of IQLalgorithm [26].
+maze2d-mediumIQLIQL+LAG-¯sDMBP+LAG-I FORL(ours)-I
+real-data-A39.5±7.816.0±4.912.2±7.719.5±2.9
+real-data-B3.7±7.313.1±8.714.0±9.532.3±13.1
+real-data-C-1.1±2.533.1±11.928.0±10.931.8±9.9
+real-data-D10.1±2.612.4±5.612.7±9.040.0±10.1
+real-data-E-4.5±0.212.4±5.29.9±2.924.0±8.4
+Average9.6 17.4 15.429.5
+maze2d-large
+real-data-A16.2±6.212.5±5.56.0±4.724.3±9.4
+real-data-B-0.6±2.63.3±7.713.5±10.542.8±9.8
+real-data-C0.1±1.527.8±13.127.9±5.546.7±9.2
+real-data-D1.2±3.711.2±7.48.0±7.523.9±8.4
+real-data-E-2.3±0.2-1.5±1.11.5±4.17.9±7.2
+Average2.9 10.7 11.429.1
+antmaze-umaze-diverse
+real-data-A23.0±1.443.7±6.144.0±9.650.3±11.0
+real-data-B21.7±5.455.0±6.261.7±9.570.8±13.2
+real-data-C20.0±3.245.4±4.058.3±5.173.8±5.4
+real-data-D6.7±5.626.7±8.629.2±6.677.5±4.8
+real-data-E8.0±8.760.0±11.856.0±9.868.0±13.0
+Average15.9 46.1 49.868.1
+antmaze-medium-diverse
+real-data-A18.3±5.521.0±5.824.7±4.017.7±3.5
+real-data-B7.5±3.57.5±5.48.3±7.811.7±7.5
+real-data-C2.5±3.718.8±6.115.8±4.816.2±7.4
+real-data-D8.3±4.212.5±5.912.5±7.816.7±2.9
+real-data-E3.3±4.122.7±8.022.7±12.322.7±6.4
+Average8.0 16.5 16.817.0
+F Scaling Offsets
+In this section, we conduct an analysis to quantify FORL’s sensitivity to different levels of non-
+stationarity. We scale the offset magnitude from 0 (standard D4RL offline RL environment [ 15]
+used in training) to 1 (our experiments) using scaling factors {0,0.25,0.5,0.75,1.0} , and report
+performance over five random seeds across five environments inmaze2d and antmaze in Figure 13.
+This analysis delivers two key insights: first, FORLmatches baseline performance on the stationary
+offline-RL dataset on which it was trained; second, it maintains superior results throughout the
+full range of non-stationarity magnitudes. Crucially, FORL’s performance degrades gracefully as
+offsets increase, whereas DQL (without forecasting) suffers steep drops, and both DMBP+LAGand
+DQL+LAG-¯sdecline similarly. DMBP+LAGdegrades slightly more gracefully than DQL+LAG-¯sin
+maze2d-largeandantmaze-umaze-diverse.
+G What if we do not have access to past offsets?
+To analyze the challenging identifiability issue—arising from (i) non-smoothly varying offsets and
+(ii) the unobservability of ground-truth offsets throughout the evaluation interval, we implement a set
+of methods for the setting where we never have delayed access to past ground truth offsets. Fig. 14
+shows the average normalized scores and prediction accuracies over 25 environment–non-stationarity
+pairs across five random seeds in navigation control tasks with continuous state and action spaces.
+1https://github.com/seohongpark/fql/
+22
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+50
+100
+Score(↑)
+α= 0
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+50
+100
+α= 0.25
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+50
+100
+α= 0.5
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 0.75
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 1
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+50
+100
+150
+Score(↑)
+α= 0
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+50
+100
+α= 0.25
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+α= 0.5
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+α= 0.75
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+10
+20
+30
+40
+α= 1
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+100
+Score(↑)
+α= 0
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 0.25
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 0.5
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 0.75
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+α= 1
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+80
+Score(↑)
+α= 0
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+α= 0.25
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+α= 0.5
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+α= 0.75
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+α= 1
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+60
+Score(↑)
+α= 0
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+α= 0.25
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+20
+40
+α= 0.5
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+10
+20
+30
+40
+α= 0.75
+DQL
+DQL+LAG-¯sDMBP+LAG
+FORL
+0
+10
+20
+30
+α= 1
+maze2d-medium
+maze2d-large
+antmaze-umaze-diverse
+antmaze-medium-diverse
+antmaze-large-diverse
+Figure 13:Average normalized scores of FORL(ours) and baselines across offset scaling factors
+α∈ {0,0.25,0.5,0.75,1} in the maze2d-medium, maze2d-large, antmaze-umaze-diverse,
+antmaze-medium-diverse, antmaze-large-diverse environments.Scaling factor α= 0
+corresponds to a stationary D4RL [15] test environment;α= 1 matches the original experimental con-
+figuration in Fig. 14. Results are averaged over 5 non-stationarities (real-data-A, real-data-B,
+real-data-C,real-data-D,real-data-E) and 5 random seeds.
+Overall, these methods underperform compared to FORL. Among the cases with no access to past
+offsets (see Fig. 15), the best-performing methods are our proposed candidate state generation module
+23
+DQL
+DQL+LAG-¯sDQL+LAG-˜sDMBP+LAG
+MAXFORL DM
+MED+DCMMED+NOISEH-LAG+DCM
+H-LAG
+0
+20
+40
+Score(↑)
+DQL
+DQL+LAG-¯sDQL+LAG-˜sDMBP+LAG
+MAXFORL DM
+MED+DCMMED+NOISEH-LAG+DCM
+H-LAG
+0
+2
+4
+6
+8
+Prediction Error(↓)
+Figure 14:Comparison of average normalized scores and prediction errors across all 25 experiments in
+D4RL[15]betweenFORL(ours)and baseline methods, each evaluated over5 random seeds. LAG denotes the
+integration of a zero-shot time-series foundation model [10]. WhileFORLandMAXalso utilize this model, the
+subscripts are omitted for brevity.
+DQL
+FORL-DMMED+DCMMED+NOISEH-LAG+DCM
+H-LAG
+0
+10
+20
+30
+Score(↑)
+DQL
+FORL-DMMED+DCMMED+NOISEH-LAG+DCM
+H-LAG
+0
+2
+4
+6
+8
+Prediction Error(↓)
+Figure 15:Performance comparison without access to past offsets.Average normalized scores and
+prediction errors forFORL(ours)versus baselines, aggregated over 25 experiments (5 random seeds
+each) in D4RL[15]. LAG denotes the integration of a zero-shot time-series foundation model [10].
+However, in this settingZero-Shot FMuses the samples from DMinstead of past offsets.
+(FORL-DM) and H-LAG+DCM a version of FORLthat utilizesZero-Shot FMin addition to DMwhich
+we detailed in 3.1.1.
+FORL-DM(DM)FORL-DM, which we also refer to as DMfor brevity, directly uses the state
+predicted by the diffusion model component. Given the multimodal nature of these candidate states,
+this selection does not fully leverage our framework. Yet, DMoutperforms the baselines when no
+past offsets are used. Additional comparisons in Table 6 with other standard statistical methods like
+DM-MAD, DM-RANSAC, DM-RUNNING-µ , DM-RUNNING-µ-p indicate that only using the sample
+predicted by the diffusion model yields higher scores on average.
+MED+DCM We first compute the median of the offsets from the previous episode, beginning with
+the first episode predicted by FORL’s diffusion model. We then fit a Gaussian distribution centered at
+this median and sample l offsets from it, matching the sample count ofZero-Shot FM. Next, we apply
+DCMto these samples with the candidates generated by the diffusion model.
+MED+NOISE We begin by computing the median offset produced by the diffusion model during
+the initial evaluation episode similar to MED+DCM . Thereafter, we treat these offsets as evolving
+according to a random walk where each offset is predicted as the previous value with white-noise
+increments.
+DM-MADfollows a state estimation based on robust statistics [ 69]. DM-MADcomputes the
+coordinate-wise median of the differences between the observation and each denoiser prediction
+24
+Table 5:Normalized scores (mean ± std.) for no-access to past offsets setting.This table shows
+the performance comparison of other heuristics variants using FORL-DMor leveraging aZero-Shot
+FMin combination with FORL-DMwhen we do not have access to past offsets.
+maze2d-mediumDQL MED+NOISEMED+DCMH-LAGH-LAG+DCMFORL-DM
+real-data-A30.2±6.527.4±14.527.4±12.229.7±11.348.8±10.055.2±10.6
+real-data-B14.1±12.123.9±14.333.1±19.54.5±12.350.3±12.956.8±24.7
+real-data-C-2.3±3.317.6±8.1-2.6±2.526.5±5.430.3±5.652.8±10.3
+real-data-D4.7±5.018.9±9.164.1±12.718.2±13.71.8±3.860.1±20.2
+real-data-E3.5±8.821.8±15.6-2.1±1.656.7±11.645.7±12.460.5±18.2
+Average10.0 21.9 24.0 27.1 35.457.1
+maze2d-large
+real-data-A16.2±5.56.4±2.9-1.8±0.57.1±3.97.3±2.011.1±4.3
+real-data-B-0.5±2.9-0.1±1.7-1.4±1.7-1.4±2.30.9±4.513.4±10.3
+real-data-C0.9±1.73.2±4.7-2.0±0.63.4±2.00.5±1.79.4±2.5
+real-data-D3.0±6.63.7±6.847.6±16.41.0±4.52.9±4.07.4±7.2
+real-data-E-2.1±0.43.8±4.7-0.5±3.71.8±2.77.2±2.37.7±7.6
+Average3.5 3.4 8.4 2.4 3.89.8
+antmaze-umaze-diverse
+real-data-A22.7±3.08.3±2.48.3±4.732.3±6.362.7±11.248.7±9.1
+real-data-B24.2±3.59.2±5.425.0±13.241.7±5.133.3±2.956.7±8.1
+real-data-C21.7±3.510.8±7.775.8±6.436.7±3.259.2±11.555.0±8.7
+real-data-D5.8±2.317.5±11.66.7±6.310.8±2.342.5±7.554.2±7.2
+real-data-E6.0±6.850.0±13.52.0±3.014.0±8.342.7±11.953.3±7.8
+Average16.1 19.2 23.6 27.1 48.153.6
+antmaze-medium-diverse
+real-data-A31.0±6.534.3±10.455.0±6.815.0±4.917.3±6.34.3±0.9
+real-data-B23.3±4.815.8±9.942.5±4.633.3±4.228.3±3.56.7±4.8
+real-data-C10.0±2.323.3±5.410.0±4.331.2±4.940.4±6.74.6±1.7
+real-data-D11.7±5.426.7±6.333.3±15.99.2±3.536.7±6.83.3±3.5
+real-data-E18.7±4.526.7±18.10.0±0.014.7±5.646.0±16.26.0±4.3
+Average18.9 25.4 28.2 20.733.75.0
+antmaze-large-diverse
+real-data-A11.0±1.95.0±3.91.3±1.49.0±1.911.3±4.111.0±3.0
+real-data-B5.8±4.87.5±3.55.0±5.49.2±1.97.5±1.911.7±4.6
+real-data-C5.4±2.45.4±2.41.7±0.910.8±2.712.9±5.812.1±2.7
+real-data-D2.5±2.315.8±6.211.7±4.68.3±6.614.2±6.315.0±9.6
+real-data-E5.3±3.85.3±3.01.3±1.88.7±3.06.0±2.88.7±5.1
+Average6.0 7.8 4.2 9.2 10.411.7
+Table 6:Additional results for no-access to past offsets setting.We present alternative ways of
+using FORL’s diffusion model (DM) component when we do not have access to past offsets.
+maze2d-mediumDM-MADDM-RANSACDM-RUNNING-µDM-RUNNING-µ-p FORL-DM
+real-data-A44.3±10.646.8±12.437.8±13.637.4±8.755.2±10.6
+real-data-B46.8±19.044.6±17.142.4±24.551.6±11.756.8±24.7
+real-data-C46.4±10.944.5±10.141.8±16.061.7±14.152.8±10.3
+real-data-D47.7±22.949.9±23.244.4±24.152.5±13.360.1±20.2
+real-data-E42.9±10.652.4±15.748.3±18.824.2±12.260.5±18.2
+Average45.6 47.6 42.9 45.557.1
+and discards any sample whose absolute deviation from this median exceeds ϵ x Median Absolute
+Deviation (MAD). Then it takes the median of the remaining inliers to obtain a robust offset estimate,
+and subtracts that offset from the observation to obtain the state˜st.
+25
+Table 7:Normalized scores (mean ± std.) for FORLframework and the baselines.
+cube-single-playFQL FORL-DM-F FQL+LAG-¯sFORL(MAX)-F FORL(KDE)-F FORL-F (ours)
+real-data-A0.0±0.03.0±1.40.0±0.00.0±0.00.0±0.023.7±3.6
+real-data-B0.0±0.06.7±5.615.0±7.043.3±4.82.5±2.360.0±7.0
+real-data-C0.4±0.94.6±1.710.0±1.739.6±4.438.3±3.842.1±5.6
+real-data-D0.0±0.02.5±2.30.8±1.97.5±1.90.0±0.070.0±13.0
+real-data-E0.0±0.08.0±3.00.0±0.021.3±8.00.0±0.032.7±9.5
+Average0.1 5.0 5.2 22.3 8.245.7
+DM-RANSACis a RANndom SAmple Consensus (RANSAC) [ 70] based state estimation using
+the samples from our DM. DM-RANSACcalculates the offsets using states generated by DMand
+the observation, sets an adaptive per-dimension threshold as ϵ x MAD. Then, it repeatedly samples a
+random offset candidate and chooses the candidate whose inlier set (differences within that threshold)
+the largest. Then, it takes the average of those inliers to estimate the offset.
+DM-RUNNING-µ computes a numerically stable, global running mean [71, 72] of offsets from DM
+aggregated across all timesteps and episodes.
+DM-RUNNING-µ-p computes an online average of offsets [ 71, 72] from DM(Running- µ) per
+episode p. Unlike DM-RUNNING-µ , in DM-RUNNING-µ-p the statistics are reset to zero at the
+beginning of each episode.
+H Candidate Selection
+The results in Table 8, Table 9, and Table 7 show that FORL(DCM) more consistently per-
+forms better than other methods. Although the KDE-based FORL(KDE) method performs well
+in antmaze-medium-diverse, it significantly underperforms in cube-single-play (Table 7).
+Moreover, it requires bandwidth selection and a fallback mechanism to handle numerical instability,
+which highlights the practical advantage of DCM.
+FORL(MAX), also referred to asMAXfor brevity, can fail when the forecast mean of Dtimeseries is
+biased, misleading it to select a candidate from a geometrically distant mode that appears more likely
+under an inaccurate forecast. In contrast DCM, succeeds because its state estimation is not dependent
+on the forecast’s mean, but on a non-parametric search for the forecast sample with the highest score
+(minimum dimension-wise distance). Hence, DCM’s prediction error is governed by the accuracy
+of the forecast sample in Dtimeseries with the best score. Empirically this yields lower maximum
+and mean errors compared toMAX. The timeseries forecaster can generate a large set of samples
+that can be systematically biased, which is why we observe that the DQL+LAG-¯sand DQL+LAG-˜s
+also have high maximum prediction error in Table 9. While for this specific setting in Fig. 18, FORL
+(MAX) and FORL-DMare close to FORL(DCM) although worse, we observe that across the test
+episodes, FORL(DCM) outperforms FORL(MAX) and FORL-DMin terms of maximum and mean
+error, demonstrating stability.
+H.1 Sensitivity to Diffusion-generated Sample Size
+MAXuses candidate states predicted by the diffusion model in FORLframework and Lag-Llama
+but uses maximum likelihood instead of DCM. Since bothMAXand FORLuses the same diffusion
+model trained in FORLframework, we check the hyperparameter number of denoiser samples as the
+candidate states form a multimodal distribution and report the results with varying number of samples,
+across 5 random seeds and 25 experiments ( antmaze and maze2d with real-data-A,B,C,D,E).
+The results in Fig. 16 indicate that the diffusion model’s performance remains consistent across
+varying sample sizes, demonstrating robustness to the number of candidate states generated, 50
+denoiser samples are used by DMBPalgorithm.
+26
+Table 8:Normalized scores (mean ± std.) for DCM candidate selection and the baselines.Bold
+are the best values, and those not significantly different (p >0.05, Welch’s t-test).
+maze2d-mediumDM-FS-¯sDM-FS-˜sFORL(MAX) FORL(KDE) FORL(DCM)
+real-data-A40.6±9.673.7±8.441.2±8.249.7±5.863.3±6.7
+real-data-B59.8±16.959.3±20.058.9±14.196.2±14.066.5±18.2
+real-data-C64.9±17.067.8±17.766.1±16.494.9±13.886.3±15.7
+real-data-D45.1±21.645.0±19.544.4±21.686.9±14.5103.4±11.9
+real-data-E12.5±6.320.8±7.211.8±5.549.3±16.551.2±13.7
+Average44.6 53.3 44.575.474.1
+maze2d-large
+real-data-A11.9±5.520.8±6.211.1±2.36.6±2.242.9±4.1
+real-data-B27.9±14.725.1±11.728.3±7.120.9±7.234.9±9.2
+real-data-C34.6±6.832.4±5.834.6±13.636.0±7.345.6±4.1
+real-data-D16.4±12.015.5±9.018.4±9.911.8±3.258.4±6.5
+real-data-E8.4±5.07.9±3.99.2±6.15.7±5.112.0±9.9
+Average19.8 20.3 20.3 16.238.8
+antmaze-umaze-diverse
+real-data-A56.0±13.358.7±7.459.7±9.780.3±4.165.3±8.7
+real-data-B69.2±11.376.7±11.365.0±10.582.5±8.074.2±10.8
+real-data-C72.1±5.475.8±4.876.2±5.467.9±7.978.8±8.5
+real-data-D65.0±11.361.7±15.163.3±6.885.0±4.875.8±8.0
+real-data-E76.7±16.274.7±18.372.0±15.075.3±8.081.3±6.9
+Average67.8 69.5 67.278.275.1
+antmaze-medium-diverse
+real-data-A39.0±9.527.3±7.536.0±4.862.7±6.344.0±7.9
+real-data-B34.2±9.035.8±8.136.7±7.559.2±8.055.8±7.0
+real-data-C36.2±2.834.6±2.437.1±3.749.2±10.152.9±9.5
+real-data-D25.0±6.617.5±3.537.5±6.677.5±8.664.2±8.6
+real-data-E28.7±3.025.3±5.126.7±7.136.7±5.826.7±4.7
+Average32.6 28.1 34.857.148.7
+antmaze-large-diverse
+real-data-A25.0±7.921.0±3.521.7±7.921.7±8.334.3±5.7
+real-data-B25.0±5.130.0±7.520.0±6.847.5±15.246.7±11.9
+real-data-C25.8±4.621.7±2.423.8±6.440.0±7.633.8±6.8
+real-data-D14.2±7.015.8±5.421.7±7.535.0±14.346.7±12.6
+real-data-E21.3±8.422.0±7.720.7±4.98.0±3.011.3±7.3
+Average22.3 22.1 21.6 30.434.6
+Table 9:Comparison of algorithm performance on error metrics.
+Algorithm Minimum Error↓Maximum Error↓Mean Error↓
+FORL-DCM 0.022.40 0.87±0.60
+FORL-MAX0.019.33 2.05±1.74
+DQL 2.26 11.30 5.51±2.13
+FORL-DM(no past offsets)0.019.94 3.68±2.25
+DQL+LAG-¯s0.04 6.28 1.76±1.13
+DQL+LAG-˜s0.05 6.56 1.87±1.19
+DMBP+LAG0.03 6.28 1.69±1.11
+I Zero-shot Foundation Model and Time-Series Datasets
+We extract the first two univariate series from five time-series datasets: real-data-A
+(australian-electricity-demand)[73], real-data-B (electricity)[74], real-data-C
+(electricity-hourly) [73, 74], real-data-D (electricity-nips) [74, 75] and real-data-E
+27
+Table 10:Intra-episode non-stationarity results with f= 50 .We compare methods with access to
+past offsets (DQL+LAG-¯svs. FORL) and without (DQL vs. FORL-DM).
+maze2d-mediumDQL FORL-DMDQL+LAG-¯sFORL
+real-data-A31.6±1.655.7±8.729.7±9.217.8±4.4
+real-data-B-4.7±0.242.2±9.363.0±9.2100.1±8.5
+real-data-C-4.7±0.239.2±7.288.4±9.481.0±8.3
+real-data-D25.9±5.337.0±8.443.1±8.1101.0±7.1
+real-data-E-4.7±0.257.0±10.25.8±2.266.7±8.3
+Average8.7 46.2 46.073.3
+antmaze-umaze-diverse
+real-data-A51.0±7.447.2±10.670.6±14.578.2±8.0
+real-data-B63.8±10.251.2±10.326.0±16.861.4±9.7
+real-data-C61.0±9.353.0±6.691.2±2.589.0±5.1
+real-data-D17.6±5.953.8±5.778.0±4.490.0±2.9
+real-data-E0.2±0.451.0±11.680.6±9.785.6±5.5
+Average38.7 51.2 69.380.8
+antmaze-medium-diverse
+real-data-A42.8±6.97.2±1.850.4±2.954.8±5.2
+real-data-B5.0±3.137.4±3.841.2±4.847.2±4.6
+real-data-C12.0±5.126.8±2.471.2±2.961.4±4.5
+real-data-D24.0±4.730.4±2.961.6±5.070.2±6.6
+real-data-E2.2±2.321.0±3.333.0±5.037.0±3.4
+Average17.2 24.6 51.554.1
+antmaze-large-diverse
+real-data-A13.0±5.55.8±2.616.0±3.827.4±3.6
+real-data-B1.2±0.811.4±4.919.4±4.650.2±9.7
+real-data-C4.8±2.97.2±0.831.8±4.448.6±4.3
+real-data-D4.6±1.311.0±2.525.2±2.948.2±6.2
+real-data-E2.4±1.513.6±4.812.8±3.413.4±2.2
+Average5.2 9.8 21.037.6
+MAX FORL
+0
+20
+40
+Score(↑)
+32 50
+Figure 16:Average normalized scores over 25 experiments with diffusion-generated sample
+sizes of 32 and 50, each conducted with 5 random seeds.The results indicate that the diffusion
+model’s performance remains consistent across varying sample sizes, demonstrating robustness to the
+number of candidate states generated.
+(exchange-rate2) [76], [73] all accessed via GluonTS [22, 77]. Figure 5 presents the ground truth,
+forecast mean, and standard deviation from Lag-Llama [10] for the first series of real-data-A and
+real-data-D; forecasts for the remaining series and domains are provided in Figure 17.
+2https://github.com/laiguokun/multivariate-time-series-data
+28
+0 100 200
+Episodes
+−10
+0
+10
+Offset
+real-data-A (Series 1)
+0 50
+Episodes
+−10
+0
+10
+Offset
+real-data-B (Series 1)
+0 100
+Episodes
+−10
+0
+10
+Offset
+real-data-C (Series 1)
+0 50
+Episodes
+−10
+0
+10
+Offset
+real-data-D (Series 1)
+0 50 100
+Episodes
+−10
+0
+10
+Offset
+real-data-E (Series 1)
+0 100 200
+Episodes
+−10
+0
+10
+Offset
+real-data-A (Series 2)
+0 50
+Episodes
+−10
+0
+10
+Offset
+real-data-B (Series 2)
+0 100
+Episodes
+−10
+0
+10
+Offset
+real-data-C (Series 2)
+0 50
+Episodes
+−10
+0
+10
+Offset
+real-data-D (Series 2)
+0 50 100
+Episodes
+−10
+0
+10
+Offset
+real-data-E (Series 2)
+Standard Deviation Time-series Forecast Mean
+Figure 17: Zero-shot forecasting results with Lag-Llama [ 10] for first 2 time-series in univariate
+time-series datasets: real-data-A (Australian-electricity-demand), real-data-E (Exchange Rate),
+real-data-B(Electricity),real-data-C(Electricity Hourly),real-data-D(Electricity Nips).
+Table 11:Sensitivity analysis of FORLto forecasting errors.We compare the average prediction
+error (↓) of our method against theDQL+LAG-¯sbaseline, which uses only the forecaster’s predictions.
+The analysis is presented across five time-series datasets. Error reduction percentages are calculated
+from full-precision values before rounding.
+Dataset DQL+LAG-¯s(↓) FORL(↓)Error Reduction(↑)
+real-data-A4.563.3227.0%
+real-data-B3.662.2937.4%
+real-data-C3.02.6910.2%
+real-data-D4.291.87 56.5%
+real-data-E5.455.214.3%
+We aim to capture a broad spectrum of scenarios for a comprehensive evaluation. For instance, the
+electricity-hourly dataset provides hourly electricity usage data from various consumers, while
+the australian-electricity-demand dataset offers 30-minute interval records of electricity
+demand across different Australian states. The exchange-rate dataset, on the other hand, includes
+daily exchange rates of multiple currencies, including those of Australia, the United Kingdom,
+Canada, Switzerland, China, Japan, New Zealand, and Singapore.
+To effectively represent diverse offset patterns in multiple directions, we apply feature scaling to the
+time-series data using a normalization x′
+c = x−¯x
+max(x)−min(x) where sample mean ¯x, min(x) and max(x)
+are computed from the available data up to the context length. Furthermore, we scale these values
+using the minimum and maximum state values observed in the offline RL dataset [15] for navigation
+and minimum and maximum state values of the initial state distribution at test time for manipulation
+[15], ensuring diverse observation spaces that can accurately represent a wide range of scenarios. We
+group our results in terms of time-series datasets in Table 13.
+I.1 Sensitivity of FORLto Forecasting Errors
+To analyze the sensitivity of FORLto forecasting errors, we compare its performance against
+DQL+LAG-¯sthat only uses the forecaster’s predictions. Table 11 presents the average prediction
+error (↓) across all datasets inantmazeandmaze2denvironments with 5 seeds.
+In all datasets, FORLoutperforms the DQL+MeanLag baseline. FORLachieves its greatest impact on
+moderately challenging forecasts (a 56.5% error reduction on real-data-D)). Its behavior at the
+extremes further demonstrates its robustness:
+• FORLstill refines the best forecast by 10.2% (real-data-C)
+• FORLimproves the worst forecast by 4.3% (real-data-E).
+29
+I.2 State Prediction Accuracy
+To evaluate the state-prediction accuracy of our FORLframework, we compare it againstDQL+LAG-¯s.
+For each method, we report the mean ℓ2 error between the true state st and the predicted state ˜st
+obtained during evaluation for diffusion generated sample size of 32.
+In the resulting average prediction error table in Table 12:
+• Eachrowcorresponds to the state estimation algorithm used at test time to generate states
+˜st, which are then provided to the policy to select actions.
+• Eachcolumncorresponds to a method whose state estimates are evaluated on that same
+rollout.
+The entry at row i, column j is the mean ℓ2 error when method mi is used in the environment but
+predictions are produced by method mj. When i=j , this entry measures the self-prediction error of
+each method; wheni̸=j, it measures the counterfactual error under an alternate method.
+Across all method pairs, FORLachieves lower mean ℓ2 errors, even in off-diagonal evaluations,
+demonstrating its superior state-prediction performance compared to DQL+LAG-¯s. These findings
+are consistent with the normalized environment scores in Table 1.
+Table 12:Comparison of prediction errors ( ↓).We present state prediction accuracy for the
+proposed FORLframework with the baselines across 5 random seeds.
+maze2d-mediumDQL+LAG-¯sFORL
+DQL+LAG-¯s1.68±0.461.35±0.48
+FORL1.39±0.491.25±0.43
+maze2d-largeDQL+LAG-¯sFORL
+DQL+LAG-¯s2.37±0.51.63±0.57
+FORL1.91±0.441.39±0.62
+antmaze-large-diverseDQL+LAG-¯sFORL
+DQL+LAG-¯s8.07±1.835.33±2.17
+FORL7.16±1.715.89±2.96
+antmaze-medium-diverseDQL+LAG-¯sFORL
+DQL+LAG-¯s5.33±1.154.75±1.98
+FORL4.94±1.174.74±1.63
+antmaze-umaze-diverseDQL+LAG-¯sFORL
+DQL+LAG-¯s3.51±0.532.04±0.47
+FORL3.27±0.612.31±0.51
+J Preliminary Results for Affine Transformation with Uniform Scaling and
+Bias
+We use the fourth time series in each time-series domain to do isotropic scaling for the dimensions
+affected by a non-stationarity using a scaling factor of β= 0.5 with bias coming from first two
+series, respectively. We apply the feature scaling to time-series data with x′
+c = 1−β+β·
+exp
+
+x−¯x
+2·(max(x)−min(x))
+
+. The offset scaling for the bias uses α= 1 , which is the standard value in
+our experiments. As in the other ablations with scaling offsets, we use the DQL policy. Table 14
+shows that FORLoutperforms the baselines under these transformations. A large-scale analysis of
+more general transformations is left for future work.
+30
+Table 13:Normalized scores (mean ± std.) for FORLframework and the baselines grouped by
+time-series.Bold are the best values, and those not significantly different ( p >0.05, Welch’s t-test).
+real-data-ADQL DQL+LAG-¯sDMBP+LAGFORL(ours)
+maze2d-medium30.2±6.530.2±8.625.1±9.863.3±6.7
+maze2d-large16.2±5.52.4±1.14.2±5.842.9±4.1
+antmaze-umaze-diverse22.7±3.041.0±5.245.7±4.865.3±8.7
+antmaze-medium-diverse31.0±6.540.0±5.739.7±4.044.0±7.9
+antmaze-large-diverse11.0±1.911.3±4.99.0±4.534.3±5.7
+kitchen-complete16.6±1.47.2±1.98.7±1.312.0±3.9
+real-data-B
+maze2d-medium14.1±12.153.4±14.641.2±21.166.5±18.2
+maze2d-large-0.5±2.95.5±9.015.0±14.634.9±9.2
+antmaze-umaze-diverse24.2±3.548.3±7.062.5±13.274.2±10.8
+antmaze-medium-diverse23.3±4.848.3±4.843.3±16.055.8±7.0
+antmaze-large-diverse5.8±4.89.2±4.68.3±2.946.7±11.9
+kitchen-complete12.9±4.132.7±6.520.0±3.133.1±5.6
+real-data-C
+maze2d-medium-2.3±3.356.7±18.556.9±18.486.3±15.7
+maze2d-large0.9±1.716.6±7.526.8±8.445.6±4.1
+antmaze-umaze-diverse21.7±3.550.4±8.360.4±3.978.8±8.5
+antmaze-medium-diverse10.0±2.348.3±3.449.6±3.752.9±9.5
+antmaze-large-diverse5.4±2.422.1±5.617.9±3.833.8±6.8
+kitchen-complete13.4±1.723.9±6.620.5±3.323.9±6.0
+real-data-D
+maze2d-medium4.7±5.036.9±16.338.5±14.2103.4±11.9
+maze2d-large3.0±6.68.6±3.213.4±4.158.4±6.5
+antmaze-umaze-diverse5.8±2.326.7±6.329.2±5.975.8±8.0
+antmaze-medium-diverse11.7±5.446.7±7.541.7±6.664.2±8.6
+antmaze-large-diverse2.5±2.314.2±3.714.2±6.346.7±12.6
+kitchen-complete7.5±2.524.0±9.228.1±8.127.1±10.1
+real-data-E
+maze2d-medium3.5±8.88.7±6.011.4±2.851.2±13.7
+maze2d-large-2.1±0.42.6±3.40.9±3.712.0±9.9
+antmaze-umaze-diverse6.0±6.858.0±16.659.3±7.681.3±6.9
+antmaze-medium-diverse18.7±4.527.3±8.626.0±5.526.7±4.7
+antmaze-large-diverse5.3±3.83.3±2.43.3±0.011.3±7.3
+kitchen-complete18.5±6.02.8±2.16.2±1.710.3±3.0
+Table 14:Preliminary results for affine transformation.We present normalized scores in
+maze2d-largefor the scaling affine observation transformation.
+maze2d-largeDQL DQL+LAG-¯sFORL(ours)
+real-data-A5.9 6.139.7
+real-data-B2.4 1.613.8
+real-data-C2.2 22.232.9
+real-data-D0.7 10.756.1
+real-data-E-2.0 -2.327.5
+Average1.8 7.734.0
+31
+{st
+(0)}k state observation
+FORL(DCM) FORL-DM FORL(MAX) DMBP  
+DQL+LAG-sDQL+LAG-s~
+Figure 18: Illustrations of states, observations, diffusion model predictions {s(0)
+t }k, and predicted
+states from FORL(DCM), FORL-DM, DQL+LAG-¯s, DQL+LAG-˜s, FORL(MAX), and DMBP+LAG
+are shown. These illustrations serve as detailed ablation predictions for the same setting presented in
+Fig. 12. Maximum, minimum, and mean prediction errors across episodes for this task are provided
+in Table 9.
+K Offline Reinforcement Learning Environments
+K.1 D4RL
+We use the standard D4RL [15] offline-RL environments [15] with no modifications during training,
+antmaze-medium-diverse, maze2d-medium, antmaze-large-diverse, maze2d-large, and
+antmaze-umaze-diverse, where initial states are randomized both in the evaluation environment
+and in the offline dataset.
+Fig. 19 illustrates the key environments from the D4RL benchmark namely, kitchen-complete,
+antmaze-large-diverse,antmaze-medium-diverse,antmaze-umaze-diverse.
+The maze2d-large and maze2d-medium environments share the same maze configurations as
+antmaze-large-diverse, antmaze-medium-diverse respectively. For manipulation tasks, we
+train on the standard kitchen-complete environment. We sample the base-joint angles from
+U([−1.5,0.17]) and the shoulder-joint angles from U([−1.78,−1.16]) which are set based on the
+minimum and maximum state space space dimension intervals in the offline RL dataset to evaluate
+partial identifiability at test-time. The offsets affect the state dimensions associated with the base and
+shoulder joint angles.
+Figure 19: antmaze-large, antmaze-medium, antmaze-umaze (-v1) and kitchen-complete
+environments in D4RL benchmark [15].
+K.2 OGBench
+OGBench benchmark [21] contains both standard and goal-conditioned offline reinforcement learning
+tasks. To induce non-stationarity at test time, we follow the procedure from our D4RL experiments
+and use time-series data from GluonTS [ 22, 77]. For all tasks in Fig. 21, we use the default
+singletask-v0 variant. We report results using the FQL algorithm [ 23] with its officially rec-
+ommended hyperparameters. For the antmaze-large-navigate environment, we use the first
+two time series from the GluonTS real-data-A,B,C,D,E datasets and apply an offset scaling
+factor of α= 0.5 . For cube-single-play, we apply offsets to the first 17 observation dimensions,
+32
+FQL
+FQL+LAG-¯sFORL−F
+0
+20
+40
+Score(↑)
+antmaze-large-navigate
+FQL
+FQL+LAG-¯sFORL−F
+0
+20
+40
+cube-single-play
+Figure 20:Average normalized scores of FORL(ours) and baselines for OGBench
+which include all joint positions, joint velocities, and end effector variables (position and yaw),
+using the first 17 time series from each of the GluonTS real-data-A,B,C,D,E datasets. Because
+the real-data-A dataset only has five time series, we cycle through them repeatedly until all 17
+dimensions are covered. Across all cube-single-play experiments, we use an offset scaling factor
+ofα= 0.25.
+Figure 21: cube-single-play and antmaze-large-navigate environments in OGBench bench-
+mark [21].
+L Implementation Details
+During training, we use the original offline RL datasetwithout offsets. At test-time, the offsets affect
+the first two state dimensions, where each offset sequence is drawn from the first two univariate
+time–series from diverse datasets. The agent’s policy receives only the offset-corrupted observa-
+tions, with no direct access to the true underlying states throughout P episodes. The time–series
+forecasting model, given the past C ground-truth offsets {bj−C ,···, b j−1}, predicts the future off-
+sets {bj,···, b j+P } during testing. FORLleverages these predictions and in-episode experience to
+dynamically adapt to unknown external perturbations. All experiments use 5 random seeds, except
+for (i) the preliminary affine-transformation results (Section J) and (ii) the focused error analysis
+across all evaluation episodes for the task shown in Fig. 18 with results reported in Table 9.
+We select the hyperparameters in Table 20 based on the validation loss of the FORLdiffusion model
+in D4RL and OGbench standard offline RL datasets. The validation loss is computed using the DM
+loss function in Eq. 4. Hyperparameter optimization was conducted using a grid search, with the
+following ranges for maze2d and antmaze: diffusion timesteps N={10,20} , number of hidden
+layers following the Temporal Unet model #layers={1,2,3} , window size w={128,256} ,
+learning rate lr={0.0004,0.0006,0.0009} . For the kitchen-complete and cube-single-play
+embedding dimension {64,128}, learning rate lr={0.0004,0.0009} and w={32,64} are used
+for grid search.
+The architecture of our FORLModel is a noise prediction conditional TemporalUnet diffusion model
+[3, 39, 78]. Different from the architecture used in [3], we concatenate each element in τ(t,w) with
+s(n)
+t and feed it to our model without additional encoders, and use the diffusion timestep embedding
+in the Residual Temporal Blocks. For the TemporalUnet architecture, we concatenate the Unet
+model output with the time-embedding before feeding it to fully connected layers, particularly in
+33
+the antmaze environments due to the large input size. The set of hyperparameters is provided in
+Table 20. Although the FORLconditional diffusion model is specifically utilized for time-dependent
+offsets in the first two dimensions of the state vector, it is trained for general-purpose state prediction,
+enabling it to predict all dimensions of the state in maze2d, antmaze, and OGBench environments.
+This approach is taken because we do not assume prior knowledge of the evaluation environment.
+The method for setting seeds involves a function that initializes the seed across all relevant libraries
+(PyTorch, CUDA, NumPy, Gym Environment, and Python’s random module) and ensures replicability
+of results. We use the open source implementation of DMBP 3 with the suggested hyperparameters
+[56], and pretrained LagLlama4 model[10].
+M Experiments compute resources
+Experiments were primarily conducted on an HPC cluster with NVIDIA A100 GPUs (40GB HBM2,
+PCIe4.0/NVLink interconnect) and AMDEPYC7302 CPUs (32cores, 1TB RAM, 3TB local SSD),
+and a workstation with NVIDIAGeForceRTX4090 (24GB GDDR6X), 128GB RAM, 2TB PCIe4.0
+NVMe SSD. A small portion of the experiments also ran on a cluster equipped with 4x NVIDIA
+V100 GPUs (16GB NVLink), 2x Intel Xeon Gold 6248R CPUs, and 384GB RAM. Total compute
+for published results are approximately 7300 GPU-hours; additional failed and preliminary runs are
+approximately 1500GPU-hours.
+Table 15: Hyperparameters for DQL [14, 79, 80] across kitchen-complete, maze2d, and antmaze
+environments.
+Hyperparameters
+Maximum Timesteps 1 000 000
+γ0.99
+τ0.005
+Learning rate decay true
+T 10
+βSchedulevp
+Learning rate3×10 −4
+α0.2
+Batch Size 256
+Hidden Size 256
+Reward tuneno
+Normalize false
+Optimizer Adam[81]
+kitchen-complete maze2d antmaze
+gn 10.0umaze-diverse: 3.0
+medium-diverse: 1.0
+large-diverse: 7.0
+umaze-diverse: 3.0
+medium-diverse: 1.0
+large-diverse: 7.0
+η0.005umaze-diverse: 2.0
+medium-diverse: 3.0
+large-diverse: 3.5
+umaze-diverse: 2.0
+medium-diverse: 3.0
+large-diverse: 3.5
+MaxQ Backup false true true
+Table 16: Hyperparameters for Implicit Q-Learning (IQL) [ 26, 63, 82, 83] across maze2d, and
+antmazeenvironments.
+Hyperparameters Value
+Batch Size 256
+Discount (γ) 0.99
+Target Network Update (τ) 0.005
+maze2dβ= 3.0
+τIQL = 0.7
+Normalize Rewards = false
+antmazeβ= 10.0
+τIQL = 0.9
+Normalize Rewards = true
+3https://github.com/zhyang2226/DMBP/tree/main
+4https://github.com/time-series-foundation-models/Lag-Llama
+34
+Table 17: Hyperparameters for Flow Q-Learning (FQL) [ 23, 84] for cube-single-play and
+antmaze-large-navigate.
+Hyperparameters Value
+Batch Size 256
+Learning Rate0.0003
+Discount factor (γ) 0.99
+Target network smoothing coefficient (τ) 0.005
+BC Coefficient (α) 10.0
+Flow Steps 10
+Actor Hidden Dimensions (512, 512, 512, 512)
+Value Hidden Dimensions (512, 512, 512, 512)
+antmaze-large-navigateBC Coefficient (α) = 10.0
+cube-single-playBC Coefficient (α) = 300.0
+Table 18: Hyperparameters for TD3BC[ 59, 80, 85] across kitchen-complete, maze2d, and
+antmazeenvironments.
+Hyperparameters Value
+Maximum Timesteps 1 000 000
+Exploration noise 0.1
+Batch Size 256
+Discount factor 0.99
+τ0.005
+Policy Noise 0.2
+Policy Noise Clipping 0.5
+Policy update frequency 2
+α2.5
+Normalize true
+Optimizer Adam[81]
+Table 19: Hyperparameters for RORL[25, 80, 86] inmaze2denvironments.
+Hyperparameters
+γ0.99
+softτ 0.005
+Q Learning Rate3×10 −4
+Policy Learning Rate3×10 −4
+α1.0
+Auto-tune entropy true
+MaxQ Backup false
+Deterministic Backup false
+η−1
+Batch Size 256
+Hidden Size 256
+Target Update Interval 1
+τ0.2
+Normalize false
+n sample 20
+βQ 0.0001
+βP 1.0
+ϵood 0.01
+Maximum Timesteps 3 000 000
+Optimizer Adam[81]
+maze2d
+βOOD 0.5
+ϵQ 0.01
+ϵP 0.03
+λmax 1.0
+λmin 0.5
+λdecay 10−6
+35
+Table 20: Hyperparameters for FORLacross kitchen-complete, maze2d, antmaze,
+antmaze-large-navigate,cube-single-playenvironments.
+Hyperparameters
+Batch Size 128
+Hidden Size 128
+# denoiser samples 50
+Optimizer Adam[81]
+Maximum Timesteps 300 000
+kitchen-complete antmaze maze2d antmaze-large-navigate cube-single-play
+Embedding Dimension 128 64 64 64 128
+w32 256 128 256 64
+Learning rate4×10 −4 4×10 −4 9×10 −4 4×10 −4 9×10 −4
+Observation Scale 1 1 100 1 1
+Time Concatenation true true false true true
+# middle hidden layers 1 1large: 1
+medium: 3
+1 1
+N 10 10large: 10
+medium: 20
+20 20
+N Licenses for Existing Assets and Libraries
+N.1 Existing Assets
+• TheD4RL[ 15], including the Franka Kitchen tasks, are distributed under the Creative
+Commons Attribution 4.0 (data) and Apache 2.0 (code) licenses as in https://github.
+com/Farama-Foundation/D4RL.
+• MuJoCo[87] is released under the Apache 2.0 license as indicated in https://github.
+com/google-deepmind/mujoco/blob/main/LICENSE.
+• Gymnasium(formerly OpenAI Gym) is distributed under the MIT license as indicated in
+https://github.com/Farama-Foundation/Gymnasium/blob/main/LICENSE.
+• The real-data-B dataset (UCI “Electricity Load Diagrams 2011-2014”)[88] is distributed
+under the Creative Commons Attribution 4.0 International license as indicated in https:
+//archive.ics.uci.edu/ml/datasets/electricityloaddiagrams20112014.
+• The real-data-D and real-data-C variants are derived from the same UCI data and
+inherit the CC-BY-4.0 license.
+• The real-data-A dataset5 [73] is distributed under the Creative Commons Attribution 4.0
+International license as indicated inhttps://doi.org/10.5281/zenodo.4659727.
+• The real-data-E dataset introduced by Lai et al. [76] with publicly available finan-
+cial data; no explicit license is provided in the original repository ( https://github.
+com/laiguokun/multivariate-time-series-data ), and it is used in [73], which dis-
+tributes its datasets under the Creative Commons Attribution 4.0 International license.
+N.2 Libraries
+The libraries used in our experiments are:
+1.diffuseruses the MIT License. 6
+2.einopsuses the MIT License. 7
+3.imageiouses the BSD 2-Clause License. 8
+4.loguruuses the MIT License. 9
+5.matplotlib[89] uses a PSF-based license. 10
+5Half-hourly demand for five Australian states
+6https://github.com/jannerm/diffuser/blob/master/LICENSE
+7https://github.com/arogozhnikov/einops/blob/main/LICENSE
+8https://github.com/imageio/imageio/blob/master/LICENSE
+9https://github.com/Delgan/loguru/blob/master/LICENSE
+10https://github.com/matplotlib/matplotlib/blob/master/LICENSE/LICENSE
+36
+6.mujoco_pyuses the MIT License. 11
+7.numpyuses the BSD 3-Clause License. 12
+8.pandasuses the BSD 3-Clause License. 13
+9.scikit-videouses the BSD 3-Clause License. 14
+10.torch (PyTorch)) is distributed under a permissive, BSD-style license that includes an
+express patent grant. 15
+11.tqdmis licensed under MIT and MPL-2.0. 16
+12.ogbenchuses the MIT License. 17
+11https://github.com/openai/mujoco-py/blob/master/LICENSE
+12https://numpy.org/doc/stable/license.html
+13https://github.com/pandas-dev/pandas/blob/main/LICENSE
+14https://github.com/scikit-video/scikit-video/blob/master/LICENSE.txt
+15https://github.com/pytorch/pytorch/blob/main/LICENSE
+16https://github.com/tqdm/tqdm/blob/master/LICENCE
+17https://github.com/seohongpark/ogbench/blob/master/LICENSE
+37

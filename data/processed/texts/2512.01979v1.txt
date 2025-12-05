@@ -1,0 +1,1159 @@
+Chain-of-Ground: Improving GUI Grounding via Iterative Reasoning
+and Reference Feedback
+Aiden Yiliu Li1,4∗ Bizhi Yu2 Daoan Lei2 Tianhe Ren3† Shilong Liu4†
+1University College London 2Chico Future AI Lab
+3The University of Hong Kong 4Princeton University
+yiliu.li@outlook.com slongliu86@gmail.com
+Abstract
+GUI grounding aims to align natural-language instruc-
+tions with precise regions in complex user interfaces
+(UIs). While advanced MLLMs have demonstrated
+strong capabilities in visual GUI grounding, they still
+struggle with small or visually similar targets, and
+ambiguity in real-world layouts. We argue that these
+limitations stem not only from the models’ inherent
+grounding capacity, but also from an overlooked un-
+derutilization of their existing reasoning potential. To
+address this, we presentChain-of-Ground (CoG),
+a training-free multi-step grounding framework that
+leverages MLLMs for iterative visual reasoning and
+refinement. Instead of relying on direct prediction,
+Chain-of-Ground enables the model to progressively re-
+flect and adjust its hypotheses, achieving more accurate
+and interpretable localization. Our approach establishes
+a new state of the art on the ScreenSpot-Pro bench-
+mark with68.4%accuracy, surpassing the previous
+best by4.8%. To evaluate real-world generalization,
+we introduceTPanel-UI, a dataset of 420 labeled in-
+dustrial control panels featuring visual distortions such
+as blur and masking to test robustness. On TPanel-
+UI, Chain-of-Ground outperforms the SOTA MLLM
+Qwen3-VL-235B by6.9%, demonstrating the effective-
+ness of multi-step, training-free grounding across real-
+world and digital interfaces. Together, these results
+point to a new direction for unlocking MLLMs’ ground-
+ing potential, through structured, iterative refinement
+rather than additional training.
+∗Work was done during an internship at Princeton AI2 Lab
+†Corresponding Authors
+ScreenSpot-Pro
+50
+55
+60
+65
+70
+Overall Success Rate (%)
++3.1%
++4.8%
+UI-TARS-1.5-7B
+Qwen3-VL-235B
+UI-Venus-72B
+Holo1.5-72B
+Qwen3-VL-32B
+GTA1-32B (Prev. SOTA)
+CoG (Dual-Step)
+CoG (Triple-Step)
+Figure 1. Overall success rates on the ScreenSpot-Pro [19]
+benchmark for recent GUI grounding models. GTA1-32B
+[44] represents the previous state of the art among strong
+baselines including UI-TARS-1.5-7B [29], Qwen3-VL-235B
+[33], UI-Venus-72B [10], Holo1.5-72B [6], and Qwen3-VL-
+32B. Our Chain-of-Ground (CoG) framework surpasses
+GTA1-32B by a substantial margin: the dual-step variant
+yields a +3.1% improvement, while the triple-step variant
+achieves a +4.8% gain, setting a SOTA on ScreenSpot-Pro.
+1. Introduction
+Grounding natural language instructions to UI ele-
+mentsisfundamentalforcomputer-useagentsandmul-
+timodal systems [1, 15, 24, 34, 36, 38, 40, 42, 48, 48],
+yet accuracy remains the main bottleneck to reliabil-
+ity and autonomy. Interfaces pack hundreds of look-
+alike controls whose meaning depends on structure
+arXiv:2512.01979v1  [cs.AI]  1 Dec 2025
+and function, making precise grounding essential for
+downstream steps [9]. Still, grounding from pixels is
+hard: targets are small and crowded; icons are com-
+positional; text is tiny or occluded; spatial cues span
+distant panes; appearance shifts with themes and reso-
+lutions; repeats and low contrast mislead; and control
+boundaries poorly match pixels. Because single-step
+prediction often misaligns and induces errors, a step-
+wise procedure that reasons and exposes intermediate
+decisions yields a more robust and interpretable frame-
+work.
+Existing GUI grounding methods range from clas-
+sical detectors and segmentation networks [8, 16, 20,
+21, 30, 31] to multimodal LLMs such as GPT-5 [25],
+Qwen3-VL [33], Claude Sonnet 4.5 [28], Seed 1.5 VL
+[11], and InternVL3.5 [35]. While MLLMs are strong
+at reasoning and grounding, they still struggle with
+precise localization in cluttered scenes; visual prompt-
+inglikeSoM[43]helpsalignmentbutdependsonbrittle
+segmentation, andfinetunedMLLMs[4,6,9,10,29,44]
+improve accuracy yet remain limited in stability and
+interpretability. Recent iterative localization such as
+DiMo-GUI [37] and Iterative Narrowing [22] zoom
+screnshots into cropped regions(see Fig. 2)but sac-
+rifice global context.
+Motivated by these gaps, we introduceChain-of-
+Ground (CoG), a purely visual framework designed
+to enhance grounding accuracy through iterative rea-
+soning and reference feedback. CoG first anchors
+an initial guess, encodes this location as an explicit
+marker, andthenprogressivelyrefinesthepredictionby
+re-evaluating the instruction in the context of the up-
+dated image. The framework produces an interpretable
+reasoning trace, allowing earlier guesses to be revisited
+and corrected. It comprises two core components: (1)
+iterative reasoning, where the model incrementally up-
+dates its prediction using both the current hypothesis
+and prior steps, over a fixed or adaptive number of
+iterations; and (2) reference feedback, where each pre-
+dicted location is returned to the model as a visual or
+textual signal. We design this feedback to balance in-
+terpretability and precision, exploring different marker
+modalities (e.g., image overlays vs. text prompts) and
+scales (e.g., small vs. large marks).
+We evaluate our approach on the ScreenSpot-Pro
+benchmark, which features high-resolution professional
+GUIs with complex layouts and dense We evaluate
+on the ScreenSpot-Pro benchmark with high-resolution
+professional GUIs. Across multiple MLLM backbones,
+our reference-guided iterative grounding consistently
+outperforms direct one-step baselines and sets a new
+state of the art on the public leaderboard, surpassing
+thepreviousbestmodelby4.1%ingroundingaccuracy.
+The method also reduces prediction instability across
+domains, and qualitative analysis shows that it reasons
+relationally by linking targets to contextual references
+rather than relying on surface-level visual matching.
+Although our method achieves strong results on es-
+tablished computer GUI grounding benchmarks, we
+aim to extend its applicability to real-world indus-
+trial interfaces, where conditions are far more challeng-
+ing. However, existing benchmarks rarely capture such
+complexity, leaving a gap between academic progress
+and deployment settings. To bridge this gap, we intro-
+duceTPanel-UI, a dataset of 420 labeled instances
+capturing real industrial control panels such as ther-
+mostats, instrument dashboards, and machinery inter-
+faces. Unlike prior GUI datasets focused on virtual or
+synthetic environments, TPanel-UI emphasizes physi-
+cal panels with dense layouts, metallic surfaces, vari-
+able lighting, and complex iconography representative
+of real operational settings. Specifically: (1) it includes
+420 high-resolution panel images from 20 commercial
+brands with diverse layouts; (2) among them, 100 in-
+stances involve physical-button interactions and 320
+correspond to touch-based interfaces; and (3) to stress
+test robustness, we add controlled degradations at mul-
+tipleseveritiesincludingblur, masking, exposureshifts,
+noise, and compression, yielding paired clean-degraded
+samples that preserve labels and enable rigorous ro-
+bustness auditing. This enables systematic evaluation
+ofgroundingrobustnessandsupportsresearchonrefer-
+ence resolution in industry-oriented, safety-critical sce-
+narios.
+This work makes the following contributions.
+1. We revisited GUI grounding as a structured rea-
+soning problem rather than a single-step recogni-
+tion task. To this end, we introducedChain-
+of-Ground (CoG), a reference-guided iterative
+grounding framework that enables the model to re-
+flect progressively with contextual feedback.
+2. We proposed three complementary components
+for the Chain-of-Ground mechanism: a reflective
+grounding framework that records intermediate hy-
+potheses and allows self-correction, reference guid-
+ance that anchors predictions through contextual
+comparison and semantic analogy, and iterative
+refinement that progressively reduces ambiguity
+among visually similar interface elements.
+3. We presentedTPanel-UI, a real industrial control
+panel dataset for controlled evaluation.
+4. We verified the effectiveness of our methods on both
+standard GUI Grounding dataset and real industrial
+scenarios.
+Final Grounded Location
+MLLM
+MLLM
+Grounded 
+Location
+Prompt 
++ 
+Instruction
+Final Grounded Location
+MLLM
+Prompt 
++ 
+Instruction
+(a) Single-Step Grounding (c) Dual-Step Text-Based CoG
+Final Grounded Location
+MLLM
+Grounded 
+Region
+MLLM
+Prompt 
++ 
+Instruction
+(b) Iterative Narrowing Grounding
+Crop
+Final Grounded Location
+MLLM
+Grounded 
+Location
+MLLM
+Prompt 
++ 
+Instruction
+(d) Multi-Step Image-Based CoG
+Mark
+Figure 2. Comparison of grounding strategies. We compared previous strategy (a) Single-Step Grounding and (b) Iterative
+Narrowing Grounding with our proposed Multi-Step Text-Based (c) and Image-Based (d) Chain-of-Ground (CoG). (a)
+Single-Step Grounding performs prediction from screenshot and instruction directly. (b) Iterative Narrowing Grounding
+crops around the first guess and re-predicts from the cropped image, which can lose global context [22, 37]. (c) Multi-Step
+Text-Based CoG first produces a textual reference and then grounds by reasoning with this reference. (d) Multi-Step Image-
+Based CoG marks intermediate locations and iteratively refines using visual reference feedback while keeping access to the
+full screen.
+2. Related Work
+2.1. GUI Agents
+Large-scale language and multimodal models [2, 7, 25–
+28] are increasingly used as agents for GUI inter-
+action [1, 15, 24, 34, 36, 38, 40, 42, 48]. While
+many multimodal agents [3, 17, 49] rely on struc-
+tured data like HTML, our work aligns with research
+on visually grounded agents operating on raw pixels
+[4, 14, 23, 32, 47], proposing a two-stage framework
+decoupling planning from visual grounding.
+2.2. Visual Grounding
+Visual Detection and Segmentation Methods.
+GUI elements can be grounded using classical but brit-
+tle techniques or modern detectors [8, 20, 30] and seg-
+mentation networks [16, 31]. GUI-specific detectors
+like OmniParser [21] are trained on large GUI corpora.
+General-Purpose Multimodal LLMs.MLLMs
+like GPT-5 [25], Qwen3-VL [33], Clause Sonnet 4.5
+[28], Seed 1.5 VL [11], and InternVL3.5 [35] are applied
+to GUI grounding but can struggle with precise local-
+ization. Visual prompting strategies like Set-of-Mark
+(SoM) [43] are used to improve grounding in systems
+such as WebVoyager [12], VisualWebArena [17], and
+SeeAct [48], but are limited by segmentation quality.
+Finetuned Multimodal LLMs.Fine-tuning
+MLLMs on GUI-specific data improves grounding
+accuracy. Examples include SeeClick [4], UI-TARS
+[29], and UGround [9]. More recent work uses re-
+inforcement learning, such as GTA1-32B [44], Holo
+1.5 [6], and UI-Venus [10]. Despite advances, even
+state-of-the-art models like GTA1-32B achieve only
+63.6% accuracy on ScreenSpot-Pro [19], showing
+persistent challenges.
+Iterative GroundingRecent work has explored
+iterative localization. Zoom-based methods like
+DiMo-GUI [37], Iterative Narrowing [22], and GUI-
+Spotlight [18] refine predictions by cropping image re-
+gions. However, these methods lose global context.
+Our framework iterates in the reasoning space, pre-
+serving global context and allowing the model to revisit
+and refine its hypotheses through an evolving reasoning
+trace with referential feedback.
+3. Methods
+Our proposedChain-of-Ground (CoG)is a GUI
+grounding framework that performs multi-step refine-
+ment instead of a single forward prediction. At each
+step the model revisits the screenshot with cues derived
+from its previous output, enabling verification and cor-
+rection. CoG consists of: (1)Iterative reasoning: a
+fixed or adaptive number of steps where the model
+re-encodes the screen and updates the target location
+Original Image
+Anchor 
+MLLM
+Element Instruction
+Grounded Location
+[x₁, y₁]
+Labelled Image
+ Labelled Image
+Reﬁnement 
+MLLM
+Location Labelling Location Labelling
+Reﬁnement 
+MLLM
+Grounded Location
+[x₂, y₂]
+Instruction 
+“Run the project in android studio”
+Labelled Image
+Location Labelling
+Final Location
+[x₃, y₃]
+Stage Coordinate Status Correctness
+Initial attempt [x₁, y₁] Imprecise ✗
+First reﬁnement [x₂, y₂] Improved ✗
+Final prediction [x₃, y₃] Improved ✓
+Figure 3. Overview of theChain-of-Ground (CoG)framework, shown here in its triple-step configuration. Given an
+element instruction and the original interface image, CoG performs grounding through a sequence of iterative reasoning
+steps using multimodal large language models (MLLMs). The first Anchor MLLM predicts an initial location, which is
+labeled on the image and passed forward as contextual feedback. Two subsequent Refinement stages reflect the instruction
+in relation to the updated visual context and iteratively refine the coordinates. This structured reasoning loop terminates
+at the final grounded location[x3, y3]. By leveraging multi-step visual feedback without model retraining, CoG enables
+accurate, interpretable, and training-free grounding in complex GUI environments.
+based on the current hypothesis and referenced history.
+(2)Reference feedback: the previous prediction is fed
+back as an input signal to guide the next step. We
+study design choices for this signal, including modality
+(text vs. image label) and visual marker size (small vs.
+large).
+3.1. Iterative Reasoning
+In CoG, grounding proceeds through a sequence of
+stepsratherthanasingleforwardpass. Theprocessbe-
+gins with an anchoring step, where the model produces
+an initial localization based on the instruction and the
+rawscreenshot. Thisanchorservesasaninitialhypoth-
+esis of the target region. Subsequent steps then refine
+this anchor through iterative updates: each step en-
+codes previous outputs into a feedback signal and uses
+it, togetherwiththeoriginalinstruction, togeneratean
+improved prediction. Repeating this reflect–refine loop
+allows the model to self-correct and gradually converge
+toward a stable and accurate grounding.
+We evaluate three configurations to study the role
+of iterative depth: a single-step baseline, a dual-step
+setup with one refinement round, and a triple-step
+setup with two refinement rounds. This allows us
+to measure the benefits of reflective correction. Fur-
+thermore, recognizing that different models may excel
+at different stages of reflective reasoning, we also ex-
+plore various model combinations within the multi-step
+framework to see if leveraging diverse model strengths
+can further enhance performance.
+Across all settings, each iteration involves three con-
+ceptual phases: (1) anchoring, which produces an ini-
+tial hypothesis; (2) reference construction, which en-
+codes prior predictions as feedback; and (3) refinement,
+whichintegratesthisfeedbacktoreflectivelyupdatethe
+localization. This iterative design yields a transparent
+reasoning trace that captures how the model’s spatial
+understanding evolves over time.
+3.2. Reference Feedback
+The reference feedback mechanism determines how the
+model perceives and reuses its previous predictions.
+Its goal is to provide an explicit signal that helps the
+model align new reasoning with past observations. We
+consider two feedback modalities. In the text-based
+method, the model encodes its earlier predicted loca-
+tion as a textual coordinate appended to the instruc-
+tion. This form provides an abstracted signal that
+can be interpreted by models for a rough reference.
+In the image-based method, the model receives the
+marked screenshot with a visual marker on previously
+predicted locations. The feedback acts as an anchor
+that allows the model to understand the spatial coor-
+dinate of the previous prediction across iterations and
+also the contextual dependence between UI elements.
+For image-based feedback, as shown in Figure 4, we
+(a) Small Red Solid Mark (b) Big Red Solid Mark (c)  Big Blue Square Mark
+Figure 4. Examples of visual grounding marks. (a) A small
+red solid mark with radiusr= 10. (b) A large red solid
+mark with radiusr= 100. (c) A large blue square mark
+with sidel= 100.
+examine how the marker design influences grounding.
+The main factor is marker size. On high-resolution
+screenshots, a larger marker is more salient and reli-
+ably draws attention to the focus region, whereas very
+small markers may be overlooked by the model. How-
+ever, excessively large markers can still occlude nearby
+elements. Inourtriple-stepmechanism, weusedalarge
+red circle(r=100px)for the first layer and a large blue
+square(l=100px)for the second step. By integrating
+feedback into the reasoning process, CoG encourages
+the model to revisit earlier hypotheses with additional
+context. The result is a structured form of grounding
+where predictions are not isolated outcomes but part of
+a coherent sequence guided by reflective, interpretable
+feedback.
+4. TPanel-UI Dataset
+Existing GUI grounding datasets such as ScreenSpot-
+Pro [19] and Point Arena [5] mainly cover virtual in-
+terfaces or generic photography, leaving real hardware
+panels underexplored.TPanel-UIaddresses this gap
+with industrial-style scenes such as thermostats and in-
+strument dashboards, where controls are small, densely
+packed, andoftenicon-based. Thedatasetcontains420
+high-resolution panel images spanning20commercial
+brands with diverse layouts. Among these,100in-
+stances involve physical-button interactions, while320
+correspond to touch-based interfaces. For each image,
+annotators identify a single interactive control element
+(e.g., power button) required to fulfill a given instruc-
+tion and record its precise coordinate. Each image is
+paired with a concise natural-language instruction de-
+scribingtheintendeduseraction, supportingcontrolled
+evaluation of grounding performance under sparse lin-
+guistic guidance and high visual ambiguity.
+(a) Original Touch Interaction (b) Original Physical Button 
+(d) Degraded Physical Button (c) Degraded Touch Interaction 
+Figure 5. Examples from the TPanel-UI dataset. The
+dataset includes two interface types: (a,c) touch-based con-
+trol panels and (b,d) physical-button panels. For each, we
+provide both original images and degraded versions featur-
+ing blur, glare, and lighting artifacts to assess grounding
+robustness under visually challenging conditions.
+Images are captured using consumer-grade cam-
+eras under everyday usage conditions, then processed
+through a multi-stage degradation pipeline to simulate
+realistic visual disturbances. Starting from the original
+photos, we apply randomized transformations includ-
+ing global color shifts, synthetic lens flares, Perlin-noise
+overlays, and wear patterns to emulate surface dam-
+age. Additional degradations such as Gaussian sensor
+noise, motion blur, soft specular highlights, and chro-
+matic aberration introduce further distortion. JPEG
+recompression and color quantization reduce image fi-
+delity, while lighting inconsistencies, mild occlusions,
+and perspective shifts add complexity. The result is a
+challenging set of degraded variants corresponding to
+the original panel images.
+In summary, TPanel-UI provides 420 annotated
+panel instances (original and degraded) sharing the
+same interaction targets. This design yields a con-
+trolled benchmark well-suited for evaluating model ro-
+bustness and the reliability of iterative grounding un-
+der realistic visual noise for industrial scene.
+5. Experiments
+We evaluate our Chain-of-Ground (CoG) framework
+by examining how reasoning depth, feedback modal-
+Table 1. Comparison with state-of-the-art methods on the ScreenSpot-Pro dataset [19]. We report grounding accuracy
+(%) by domain and show only the averaged scores (Avg). A dash ‘–’ indicates unavailable results and ‘∗’ denotes our own
+evaluation. Our multi-step CoG framework allows flexible model selection per step. The dual-step configuration shown here
+uses two instances ofQwen3-VL-235B[33], while the triple-step configuration (illustrated) adopts one possible sequence:
+UI-TARS1.5-7B→Qwen3-VL-235B→Qwen3-VL-32B.
+Agent Model Development Creative CAD Scientific Office OS Avg
+Proprietary Models
+GPT-4o [26] 0.7 0.6 1.5 1.2 0.9 0.0 0.8
+Claude 3.7 Sonnet [27] - - - - - - 27.7
+Operator [24] 35.1 39.6 16.1 43.7 53.0 32.7 36.6
+Seed-1.5-VL [11] 53.8 59.2 59.0 61.4 74.8 60.2 60.9
+UI-TARS-1.5 [29] 63.9 50.4 58.2 69.3 79.6 51.0 61.6
+Open-Source Models
+SeeClick [4] 0.3 0.6 1.9 2.0 0.9 1.5 1.1
+CogAgent-18B [13] 8.0 5.6 6.1 13.4 10.0 3.1 7.7
+Aria-UI [45] 8.4 14.7 6.1 18.1 16.1 2.6 11.3
+OS-Atlas-7B [39] 17.7 17.9 10.3 24.4 27.4 16.8 18.9
+Qwen2.5-VL-7B [2] 29.1 24.9 13.8 31.1 45.7 22.4 27.6
+UGround-72B [9] 31.1 35.8 13.8 50.0 51.3 25.5 34.5
+SE-GUI-3B [46] 35.1 29.0 31.8 43.3 50.9 25.5 35.9
+Jedi-3B [41] 38.1 34.6 23.0 38.6 57.0 25.0 36.1
+GUI-G1-3B [50] 31.1 26.6 32.2 48.0 59.1 16.1 37.1
+UI-TARS-72B [29] 40.8 39.6 17.2 45.7 54.8 30.1 38.1
+Jedi-7B [41] 27.4 34.0 32.2 52.4 68.7 26.0 39.5
+UI-TARS-1.5-7B [29] 31.8 40.2 31.8 47.2 65.6 33.2 42.0
+SE-GUI-7B [46] 44.5 37.2 42.1 54.7 70.4 38.8 47.3
+GUI-Spotlight [18] 52.6 44.8 51.6 53.5 70.4 45.9 52.8
+Qwen2.5-VL-72B-Instruct [2] 53.5 44.9 44.4 59.1 72.6 49.5 53.3
+Qwen3-VL-32B-Instruct∗ [33] 67.5 57.6 47.9 65.3 73.6 60.1 61.4
+Holo1.5-72B [6] 63.5 62.5 51.3 64.2 79.6 59.7 63.3
+GTA-32B [44] 61.2 52.860.565.083.565.3 63.6
+Qwen3-VL-235B-Instruct∗ [33] 66.4 63.1 52.8 66.1 75.8 61.9 63.9
+Ours (Multi-Step CoG)
+Dual-Step CoG∗ 66.4 63.1 59.5 70.980.9 62.3 66.7
+Triple-Step CoG∗ 69.2 65.757.9 69.3 80.9 71.9 68.4
+ity, and visual design affect grounding accuracy. Our
+study uses large-scale GUI datasets and a new indus-
+trial benchmark to test performance under varied con-
+ditions. We evaluate on two primary benchmarks:
+(1)ScreenSpot-Pro[19], a large-scale dataset for
+grounding generalization in professional GUI environ-
+ments (see Table 1). (2)TPanel-UI, a new 420-label
+dataset of industrial control panels with visual distor-
+tions to test real-world robustness (see Table 2).
+5.1. ScreenSpot-Pro Results
+For ScreenSpot-Pro datasets , test scenes cover six ma-
+jor categories of professional software:Development,
+Creative,CAD,Scientific,Office, andOperating Sys-
+tems, representing a diverse range of interface struc-
+tures and visual densities (see Table 1). We test
+CoG on several MLLMs of different scales and capa-
+bilities, including Qwen-VL-32B, Qwen-VL-235B [33],
+and UI-TARS-1.5-7B [29]. Performance is measured
+using grounding success rate across categories. Our re-
+sults demonstrate that our multi-step CoG framework
+achieves state-of-the-art performance, outperforming
+existing proprietary and open-source models. Specifi-
+cally, ourtriple-stepCoGmodelachievesanaverageac-
+curacy of68.4%, surpassing the strongest open-source
+model, GTA-32B (63.6%), by a significant margin of
+4.8%. Our dual-step CoG model also shows strong per-
+formance with an average accuracy of66.7%, outper-
+forming GTA-32B by3.1%. Notably, our triple-step
+model is the top performer across most categories, in-
+cludingDevelopment(69.2%),Creative(65.7%), and
+OS(71.9%). The dual-step CoG model achieves
+the best results in theScientific(70.9%) andOffice
+(80.9%) categories, while the single-step Qwen3-VL-
+235B model is the top performer in theCAD(59.5%)
+category. These findings highlight the effectiveness of
+our iterative refinement approach in improving ground-
+ing accuracy, especially in challenging professional soft-
+ware environments.
+5.2. TPanel-UI Results
+On theTPanel-UIdataset, which features challeng-
+ing industrial control panels, our CoG framework again
+demonstrates significant performance gains. For these
+experiments, visual feedback was provided using a
+small red circle to mark the predicted location in each
+step. As shown in Table 2, all dual-step CoG con-
+figurations outperform their single-step counterparts.
+The heterogeneous combination of Qwen3-VL-235B→
+Qwen3-VL-32B achieves the highest average accuracy
+of 90.0%, a 6.9% improvement over the strongest single
+model (Qwen3-VL-235B). Furthermore, with the same
+refinement model as anchoring model, with Qwen3-VL-
+32B→Qwen3-VL-32B also yields a substantial boost,
+improving accuracy from 81.2% to 87.9%. These re-
+sults underscore CoG’s robustness and its effectiveness
+in leveraging iterative refinement to overcome visual
+complexities in specialized domains.
+5.3. Ablation Studies
+Number of Iterations.Table 3 shows the impact
+of the number of reasoning iterations on performance.
+We observe a consistent improvement in accuracy as
+the number of iterations increases from one to three.
+The single-step model achieves a baseline accuracy of
+63.9%. The dual-step model improves this by 2.8%
+to 66.7%. The triple-step model further boosts accu-
+racy to 68.4%, a 4.5% improvement over the single-step
+baseline. This trend highlights the value of iterative
+refinement in our CoG framework, allowing the model
+to progressively correct errors and improve grounding
+accuracy.
+Feedback Modality.We investigate how different
+feedback modalities affect performance in the CoG
+framework. As shown in Table 4, visual-only feedback
+achieves the highest accuracy of 65.8%, while text-only
+feedback results in a lower accuracy of 64.3%. Re-
+moving feedback entirely yields the worst performance
+at 61.4%. These findings indicate that visual markers
+provide more effective grounding cues than textual de-
+scriptions alone, though both contribute positively rel-
+ative to no feedback. Effective grounding in our multi-
+step setup benefits from spatially explicit guidance.
+Visual Marker Size.In Table 5, we analyze the
+effect of visual marker size on grounding accuracy. The
+results show that using a large marker (r=100px) leads
+to a slightly better accuracy of 66.7% compared to a
+small marker (r=10px), which achieves 65.5%. While
+both marker sizes perform well, the large marker’s
+slight advantage suggests that a more prominent visual
+cue can help the model better localize the target. How-
+ever, the small performance difference indicates that a
+(a) Same model for all 3 steps (b) Diﬀerent models for all 3 steps
+1
+Instruction 
+“Run the project in android studio”
+2
+3
+1
+23
+✗ ✓
+Figure 6. Example illustrating the effect of model combina-
+tions in the CoG framework. In (a), using the same model
+across all three steps results in repeated errors and poor
+final grounding. In (b), using three different models pro-
+gressively refines the prediction, ultimately producing the
+correct result. This supports our hypothesis that combin-
+ing diverse models helps overcome individual blind spots
+and enhances final localization accuracy.
+less conspicuous marker is still highly effective, demon-
+strating flexibility in marker size selection.
+Model Combination.We investigate the im-
+pact of different model combinations in the multi-step
+CoG framework. Different models may have unique
+strengths and weaknesses, or “blindspots,” when inter-
+preting visual information. By combining models, we
+can potentially compensate for these individual limita-
+tions and achieve a more robust overall performance.
+As shown in Table 6, the UI-TARS-1.5-7B→Qwen3-
+VL-235B→Qwen3-VL-32B combination achieves the
+best performance, with an average accuracy of 68.4%.
+Based on this, we speculate that the best results are
+achieved by combining three different models. Al-
+though UI-TARS-1.5-7B has the lowest score as a stan-
+dalone model, we observe that greater model diver-
+sity in the combination leads to better performance.
+We hypothesize that this is because each model has
+its own deficiencies, and the different decision-making
+processesofthemodelscompensatefortheseshortcom-
+ings. This suggests that leveraging a smaller, special-
+ized model for the initial step, followed by larger, more
+capable models for refinement, is an effective strategy.
+The performance of other combinations, while slightly
+lower, is still competitive, with the Qwen3-VL-32B→
+Qwen3-VL-235B→Qwen3-VL-32B combination, for
+example, achieving a 5.3% improvement over the base-
+line.
+Table 2. Performance on the TPanel-UI dataset. We report single-step baselines and dual-step CoG runs. Dual-step settings
+include Qwen3-VL-32B followed by Qwen3-VL-32B, and vice versa. The Qwen3-VL-235B→Qwen3-VL-32B setting achieves
+the best results.
+Method Touch Interaction Physical Button Avg
+Single Models
+Qwen3-VL-32B 82.2 74.0 81.2
+Qwen3-VL-235B 84.7 78.0 83.1
+UI-TARS-1.5-7B 50.0 40.0 47.6
+Dual-Step CoG
+CoG (Qwen3-VL-235B→Qwen3-VL-235B) 83.6 78.0 84.3
+CoG (Qwen3-VL-32B→Qwen3-VL-32B)90.978.0 87.9
+CoG (Qwen3-VL-235B→Qwen3-VL-32B)90.9 87.0 90.0
+CoG (UI-TARS-1.5-7B→UI-TARS-1.5-7B) 64.4 54.0 61.9
+Table 3. Ablation on the number of reasoning iterations on
+the ScreenSpot-Pro dataset [19]. 2-step CoG uses Qwen3-
+VL-235B in both steps, while 3-step CoG uses the sequence
+UI-TARS1.5-7B→Qwen3-VL-235B→Qwen3-VL-32B.
+Method Dev CreaCADSci OfficeOS Avg
+Baselines (Single-Step)
+UI-TARS-1.5-7B 31.8 40.2 31.8 47.2 65.6 33.2 42.0
+Qwen3-VL-32B 67.5 57.6 47.9 65.3 73.6 60.1 61.4
+Qwen3-VL-235B 66.4 63.1 52.8 66.1 75.8 61.9 63.9
+CoG Iterations
+Dual-Step CoG 66.4 63.1 59.5 70.9 80.962.3 66.7
+Triple-Step CoG69.2 65.757.9 70.9 80.9 71.9 68.4
+Table 4. Ablation on feedback modality on the ScreenSpot-
+Pro dataset [19]. Both text- and image-based feedback de-
+signs use the Qwen3-VL-32B model in both steps.
+Feedback Design Dev CreaCADSci Office OS Avg
+Baselines (Single-Step)
+Qwen3-VL-32B67.557.6 47.9 65.3 73.6 60.1 61.4
+Modality
+Text-based 65.1 62.7 54.6 67.3 77.0 61.764.3
+Image-based 65.4 64.7 57.2 69.3 79.661.2 65.8
+6. Conclusion
+Our work demonstrates the effectiveness of a multi-
+step, multi-model Chain-of-Grounding (CoG) frame-
+work for complex visual understanding. By com-
+bining models with diverse capabilities, such as
+the proposed UI-TARS-1.5-7B→Qwen3-VL-235B→
+Qwen3-VL-32B [29, 33] pipeline, we significantly en-
+hance performance, achieving state-of-the-art results
+on ScreenSpot-Pro [19] with 68.4% average accuracy.
+This design exploits the complementary strengths of
+each model, compensating for individual weaknesses
+Table 5. Ablation on visual marker size for image-based
+feedback on the ScreenSpot-Pro dataset [19]. Both marker
+sizesaretestedwiththeQwen3-VL-32Bmodelinadual-
+step CoG setup.
+Marker Size Dev Crea CAD Sci OfficeOS Avg
+Baselines (Single-Step)
+Qwen3-VL-32B67.557.6 47.9 65.3 73.6 60.1 61.4
+Marker Size (Qwen3-VL-32B→Qwen3-VL-32B)
+Small Mark 64.7 63.7 55.9 67.3 78.962.365.0
+Large Mark 65.464.757.2 69.3 79.6 61.2 65.8
+Marker Size (Qwen3-VL-235B→Qwen3-VL-32B)
+Small Mark 66.7 61.4 57.9 72.076.9 60.2 65.5
+Large Mark 66.4 63.159.570.9 80.9 62.3 66.7
+and yielding more accurate and robust outcomes. Our
+ablations show that performance is improved by: (1)
+iterative refinement, where each step builds on previ-
+ous reasoning and corrects initial mistakes, with triple-
+step refinement outperforming dual-step, and dual-step
+outperforming single-step; (2) integrating multi-modal
+feedback, where combining text and visual cues pro-
+vides richer grounding context; and (3) strategic het-
+erogeneous model combinations, which leverage diverse
+model strengths to achieve results unattainable by any
+single model. Overall, our findings highlight CoG as
+a versatile framework for building reliable and accu-
+rate visual grounding systems and for designing an in-
+telligent system that could understand the real-world
+scenario more accurately and safely.
+LimitationDespite these gains, several limitations
+remain. First, the performance of CoG is ultimately
+bounded by the capabilities of its base models; no guid-
+ance strategy can overcome their inherent limits. Sec-
+ond, compared to single-pass approaches, our iterative
+methodincurshigherinferencetimeandcomputational
+Table 6. Ablation on model combination for triple-step CoG on the ScreenSpot-Pro dataset [19].
+Model Combination Dev CreativeCAD ScientificOffice OS Avg
+Baselines (Single-Step)
+UI-TARS-1.5-7B 31.8 40.2 31.8 47.2 65.6 33.2 42.0
+Qwen3-VL-32B 67.5 57.6 47.9 65.3 73.6 60.1 61.4
+Qwen3-VL-235B 66.4 63.1 52.8 66.1 75.8 61.9 63.9
+Dual-Step CoG Variants
+Qwen3-VL-32B→Qwen3-VL-32B 65.4 64.7 57.2 69.3 79.6 61.2 65.8
+Qwen3-VL-235B→Qwen3-VL-32B 66.4 63.1 59.5 70.9 80.962.3 66.7
+Triple-Step CoG Variants
+Qwen3-VL-235B→Qwen3-VL-32B→Qwen3-VL-235B 69.2 60.861.8 70.976.6 60.7 66.4
+Qwen3-VL-32B→Qwen3-VL-32B→Qwen3-VL-32B 69.866.358.5 68.5 78.3 66.3 67.5
+UI-TARS-1.5-7B→Qwen3-VL-235B→Qwen3-VL-32B 69.2 65.757.9 69.380.9 71.9 68.4
+Qwen3-VL-235B→Qwen3-VL-235B→Qwen3-VL-235B 69.962.4 56.9 69.7 77.0 59.2 65.6
+Qwen3-VL-32B→UI-TARS-1.5-7B→Qwen3-VL-32B 63.4 62.7 59.2 67.3 74.3 60.2 64.3
+Qwen3-VL-32B→Qwen3-VL-235B→Qwen3-VL-32B70.964.7 52.670.978.3 66.9 66.7
+cost. While the framework emulates aspects of human
+thought processes, this does not establish that the neu-
+ral network is actually “reasoning.” Third, CoG does
+not guarantee correct reasoning paths, and both cor-
+rect and incorrect answers can arise from flawed inter-
+mediate steps. Finally, our experiments are conducted
+on a specific benchmark, and the generalization of our
+model combinations and feedback strategies to other
+domains remains an open question.
+Social ImpactsThe proposed framework has
+several potential social implications. On the positive
+side, more accurate visual understanding systems
+can support powerful accessibility tools for visually
+impaired users and improve user experience by making
+interfaces more intuitive and responsive. However,
+increasing reliance on complex black-box models
+complicates the analysis of failure cases and may lead
+to unintended consequences. There are also privacy
+concerns associated with large-scale visual data
+processing. Moreover, the substantial computational
+resources required to train and deploy such systems
+risk widening the digital divide, concentrating access
+to these capabilities among well-resourced institutions.
+References
+[1] Anthropic. Introducing computer use, a new claude
+3.5 sonnet, and claude 3.5 haiku, 2024. 1, 3
+[2] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang,
+Wenbin Ge, Sibo Song, Kai Dang, Peng Wang, Shi-
+jie Wang, Jun Tang, Humen Zhong, Yuanzhi Zhu,
+Mingkun Yang, Zhaohai Li, Jianqiang Wan, Pengfei
+Wang, Wei Ding, Zheren Fu, Yiheng Xu, Jiabo Ye, Xi
+Zhang, Tianbao Xie, Zesen Cheng, Hang Zhang, Zhibo
+Yang, Haiyang Xu, and Junyang Lin. Qwen2.5-vl tech-
+nical report, 2025. 3, 6
+[3] Ruisheng Cao, Fangyu Lei, Haoyuan Wu, Jixuan
+Chen, Yeqiao Fu, Hongcheng Gao, Xinzhuang Xiong,
+Hanchong Zhang, Yuchen Mao, Wenjing Hu, et al.
+Spider2-V: How far are multimodal agents from au-
+tomating data science and engineering workflows? In
+The Thirty-eight Conference on Neural Information
+Processing Systems Datasets and Benchmarks Track,
+2024. 3
+[4] Kanzhi Cheng, Qiushi Sun, Yougang Chu, Fangzhi Xu,
+YantaoLi, JianbingZhang, andZhiyongWu. SeeClick:
+Harnessing GUI grounding for advanced visual GUI
+agents. InProceedings of the 62nd Annual Meeting
+of the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), 2024. 2, 3, 6
+[5] Long Cheng, Jiafei Duan, Yi Ru Wang, Haoquan
+Fang, Boyang Li, Yushan Huang, Elvis Wang, Ainaz
+Eftekhar, Jason Lee, Wentao Yuan, Rose Hendrix,
+Noah A. Smith, Fei Xia, Dieter Fox, and Ranjay Kr-
+ishna. Pointarena: Probing multimodal grounding
+through language-guided pointing, 2025. 5
+[6] H Company. Holo1.5 - open foundation models for
+computer use agents, 2025. 1, 2, 3, 6
+[7] Google DeepMind. Introducing the gemini 2.5 com-
+puter use model.https://blog.google/technology/
+google - deepmind / gemini - computer - use - model/,
+2025. Accessed [insert date you viewed it]. 3
+[8] Zheng Ge, Songtao Liu, Feng Wang, Zeming Li, and
+Jian Sun. Yolox: Exceeding yolo series in 2021, 2021.
+2, 3
+[9] Boyu Gou, Ruohan Wang, Boyuan Zheng, Yanan Xie,
+Cheng Chang, Yiheng Shu, Huan Sun, and Yu Su.
+Navigating the digital world as humans do: Universal
+visual grounding for GUI agents. InThe Thirteenth In-
+ternational Conference on Learning Representations,
+2025. 2, 3, 6
+[10] Zhangxuan Gu, Zhengwen Zeng, Zhenyu Xu, Xin-
+gran Zhou, Shuheng Shen, Yunfei Liu, Beitong Zhou,
+Changhua Meng, Tianyu Xia, Weizhi Chen, Yue Wen,
+Jingya Dou, Fei Tang, Jinzhen Lin, Yulin Liu, Zhen-
+lin Guo, Yichen Gong, Heng Jia, Changlong Gao,
+Yuan Guo, Yong Deng, Zhenyu Guo, Liang Chen, and
+Weiqiang Wang. Ui-venus technical report: Building
+high-performance ui agents with rft, 2025. 1, 2, 3
+[11] Dong Guo, Faming Wu, Feida Zhu, Fuxing Leng,
+Guang Shi, Haobin Chen, Haoqi Fan, Jian Wang,
+Jianyu Jiang, Jiawei Wang, Jingji Chen, Jingjia
+Huang, Kang Lei, Liping Yuan, Lishu Luo, Pengfei
+Liu, Qinghao Ye, Rui Qian, Shen Yan, Shixiong Zhao,
+Shuai Peng, Shuangye Li, Sihang Yuan, Sijin Wu,
+Tianheng Cheng, Weiwei Liu, Wenqian Wang, Xian-
+han Zeng, Xiao Liu, Xiaobo Qin, Xiaohan Ding, Xi-
+aojun Xiao, Xiaoying Zhang, Xuanwei Zhang, Xue-
+han Xiong, Yanghua Peng, Yangrui Chen, Yanwei Li,
+Yanxu Hu, Yi Lin, Yiyuan Hu, Yiyuan Zhang, Youbin
+Wu, Yu Li, Yudong Liu, Yue Ling, Yujia Qin, Zanbo
+Wang, Zhiwu He, Aoxue Zhang, Bairen Yi, Bencheng
+Liao, Can Huang, Can Zhang, Chaorui Deng, Chaoyi
+Deng, Cheng Lin, Cheng Yuan, Chenggang Li, Chen-
+hui Gou, Chenwei Lou, Chengzhi Wei, Chundian Liu,
+Chunyuan Li, Deyao Zhu, Donghong Zhong, Feng Li,
+Feng Zhang, Gang Wu, Guodong Li, Guohong Xiao,
+Haibin Lin, Haihua Yang, Haoming Wang, Heng Ji,
+Hongxiang Hao, Hui Shen, Huixia Li, Jiahao Li, Jia-
+long Wu, Jianhua Zhu, Jianpeng Jiao, Jiashi Feng, Ji-
+aze Chen, Jianhui Duan, Jihao Liu, Jin Zeng, Jingqun
+Tang, Jingyu Sun, Joya Chen, Jun Long, Junda Feng,
+Junfeng Zhan, Junjie Fang, Junting Lu, Kai Hua, Kai
+Liu, Kai Shen, Kaiyuan Zhang, Ke Shen, Ke Wang,
+Keyu Pan, Kun Zhang, Kunchang Li, Lanxin Li, Lei
+Li, Lei Shi, Li Han, Liang Xiang, Liangqiang Chen,
+Lin Chen, Lin Li, Lin Yan, Liying Chi, Longxiang Liu,
+Mengfei Du, Mingxuan Wang, Ningxin Pan, Peibin
+Chen, Pengfei Chen, Pengfei Wu, Qingqing Yuan,
+Qingyao Shuai, Qiuyan Tao, Renjie Zheng, Renrui
+Zhang, Ru Zhang, Rui Wang, Rui Yang, Rui Zhao,
+ShaoqiangXu, ShihaoLiang, ShipengYan, ShuZhong,
+Shuaishuai Cao, Shuangzhi Wu, Shufan Liu, Shuhan
+Chang, Songhua Cai, Tenglong Ao, Tianhao Yang,
+Tingting Zhang, Wanjun Zhong, Wei Jia, Wei Weng,
+Weihao Yu, Wenhao Huang, Wenjia Zhu, Wenli Yang,
+WenzhiWang, XiangLong, XiangRuiYin, XiaoLi, Xi-
+aolei Zhu, Xiaoying Jia, Xijin Zhang, Xin Liu, Xinchen
+Zhang, Xinyu Yang, Xiongcai Luo, Xiuli Chen, Xuan-
+tong Zhong, Xuefeng Xiao, Xujing Li, Yan Wu, Yawei
+Wen, Yifan Du, Yihao Zhang, Yining Ye, Yonghui Wu,
+Yu Liu, Yu Yue, Yufeng Zhou, Yufeng Yuan, Yuhang
+Xu, Yuhong Yang, Yun Zhang, Yunhao Fang, Yun-
+tao Li, Yurui Ren, Yuwen Xiong, Zehua Hong, Zehua
+Wang, ZeweiSun, ZeyuWang, ZhaoCai, ZhaoyueZha,
+Zhecheng An, Zhehui Zhao, Zhengzhuo Xu, Zhipeng
+Chen, Zhiyong Wu, Zhuofan Zheng, Zihao Wang, Zi-
+long Huang, Ziyu Zhu, and Zuquan Song. Seed1.5-vl
+technical report, 2025. 2, 3, 6
+[12] Hongliang He, Wenlin Yao, Kaixin Ma, Wenhao Yu,
+Yong Dai, Hongming Zhang, Zhenzhong Lan, and
+Dong Yu. WebVoyager: Building an end-to-end web
+agent with large multimodal models. InProceedings of
+the 62nd Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers), 2024.
+3
+[13] Wenyi Hong, Weihan Wang, Qingsong Lv, Jiazheng
+Xu, Wenmeng Yu, Junhui Ji, Yan Wang, Zihan Wang,
+Yuxiao Dong, Ming Ding, and Jie Tang. Cogagent:
+A visual language model for gui agents. InProceed-
+ings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition (CVPR), pages 14281–
+14290, 2024. 6
+[14] Wenyi Hong, Weihan Wang, Qingsong Lv, Jiazheng
+Xu, Wenmeng Yu, Junhui Ji, Yan Wang, Zihan Wang,
+Yuxiao Dong, Ming Ding, et al. CogAgent: A visual
+language model for GUI agents. InProceedings of the
+IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition, pages 14281–14290, 2024. 3
+[15] Geunwoo Kim, Pierre Baldi, and Stephen McAleer.
+Language models can solve computer tasks. InAd-
+vances in Neural Information Processing Systems,
+pages 39648–39677, 2023. 1, 3
+[16] Alexander Kirillov, Eric Mintun, Nikhila Ravi, Hanzi
+Mao, Chloe Rolland, Laura Gustafson, Tete Xiao,
+Spencer Whitehead, Alexander C. Berg, Wan-Yen Lo,
+Piotr Dollár, and Ross Girshick. Segment anything,
+2023. 2, 3
+[17] Jing Yu Koh, Robert Lo, Lawrence Jang, Vikram
+Duvvur, Ming Chong Lim, Po-Yu Huang, Graham
+Neubig, Shuyan Zhou, Ruslan Salakhutdinov, and
+Daniel Fried. VisualWebArena: Evaluating multi-
+modal agents on realistic visual web tasks. InProceed-
+ings of the 62nd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers),
+pages 881–905, 2024. 3
+[18] Bin Lei, Nuo Xu, Ali Payani, Mingyi Hong, Chunhua
+Liao, Yu Cao, and Caiwen Ding.GUI-Spotlight:
+Adaptive iterative focus refinement for enhanced gui
+visual grounding, 2025. 3, 6
+[19] Kaixin Li, Meng Ziyang, Hongzhan Lin, Ziyang Luo,
+Yuchen Tian, Jing Ma, Zhiyong Huang, and Tat-Seng
+Chua. Screenspot-pro: GUI grounding for professional
+high-resolution computer use. InWorkshop on Reason-
+ing and Planning for Large Language Models, 2025. 1,
+3, 5, 6, 8, 9
+[20] ShilongLiu, ZhaoyangZeng, TianheRen, FengLi, Hao
+Zhang, Jie Yang, Chunyuan Li, Jianwei Yang, Hang
+Su, Jun Zhu, et al. Grounding dino: Marrying dino
+with grounded pre-training for open-set object detec-
+tion.arXiv preprint arXiv:2303.05499, 2023. 2, 3
+[21] Yadong Lu, Jianwei Yang, Yelong Shen, and Ahmed
+Awadallah. Omniparser for pure vision based gui
+agent, 2024. 2, 3
+[22] AnthonyNguyen. Improvedguigroundingviaiterative
+narrowing, 2025. 2, 3
+[23] Runliang Niu, Jindong Li, Shiqi Wang, Yali Fu, Xiyu
+Hu, Xueyuan Leng, He Kong, Yi Chang, and Qi Wang.
+ScreenAgent: A vision language model-driven com-
+puter control agent. InProceedings of the Thirty-
+Third International Joint Conference on Artificial In-
+telligence, IJCAI-24, 2024. 3
+[24] OpenAI. Computer-using agent.https://openai.
+com/index/computer-using-agent/, 2025. Accessed
+[insert date you viewed it]. 1, 3, 6
+[25] OpenAI. Introducing gpt-5.https://openai.com/
+index/introducing-gpt-5/, 2025. Accessed [insert
+date you viewed it]. 2, 3
+[26] OpenAI, :, Aaron Hurst, Adam Lerer, Adam P.
+Goucher, Adam Perelman, Aditya Ramesh, Aidan
+Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec
+Radford, Aleksander Mądry, Alex Baker-Whitcomb,
+Alex Beutel, Alex Borzunov, Alex Carney, Alex Chow,
+Alex Kirillov, Alex Nichol, Alex Paino, Alex Renzin,
+Alex Tachard Passos, Alexander Kirillov, Alexi Chris-
+takis, Alexis Conneau, Ali Kamali, Allan Jabri, Al-
+lison Moyer, Allison Tam, Amadou Crookes, Amin
+Tootoochian, Amin Tootoonchian, Ananya Kumar,
+Andrea Vallone, Andrej Karpathy, Andrew Braun-
+stein, Andrew Cann, Andrew Codispoti, Andrew
+Galu, Andrew Kondrich, Andrew Tulloch, Andrey
+Mishchenko, Angela Baek, Angela Jiang, Antoine
+Pelisse, Antonia Woodford, Anuj Gosalia, Arka Dhar,
+Ashley Pantuliano, Avi Nayak, Avital Oliver, Bar-
+ret Zoph, Behrooz Ghorbani, Ben Leimberger, Ben
+Rossen, Ben Sokolowsky, Ben Wang, Benjamin Zweig,
+Beth Hoover, Blake Samic, Bob McGrew, Bobby
+Spero, Bogo Giertler, Bowen Cheng, Brad Light-
+cap, Brandon Walkin, Brendan Quinn, Brian Guar-
+raci, Brian Hsu, Bright Kellogg, Brydon Eastman,
+Camillo Lugaresi, Carroll Wainwright, Cary Bassin,
+Cary Hudson, Casey Chu, Chad Nelson, Chak Li,
+Chan Jun Shern, Channing Conger, Charlotte Barette,
+Chelsea Voss, Chen Ding, Cheng Lu, Chong Zhang,
+Chris Beaumont, Chris Hallacy, Chris Koch, Chris-
+tian Gibson, Christina Kim, Christine Choi, Chris-
+tine McLeavey, Christopher Hesse, Claudia Fischer,
+Clemens Winter, Coley Czarnecki, Colin Jarvis, Colin
+Wei, Constantin Koumouzelis, Dane Sherburn, Daniel
+Kappler, Daniel Levin, Daniel Levy, David Carr,
+David Farhi, David Mely, David Robinson, David
+Sasaki, Denny Jin, Dev Valladares, Dimitris Tsipras,
+Doug Li, Duc Phong Nguyen, Duncan Findlay, Ed-
+ede Oiwoh, Edmund Wong, Ehsan Asdar, Eliza-
+beth Proehl, Elizabeth Yang, Eric Antonow, Eric
+Kramer, Eric Peterson, Eric Sigler, Eric Wallace,
+Eugene Brevdo, Evan Mays, Farzad Khorasani, Fe-
+lipe Petroski Such, Filippo Raso, Francis Zhang, Fred
+von Lohmann, Freddie Sulit, Gabriel Goh, Gene
+Oden, Geoff Salmon, Giulio Starace, Greg Brockman,
+Hadi Salman, Haiming Bao, Haitang Hu, Hannah
+Wong, Haoyu Wang, Heather Schmidt, Heather Whit-
+ney, Heewoo Jun, Hendrik Kirchner, Henrique Ponde
+de Oliveira Pinto, Hongyu Ren, Huiwen Chang,
+Hyung Won Chung, Ian Kivlichan, Ian O’Connell, Ian
+O’Connell, Ian Osband, Ian Silber, Ian Sohl, Ibrahim
+Okuyucu, Ikai Lan, Ilya Kostrikov, Ilya Sutskever, In-
+gmar Kanitscheider, Ishaan Gulrajani, Jacob Coxon,
+Jacob Menick, Jakub Pachocki, James Aung, James
+Betker, James Crooks, James Lennon, Jamie Kiros,
+Jan Leike, Jane Park, Jason Kwon, Jason Phang,
+Jason Teplitz, Jason Wei, Jason Wolfe, Jay Chen,
+Jeff Harris, Jenia Varavva, Jessica Gan Lee, Jessica
+Shieh, Ji Lin, Jiahui Yu, Jiayi Weng, Jie Tang, Jieqi
+Yu, Joanne Jang, Joaquin Quinonero Candela, Joe
+Beutler, Joe Landers, Joel Parish, Johannes Heidecke,
+JohnSchulman, JonathanLachman, JonathanMcKay,
+Jonathan Uesato, Jonathan Ward, Jong Wook Kim,
+Joost Huizinga, Jordan Sitkin, Jos Kraaijeveld, Josh
+Gross, Josh Kaplan, Josh Snyder, Joshua Achiam, Joy
+Jiao, Joyce Lee, Juntang Zhuang, Justyn Harriman,
+Kai Fricke, Kai Hayashi, Karan Singhal, Katy Shi,
+Kavin Karthik, Kayla Wood, Kendra Rimbach, Kenny
+Hsu, Kenny Nguyen, Keren Gu-Lemberg, Kevin But-
+ton, Kevin Liu, Kiel Howe, Krithika Muthukumar,
+Kyle Luther, Lama Ahmad, Larry Kai, Lauren Itow,
+Lauren Workman, Leher Pathak, Leo Chen, Li Jing,
+Lia Guy, Liam Fedus, Liang Zhou, Lien Mamit-
+suka, Lilian Weng, Lindsay McCallum, Lindsey Held,
+Long Ouyang, Louis Feuvrier, Lu Zhang, Lukas Kon-
+draciuk, Lukasz Kaiser, Luke Hewitt, Luke Metz,
+Lyric Doshi, Mada Aflak, Maddie Simens, Madelaine
+Boyd, Madeleine Thompson, Marat Dukhan, Mark
+Chen, Mark Gray, Mark Hudnall, Marvin Zhang,
+Marwan Aljubeh, Mateusz Litwin, Matthew Zeng,
+Max Johnson, Maya Shetty, Mayank Gupta, Meghan
+Shah, Mehmet Yatbaz, Meng Jia Yang, Mengchao
+Zhong, Mia Glaese, Mianna Chen, Michael Janner,
+Michael Lampe, Michael Petrov, Michael Wu, Michele
+Wang, Michelle Fradin, Michelle Pokrass, Miguel Cas-
+tro, Miguel Oom Temudo de Castro, Mikhail Pavlov,
+Miles Brundage, Miles Wang, Minal Khan, Mira Mu-
+rati, Mo Bavarian, Molly Lin, Murat Yesildal, Na-
+cho Soto, Natalia Gimelshein, Natalie Cone, Natalie
+Staudacher, Natalie Summers, Natan LaFontaine, Neil
+Chowdhury, Nick Ryder, Nick Stathas, Nick Tur-
+ley, Nik Tezak, Niko Felix, Nithanth Kudige, Nitish
+Keskar, Noah Deutsch, Noel Bundick, Nora Puckett,
+Ofir Nachum, Ola Okelola, Oleg Boiko, Oleg Murk,
+Oliver Jaffe, Olivia Watkins, Olivier Godement, Owen
+Campbell-Moore, Patrick Chao, Paul McMillan, Pavel
+Belov, Peng Su, Peter Bak, Peter Bakkum, Peter
+Deng, Peter Dolan, Peter Hoeschele, Peter Welinder,
+Phil Tillet, Philip Pronin, Philippe Tillet, Prafulla
+Dhariwal, Qiming Yuan, Rachel Dias, Rachel Lim,
+Rahul Arora, Rajan Troll, Randall Lin, Rapha Gon-
+tijo Lopes, Raul Puri, Reah Miyara, Reimar Leike,
+Renaud Gaubert, Reza Zamani, Ricky Wang, Rob
+Donnelly, Rob Honsby, Rocky Smith, Rohan Sahai,
+Rohit Ramchandani, Romain Huet, Rory Carmichael,
+Rowan Zellers, Roy Chen, Ruby Chen, Ruslan Nig-
+matullin, Ryan Cheu, Saachi Jain, Sam Altman, Sam
+Schoenholz, Sam Toizer, Samuel Miserendino, Sand-
+hini Agarwal, Sara Culver, Scott Ethersmith, Scott
+Gray, Sean Grove, Sean Metzger, Shamez Hermani,
+Shantanu Jain, Shengjia Zhao, Sherwin Wu, Shino Jo-
+moto, Shirong Wu, Shuaiqi, Xia, Sonia Phene, Spencer
+Papay, Srinivas Narayanan, Steve Coffey, Steve Lee,
+Stewart Hall, Suchir Balaji, Tal Broda, Tal Stramer,
+Tao Xu, Tarun Gogineni, Taya Christianson, Ted
+Sanders, Tejal Patwardhan, Thomas Cunninghman,
+Thomas Degry, Thomas Dimson, Thomas Raoux,
+Thomas Shadwell, Tianhao Zheng, Todd Underwood,
+Todor Markov, Toki Sherbakov, Tom Rubin, Tom
+Stasi, Tomer Kaftan, Tristan Heywood, Troy Peter-
+son, Tyce Walters, Tyna Eloundou, Valerie Qi, Veit
+Moeller, Vinnie Monaco, Vishal Kuo, Vlad Fomenko,
+Wayne Chang, Weiyi Zheng, Wenda Zhou, Wesam
+Manassra, Will Sheu, Wojciech Zaremba, Yash Patil,
+Yilei Qian, Yongjik Kim, Youlong Cheng, Yu Zhang,
+Yuchen He, Yuchen Zhang, Yujia Jin, Yunxing Dai,
+and Yury Malkov. Gpt-4o system card, 2024. 6
+[27] Anthropic PBC. Claude 3.7 sonnet and claude code.
+https://www.anthropic.com/news/claude- 3- 7-
+sonnet, 2025. 6
+[28] Anthropic PBC. Claude sonnet 4.5 sys-
+tem card.https : / / assets . anthropic .
+com / m / 12f214efcc2f457a / original /
+ClaudeâĂŘSonnetâĂŘ4âĂŘ5âĂŘSystemâĂŘCard . pdf,
+2025. Accessed [insert date you viewed it]. 2, 3
+[29] Yujia Qin, Yining Ye, Junjie Fang, Haoming Wang,
+Shihao Liang, Shizuo Tian, Junda Zhang, Jiahao Li,
+Yunxin Li, Shijue Huang, Wanjun Zhong, Kuanye Li,
+Jiale Yang, Yu Miao, Woyu Lin, Longxiang Liu, Xu
+Jiang, Qianli Ma, Jingyu Li, Xiaojun Xiao, Kai Cai,
+Chuang Li, Yaowei Zheng, Chaolin Jin, Chen Li, Xiao
+Zhou, Minchao Wang, Haoli Chen, Zhaojian Li, Hai-
+hua Yang, Haifeng Liu, Feng Lin, Tao Peng, Xin Liu,
+and Guang Shi. Ui-tars: Pioneering automated gui
+interaction with native agents, 2025. 1, 2, 3, 6, 8
+[30] Shaoqing Ren, Kaiming He, Ross Girshick, and Jian
+Sun. Faster r-cnn: Towards real-time object detection
+with region proposal networks, 2016. 2, 3
+[31] Olaf Ronneberger, Philipp Fischer, and Thomas Brox.
+U-net: Convolutional networks for biomedical image
+segmentation, 2015. 2, 3
+[32] Peter Shaw, Mandar Joshi, James Cohan, Jonathan
+Berant, Panupong Pasupat, Hexiang Hu, Urvashi
+Khandelwal, Kenton Lee, and Kristina N Toutanova.
+From pixels to UI actions: Learning to follow instruc-
+tions via graphical user interfaces. InAdvances in
+Neural Information Processing Systems, pages 34354–
+34370, 2023. 3
+[33] Qwen Team. Qwen3-vl: Sharper vision, deeper
+thought, broader action.https://qwen.ai/blog?
+from = research . latest - advancements - list & id =
+99f0335c4ad9ff6153e517418d48535ab6d8afef, 2025.
+Accessed [insert date you viewed it]. 1, 2, 3, 6, 8
+[34] Junyang Wang, Haiyang Xu, Jiabo Ye, Ming Yan,
+Weizhou Shen, Ji Zhang, Fei Huang, and Jitao Sang.
+Mobile-Agent: Autonomous multi-modal mobile de-
+vice agent with visual perception. InICLR 2024 Work-
+shop on Large Language Model (LLM) Agents, 2024. 1,
+3
+[35] Weiyun Wang, Zhangwei Gao, Lixin Gu, Hengjun Pu,
+Long Cui, Xingguang Wei, Zhaoyang Liu, Linglin Jing,
+Shenglong Ye, Jie Shao, Zhaokai Wang, Zhe Chen,
+Hongjie Zhang, Ganlin Yang, Haomin Wang, Qi Wei,
+Jinhui Yin, Wenhao Li, Erfei Cui, Guanzhou Chen,
+Zichen Ding, Changyao Tian, Zhenyu Wu, Jingjing
+Xie, Zehao Li, Bowen Yang, Yuchen Duan, Xuehui
+Wang, Zhi Hou, Haoran Hao, Tianyi Zhang, Songze
+Li, Xiangyu Zhao, Haodong Duan, Nianchen Deng,
+Bin Fu, Yinan He, Yi Wang, Conghui He, Botian Shi,
+Junjun He, Yingtong Xiong, Han Lv, Lijun Wu, Wenqi
+Shao, Kaipeng Zhang, Huipeng Deng, Biqing Qi, Ji-
+aye Ge, Qipeng Guo, Wenwei Zhang, Songyang Zhang,
+Maosong Cao, Junyao Lin, Kexian Tang, Jianfei Gao,
+Haian Huang, Yuzhe Gu, Chengqi Lyu, Huanze Tang,
+Rui Wang, Haijun Lv, Wanli Ouyang, Limin Wang,
+Min Dou, Xizhou Zhu, Tong Lu, Dahua Lin, Jifeng
+Dai, Weijie Su, Bowen Zhou, Kai Chen, Yu Qiao, Wen-
+hai Wang, and Gen Luo. Internvl3.5: Advancing open-
+sourcemultimodalmodelsinversatility, reasoning, and
+efficiency, 2025. 2, 3
+[36] Xinyuan Wang, Bowen Wang, Dunjie Lu, Junlin Yang,
+Tianbao Xie, Junli Wang, Jiaqi Deng, Xiaole Guo, Yi-
+heng Xu, Chen Henry Wu, Zhennan Shen, Zhuokai Li,
+Ryan Li, Xiaochuan Li, Junda Chen, Boyuan Zheng,
+Peihang Li, Fangyu Lei, Ruisheng Cao, Yeqiao Fu,
+Dongchan Shin, Martin Shin, Jiarui Hu, Yuyan Wang,
+Jixuan Chen, Yuxiao Ye, Danyang Zhang, Dikang Du,
+Hao Hu, Huarong Chen, Zaida Zhou, Haotian Yao, Zi-
+wei Chen, Qizheng Gu, Yipu Wang, Heng Wang, Diyi
+Yang, Victor Zhong, Flood Sung, Y. Charles, Zhilin
+Yang, and Tao Yu. Opencua: Open foundations for
+computer-use agents, 2025. 1, 3
+[37] Hang Wu, Hongkai Chen, Yujun Cai, Chang Liu,
+Qingwen Ye, Ming-Hsuan Yang, and Yiwei Wang.
+DiMo-GUI: Advancing test-time scaling in GUI
+groundingviamodality-awarevisualreasoning. InPro-
+ceedings of the 2025 Conference on Empirical Methods
+in Natural Language Processing, pages 26257–26267,
+Suzhou, China, 2025. Association for Computational
+Linguistics. 2, 3
+[38] Zhiyong Wu, Chengcheng Han, Zichen Ding, Zhen-
+min Weng, Zhoumianze Liu, Shunyu Yao, Tao Yu, and
+Lingpeng Kong. OS-Copilot: Towards generalist com-
+puter agents with self-improvement. InICLR 2024
+Workshop on Large Language Model (LLM) Agents,
+2024. 1, 3
+[39] Zhiyong Wu, Zhenyu Wu, Fangzhi Xu, Yian Wang,
+Qiushi Sun, Chengyou Jia, Kanzhi Cheng, Zichen
+Ding, Liheng Chen, Paul Pu Liang, et al. Os-atlas:
+A foundation action model for generalist gui agents.
+arXiv preprint arXiv:2410.23218, 2024. 6
+[40] Tianbao Xie, Danyang Zhang, Jixuan Chen, Xi-
+aochuan Li, Siheng Zhao, Ruisheng Cao, Jing Hua
+Toh, Zhoujun Cheng, Dongchan Shin, Fangyu Lei, Yi-
+tao Liu, Yiheng Xu, Shuyan Zhou, Silvio Savarese,
+Caiming Xiong, Victor Zhong, and Tao Yu. Osworld:
+Benchmarkingmultimodalagentsforopen-endedtasks
+in real computer environments. InAdvances in Neural
+Information Processing Systems, pages 52040–52094,
+2024. 1, 3
+[41] Tianbao Xie, Jiaqi Deng, Xiaochuan Li, Junlin Yang,
+Haoyuan Wu, Jixuan Chen, Wenjing Hu, Xinyuan
+Wang, Yuhui Xu, Zekun Wang, Yiheng Xu, Junli
+Wang, Doyen Sahoo, Tao Yu, and Caiming Xiong.
+Scaling computer-use grounding via user interface de-
+composition and synthesis, 2025. 6
+[42] An Yan, Zhengyuan Yang, Wanrong Zhu, Kevin
+Lin, Linjie Li, Jianfeng Wang, Jianwei Yang, Yiwu
+Zhong, Julian McAuley, Jianfeng Gao, et al. GPT-
+4V in wonderland: Large multimodal models for
+zero-shot smartphone gui navigation.arXiv preprint
+arXiv:2311.07562, 2023. 1, 3
+[43] Jianwei Yang, Hao Zhang, Feng Li, Xueyan Zou,
+Chunyuan Li, and Jianfeng Gao. Set-of-Mark prompt-
+ing unleashes extraordinary visual grounding in GPT-
+4v.arXiv preprint arXiv:2310.11441, 2023. 2, 3
+[44] Yan Yang, Dongxu Li, Yutong Dai, Yuhao Yang,
+Ziyang Luo, Zirui Zhao, Zhiyuan Hu, Junzhe Huang,
+Amrita Saha, Zeyuan Chen, Ran Xu, Liyuan Pan, Sil-
+vio Savarese, Caiming Xiong, and Junnan Li. Gta1:
+Gui test-time scaling agent, 2025. 1, 2, 3, 6
+[45] Yuhao Yang, Yue Wang, Dongxu Li, Ziyang Luo, Bei
+Chen, Chao Huang, and Junnan Li. Aria-ui: Visual
+grounding for gui instructions, 2025. 6
+[46] Xinbin Yuan, Jian Zhang, Kaixin Li, Zhuoxuan Cai,
+Lujian Yao, Jie Chen, Enguang Wang, Qibin Hou,
+Jinwei Chen, Peng-Tao Jiang, and Bo Li. Enhancing
+visual grounding for gui agents via self-evolutionary
+reinforcement learning, 2025. 6
+[47] Zhuosheng Zhan and Aston Zhang. You only look
+at screens: Multimodal chain-of-action agents.arXiv
+preprint arXiv:2309.11436, 2023. 3
+[48] Boyuan Zheng, Boyu Gou, Jihyung Kil, Huan Sun,
+and Yu Su. GPT-4V(ision) is a generalist web agent,
+if grounded. InForty-first International Conference on
+Machine Learning, 2024. 1, 3
+[49] Shuyan Zhou, Frank F Xu, Hao Zhu, Xuhui Zhou,
+Robert Lo, Abishek Sridhar, Xianyi Cheng, Tianyue
+Ou, Yonatan Bisk, Daniel Fried, et al. WebArena:
+A realistic web environment for building autonomous
+agents. InThe Twelfth International Conference on
+Learning Representations, 2024. 3
+[50] Yuqi Zhou, Sunhao Dai, Shuai Wang, Kaiwen Zhou,
+Qinglin Jia, and Jun Xu. GUI-g1: Understanding r1-
+zero-like training for visual grounding in GUI agents.
+InThe Thirty-ninth Annual Conference on Neural In-
+formation Processing Systems, 2025. 6

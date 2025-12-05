@@ -1,0 +1,1203 @@
+preprint
+Weight Space Representation Learning with
+Neural Fields
+Zhuoqian Yang, Mathieu Salzmann, Sabine S¨ usstrunk
+EPFL
+<first>.<last>@epfl.ch
+Abstract
+In this work, we investigate the potential of weights to serve as effective
+representations, focusing on neural fields. Our key insight is that constrain-
+ing the optimization space through a pre-trained base model and low-rank
+adaptation (LoRA) can induce structure in weight space. Across recon-
+struction, generation, and analysis tasks on 2D and 3D data, we find that
+multiplicative LoRA weights achieve high representation quality while ex-
+hibiting distinctiveness and semantic structure. When used with latent
+diffusion models, multiplicative LoRA weights enable higher-quality gener-
+ation than existing weight-space methods.
+1 Introduction
+Neural network weights have traditionally been viewed as opaque byproducts of optimiza-
+tion, high-dimensional vectors that encode learned functions but resist interpretation or
+manipulation. This perspective has begun to shift with recent advances in weight space
+learning, where researchers have demonstrated that network parameters can be merged
+Yang et al. (2024); Singh et al.; Lim et al. (2024b), generated Erko¸ c et al. (2023); Peebles
+et al. (2023), or used as inputs to other networks Zhou et al. (2023b); Hospedales et al.
+(2020); Lim et al. (2024a). A fundamental question nonetheless remains largely unexplored:
+Can neural network weights themselves serve as meaningful representations for data?
+We investigate this question in the context of implicit neural representations (INRs), where
+neural networks are trained to overfit individual samples by mapping coordinates to values.
+INRs have proven to be versatile, capable of encoding diverse data modalities within a unified
+architecture Xie et al. (2022). Since INRs inherently encode signals as network parameters,
+using these weights as representations is a natural next step. However, neural network
+weights are known to be ambiguous by nature, for example because neuron permutations and
+scaling leave the network function unchanged Zhao et al. (2025). As such, different random
+initializations may yield vastly different parameter configurations yet functionally identical
+models. In other words, functionally identical networks can be arbitrarily far in weight space
+Zhao et al. (2025), challenging the use of network weights as data representations.
+Our key insight is that constraining the network weights of different samples by introducing
+appropriate inductive biases allows us to transform these chaotic parameters into organized,
+semantic representations. To this end, as illustrated in Figure 1, we propose to use Low-
+Rank Adaptation (LoRA) Hu et al. (2022) within a pre-trained base neural field to create
+structured weight space representations. This design is motivated by two key properties of
+LoRA: First, adaptation through LoRA constrains the weight updates to lie within a low-
+dimensional subspace defined by the base model. Hu et al. Hu et al. (2022) demonstrate
+this through subspace similarity analysis, showing that adaptations at different ranks share
+common singular vector directions, suggesting the existence of a meaningful low-rank adap-
+tation subspace. Second, the low-rank constraint inherently reduces the dimensionality of
+the weight space representation, mitigating the curse of dimensionality that would otherwise
+hinder learning in high-dimensional parameter spaces.
+Notably, we find that the standard additive LoRA formulation is insufficient for weight space
+learning in the context of neural fields. Instead, we introduce multiplicative LoRA (mLoRA),
+1
+arXiv:2512.01759v1  [cs.LG]  1 Dec 2025
+preprint
+θ
+p ∈ ℝn
+vp ∈ ℝm
+ϕ1
+ϕ2
+ϕi
+ϕ3
+input 
+coordinate
+signal 
+values
+multiplicative 
+low-rank 
+adaptation
+base 
+network
+mLoRA 
+weight
+Weight Space Representation
+Generation ClassificationReconstruction …
+Figure 1: LoRA based weight space representation with neural fields. Given an input
+coordinatep∈R n, a base neural field is adapted via multiplicative LoRA weightsϕ i to
+produce signal valuesv p ∈R m, each weight representing an instance. The LoRA weights
+themselves form structured representations in weight space, enabling diverse applications
+including reconstruction, generation, and clustering.
+where weight updates are applied through element-wise multiplication rather than addition.
+This multiplicative formulation naturally aligns with modulation mechanisms in generative
+neural fields Anokhin et al. (2021); Karras et al. (2021); Chan et al. (2020), where features
+are composed through multiplicative interactions, enabling effective weight space learning.
+We validate our approach across multiple data modalities and tasks. First, we establish that
+LoRA-based weight representations achieve lower reconstruction error, greater robustness
+to initialization, and better linear mode connectivity than vanilla INR weights. Second, we
+demonstrate that these structured weight spaces support high-quality generative modeling,
+with diffusion models trained on multiplicative LoRA weights outperforming prior attempts
+in weight space neural field generation. Finally, through evaluation on discriminative tasks
+(i.e.classification and clustering), we confirm that the weight space structure correlates
+with semantic properties of the encoded data.
+Our contributions can be summarized as follows:
+1. We demonstrate that neural network weights, when properly constrained, can serve as
+effective data representations that capture semantic structure.
+2. We introduce multiplicative LoRA for neural fields, which we show provides superior
+representation quality compared to standard additive LoRA and vanilla weight parameter-
+izations.
+3. We validate weight space representations across diverse tasks: Reconstruction, genera-
+tion, and analysis, establishing their viability as a representation paradigm.
+2 Related Work
+2.1 Weight Space Learning
+The treatment of neural network weights as learnable representations has emerged as a
+distinct research direction, progressing from early hypernetwork approaches to sophisticated
+weight-space generative models. Early work demonstrated that network parameters could
+be generated by auxiliary networks Ha et al. (2016), though these methods suffered from
+prohibitive memory overhead when scaling to modern architectures Wang & Others (2025).
+The fundamental challenge of weight space manipulation stems from permutation symmetry:
+Functionally identical networks can have vastly different parameter configurations due to
+neuron reordering Gao & Others (2024); Navon et al. (2023).
+2
+preprint
+Recent advances have addressed these challenges through multiple strategies. Model merging
+techniques leverage optimal transport and activation matching to align neurons before pa-
+rameter fusion Singh & Jaggi (2020); Ormaniec & Others (2025), while equivariant architec-
+tures explicitly respect weight-space symmetries when processing network parameters Navon
+et al. (2023); Kofinas et al. (2024). A parallel research direction focuses on building neural
+networks that process weights as inputs. Neural Functional Transformers Zhou et al. (2023b)
+and permutation-equivariant neural functionals Zhou et al. (2023a) construct architectures
+that can extract information from network parameters while respecting their symmetries.
+Methods operating on Low-Rank Adaptation (LoRA) weights Lim et al. (2024a) develop
+GL-equivariant networks to process low-rank weight spaces of fine-tuned models.
+Our work differs fundamentally from these weight-processing approaches: Rather than
+building encoders or networks that consume weights as inputs, we investigate whether
+optimization-derived weights candirectlyserve as representations without additional en-
+coding steps. This distinction positions our contribution as exploring the intrinsic repre-
+sentational quality of weight spaces rather than developing architectures for weight-space
+processing.
+Generative modeling in weight space has seen significant progress, with diffusion models now
+capable of synthesizing functional neural networks. Weight-space generation with diffusion
+models Wang et al. (2024); Wang & Others (2025); Peebles et al. (2023) has been explored
+for generating models for image classification. With a different focus, our work explore
+neural neural field weights as representation of data that support high-quality generation
+and encode semantic structure.
+2.2 Implicit Neural Representations
+Implicit Neural Representations (INRs), also known as neural fields, are continuous functions
+parameterized by neural networks that map coordinates to signal values. INRs represent
+signals as continuous functions Φ :R n →R m, where a neural network mapsn-dimensional
+coordinates tom-dimensional quantities. This paradigm enables resolution-independent,
+memory-efficient representations of complex signals.
+The versatility of INRs has been extensively documented Xie et al. (2022); Essakine et al.
+(2024). These representations are fundamentally data-agnostic, employing identical network
+architectures across diverse modalities including 1D audio, 2D images, 3D shapes, and even
+4D spatiotemporal data.
+Beyond single-instance fitting, generalizable INRs have been proposed to learn priors across
+datasets through approaches based on autoencoders Park et al. (2019), generative adversarial
+networks (GANs) Anokhin et al. (2021); Karras et al. (2021); Chan et al. (2020) and shared
+layers Vyas et al. (2024). The GAN-based works could be seen as extensions of the StyleGAN
+Karras et al. (2019) paradigm into the realm of neural fields. They generate different
+instances by modulating an MLP trunk, upon which we build as base network.
+Because INRs parameterize data as neural network functions, the weights offer a direct
+pathway to data representation. This perspective has practical applications in compres-
+sion, with methods Dupont et al. (2021); Gordon et al. (2024) demonstrating competitive
+compression ratios by storing quantized network parameters instead of raw data. However,
+whether the collection of weights could encode semantic structure remains an open ques-
+tion. Another line of work employs hypernetworks Klocek et al. (2019) and transformers
+Chen & Wang (2022) to predict INR weights from input data via learned mappings as way
+of data generation. In contrast, we investigate whether gradient-descent-optimized weights
+can directly serve as meaningful representations. HyperDiffusion Erko¸ c et al. (2023) train
+a diffusion transformer to generate neural field weights as mean of synthesizing 3D shapes
+and 4D animated shapes. Our work build on this work to further explore what ensures
+successful weight space generative modeling as well as explore semantic structures in neural
+field weights.
+3
+preprint
+3 Method
+We begin by establishing weight space representations via Low-Rank Adaptation of pre-
+trained base neural fields (Section 3.1). We then introduce multiplicative LoRA, a key
+modification that enables effective weight space learning for neural fields (Section 3.2). Next,
+we describe the base model architecture and training procedure (Section 3.3), followed by
+asymmetric masking to address permutation symmetry (Section 3.4). Finally, we present a
+hierarchical diffusion transformer for generative modeling in weight space (Section 3.5).
+3.1 Weight Space Representation
+Given a dataset consisting of a collection of instances{x i}N
+i=1, we optimize one neural field
+for each instance. Each instance is then represented by the weights of its corresponding
+network, forming a weight space representation.
+The simplest way to represent an instance with network weights consists of using standalone
+MLP weights. For each instancex i, we fit a small MLP from scratch. The instancex i is
+then represented with the weights of the MLPθ i. Formally,
+θi = min
+θ
+Lrecon [f(p|θ),x i(p)],(1)
+wherepis a spatial coordinate. The architecture consists of a Fourier Feature layer followed
+by two linear layers. We evaluate this approach as a baseline, to encourage consistency, all
+MLPs share the same random initialization across different instances as is done in Erko¸ c
+et al. (2023).
+Encouraged by the observation that LoRA weights converge to a certain a subspace Hu et al.
+(2022), which indicates that the base network enforce a certain structure on the space of
+LoRA weights, we fine tune a pre-trained base model using Low-Rank Adaptation (LoRA).
+For each instancex i, we optimize LoRA parametersϕ i ={A l
+i,B l
+i}L
+l=1 acrossLlayers while
+keeping the base weights frozen. That is, we solve
+ϕi = min
+ϕ
+Lrecon [f(p|LoRA(W,ϕ)),x i(p)],(2)
+whereWdenotes the frozen base model weights andL recon is a reconstruction loss. The
+instancex i is then represented with the LoRA weightsϕ i, illustrated in Figure 1. Like is
+done for Standalone MLP weights, all LoRA share the same initialization.
+3.2 Multiplicative LoRA
+We employ multiplicative LoRA rather than the standard additive formulation. Standard
+LoRA Hu et al. (2022) adapts a pre-trained weight matrixW∈R dout×din through additive
+low-rank updatesW ′ =W+BAwhereA∈R r×din andB∈R dout×r are low-rank matrices
+with rankr≪min(d in, dout). We introduce a multiplicative formulation that applies weight
+updates through elementwise multiplication as
+W′ =W⊙BA,(3)
+where⊙denotes elementwise multiplication. This formulation enables more effective mod-
+ulation of features, analogous to successful modulation techniques in generative neural
+fields Anokhin et al. (2021); Karras et al. (2021); Chan et al. (2020). In our experiments,
+we demonstrate that this design is a critical to obtaining good weight space structure and
+performance on reconstruction, generation and discriminative tasks.
+3.3 Base Model Architecture and Training
+For LoRA-based representations, we require a strong base model that captures transferable
+features across the data distribution. We adopt a coordinate-based neural field architecture
+with multiplicative weight modulation, a design found across multiple generative neural field
+works Anokhin et al. (2021); Karras et al. (2021); Chan et al. (2020). The network consists of
+an MLP-based trunk, where variations across instances are injected through multiplicative
+4
+preprint
+Diffusion Transformer
+…
+Multi-Head Attention
+…a(1)
+1 b(1)
+1
+concat
+a(r)
+1 b(r)
+1
+concat
+Diffusion Timestep
+̂ a(1)
+1
+Vector-level PE
+Layer-level PE
+Multi-Head Attention
+…a(1)
+L b(1)
+L a(r)
+L b(r)
+L
+concat concat
+… ̂ a(r)
+L
+̂ b(1)
+1
+̂ b(r)
+L
+LoRA Layer Encoders
+Figure 2:Diffusion Transformer with hierarchical LoRA layer encoder architec-
+ture.For each layerl, we treat vector pairs (a (i)
+l ,b (i)
+l ) as tokens. Vector-level positional
+encodings capture rank dimension indices, followed by multi-head attention that models
+interactions among therrank components within the layer. This hierarchical design en-
+ables the model to learn both local (within-layer) dependencies among rank components
+and global (cross-layer) relationships across different layers of the neural field.
+weight modulation. This modulation mechanism naturally aligns with our multiplicative
+LoRA formulation, and the architecture is applicable, but not limited, to 2D and 3D data.
+We train the base model using the variational autodecoder paradigm Park et al. (2019).
+This training scheme is desirable because it requires no encoder design, aligning with the
+data-agnostic quality of INRs. Given a dataset{x i}N
+i=1, we jointly optimize the network
+parametersθand per-instance latent codes{z i}N
+i=1 by solving
+min
+θ,{zi}
+NX
+i=1
+Lrecon(fθ(p,z i),x i(p)) +λ r∥zi∥2
+2 ,(4)
+whereprepresents spatial coordinates andλ r controls the latent code regularization.
+3.4 Asymmetric Mask for Permutation Symmetry
+Permutation symmetry refers to the invariance of network functions under neuron reorder-
+ing, which causes functionally identical networks to occupy vastly different locations in
+weight space Zhao et al. (2025); Gao & Others (2024); Navon et al. (2023). Although LoRA
+weights converge to a certain subspace Hu et al. (2022), permutation symmetry remains
+present even within LoRA parameterizations, affecting both additive and multiplicative for-
+mulations. In additive LoRA, the operationBAcan be viewed as a two layer network:A
+acts as an encoder compressing torhidden activations, andBacts as a decoder expand-
+ing back. Permuting theserhidden dimensions preserves the function, inducing anr!-fold
+symmetry. In multiplicative LoRA, the adapted weight matrix decomposes into a sum of
+terms, each being the base weight matrix scaled by diagonal matrices. Permuting the rank
+dimensions in this sum preserves the output due to commutative addition, again leading
+to permutation symmetry. We provide formal proofs for both cases in the appendix. No-
+tably, multiplicative LoRA weights are aligned with base network channels once permutation
+symmetry is eliminated, see Corollary 2.2.
+To address this symmetry, we investigate the asymmetric masking technique of Lim et al.
+(2024b), designed to eliminate permutation symmetry during optimization. For each layer,
+we randomly freeze √dout entries in each row of the weight matrix, whered out is the out
+dimension. The frozen entries and their positions are shared across different runs. The
+values of the frozen entries are determined as follows. Suppose entryW ij is chosen to be
+fixed. For the standalone MLP and additive LoRA, we initialize the frozen entries with
+higher variance:W ij ∼ N(0, κI). with the other weights being initialized withN(0,I). In
+the case of multiplicative LoRA, we simply zero out the frozen entries:W ij ←0. This is
+natural for the multiplicative formulation.
+5
+preprint
+While asymmetric masking was originally developed for standalone MLPs and can be ap-
+plied to all three parameterizations, it proves most effective for multiplicative LoRA in the
+neural field domain. For standalone MLPs and additive LoRA, the technique requires large
+varianceκfor the frozen entries to break symmetry effectively Lim et al. (2024b). However,
+this is problematic for neural fields, which synthesize signals through additive composi-
+tion. In this regime, fixing certain weights to large magnitudes creates entanglement: other
+weights must compensate by canceling out these fixed signals, leading to difficult opti-
+mization landscapes. Multiplicative LoRA avoids this issue by zeroing out frozen entries,
+effectively removing certain signal components rather than forcing compensation. This ap-
+proach aligns naturally with the multiplicative structure and avoids weight entanglement.
+We validate this advantage empirically in our experiments.
+3.5 Diffusion Model on Weight Representations
+To evaluate the potential of the weight representations in generative tasks, we train diffusion
+models to learn their distribution. Following the DDPM framework, we define a forward
+diffusion process that gradually adds Gaussian noise to the weight representations, i.e.
+q(ϕt|ϕt−1) =N(ϕ t;
+p
+1−β tϕt−1, βtI),(5)
+whereϕrepresents the flattened weight parameters (either full MLP weights or LoRA
+matrices), andβ t follows a linear schedule from 10 −4 to 2×10 −2 overTtimesteps.
+We parameterize the reverse process using a diffusion transformer (DiT) Peebles & Xie
+(2022) that predicts the noise added to the weights. For standalone MLP weights, we adopt
+the architecture from Erko¸ c et al. (2023); Peebles et al. (2023). For LoRA weights, we design
+a hierarchical LoRA layer encoder module that respects the structural properties of low-rank
+weight matrices, shown in Figure 2. Each layerlis processed as follows. First, we treat
+each vector pair (a(i)
+l ,b (i)
+l ) as a token, wherea (i)
+l andb (i)
+l are thei-th columns and rows of
+matricesA (l) andB (l), respectively. Vector-level positional encodings are then applied to
+capture the rank dimension index. A multi-head attention module withrattention heads
+encodes the interactions among thervector pairs within the layer, allowing the model
+to learn dependencies between different rank components. Finally, layer-level positional
+encodings are applied to the aggregated layer representation before feeding into the main
+transformer.
+This hierarchical design is motivated by the compositional structure of LoRA weights.
+Within each layer, the low-rank decomposition creates dependencies among therrank com-
+ponents, which the intra-layer attention module explicitly models. Different layers, however,
+operate at different semantic levels in the neural field, making layer-level encoding essen-
+tial for capturing cross-layer relationships. This architecture naturally respects the paired
+nature of LoRA matrices while enabling the model to learn both local (within-layer) and
+global (cross-layer) weight space structure.
+With the noise prediction networkϵ θ(ϕt, t), we optimize the simplified diffusion objective
+L=E t∼U(1,T),ϕ 0∼pdata,ϵ∼N(0,I)
+
+∥ϵ−ϵ ν(ϕt, t)∥2
+.(6)
+During inference, we use DDIM sampling to generate new weight representations, which are
+then used to instantiate novel neural fields.
+4 Experiments
+We conduct experiments to inspect the structure of the weight space and evaluate weight
+space representations across reconstruction, generation, and discriminative tasks.
+Datasets.We evaluate on two datasets. For 2D data, we use FFHQ Karras et al. (2019),
+which contains high quality face images. We evaluate at the resolution of 128×128, al-
+though modest compared to current state-of-the-art in image generation, this resolution is
+significantly higher than what previous weight-space methods Zhou et al. (2023b;a) have
+evaluated on and therefore more challenging. For 3D data, we use ShapeNet Chang et al.
+6
+preprint
+Table 1: Reconstruction quality. We report the PSNR for 2D FFHQ, the Chamfer Distance
+×10−2 for 3D ShapeNet, and the number of trainable parameters in each weight space
+representation. Parameters frozen by the asymmetric mask are reduced from the count.
+FFHQ ShapeNet
+PSNR↑# Params CD-A↓CD-M↓# Params
+MLP 35.11 27,357 2.57 3.78 30,196
+MLP-Asym 33.28 24,537 2.64 4.00 27,226
+LoRA 35.69 27,395 2.44 3.39 29,696
+LoRA-Asym 24.63 26,307 2.46 3.44 27,539
+mLoRA 35.65 27,395 2.45 3.49 29,696
+mLoRA-Asym 36.9126,307 2.41 3.3527,539
+(2015), focusing on two settings: A single-category model trained on airplanes, and a multi-
+category model trained on ten object categories including airplanes, chairs, tables, and other
+common objects.
+Candidate Representations.We compare six weight space representations: (1)MLP:
+standalone MLP weights; (2)MLP-Asym: standalone MLP weights with asymmetric mask-
+ing; (3)LoRA: additive LoRA weights; (4)LoRA-Asym: additive LoRA weights with asym-
+metric masking; (5)mLoRA: multiplicative LoRA weights; and (6)mLoRA-Asymmulti-
+plicative LoRA weights with asymmetric masking. This design allows us to isolate the
+effects of parameterization (standalone vs LoRA), operation type (additive vs multiplica-
+tive), and symmetry breaking (with or without asymmetric masks).
+4.1 Reconstruction
+The reconstruction task directly corresponds to the fitting procedure described in Sec-
+tion 3.1, where each weight space representation is optimized to reconstruct individual
+instances. For 2D images, we measure the PSNR (higher is better). For 3D shapes, we
+measure the Chamfer Distance (lower is better). We also report the number of learnable
+parameters for each representation.
+Results. As shown in Table 1, LoRA, mLoRA and mLoRA-Asym achieve better recon-
+struction quality while maintaining a compact parameter count, compared to the MLP-based
+weight representations. We attribute this to the inductive bias provided by the base network,
+which captures transferable features across instances, and fine tuning effectively leverages
+these shared representations with minimal adaptation parameters. Multiplicative LoRA
+perform better than its additive counterpart, echoing the wide application of multiplicative
+modulation in generative neural fields Anokhin et al. (2021); Chan et al. (2020); Karras
+et al. (2021). Surprisingly, mLoRA-Asym consistently outperforms mLoRA despite having
+certain parameters frozen by the asymmetric mask. Our hypothesis is that the masking
+further reduces parameter entanglement and thereby improves the reconstruction accuracy.
+Also notably, LoRA-Asym performs poorly on FFHQ, likely due to increased parameter en-
+tanglement caused by large varianceκ= 6 (empirically determined) of the frozen weights,
+as discussed in Section 3.4.
+4.2 Weight Space Structure Analysis
+To understand the geometric properties of different weight spaces, we conduct a stabil-
+ity analysis on the ShapeNet airplane model. This experiment examines whether different
+random initializations lead to similar weight configurations after optimization. We indepen-
+dently optimize two models for each instance, starting from different initialization points.
+The first model is initialized withι 1 ∼ N(0,I), while the second is initialized with a (vari-
+ance preserving) perturbed code
+√
+1−λ 2ι1 +λι 2 whereι 2 ∼ N(0,I) andλcontrols the
+7
+preprint
+Figure 3:Weight space structure analysis.We measure weight similarity (cosine sim-
+ilarity) and the linear mode connectivity barrier (Chamfer distance) as a function of ini-
+tialization perturbation strengthλ. Each data point is averaged from 30 instances, the
+underlying shades are indicative of standard deviation.
+perturbation strength. The optimized weights from these two runs are obtained as
+ϕ= arg min
+ϕ′
+Lrecon
+
+fϕ′ (·|ι1),x
+
+,
+ϕλ = arg min
+ϕ′
+Lrecon
+h
+fϕ′
+
+·|
+p
+1−λ 2ι1 +λι 2
+
+,x
+i
+,
+wherexdenotes the target instance. We evaluate two metrics to assess weight space struc-
+ture. First, we measure weight similarity using the cosine similarity: A high cosine similarity
+indicates that different optimization paths converge to similar weight configurations.
+Second, to examine linear mode connectivity Frankle et al. (2020), we measure the barrier
+height by evaluating reconstruction quality at the midpoint of the linear interpolation path.
+Specifically, we compute the Chamfer Distance between the ground truth mesh verticesv gt
+and the verticesv avg extracted via marching cubes from the averaged weights, i.e.,
+b(ϕ,ϕ λ) = CD
+
+vgt,M
+
+fϕ+ϕλ
+2
+
+,
+whereM(·) denotes the marching cubes algorithm and CD(·,·) denotes the Chamfer Dis-
+tance. Figure 3 presents the results across varying perturbation strengthsλfor the six
+candidate representations.
+Results. Figure 3 reveals that LoRA and mLoRA improve weight similarity compared
+to standalone MLPs. Specifically, weight similarity for MLP and MLP-Asym decreases
+approximately linearly with perturbation strength, while LoRA-based representations ex-
+hibit a saturation trend at large perturbation strengths. However, it appears that applying
+LoRA does not improve linear mode connectivity. This is not unexpected since permutation
+symmetry still exist in LoRA weights, as discussed in Section. 3.4.
+Although not always improving reconstruction quality, the asymmetric mask improves
+both weight similarity and linear mode connectivity across all parameterizations. Notably,
+mLoRA-Asym exhibits exceptional behavior: weight similarity remains very high and the
+barrier remains very low even with very different initializations. This suggests that mLoRA-
+Asym weightsconverge to a linear mode. The reason is likely that multiplicative LoRA
+weights are aligned with base networks, once permutation symmetry is eliminated, as we
+prove in Corollary 2.2 in the Appendix.
+Despite the application of the asymmetric mask, additive LoRA weights does not exhibit
+good linear mode connectivity as mLoRA does. We hypothesize this is related to the internal
+8
+preprint
+Table 2: Weight space generation performance on 2D FFHQ.
+FD↓MMD-G↓MMD-P↓
+HyperDiffusion 0.241 0.158 1.887
+MLP-Asym 0.287 0.203 2.423
+LoRA 0.321 0.169 2.018
+LoRA-Asym 0.269 0.157 1.877
+mLoRA 0.100 0.056 0.674
+mLoRA-Asym 0.073 0.039 0.467
+Table 3: Weight space generation performance on 3D ShapeNet. We examine a model
+trained on a single categoryAirplaneand a 10-category modelMulti.
+mMD↓COV↑1-NNA↓FD↓MMD-G↓MMD-P↓
+ShapeNet - Airplane
+HyperDiffusion 2.39 43.6% 78.2% 0.027 0.009 0.122
+MLP-Asym 2.80 44.8% 80.9% 0.041 0.018 0.254
+LoRA 116.4 3.1% 99.9% 1.553 0.669 7.163
+LoRA-Asym 270.6 2.0% 100% 1.532 0.823 7.931
+mLoRA 1.9646.2% 70.5%0.049 0.025 0.359
+mLoRA-Asym 1.8943.4% 71.9%0.011 0.003 0.041
+ShapeNet - Multi
+HyperDiffusion 8.64 41.6% 78.3% 0.117 0.023 0.219
+MLP-Asym 7.77 46.5% 74.0% 0.085 0.016 0.157
+LoRA 152.9 10.9% 99.1% 1.014 0.319 2.501
+LoRA-Asym 210.0 1.2% 100% 1.241 0.437 2.987
+mLoRA 5.75 46.4% 61.9% 0.071 0.011 0.123
+mLoRA-Asym 5.52 49.6% 58.6% 0.026 0.004 0.040
+mechanisms of neural fields. Neural fields synthesize signals through iterative composition:
+linear layers combine basic signal components, while activation functions generate harmonics
+Y¨ uce et al. (2022). When neural fields are optimized on individual instances, their channels
+become highly entangled. However, when trained on multiple instances in a generalizable
+setting, the network learns transferable features and exhibits greater disentanglement Rad-
+ford et al. (2021). This observation provides additional motivation for fine-tuning a base
+network trained in the generative regime. Additive LoRA reintroduces entanglement by
+mixing features across channels, whereas multiplicative LoRA preserves the channel struc-
+ture through aligned feature scaling, avoiding additional entanglement.
+4.3 Generation via Diffusion Models
+We evaluate the generative capabilities of different weight space representations by training
+diffusion models on each parameterization. This experiment tests whether the learned weight
+spaces support high-quality generative modeling.
+Implementation.For standalone MLP weights, we use the same diffusion model architec-
+ture as HyperDiffusion Erko¸ c et al. (2023). For LoRA weights, we employ our hierarchical
+LoRA layer encoder described in Section 3.5. For standalone MLP weights and standalone
+MLP weights with asymmetric masks, we adopt the initialization technique from Erko¸ c et al.
+(2023), which first fits one instance and then uses its weights to initialize all other fittings.
+This can be viewed as fine tuning a small MLP fitted to one instance to other instances,
+enabling direct comparison with the state-of-the-art weight space diffusion method.
+Evaluation Metrics.For both 2D and 3D data, we measure the difference between the
+distribution of the generated and reference samples. We compute the Fr´ echet distance
+9
+preprint
+HyperDiffusion MLP-Asym LoRA LoRA-Asym mLoRA mLoRA-Asym
+Figure 4:Qualitative generation results.Generated samples from diffusion models
+trained on different weight space representations. The top 2 rows show results generated by
+theAirplanemodel, followed by 2 rows from theMulti-class model. The bottom rows show
+2D FFHQ generations.
+(FD) Fr´ echet (1957), as well as the Maximum Mean Discrepancy (MMD) calculated us-
+ing a Gaussian RBF kernel (MMD-G) and a polynomial kernel (MMD-P), which has been
+shown to be more reliable and sample efficient than the Fr´ echet distance Heusel et al. (2017);
+Bi´ nkowski et al. (2018). These metrics operate on features extracted by deep learned models,
+as deep learned feature extractors project the data into semantically rich embedding spaces
+where distances better correlate with human perception of similarity. We employ these met-
+rics in their mathematical form rather than using modality-specific implementations like FID
+Heusel et al. (2017) or KID Bi´ nkowski et al. (2018), as this allows for consistent evaluation
+across different data modalities. For 2D images, we use CLIP Radford et al. (2021) as the
+feature extractor; for 3D shapes, we use a PointNet++ Qi et al. (2017). For 3D shapes,
+following Erko¸ c et al. (2023); Vahdat et al. (2022); Luo & Hu (2021); Zhou et al. (2021), we
+also report distance-based metrics: Minimum Matching Distance (mMD), Coverage (COV),
+and 1 Nearest Neighbor Accuracy (1-NNA). These metrics use the Chamfer Distance to
+measure shape similarity. Formal definitions are presented in the supplementary material.
+Results.Quantitative results are reported in Table 2 for 2D FFHQ and Table 3 for 3D
+ShapeNet airplane, and ShapeNet ten category datasets. Figure 4 shows visual comparisons
+of generated samples. The quantitative results reveal several noteworthy patterns. First,
+mLoRA-Asym achieves the best performance across nearly all metrics on both 2D and 3D
+data, capable of generating diverse samples and capturing high-frequency details. This
+superior generative capability correlates directly with its favorable weight space structure,
+suggesting that weight space geometry is crucial for effective diffusion based generation.
+On ShapeNet, HyperDiffusion demonstrates competent performance on the single category
+airplane model, but degrades substantially on the multi category setting. This suggests
+difficulty in modeling a diverse weight distribution spanning multiple object classes. On
+FFHQ, HyperDiffusion fails to produce recgnizable face images, whereas both mLoRA and
+mLoRA-Asym manage. This represents the first successful weight space generation for high
+resolution natural image generation. Previous methods have been restricted to simpler
+datasets such as MNIST and CIFAR. In contrast, LoRA and LoRA-Asym fail across all
+settings. We hypothesize that this relates to their poor weight space structure caused by
+entanglement of additive weights, as discuss in our weight space structure analysis. Overall,
+10
+preprint
+Table 4: Classification and clustering results on the ShapeNet ten-category dataset. We
+report the accuracy for two classification methods and the Adjusted Rand Score for cluster-
+ing. All results are statistics from 10 runs with random data split and initializations.
+Clustering ARI↑1-NN↑Logistic↑
+MLP 39.3%±3.1% 50.0%±3.0% 78.1%±1.3%
+MLP-Asym 48.4%±3.7% 46.8%±4.2% 82.1%±1.2%
+LoRA 56.3%±3.3% 75.2%±1.7% 86.1%±1.1%
+LoRA-Asym 47.4%±4.4% 59.1%±10.4% 84.3%±0.8%
+mLoRA67.1%±3.7%85.1%±1.8%90.0%±0.7%
+mLoRA-Asym 56.5%±2.7% 80.8%±1.6% 84.5%±1.4%
+the strong correlation between weight space structure and generation performance validates
+that structured, well behaved weight spaces are essential for treating network parameters
+as effective data representations.
+4.4 Discriminative Tasks
+To evaluate the distinctiveness and semantic structure of the learned weight representations,
+we conduct classification and clustering experiments on the ShapeNet ten-category dataset.
+Classification.We evaluate two classification approaches. First, we use first nearest
+neighbor classification, which assigns each test weight to the category of its nearest neighbor
+in the training set using cosine similarity. Second, we train a linear classifier using logistic
+regression. All classifiers take the flattened weight representations as input and predict
+object categories.
+Clustering.For clustering, we applyk-means withk= 10 (matching the number of
+categories) on the weight representations. We evaluate the clustering quality using the
+Adjusted Rand Index (ARI), which measures the agreement between the predicted clusters
+and the ground-truth categories while correcting for chance.
+Results.Table 4 reports the accuracy for the two classification methods and the Adjusted
+Rand Score for clustering across the six candidate representations. We also present t-
+SNE visualizations of the weight representations for the ten object categories in Figure 5.
+Each point encodes one instance, colored by its category. The classification and clustering
+results reveal a clear progression in semantic structure across different parameterizations.
+LoRA outperforms standalone MLPs, mLoRA outperforms LoRA, and mLoRA delivers the
+best results overall, achieving 90% accuracy with a linear classifier. Given that mLoRA-
+Asym exhibits better weight space structure in terms of linear mode connectivity, thsi
+result indicate that the discriminative power of the weight representation is not directly
+linked to linear mode connectivity or permutation symmetry. The t-SNE visualizaitons
+show that all weight representations are able to capture some level of semantic structure, as
+same-category instances are positioned closely. However, only mulitplicative LoRA weights
+demonstrate clear class seperation. These results substantiate that multiplicative LoRA
+weight representations are capable of capturing semantic structure. Notably, recent work
+weights2weightsDravid et al. (2024) similarly observes that LoRA weights that fine-tune
+image diffusion model exhibit interpretable structure with semantic linear directions, echoing
+our observations in the context of neural fields. Our finding further challenges the popular
+view that neural network weights are uninterpretable, demonstrating that with appropriate
+parameterization, weight spaces can encode semantic information.
+5 Limitation
+While our work establishes that neural network weights can serve as effective data repre-
+sentations, several limitations present opportunities for future research.
+11
+preprint
+MLP
+MLP-Asym
+LoRA
+LoRA-Asym
+mLoRA
+mLoRA-Asym
+Figure 5:t-SNE visualization of weight spaces.Each point represents one instance
+from the ShapeNet ten-category dataset, colored by object category. Multiplicative LoRA
+weight spaces exhibit semantic structure.
+First, our approach requires finetuning a base-model which is computationally more ex-
+pensive than fitting small MLPs. This requirement prevents evaluation on datasets with
+hundreds of thousands of samples, constraining our experiments to datasets with thousands
+of instances. Future work could explore methods to eliminate this requirement, or develop
+more computationally efficient multiplicative LoRA adaptation procedures.
+Second, we apply uniform parameter budgets across all layers in the neural field, treating
+each layer identically in terms of LoRA rank and capacity. However, different layers likely
+encode different levels of semantic abstraction, suggesting that adaptive parameter allocation
+could improve efficiency and representation quality.
+Third, while our method achieves the first successful weight space generation on relatively
+high resolution natural images and demonstrates superior performance compared to prior
+weight space methods, the generation quality does not yet match state-of-the-art image
+generative models such as latent diffusion models. Future work could focus on closing this
+performance gap while preserving data modality agnosticism.
+6 Conclusion
+We have demonstrated that neural network weights can serve as effective data representa-
+tions when constrained through appropriate inductive biases. By adapting a pre-trained base
+model via multiplicative LoRA, we transform the chaotic parameter space into structured
+weight representations that exhibit semantic organization, enabling superior reconstruc-
+tion quality, generation performance, and semantic structure. Remarkably, mLoRA-Asym
+weights converge to a linear mode during optimization, and this structured weight space ge-
+ometry correlates strongly with generative performance in diffusion models. These findings
+challenge the view of weights as opaque byproducts of optimization and establish their via-
+bility as semantic representations for reconstruction, generation, and discriminative tasks.
+12
+preprint
+Appendix
+7 Permutation Symmetry in LoRA
+We provide a formal proof that permutation symmetry exists within both additive and
+multiplicative LoRA parameterizations.
+7.1 Permutation Symmetry in Additive LoRA
+Theorem 1.The adapted weight matrix from additive LoRA exhibits permutation symmetry
+with respect to the rank dimensions.
+Proof.Consider the additive LoRA formulation:
+W′ =W+BA(7)
+whereW∈R dout×din ,A∈R r×din , andB∈R dout×r.
+From a neural network perspective, the operationBAxfor inputx∈R din can be viewed
+as a two layer network:
+BAx=B(Ax) (8)
+whereAacts as an encoder layer compressing the input torhidden activations, andBacts
+as a decoder layer expanding back to the output dimension.
+Leth=Ax∈R r denote the hidden activations. Consider a permutation matrixP∈R r×r
+corresponding to permutationπ. We can insertP T P=Ibetween the two layers:
+BAx=BP T PAx= (BP T )(PA)x(9)
+Define ˜A=PAand ˜B=BP T . Then:
+BA= ˜B ˜A(10)
+This shows that (B,A) and ( ˜B, ˜A) produce identical adapted weight matrices. Concretely,
+˜Apermutes the rows ofA(equivalently, permutes which hidden neuron each row corre-
+sponds to), and ˜Bpermutes the columns ofBby the same permutation (matching the
+hidden neuron reordering).
+Since there arer! possible permutations ofrhidden neurons, and each permutation produces
+a functionally identical network, the additive LoRA weight space exhibitsr!-fold permuta-
+tion symmetry.
+Remark1.This permutation symmetry is analogous to the well known permutation sym-
+metry in standard MLPs Zhou et al. (2023a): reordering hidden neurons (along with their
+corresponding incoming and outgoing weights) does not change the function computed by
+the network. In LoRA, the hidden dimension is the rankr, and permuting this dimension
+induces the symmetry. Figure 6(a) illustrates this symmetry, showing how the low rank
+matrices can be viewed as encoder and decoder layers where intermediate neurons can be
+reordered.
+7.2 Permutation Symmetry in Multiplicative LoRA
+Theorem 2.The adapted weight matrix from multiplicative LoRA can be expressed as a
+sum of base weight matrices, each pre-multiplied and post-multiplied by diagonal matrices.
+Proof.Consider the multiplicative LoRA formulation from Section 3.2:
+W′ =W⊙BA(11)
+whereW∈R dout×din is the base weight matrix,A∈R r×din , andB∈R dout×r.
+13
+preprint
+W
+A
+B
++
+αl−1
+αl
+W
+αl−1
+αl
+diag(a1) diag(a2) diag(a3) diag(a4)
+diag(b1) diag(b2) diag(b3) diag(b4)
++
+(a) Additive (b) Multiplicative
+W W W
+Figure 6:Illustrating permutation symmetries within LoRA.(a) Permutation sym-
+metry inadditiveLoRA. Low rank matricesAandBcould be seen as an encoder layer and
+a decoder layer. The order of the intermediate neurons could swapped without changing the
+output. (b)multiplicativeLoRA could be seen as parallel pathways with different scaling
+factors for the input and output. The order of the pathways could be swapped without
+changing the output.
+We can decomposeBandAinto their column and row vectors respectively:
+B= [ b1 b2 ···b r],A=
+
+
+aT
+1
+aT
+2
+...
+aT
+r
+
+ (12)
+whereb i ∈R dout anda i ∈R din .
+Therefore:
+W′ =W⊙
+ rX
+i=1
+biaT
+i
+!
+=
+rX
+i=1
+W⊙
+ 
+biaT
+i
+
+(13)
+For each term in the sum, the elementwise productW⊙(b iaT
+i ) can be expressed using
+diagonal matrices. Let diag(b i) denote the diagonal matrix withb i on the diagonal, and
+similarly for diag(ai). Then:
+W⊙(b iaT
+i ) = diag(bi)Wdiag(ai) (14)
+This can be verified by examining the (j, k) entry:
+[W⊙(b iaT
+i )]jk =W jk ·(b i)j ·(a i)k (15)
+= (bi)j ·W jk ·(a i)k (16)
+= [diag(bi)Wdiag(ai)]jk (17)
+Therefore:
+W′ =
+rX
+i=1
+diag(bi)Wdiag(ai) (18)
+This shows that the adapted weight matrix is a sum of terms, where each term is the base
+weight matrix pre-multiplied and post-multiplied by diagonal matrices constructed from the
+LoRA parameters.
+Corollary 2.1.Permuting the rank indices{1,2, . . . , r}with a permutationπdoes not
+change the adapted weight matrixW ′, as summation is commutative. This implies permu-
+tation symmetry in the LoRA weight space.
+14
+preprint
+coordinate
+signal value
+p
+vp
+Linear
+Linear
+Linear
+sin
+LeakyReLU
+coordinate
+p
+Linear
+Linear
+Linear
+sin
+LeakyReLU
+z
+LeakyReLU
+Mapping 
+Network
+sl
+sl+1
+× Nb+
+signal value
+vp
+latent code
+Linear
+coordinate
+p
+Linear
+Linear
+Linear
+sin
+LeakyReLU
+LeakyReLU
+Al, Bl
+× Nb+
+signal value
+vp
+LoRA weight
+Linear
+Al+1, Bl+1
+Optimize
+Freeze
+ϕ
+W′ = W ⋅ diag(s)
+W′ = W ⊙ BA
+Legend
+(a) Standalone MLP (b) Base Model - Training (c) Base Model - Adaptation
+Figure 7:Network architectures for weight space representations.(a) Standalone
+MLP architecture with Fourier Feature layer followed by two linear layers. (b) Base model
+architecture with modulated fully connected layers. The network takes spatial coordinates
+pand style vectorsas inputs, applying multiplicative weight modulation at each layer. (c)
+LoRA adaptation applied to the base model, where low rank matricesAandBadapt the
+frozen base weights.
+This symmetry means that different configurations of LoRA parameters{a i,b i}r
+i=1 can
+represent the same function, making the weight space representation ambiguous without
+additional constraints. Figure 6(b) visualizes this symmetry by showing how multiplicative
+LoRA can be interpreted as parallel pathways that can be reordered without affecting the
+output.
+Corollary 2.2.Once permutation symmetry is eliminated, multiplicative LoRA weights
+are aligned with the channels in the base network, i.e. each element corresponds to a single
+feature channel.
+Proof.In Equation 18, each term diag(b i)Wdiag(ai) applies channel wise modulation to the
+base weight matrixW. Specifically, diag(a i) scales the input channels, while diag(bi) scales
+the output channels. This operation preserves the channel structure ofWthrough element
+wise scaling rather than mixing features across channels. When permutation symmetry
+is eliminated through techniques such as asymmetric masking, each rank componentiis
+uniquely identified and cannot be arbitrarily reordered. In this regime, each pair (a i,b i)
+corresponds to a specific modulation pattern applied to the base network channels.
+8 Implementation Details
+8.1 Standalone MLP
+As shown in Figure 7(a), The standalone MLP is a Fourier Feature Tancik et al. (2020)
+layerα 1 = sin(ω0 ·(W 1p+b 1)) followed by 2 linear layers.
+•ω 0 is the frequency scaling factor for the Fourier Feature layer. For 2D FFHQ, we
+setω 0 = 32; For 3D ShapeNet, we setω 0 = 1. This value is chosen empiracally and
+shared with its LoRA-based counterparts.
+•N hidden is the number of hidden features in the linear layers. For the 2D FFHQ
+model, we useN hidden = 94 for all layers; For the 3D ShapeNet, we useN hidden =
+99 for all layers, in order to have approximately the same number of learnable
+parameters as their LoRA-based counterparts.
+15
+preprint
+As noted by Erko¸ cet al.Erko¸ c et al. (2023), an initialization trick is employed to ensure
+diffusion model generalization. Specifically, an MLP with weightsϕ0 is fitted to one instance
+from the dataset, and used as a shared initialization for all the rest of the fittingsι i =ϕ 0.
+In other words, other instances are fitted by fine-tuning the weights from the first instance.
+This trick is crucial to the performance of HyperDiffusion, and therefore we employ it in the
+FFHQ and ShapeNet airplane experiments. However, in the multi-category experiment, it
+does not make sense to initialize achairfitting with weights from anairplane, therefore we
+do not use this trick and instead use a shared random initilization for all the fittings, like is
+done for the LoRA-based weight representations.
+For each instance, we run 10k steps, each step with 8,192 points with an Adam optimizer,
+where learning rate adaptively decay from 10−2 to 10−5. The same optimizer and hyperpa-
+rameters are used for the LoRA-based weight representations.
+8.2 Base Model Architecture
+The base model follows the modulated neural field architecture widely adopted in genera-
+tive neural field works Anokhin et al. (2021); Karras et al. (2021); Chan et al. (2020), as
+illustrated in Figure 7(b). The architecture consists of a mapping network and a synthesis
+network. The mapping network is a multilayer perceptron that transforms a latent code
+z∈R dz into intermediate style vectors{s l}L
+l=1, whereLis the number of synthesis layers.
+For 2D FFHQ, we usedz = 256 and an 8 layer mapping network with hidden dimension 256.
+For 3D ShapeNet, we used z = 128 and a 4 layer mapping network with hidden dimension
+256.
+The synthesis network takes spatial coordinatespas input and produces signal values
+through a sequence of synthesis blocks, each block contains 2 modulated fully connected.
+The blocks are connected with residual connections to ensure gradient flow. Each layerl
+first applies weight modulation, where the weight matrixW l is scaled by a learned affine
+transformation of the style vector:W ′
+l =W l ·diag(s l), wheres l =A ls+b l is computed
+from the style vector via an affine transformation. The modulated weights are then normal-
+ized per output channel asw ′
+ijk =w ′
+ijk/
+qP
+i,k(w′
+ijk)2 +ϵ, whereϵ= 10 −8 for numerical
+stability. The layer then computes activations asα l+1 = ReLU(W′
+lαl +bl). For 2D FFHQ,
+we use 6 synthesis blocks with channel dimensions 256. For 3D ShapeNet, we use 4 synthesis
+blocks with channel dimensions 512.
+8.3 Base Model Training
+We devise a multistage progressive training strategy that gradually increases sampling res-
+olution while decreasing batch size. Early stages use large batch sizes with low resolution
+(batch size of 256 with 2,048 points per instance) to establish the latent code manifold, while
+late stages use small batch sizes with high resolution (batch size of 16 with 32,768 points
+per instance) to capture fine details. This strategy ensures stable latent code initialization
+while maintaining computational efficiency.
+We train 350k steps with an Adam optimizer, where the learning rate gradually decay from
+10−3 to 10−5 in 5 stages. For regularization factor we useλ r = 10−4 Exponential moving
+average is applied on the base model weights.
+8.4 Dataset
+For FFHQ, we use the first 5,000 samples from the dataset for all our experiments. For
+ShapeNet airplane, we use all 4,045 samples. To create the ShapeNet 10-category dataset,
+we select the top 10 categories with the most samples and then randomly sample 500 in-
+stances from each category.
+16
+preprint
+Algorithm 1Pipeline for weight space learning and generation.
+1:Input:Dataset{x i}N
+i=1, parameterization typeτ∈ {MLP,LoRA,mLoRA}
+2:Output:Trained diffusion modelϵ θ
+3:Stage 1: Base Model Training(for LoRA/mLoRA only)
+4:ifτ∈ {LoRA,mLoRA}then
+5:Initialize base model weightsθand latent codes{z i}N
+i=1
+6:Jointly optimizeθand{z i}via variational autodecoding:
+7:θ ∗,{z ∗
+i } ←arg minPN
+i=1 Lrecon(f(p,z i|θ),x i(p)) +λ r∥zi∥2
+2
+8:Freeze base model:θ←θ ∗
+9:end if
+10:Stage 2: Instance Fitting
+11:ifτ= MLPthen
+12:Fit one instance:
+ϕ0 ←arg min ϕ Lrecon(f(p|ϕ),x 1(p))
+13:fori= 2 toNdo
+14:Initialize:ϕ i ←ϕ 0
+15:Optimize:
+ϕi ←arg min ϕ Lrecon(f(p|ϕ),x i(p))
+16:end for
+17:else
+18:Sample shared random initialization:ι 0 ∼ N(0,I)
+19:fori= 1 toNdo
+20:Initialize:ϕ i ←ι 0
+21:Optimize:
+ϕi ←arg min ϕ Lrecon(f(p|LoRA(W,ϕ)),x i(p))
+22:end for
+23:end if
+24:Stage 3: Diffusion Model Training
+25:Initialize diffusion model parametersν
+26:whilenot convergeddo
+27:Samplet∼ U(1, T),ϕ 0 ∼ {ϕi}N
+i=1,ϵ∼ N(0,I)
+28:Computeϕ t = √¯αtϕ0 + √1−¯αtϵ
+29:Update:ν←ν− ∇ ν∥ϵ−ϵ ν(ϕt, t)∥2
+30:end while
+31:returnϵ θ
+8.5 Pipeline
+Algorithm 1 describes the complete pipeline for weight space representation learning and
+generation. The process consists of three stages: First, we train a base model using vari-
+ational autodecoding for LoRA based representations. Second, we construct a dataset of
+weight representations by fitting neural fields to individual instances. For standalone MLP,
+an initialization trick is employed where one instance is first fitted and then used to initial-
+ize all other fittings. For LoRA based representations, all instances share the same random
+initialization. Third, we train a diffusion model on the collected weight representations to
+enable generation of novel instances.
+For the diffusion model architecture, we use a standard Diffusion Transformer (DiT) Peebles
+& Xie (2022) for standalone MLP weights. For LoRA weights, we employ the hierarchical
+LoRA layer encoder described in Section 3.5 of the main paper. During training, we use the
+DDPM objective with a linear noise schedule fromβ 1 = 10−4 toβ T = 2×10 −2 overT= 500
+timesteps. For generation, we use DDIM sampling with 100 steps to efficiently sample new
+weight representations. The diffusion transformer has 2880 hidden size (i.e., the size of each
+token after linear projection or layer encoder), 12 layers, and 16 self-attention heads. We
+17
+preprint
+train the diffusion transformer with batch size of 256 and learning rate of 2×10 −4 for 6000
+epochs until convergence.
+9 Evaluation Metrics for Generation
+We calculate distributional metrics for both 2D and 3D. For 3D, we also calculate distance-
+based metrics. All metrics are calculated between 2,048 generated samples and 2,048 ref-
+erence samples.
+9.1 Distributional Difference
+These metrics operate on features extracted by deep learned models, as deep learned feature
+extractors project the data into semantically rich embedding spaces where distances better
+correlate with human perception of similarity. We employ these metrics in their mathemat-
+ical form rather than using modality-specific implementations like FID Heusel et al. (2017)
+or KID Bi´ nkowski et al. (2018), as this allows for consistent evaluation across different data
+modalities. For 2D images, we use CLIP Radford et al. (2021) as the feature extractor; for
+3D shapes, we use a PointNet++ Qi et al. (2017).
+Given generated distributionPand reference distributionQ, to make the metric more
+comparable, we first normalize the extracted features by
+ρ← ρ−µ Q
+σQ
+for both the generated set and reference set, whereµ Q andσ Q are the scalar mean and
+standard deviation calculated from the reference set.
+Fr´ echet Distance (FD)Fr´ echet (1957) measures the distance between two multivariate
+Gaussian distributions fitted to feature representations of generated and reference samples.
+Given feature representations from a pretrained network, we compute the meanµ P and
+covarianceΣ P for generated distributionPand meanµ Q and covarianceΣ Q for reference
+distributionQ. The Fr´ echet Distance is then computed as:
+FD(P, Q) = 1
+Nfeature
+[∥µP −µ Q∥2
+2 + Tr
+
+ΣP +Σ Q −2(Σ P ΣQ)1/2
+
+].
+whereN feature is the feature dimension of the feature extractor.
+Maximum Mean Discrepancy (MMD)with respect to a positive definite kernelψis
+defined by:
+MMD(P, Q) =Ex,x′ [ψ(x,x ′)] +Ey,y′ [ψ(y,y ′)]−2E x,y[ψ(x,y)],
+wherex,x ′ ∼Pare samples from the generated distribution andy,y ′ ∼Qare samples from
+the reference distribution. This metric does not make the multivariate Gaussian assumption
+and is reported to be more reliable and sample efficient Jayasumana et al. (2024); Bi´ nkowski
+et al. (2018). We calculate this metric with 2 types of kernels.
+1. Polynomial kernel (MMD-P)
+ψp(x,y) = (γ p ·xT y+c) d with degreed= 3 and offsetc= 1. Following the practice
+of KID Bi´ nkowski et al. (2018), we chooseγp = 1/Nfeature.
+2. Gaussian RBF kernel (MMD-G)
+ψg(x,y) = exp(−γ g∥x−y∥ 2
+2) withγ g = 1/(2σ2
+g); we chooseσ g =N feature.
+9.2 Distance-based Metrics for 3D Shapes
+For 3D shapes, we calculate distance-based metrics following Erko¸ c et al. (2023); Vahdat
+et al. (2022); Luo & Hu (2021); Zhou et al. (2021). We denote the distance function as
+18
+preprint
+Table 5: Ablation study of LoRA Layer Encoder on 3D ShapeNet - 10 category.
+ShapeNet - Multi
+mMD↓COV↑1-NNA↓FD↓MMD-G↓MMD-P↓
+w/o 5.1847.7% 61.2% 0.049 0.008 0.098
+with 5.5249.6% 58.6% 0.026 0.004 0.040
+D(x,y) for the Chamfer Distance between two shapesxandy. The metrics are defined as:
+mMD(P, Q) =Ey∼Q
+h
+min
+x∼P
+D(x,y)
+i
+,
+COV(P, Q) =|{arg miny∼Q D(x,y)|x∼P}|
+|Q| ,
+1-NNA(P, Q) =
+P
+x∼P 1[N x ∼P] + P
+y∼Q 1[N y ∼Q]
+|P|+|Q| ,
+where in the 1-NNA metricN x is the shape that is closest toxin both generated and
+reference distributions, that is,
+Nx = arg min
+z∼P∪Q
+D(x,z).
+For mMD, lower is better; for COV, higher is better; for 1-NNA, 50% is optimal.
+10 Ablation Study
+We examine the effectiveness of the hierarchical LoRA layer encoder introduced in Sec-
+tion 3.5. To isolate its contribution, we train a baseline diffusion model without the layer
+encoder on the ShapeNet multi-category dataset. This baseline treats each weight matrix as
+an independent token, directly feeding flattened LoRA matrices into the transformer with-
+out the hierarchical processing that models within layer rank dependencies and cross layer
+relationships.
+Table 5 compares the baseline against our full model with the hierarchical layer encoder.
+The results demonstrate that the layer encoder provides substantial improvements across all
+metrics. The full model achieves higher coverage (49.6% vs 47.7%), better 1-NNA (58.6%
+vs 61.2%), and significantly better distributional metrics: FD improves from 0.049 to 0.026,
+MMD-G from 0.008 to 0.004, and MMD-P from 0.098 to 0.040. These improvements con-
+firm that explicitly modeling the compositional structure of LoRA weights, where rank
+components within each layer interact and different layers encode different semantic levels,
+is essential for effective weight space generation. The hierarchical design enables the dif-
+fusion model to respect the intrinsic organization of neural field weights, leading to higher
+quality generated samples.
+11 Additional Qualitative Results on Generation
+We provide additional qualitative results on diffusion generation. Please see Figure 8 for
+results on ShapeNet Airplanes, Figure 9 for results on ShapeNet Multi, and Figure 10 for
+results on FFHQ.
+19
+preprint
+HyperDiffusion MLP-Asym LoRA LoRA-Asym mLoRA mLoRA-Asym
+Figure 8:Additional qualitative generation results on ShapeNet - Airplanes.
+HyperDiffusion MLP-Asym LoRA LoRA-Asym mLoRA mLoRA-Asym
+Figure 9:Additional qualitative generation results on ShapeNet - Multi.
+20
+preprint
+HyperDiffusion MLP-Asym LoRA LoRA-Asym mLoRA mLoRA-Asym
+Figure 10:Additional qualitative generation results on FFHQ.
+21
+preprint
+References
+Ivan Anokhin, Kirill Demochkin, Taras Khakhulin, Gleb Sterkin, Victor Lempitsky, and
+Denis Korzhenkov. Image generators with conditionally-independent pixel synthesis. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp.
+14278–14287, 2021.
+Miko laj Bi´ nkowski, Danica J Sutherland, Michael Arbel, and Arthur Gretton. Demystifying
+mmd gans.arXiv preprint arXiv:1801.01401, 2018.
+Eric R Chan, Marco Monteiro, Petr Kellnhofer, Jiajun Wu, and Gordon Wetzstein. pi-gan:
+Periodic implicit generative adversarial networks for 3d-aware image synthesis. arxiv e-
+prints, page.arXiv preprint arXiv:2012.00926, 2020.
+Angel X Chang, Thomas Funkhouser, Leonidas Guibas, Pat Hanrahan, Qixing Huang,
+Zimo Li, Silvio Savarese, Manolis Savva, Shuran Song, Hao Su, et al. Shapenet: An
+information-rich 3d model repository.arXiv preprint arXiv:1512.03012, 2015.
+Yinbo Chen and Xiaolong Wang. Transformers as meta-learners for implicit neural repre-
+sentations. InEuropean Conference on Computer Vision, pp. 170–187. Springer, 2022.
+Amil Dravid, Yossi Gandelsman, Kuan-Chieh Wang, Rameen Abdal, Gordon Wetzstein,
+Alexei Efros, and Kfir Aberman. Interpreting the weight space of customized diffusion
+models.Advances in Neural Information Processing Systems, 37:137334–137371, 2024.
+Emilien Dupont, Adam Goli´ nski, Milad Alizadeh, Yee Whye Teh, and Arnaud Doucet. Coin:
+Compression with implicit neural representations.arXiv preprint arXiv:2103.03123, 2021.
+Ziya Erko¸ c, Fangchang Ma, Cengiz¨Oztireli, and Pascal Fua. Hyperdiffusion: Generating im-
+plicit neural fields with weight-space diffusion. InInternational Conference on Computer
+Vision, 2023.
+Amer Essakine, Yanqi Cheng, Chun-Wun Cheng, Lipei Zhang, Zhongying Deng, Lei Zhu,
+Carola-Bibiane Sch¨ onlieb, and Angelica I Aviles-Rivero. Where do we stand with im-
+plicit neural representations? a technical and performance survey.arXiv preprint
+arXiv:2411.03688, 2024.
+Jonathan Frankle, Gintare Karolina Dziugaite, Daniel Roy, and Michael Carbin. Linear
+mode connectivity and the lottery ticket hypothesis. InInternational Conference on
+Machine Learning, pp. 3259–3269. PMLR, 2020.
+Maurice Fr´ echet. Sur la distance de deux lois de probabilit´ e. InAnnales de l’ISUP, volume 6,
+pp. 183–198, 1957.
+Y Gao and Others. Revisiting model merging: A statistical perspective.arXiv preprint,
+2024.
+Cameron Gordon, Lachlan E MacDonald, Hemanth Saratchandran, and Simon Lucey. D’oh:
+Decoder-only random hypernetworks for implicit neural representations. InProceedings
+of the Asian Conference on Computer Vision, pp. 2507–2526, 2024.
+David Ha, Andrew Dai, and Quoc V Le. Hypernetworks. InInternational Conference on
+Learning Representations, 2016.
+Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp
+Hochreiter. Gans trained by a two time-scale update rule converge to a local nash equi-
+librium.Advances in neural information processing systems, 30, 2017.
+T Hospedales, A Antoniou, P Micaelli, and A Storkey. Meta-learning in neural networks: a
+survey. arxiv preprint arxiv: 200405439. 2020.
+Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang,
+Lu Wang, Weizhu Chen, et al. Lora: Low-rank adaptation of large language models.
+ICLR, 1(2):3, 2022.
+22
+preprint
+Sadeep Jayasumana, Srikumar Ramalingam, Andreas Veit, Daniel Glasner, Ayan
+Chakrabarti, and Sanjiv Kumar. Rethinking fid: Towards a better evaluation metric
+for image generation. InProceedings of the IEEE/CVF Conference on Computer Vision
+and Pattern Recognition, pp. 9307–9315, 2024.
+Tero Karras, Samuli Laine, and Timo Aila. A style-based generator architecture for gen-
+erative adversarial networks. InProceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, pp. 4401–4410, 2019.
+Tero Karras, Miika Aittala, Samuli Laine, Erik H¨ ark¨ onen, Janne Hellsten, Jaakko Lehtinen,
+and Timo Aila. Alias-free generative adversarial networks.Advances in neural information
+processing systems, 34:852–863, 2021.
+Sylwester Klocek,  Lukasz Maziarka, Maciej Wo lczyk, Jacek Tabor, Jakub Nowak, and Marek
+´Smieja. Hypernetwork functional image representation. InInternational Conference on
+Artificial Neural Networks, pp. 496–510. Springer, 2019.
+M Kofinas, B Knyazev, Y Zhang, Y Chen, G J Burghouts, E Gavves, C G M Snoek, and
+D W Zhang. Graph neural networks for learning equivariant representations of neural
+networks. InThe Twelfth International Conference on Learning Representations, 2024.
+D Lim, Y Gelberg, S Jegelka, H Maron, et al. Learning on loras: Gl-equivariant processing
+of low-rank weight spaces for large finetuned models.arXiv preprint arXiv:2410.04207,
+2024a.
+Derek Lim, Theo Putterman, Robin Walters, Haggai Maron, and Stefanie Jegelka. The
+empirical impact of neural parameter symmetries, or lack thereof.Advances in Neural
+Information Processing Systems, 37:28322–28358, 2024b.
+Shitong Luo and Wei Hu. Diffusion probabilistic models for 3d point cloud generation. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp.
+2837–2845, 2021.
+A Navon, A Shamsian, I Achituve, E Fetaya, G Chechik, and H Maron. Equivariant ar-
+chitectures for learning in deep weight spaces. InInternational Conference on Machine
+Learning, pp. 25790–25816, 2023.
+O Ormaniec and Others. Fusion of graph convolutional networks via optimal transport.
+arXiv preprint, 2025.
+Jeong Joon Park, Peter Florence, Julian Straub, Richard Newcombe, and Steven Lovegrove.
+Deepsdf: Learning continuous signed distance functions for shape representation. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp.
+165–174, 2019.
+William Peebles, Ilija Radosavovic, Tim Brooks, Alexei A Efros, and Jitendra Malik.
+Learning to learn with generative models of neural network checkpoints.arXiv preprint
+arXiv:2209.12892, 2023.
+William S Peebles and Saining Xie. Scalable diffusion models with transformers. 2023 ieee.
+InCVF International Conference on Computer Vision (ICCV), volume 4172, 2022.
+Charles Ruizhongtai Qi, Li Yi, Hao Su, and Leonidas J Guibas. Pointnet++: Deep hier-
+archical feature learning on point sets in a metric space.Advances in neural information
+processing systems, 30, 2017.
+Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini
+Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning
+transferable visual models from natural language supervision. InInternational conference
+on machine learning, pp. 8748–8763. PmLR, 2021.
+C Singh and M Jaggi. Model fusion via optimal transport. InAdvances in Neural Informa-
+tion Processing Systems, 2020.
+23
+preprint
+Jaisidh Singh, Diganta Misra, and Boris Knyazev6 Antonio Orvieto. Hyper-align: Efficient
+modality alignment via hypernetworks. InWorkshop on Neural Network Weights as a
+New Data Modality.
+Matthew Tancik, Pratul Srinivasan, Ben Mildenhall, Sara Fridovich-Keil, Nithin Raghavan,
+Utkarsh Singhal, Ravi Ramamoorthi, Jonathan Barron, and Ren Ng. Fourier features let
+networks learn high frequency functions in low dimensional domains.Advances in neural
+information processing systems, 33:7537–7547, 2020.
+Arash Vahdat, Francis Williams, Zan Gojcic, Or Litany, Sanja Fidler, Karsten Kreis, et al.
+Lion: Latent point diffusion models for 3d shape generation.Advances in Neural Infor-
+mation Processing Systems, 35:10021–10039, 2022.
+Kushal Vyas, Ahmed I Humayun, Aniket Dashpute, Richard G Baraniuk, Ashok Veer-
+araghavan, and Guha Balakrishnan. Learning transferable features for implicit neural
+representations.Advances in Neural Information Processing Systems, 37:42268–42291,
+2024.
+K Wang and Others. Scaling weight space generative models.arXiv preprint, 2025.
+K Wang, Z Xu, Y Zhou, Z Zang, T Darrell, Z Liu, and Y You. Neural network diffusion.
+arXiv preprint arXiv:2402.13144, 2024.
+Yiheng Xie, Towaki Takikawa, Shunsuke Saito, Or Litany, Shiqin Yan, Numair Khan, Fed-
+erico Tombari, James Tompkin, Vincent Sitzmann, and Srinath Sridhar. Neural fields
+in visual computing and beyond. InComputer graphics forum, volume 41, pp. 641–676.
+Wiley Online Library, 2022.
+Enneng Yang, Li Shen, Guibing Guo, Xingwei Wang, Xiaochun Cao, Jie Zhang, and Dacheng
+Tao. Model merging in llms, mllms, and beyond: Methods, theories, applications and
+opportunities.arXiv preprint arXiv:2408.07666, 2024.
+Gizem Y¨ uce, Guillermo Ortiz-Jim´ enez, Beril Besbinar, and Pascal Frossard. A structured
+dictionary perspective on implicit neural representations. InProceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pp. 19228–19238, 2022.
+Bo Zhao, Robin Walters, and Rose Yu. Symmetry in neural network parameter spaces.
+arXiv preprint arXiv:2506.13018, 2025.
+Allan Zhou, Kaien Yang, Kaylee Burns, Adriano Cardace, Yiding Jiang, Samuel Sokota,
+J Zico Kolter, and Chelsea Finn. Permutation equivariant neural functionals.Advances
+in neural information processing systems, 36:24966–24992, 2023a.
+Allan Zhou, Kaien Yang, Yiding Jiang, Kaylee Burns, Winnie Xu, Samuel Sokota, J Zico
+Kolter, and Chelsea Finn. Neural functional transformers.Advances in neural information
+processing systems, 36:77485–77502, 2023b.
+Linqi Zhou, Yilun Du, and Jiajun Wu. 3d shape generation and completion through point-
+voxel diffusion. InProceedings of the IEEE/CVF international conference on computer
+vision, pp. 5826–5835, 2021.
+24

@@ -1,0 +1,1320 @@
+MSPT: Efficient Large-Scale Physical Modeling
+via Parallelized Multi-Scale Attention
+Pedro M. P. Curvo Jan-Willem van de Meent Maksim Zhdanov
+University of Amsterdam
+pedro.pombeiro.curvo@student.uva.nl
+Abstract
+A key scalability challenge in neural solvers for industrial-
+scale physics simulations is efficiently capturing both fine-
+grained local interactions and long-range global dependen-
+cies across millions of spatial elements. We introduce the
+Multi-Scale Patch Transformer (MSPT), an architecture that
+combines local point attention within patches with global
+attention to coarse patch-level representations. To partition
+the input domain into spatially-coherent patches, we employ
+ball trees, which handle irregular geometries efficiently. This
+dual-scale design enables MSPT to scale to millions of points
+on a single GPU. We validate our method on standard PDE
+benchmarks (elasticity, plasticity, fluid dynamics, porous
+flow) and large-scale aerodynamic datasets (ShapeNet-Car,
+Ahmed-ML), achieving state-of-the-art accuracy with sub-
+stantially lower memory footprint and computational cost.
+1. Introduction
+Deep learning is increasingly applied to model complex
+physical phenomena as a computationally efficient surro-
+gate. However, as applications in computational fluid dy-
+namics (CFD) and multi-physics design scale to simulations
+with millions of mesh points, these methods face substantial
+computational challenges [4]. Developing neural architec-
+tures capable of efficiently processing millions of spatial
+elements has therefore become important [ 4], particularly
+for high-throughput environments such as large-scale design
+optimization and real-time industrial analysis where both
+accuracy and scalability are required. These challenges re-
+quire neural surrogates that capture fine-grained physical
+interactions while maintaining computational efficiency.
+A key obstacle in scaling these methods lies in captur-
+ing spatial dependencies appropriate to different physical
+regimes. In solid mechanics, stress and strain fields localize
+around applied loads. By contrast, in incompressible fluids a
+global pressure coupling arises from the divergence-free con-
+straint. Similarly, aerodynamics problems require computing
+Peak Memory (GB)
+42.8
+26.0
+Latency (ms)
+31
+28
+Pool
+Transolver
+MSPT
+Figure 1. Parallelized Multi-Scale Attention mechanism. Each
+patch performs local self-attention, while pooled supernodes ex-
+change information globally across patches in parallel. Peak mem-
+ory (GB) and latency (ms) on 500k points with 256 slices (Tran-
+solver) and 256 patches (MSPT).
+forces from surface pressures, which must be consistent with
+far-field boundary conditions. Modeling such long-range de-
+pendencies poses a challenge, since computing all pairwise
+interactions scales quadratically with the system size.
+Modeling long-range dependencies at industrial scale
+therefore requires approximations that preserve accuracy
+while reducing computational cost [ 33]. Recent approaches
+have made substantial progress toward scalable neural PDE
+solvers. Neural operator models [ 16, 21, 40] have demon-
+strated that learning mappings between function spaces en-
+ables mesh-independent surrogate models. However, these
+spectral methods require structured grids or periodic bound-
+ary conditions and often struggle to accurately represent
+sharp, localized features without dense sampling or large
+frequency bases [47].
+Transformer-based solvers [5, 18, 24, 48] extend operator-
+1
+arXiv:2512.01738v1  [cs.LG]  1 Dec 2025
+learning concepts to unstructured data, including meshes and
+point clouds, by leveraging attention to capture long-range
+dependencies. A key area of innovation are architectures
+that avoid quadratic complexity. Transolver [ 47] projects
+the input mesh to a reduced set of learnable global represen-
+tations (slices), achieving sub-linear complexity. However,
+this approach scales poorly with bottleneck size and relies
+on pooling that compromises simulation fidelity. UPT [ 1]
+introduces a centralized latent space that summarizes the
+domain via cross-attention between mesh points and shared
+latent tokens, providing global context applied uniformly
+across regions. Extending this idea, AB-UPT [ 2] adopts a
+branched design for CFD, splitting computation into surface
+and volume branches that perform self-attention indepen-
+dently and exchange information through cross-attention.
+Erwin [49] removes pooling entirely and instead achieves
+linear complexity by localizing attention to ball-tree par-
+titions, preserving local fidelity. However, this approach
+suffers from limited information propagation in capturing
+long-range dependencies.
+In this work, we introduce the Multi-Scale Patch Trans-
+former (MSPT), a parallelized multi-scale attention architec-
+ture that bridges fine-grained local interactions with global
+context in a scalable manner. MSPT first partitions the
+domain into local patches of points, where attention is com-
+puted efficiently to capture fine-scale interactions within
+each region. To capture long-range interactions, we compute
+a coarse-grained representation of each patch and apply fine-
+to-coarse attention, allowing information to flow globally
+without quadratic cost. This multi-scale organization enables
+MSPT to capture local and global dependencies within a sin-
+gle, unified attention operation, achieving near-linear scaling
+with the number of points.
+The main contributions of this work are:
+• We propose the Parallelized Multi-Scale Attention
+(PMSA) mechanism, which processes local patch-level
+interactions and global cross-patch interactions in par-
+allel within a unified attention operation, enabling scal-
+able operator learning with near-linear complexity.
+• We introduce MSPT, a multi-block transformer archi-
+tecture that handles arbitrary geometries and varying
+resolutions through flexible domain partitioning and
+hierarchical pooling.
+• We demonstrate state-of-the-art accuracy on standard
+PDE benchmarks (elasticity, plasticity, fluid dynamics,
+porous media flow) and industry-scale 3D aerodynamic
+datasets (ShapeNet-Car, Ahmed-ML) at significantly
+lower computational cost, potentially scaling to mil-
+lions of points on a single GPU.
+2. Background
+Neural Operator LearningNeural operators [ 20] are
+a class of deep learning models designed to learn map-
+pings between infinite-dimensional function spaces, making
+them particularly well-suited for parameterizing neural PDE
+solvers [27]. The key idea is to formulate a model as a se-
+quence of linear integral operators computed in the spectral
+(Fourier) domain, thus guaranteeing discretization invari-
+ance. The main limitations of the original work - specifically
+suboptimal local feature representations and reliance on uni-
+form grids - were addressed in subsequent works [15, 23, 38].
+In general, spectral methods efficiently capture global depen-
+dencies through frequency-domain operations and achieve
+strong performance on regular, periodic domains.
+Transformer-based PDE SolversComplementing spec-
+tral approaches, transformer-based architectures leverage
+attention mechanisms to handle unstructured data such as
+meshes and point clouds [ 5, 18, 24, 25, 29, 48]. Self-
+attention naturally models long-range dependencies across
+irregular domains without requiring regular grid structure.
+For example, GNOT [18] augments attention with topology-
+aware neighborhoods, while OFormer [24] formulates PDE
+solution inference as a sequence-to-sequence problem us-
+ing cross-attention between spatial queries and target fields.
+CViT [43] leverages recent advancements in computer vision
+and builds upon a ViT [11] encoder to capture multi-scale de-
+pendencies. Overall, transformer-based approaches achieve
+state-of-the-art performance on most PDE-related tasks.
+Hierarchical ModelsTo address the scalability bottleneck
+of attention, hierarchical formulations introduce spatial struc-
+ture and multi-scale reasoning. ViT [12] first demonstrated
+the effectiveness of patch-based tokenization in vision, while
+PatchFormer [8] extended this idea to point clouds by cluster-
+ing points into compact patch tokens that approximate global
+interactions. For physical systems, HT-Net [30] constructs
+explicit coarse-to-fine representations to capture dynamics
+at multiple scales. Similarly, UPT [ 1] introduces a latent
+operator framework where learnable tokens summarize the
+global domain through cross-attention with physical points,
+providing compact global context. Erwin [49] imposes reg-
+ular structure on irregular point cloud data using ball trees,
+which enables sparse attention and achieves linear complex-
+ity. Building upon UPT [1], AB-UPT [2] introduces a two-
+branch transformer architecture specifically designed for
+CFD domains. The model splits computation into asurface
+branchand avolume branch, allowing each to specialize in
+distinct physical regimes. Each branch processes its subset
+of mesh points with self-attention, while cross-attention be-
+tween branches enables bidirectional information exchange.
+2
+3. Multi-Scale Patch Transformer (MSPT)
+We present our Parallelized Multi-Scale Attention mech-
+anism and the overall MSPT architecture built upon it.
+Core idea.We partition a point cloud into patches.
+Points attend locally within their patch and globally
+to pooled patch representations, capturing both fine-
+grained structure and long-range context.
+3.1. Parallelized Multi-Scale Attention Mechanism
+We begin with a point cloud and a feature matrix
+P={p 1, . . . ,pN } ⊂RD,H∈R N×F ,
+where F is the feature dimension. We partition the point
+cloud intoKnon-overlapping patches of sizeL, 1 so that
+P=
+K[
+k=1
+Pk,|P k|=L, N=KL,
+with feature blocksH k ∈R L×F for each patch.
+In the case of unstructured grids, we employ Ball Tree
+partitioning [49]: by building a balanced ball tree overP and
+reordering points according to a depth-first traversal of its
+leaves, we obtain contiguous blocks of length L as patches
+Pk (see Section 3.2 and Appendix A.1 for details).
+Pooled global context.In each patch Pk, we summarize
+the L local tokens into Q pooled tokens using a pooling
+operatorPool :R L×F →R Q×F (see Section 3.2):
+Sk = Pool(Hk)∈R Q×F .(1)
+Stacking all patch summaries row-wise yields the global
+context matrix:
+S=
+S1;S 2;···;S K
+
+∈R (KQ)×F .(2)
+In practice, we can adjust the patch size L such that
+KQ≪N . This allows for efficient inter-patch com-
+munication without substantial computational overhead, as
+we will explain in the following section.
+Augmented dual-scale attention.We then augment local
+block featuresH k with the context matrix:
+Zk =
+Hk
+S
+
+∈R (L+KQ)×F .(3)
+This formulation allows us to compute local interactions
+as well as capture global dependencies within a single self
+1Padding is applied as needed so thatNis divisible byL.
+attention [42] operation:
+Qk =Z kWQ,K k =Z kWK,V k =Z kWV ,
+Ak = softmax
+QkK⊤
+k√
+F
+
+(4)
+To expose the dual-scale structure, we partition the atten-
+tion and value matrices according to the block structure of
+Zk. The attention matrix decomposes as:
+Ak =
+"
+Aloc,loc
+k Aloc,glob
+k
+Aglob,loc
+k Aglob,glob
+k
+#
+,(5)
+where Aloc,loc
+k ∈R L×L captures local-to-local attention
+within the patch, Aloc,glob
+k ∈R L×KQ captures local-to-
+global attention from patch tokens to all pooled tokens, and
+the remaining blocks Aglob,loc
+k ∈R KQ×L and Aglob,glob
+k ∈
+RKQ×KQ govern how global tokens attend to local and
+global features, respectively.
+Similarly, we partition the value matrix:
+Vk =
+Vloc
+k
+Vglob
+k
+
+,V loc
+k ∈R L×F ,V glob
+k ∈R KQ×F .(6)
+The attention operation produces updated representations
+for both the local patch tokens and the global supernodes;
+we retain the former resulting in the following update of a
+tokeniin blockk:
+h′
+k,i =
+LX
+j=1
+aloc,loc
+k,ij vloc
+k,j
+| {z }
+local attention
+within patch
++
+KQX
+m=1
+aloc,glob
+k,im vglob
+m
+| {z }
+global attention
+via pooled tokens
+,
+or, in the matrix form,
+H′
+k =A loc,loc
+k Vloc
+k +A loc,glob
+k Vglob
+k ∈R L×F .(7)
+The first term captures fine-grained structure within patch k,
+while the second provides long-range context via the pooled
+representations. After processing all patches, we stack the
+results to recover the full sequence:
+H′ =
+H′
+1;···;H ′
+K
+
+Multi-head extension.We extend to multi-head attention
+in the standard way [ 42]. With Ha attention heads, each
+head h operates on a (F/Ha)-dimensional subspace with its
+own weight matrices W(h)
+Q ,W (h)
+K ,W (h)
+V . The outputs are
+concatenated and projected:
+MHA(Zk) =
+
+O(1)
+k ∥ ··· ∥O(Ha)
+k
+
+WO.(8)
+Retaining the first L rows yields the updated patch features
+H′
+k, and stacking across patches recoversH ′.
+3
+Compact operator form.We summarize the full Paral-
+lelized Multi-Scale Attention (PMSA) mechanism as:
+H′ = PMSA(H) =
+KM
+k=1
+Πloc MHA
+Hk
+S
+
+. (9)
+The operator Πloc retains the first L rows (local tokens), andLK
+k=1 stacks results across all patches.
+Computational cost.PMSA has complexity O(NL+
+N2Q/L), decomposed into local attention within patches
+and global attention to pooled tokens. While quadratic in
+N, the coefficient Q/L of the quadratic term is typically
+small, making the linear term dominant in practice. The
+patch size L offers a tunable trade-off: larger L suppresses
+the quadratic global communication cost but increases local
+attention cost, while smaller L reduces local computation
+at the expense of more cross-patch overhead. This flexibil-
+ity enables PMSA to scale to point clouds with millions of
+points on a single GPU, see Section 4.4.
+3.2. Model Architecture
+Building on Parallelized Multi-Scale Attention, we pro-
+pose the Multi-Scale Patch Transformer (MSPT).
+Input Embedding and PreprocessingWe start from a
+point cloud P={p 1, . . . ,pN } ⊂RD, where each point
+pi has coordinates xi. For each point, we construct an
+input feature vector ri by concatenating xi with geometric
+descriptors gi. A shared embedding MLP ϕemb maps these
+raw features to hidden features hi =ϕ emb(ri)∈R F . We
+then pad the point set so that N is divisible by the number
+of patchesK, assigning zero features to padded entries.
+Ball Tree partitioningWe impose spatial locality on point
+clouds or unstructured meshes by building a balanced ball
+tree on the coordinates using the balltree-erwin im-
+plementation [49]. The leaf order induces a spatially local
+permutation of points, and the patches are formed as con-
+tiguous blocks of length L in this permuted sequence. This
+partitioning is computed once before the first transformer
+block and reused across blocks (see Appendix A.1).
+Supernode PoolingWithin each patch k, MSPT com-
+presses the L point tokens into Q supernode tokens Sk ∈
+RQ×C using one of the pooling operators discussed below.
+Let q indicate a sub-patch Hq
+k of size L/Q. We use mean or
+max pooling to aggregate information from each sub-patch
+to a corresponding supernode:
+Sq
+k = 1
+L/Q
+L/QX
+j=1
+(Hq
+k)j (10)
+MLP
+Layer Norm
+Parallelized
+Multi-Scale
+Attention
+Layer Norm
+Multi-head Attention
+Ball Tree partitioning
+Figure 2. MSPT-Block. Each block partitions the point set into
+patches and pools local information into a small set of supernodes
+(here, 1). Multi-head attention is applied within each patch, aug-
+mented by the shared supernodes (global context).
+Sq
+k =
+L/Q
+max
+j=1
+(Hq
+k)j (11)
+Alternatively, we employ linear projection:
+Sk =W ⊤
+poolHk,W pool ∈R L×Q,
+which learns a fixed set of Q linear combinations of the
+L tokens from the patch k. The K sets of Q supernodes are
+concatenated to form the global supernode set S∈R KQ×C .
+MSPT BlockEach MSPT block is a modified pre-
+normalized Transformer block that operates on patch tokens
+and supernodes. Given point featuresH∈R N×C and global
+supernodesS∈R KQ×C :
+1. LayerNorm + PMSA.We apply layer normalization
+to H (and S) and run PMSA across patches, with the
+global supernodes providing cross-patch context. This
+yields updated point features H′ of shape N×C and
+updated supernodes S′. Both are added back to their
+inputs via residual connections.
+2. Feed-forward network.A second LayerNorm fol-
+lowed by a shared MLP with nonlinearity (e.g., GELU)
+is applied pointwise to H′, and its output is added resid-
+ually, completing the standard Attention–FFN pattern.
+We can write theℓ-th MSPT block in compact form as
+bH(ℓ), S(ℓ) = PMSA
+ 
+LN(H(ℓ−1)), S(ℓ−1)
++
+ 
+H(ℓ−1),0
+
+,
+H(ℓ) = FFN
+ 
+LN( bH(ℓ))
+
++ bH(ℓ),
+with H(0) =H and S(0) = 0. In the final block, the FFN is
+replaced by a task-specific head that maps hidden features
+to the target fields (e.g., pressure or velocity) at each point,
+4
+while keeping the residual path. Stacking B such blocks
+iteratively refines both point features and supernodes, with
+the choice of patches K and supernodes Q controlling the
+balance between receptive-field size and computational cost.
+4. Experiments
+We evaluate the proposed MSPT model on a wide range
+of benchmarks, including standard PDE problems and CFD
+tasks. We compare against state-of-the-art operator learn-
+ing methods and attention-based models. Table 1 provides
+a summary of the datasets, which span different geometry
+types, spatial dimensions, and problem sizes. Implementa-
+tion details such as benchmarks details and hyper-parameters
+are given in Appendix A.
+To evaluate the performance of the PMSA mechanism, we
+differentiate betweensingle-brancharchitectures and AB-
+UPT [2], which employs separate branches for geometry,
+surface, and volume inputs. For single-domain benchmarks
+that are not compatible with such a separation, we do not
+report AB-UPT results.
+Table 1. Summary of benchmark datasets used in our experiments.
+Each dataset is characterized by the geometry type, the physical
+problem dimension, and the average number of points.
+Geometry Benchmark Dim #Nodes
+Point Cloud Elasticity [21, 28] 2D 972
+Structured
+Plasticity [21, 28] 2D+Time 3,131
+Airfoil [21, 28] 2D 11,271
+Pipe [21, 28] 2D 16,641
+Regular Grid Navier-Stokes [21, 28] 2D+Time 4,096
+Darcy [21, 28] 2D 7,225
+Unstructured ShapeNet Car [6, 41] 3D 32,186
+AhmedML [3] 3D2×10 7
+4.1. Standard PDE Benchmarks
+TaskWe consider six standard PDE surrogate bench-
+marks that are widely used in the operator learning liter-
+ature: Elasticity, Plasticity, Airfoil, Pipe, Navier–Stokes,
+and Darcy. These benchmarks were introduced by FNO
+and geo-FNO [ 21, 28] and have since become a standard
+suite for operator-learning work. They represent a broad
+spectrum of physical systems and computational challenges.
+Collectively, these benchmarks cover key PDE types: mate-
+rial stress/deformation (Elasticity, Plasticity), fluid dynamics
+governed by the Navier–Stokes equations (Airfoil, Pipe, and
+a spatio-temporal Navier–Stokes case), and porous-media
+flow described by Darcy’s law. For a brief description, Elas-
+ticity requires predicting internal stress fields in a solid ob-
+ject given its shape and boundary conditions. Plasticity in-
+volves forecasting the deformation of a metal under impact.
+Table 2. Performance comparison on standard benchmarks. Rela-
+tive L2 is recorded. A smaller value indicates better performance.
+For clarity, the best result is in bold and the second best is under-
+lined. Promotion refers to the relative error reduction w.r.t. the
+second best model (1− Our error
+The second best error ). “/” means that the base-
+line cannot apply to this benchmark. Baselines are taken from Wu
+et al. [47] and Zhdanov et al. [49].
+Model
+Point Cloud Structured Mesh Regular Grid
+Elasticity Plasticity Airfoil PipeNavierDarcyStokes
+FNO [21] / / / / 15.56 1.08
+WMT [16] 3.59 0.76 0.75 0.77 15.41 0.82
+U-FNO [45] 2.39 0.39 2.69 0.56 22.31 1.83
+geo-FNO [28] 2.29 0.74 1.38 0.67 15.56 1.08
+U-NO [38] 2.58 0.34 0.78 1.00 17.13 1.13
+F-FNO [40] 2.63 0.47 0.78 0.70 23.22 0.77
+LSM [46] 2.18 0.25 0.59 0.50 15.35 0.65
+Galerkin [5] 2.40 1.20 1.18 0.98 14.01 0.84
+HT-Net [29] / 3.33 0.65 0.59 18.47 0.79
+OFormer [24] 1.83 0.17 1.83 1.68 17.05 1.24
+GNOT [18] 0.86 3.36 0.76 0.47 13.80 1.05
+FactFormer [25] / 3.12 0.71 0.60 12.14 1.09
+ONO [48] 1.18 0.48 0.61 0.52 11.95 0.76
+Transolver [47] 0.64 0.12 0.53 0.33 9.00 0.57
+Erwin [49]0.34 0.102.57 0.61 N/A N/A
+MSPT (Ours)0.48 0.10 0.51 0.31 6.320.63
+Relative Promotion-41% 17% 4% 6% 30% -10%
+Values shown in units of×10−2
+Airfoil predicts the steady-state Mach number distribution
+around an airfoil for a given airflow condition. Pipe predicts
+fluid velocity through various 2D cross-sections of pipes.
+Navier–Stokes predicts the evolution of an incompressible
+fluid flow field for the next time steps, given the previous
+time steps. Darcy predicts pressure fields in subsurface flow
+through porous media. Details are given in Appendix A.
+BaselinesWe compare MSPT against baselines reported
+in Wu et al. [47] and Zhdanov et al. [49], spanning classical
+neural operators and transformer-based neural surrogates
+for PDEs. For all models, the relative L2 error between
+predicted and ground-truth fields is reported. Results are av-
+eraged over all test samples. All experiments are conducted
+within theNeural-Solver-Library 2 framework, following the
+benchmarking setup of Wu et al. [47]. Transolver++ is ex-
+cluded due to reproducibility challenges, which we discuss
+in detail in Appendix C.
+ResultsMSPT achieves state-of-the-art performance on
+four of six standard PDE benchmarks (Table 2), consistently
+outperforming Transolver with substantial improvements on
+Navier–Stokes (30%) and Elasticity (25%). A key difference
+between the two models is how they combine information:
+Transolver compresses the domain into a fixed set of global
+slices and attends in that latent space, whereas MSPT oper-
+2https://github.com/thuml/Neural-Solver-Library
+5
+Plasticity
+2
+3
+4
+5
+0.08
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+0.08
+0.06
+0.04
+0.02
+0.00
+0.02
+0.04
+0.06
+0.08
+Pipe
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+0.002
+0.001
+0.000
+0.001
+0.002
+0.002
+0.001
+0.000
+0.001
+0.002
+Navier-Stokes
+3
+2
+1
+0
+1
+2
+3
+2
+1
+0
+1
+2
+2
+1
+0
+1
+2
+ShapeNet Car
+-200. 
+-100. 
+0.00  
+100.  
+200.  
+Ground-truth
+-10.0 
+-5.00 
+0.00  
+5.00  
+10.0  MSPT (Ours)
+-10.0 
+-5.00 
+0.00  
+5.00  
+10.0  Transolver
+Figure 3. Examples of relative L2 error maps for the Pipe, Navier-
+Stokes and ShapeNet Car datasets. For ShapeNet Car we show
+surface-pressure errors. See Appendix B for more visualizations.
+ates on local patches and summarizes them into supernodes.
+This preserves local detail and lets cross-patch interactions
+scale with the number of patches K, rather than through
+a fixed global bottleneck. Compared to Erwin, MSPT is
+weaker on Elasticity but clearly stronger on Airfoil. Erwin
+relies on strictly local attention, which is very efficient and
+works well when most interactions are local, but requires
+several layers to propagate information across the domain.
+In contrast, MSPT’s supernodes provide a direct way to
+share information more broadly within each layer.
+4.2. CFD Benchmarks
+We also evaluate our model on two design-oriented CFD
+benchmarks, which involve learning aerodynamic flow fields
+around complex 3D shapes: ShapeNet-Car and AhmedML.
+These problems are significantly larger in scale and reflect
+practical design optimization settings.
+4.2.1. ShapeNet-Car
+TaskThe ShapeNet-Car benchmark focuses on 3D aero-
+dynamic field reconstruction and drag coefficient prediction
+for automotive shapes. Given a triangulated car surface mesh
+from the ShapeNet dataset, the model is required to predict
+steady-state velocity and pressure fields in the surrounding
+fluid volume, as well as the pressure distribution on the car’s
+surface. These predicted fields enable the computation of
+coefficients such as the aerodynamic drag coefficient CD
+using standard formulas.
+BaselinesWe compare MSPT against graph-based net-
+works, neural operators for unstructured 3D domains,
+transformer-based CFD surrogates, and AB-UPT [ 2], un-
+der the evaluation setup of Wu et al. [47]. Metrics include
+relative L2 on volume and surface fields, drag error CD, and
+Spearman’s ρD for ranking quality. All experiments are run
+within theNeural-Solver-Library 3 framework, following the
+training setup of Wu et al. [47]. For AB-UPT, we use the of-
+ficial code release4 but note that the original training pipeline
+is not publicly available; we therefore reproduce its results
+using the configurations reported by Alkin et al. [2] within
+the Neural-Solver-Library setup. We report both the original
+AB-UPT numbers from their paper and our reproduction.
+Discrepancies are analyzed in Appendix C.
+ResultsOn ShapeNet-Car (Table 3), MSPT is the best
+single-branch model, with improvements over Transolver on
+both volume fields and drag. This matches the behavior seen
+on the standard PDE benchmarks: Transolver aggregates
+information into a fixed set of global slices, whereas MSPT
+operates on local patches and uses supernodes for global
+communication, preserving local detail while avoiding a
+hard global bottleneck and oversmoothing. AB-UPT, which
+introduces separate surface and volume branches special-
+ized for CFD field reconstruction, attains lower field errors
+in the original report but yields weaker design metrics in
+our reproduction (Appendix C). The same branching idea
+can be applied to MSPT, yielding a dual-branch variant
+while preserving its coupled local–global communication
+(Section 3).
+4.2.2. AhmedML
+TaskThis benchmark targets 3D aerodynamic field re-
+construction and force-coefficient estimation for the Ahmed
+body family. Given the body surface mesh, the model must
+predict velocity and pressure throughout the surrounding
+domain and the surface pressure on the body.
+BaselinesWe follow the evaluation setup of Alkin et al.
+[2], comparing MSPT against PointNet [ 37], Graph U-
+Net [ 14], GINO [ 22], LNO [ 44], OFormer [ 24], Tran-
+solver [47], UPT [1], and AB-UPT [2]. We adopt the experi-
+3https://github.com/thuml/Neural-Solver-Library
+4https://github.com/Emmi-AI/anchored-branched-universal-physics-
+transformers.git
+6
+Table 3. Performance on ShapeNet Car. Relative L2 for volume
+/ surface fields and drag coefficient; Spearman ρD for ranking
+quality. Baselines are taken from Wu et al. [47], except for AB-
+UPT, which is taken from Alkin et al. [2]. MSPT is compared
+primarily against one-branched models (e.g., Transolver, GNOT,
+GINO), while AB-UPT is shown for reference as a two-branched
+specialized CDF architecture. Promotion refers to the relative error
+reduction w.r.t. the second best model (1− Our error
+Second best error ).
+Model ShapeNet Car
+V olume↓Surf↓(C D)↓(ρ D)↑
+Simple MLP 5.12 13.04 3.07 94.96
+GraphSAGE [17] 4.61 10.50 2.70 96.95
+PointNet [37] 4.94 11.04 2.98 95.83
+Graph U-Net [14] 4.71 11.02 2.26 97.25
+MeshGraphNet [36] 3.54 7.81 1.68 98.40
+GNO [26] 3.83 8.15 1.72 98.34
+GALERKIN [5] 3.39 8.78 1.79 97.64
+GEO-FNO [28] 16.70 23.78 6.64 82.80
+GNOT [18] 3.29 7.98 1.78 98.33
+GINO [22] 3.86 8.10 1.84 98.26
+3D-GEOCA [10] 3.19 7.79 1.59 98.42
+Transolver [47] 2.07 7.45 1.03 99.35
+MSPT (Ours) 1.89 7.41 0.98 99.41
+Relative Promotion+8.7% +0.5% +4.9% +0.06%
+AB-UPT [2]1.16 4.81N/A N/A
+AB-UPT [2] (repr.) 2.51 7.67 2.20 97.48
+Values shown in units of×10−2
+Differences in AB-UPT [2] results are discussed in Appendix C.
+mental setup of Alkin et al. [2] and use the official AB-UPT
+code implementation 5 to train our model. However, we note
+that the original training pipeline used in AB-UPT is not
+open-sourced. Therefore, to ensure a fair comparison, we re-
+produce the experiment using the shared training routine and
+report our results alongside those reported by the authors.
+ResultsOn AhmedML (Table 4), MSPT is the best
+single-branch model, with clear improvements over Tran-
+solver on both volume and surface fields. This aligns with
+the trends on the standard PDE benchmarks and ShapeNet-
+Car (Sections 4.1 and 4.2.1), where PMSA gives a more
+effective local–global interaction than Transolver’s fixed
+set of global slices. AB-UPT, which adds separate surface
+and volume branches specialized for CFD field reconstruc-
+tion, achieves lower field errors in the original report but
+yields worse metrics in our reproduction (Appendix C). The
+same branching idea can, in principle, be applied to MSPT,
+yielding a dual-branch variant while preserving its coupled
+local–global communication (Section 3).
+5https://github.com/Emmi-AI/anchored-branched-universal-physics-
+transformers.git
+Table 4. Performance on AhmedML. Relative L2 for volume and
+surface fields. Baselines are taken from Alkin et al. [2]. MSPT is
+compared primarily against one-branched models, while AB-UPT
+is shown for reference as a two-branched specialized CDF archi-
+tecture. Promotion refers to the relative error reduction w.r.t. the
+second best model (1− Our error
+The second best error ).
+Model AhmedML
+V olume↓Surf↓
+PointNet [37] 5.44 8.02
+Graph U-Net [14] 4.15 6.46
+GINO [22] 6.23 7.90
+LNO [44] 7.59 12.95
+UPT [1] 2.73 4.25
+OFormer [24] 3.63 4.12
+Transolver [47] 2.05 3.45
+Transformer [24] 2.09 3.41
+MSPT (Ours) 2.04 3.22
+Relative Promotion+0.49% +6.67%
+AB-UPT [2]1.90 3.01
+AB-UPT [2] (repr.) 2.39 4.33
+Values shown in units of×10−2
+Differences in AB-UPT [2] results are discussed in Appendix C.
+4.3. Hyperparameter and Ablation Studies
+We conducted a series of hyperparameter and ablation
+studies on the ShapeNet-Car benchmark to evaluate the im-
+pact of key design choices in the MSPT architecture.
+Performance vs. Number of Patches ( K)We analyze
+the effect of the patch count K under ball-tree partitioning
+on ShapeNet-Car (Table 5). The relationship between K
+and test loss is non-monotonic. With few patches (K= 32 ),
+each patch is large (L=N/K∼1000 points in ShapeNet-
+Car), providing substantial local context but limiting global
+communication through the supernodes. As K increases,
+patches become smaller, initially increasing test loss due to
+reduced local context. Beyond a threshold (K≥512 in this
+study), performance improves again as the larger number of
+supernodes enhances global interactions and enables more
+fine-grained modeling. This behavior reflects a fundamental
+trade-off: too few patches oversmooth local details, while
+too many fragment long-range coherence. An intermediate
+K balances these competing demands, optimizing both local
+resolution and global context.
+Pooling Method and Number of SupernodesWe inves-
+tigated the choice of pooling operator and the number of
+supernode tokens Q per patch through three pooling types:
+mean, top-Q, and a learned linear projection. The learned
+projection was implemented as a fully-connected layer map-
+ping RL×F →R Q×F , with Q ranging from 1 to 32. As
+7
+Table 5. ShapeNet-Car test loss (see Appendix A) as a function of
+the number of patchesK.
+Number of patchesK
+32 64 128 256 512 1024
+Test Loss 6.08 6.23 6.83 6.77 6.37 5.99
+Values shown in units of×10−2.
+1 4 8 16 32
+Number of Supernodes per Patch
+6.1
+6.2
+6.3
+6.5T est Loss
+×10−2
+Mean
+Max
+Linear
+Figure 4. Study of pooling method and number of supernode tokens
+Qper patch. Mean pooling consistently outperforms max pooling
+and learned linear projection for various Q values. Increasing Q
+generally lowers the validation loss.
+shown in Figure 4, mean pooling consistently achieved good
+performance. In contrast, max pooling performed worse,
+emphasizing extreme values that may not represent typical
+patch characteristics. The learned projection, despite being
+flexible, did not consistently outperform mean pooling.
+Regarding the number of supernodes, employing multiple
+tokens per patch (Q >1) generally improved performance
+by enabling richer patch representation. Specifically, increas-
+ing Q allows to capture fine-grained information within each
+patch. However, large Q values reduce the computational
+benefits of pooling while adding additional overhead.
+4.4. Efficiency Analysis
+A primary motivation for MSPT is scalability to large
+point sets. We analyze computational and memory scaling,
+measuring peak GPU memory usage and runtime for varying
+point (N) and patch (K) counts.
+Figure 5 shows peak memory usage increases almost lin-
+early with the number of input points. For V∈[64,256] ,
+the model remains below the A100’s 40 GB memory limit
+up to approximately 800k points and stays under 80 GB at
+one million points. Figure 5 illustrates the trade-off for K:
+very few patches (32) minimize overhead but result in slower
+execution, while fine partitions (512–1024) significantly in-
+crease memory usage (e.g., >30 GB at 10k points). Across
+parameter sweeps, K= 128 provides the optimal balance
+for the ShapeNet-Car benchmark, enabling a million-point
+batch in 0.084 s under 50 GB. This demonstrates how paral-
+0
+20
+40
+60
+80Peak Memory (GB)
+A100 40GB
+A100/H100 80GB
+32 64 128 256 512 1024
+Number of Patches
+0.00
+0.05
+0.10
+0.15
+0.20Time (s)
+10K
+200K
+400K
+600K
+800K
+1M
+Figure 5. Peak GPU memory usage (top) and wall-clock runtime
+per forward pass (bottom) as a function of the number of patches,
+across several input resolutions. Colors correspond to the input
+resolution (total number of points), as indicated by the color bar.
+lelized multi-scale attention can be optimized for hardware
+constraints without sacrificing throughput.
+5. Conclusion and Future Work
+This paper introduces the Multi-Scale Patch Transformer
+(MSPT) for solving PDEs on arbitrary geometries. MSPT
+captures both fine-grained local interactions and long-range
+global dependencies via Parallelized Multi-Scale Attention
+(PMSA), which partitions the domain into spatial patches
+with ball trees and, in a single operation, performs local self-
+attention within patches while applying global attention to
+pooled representations. Experimental results show state-of-
+the-art accuracy on standard PDE benchmarks and CFD de-
+sign tasks. Our analysis also demonstrates favorable memory
+and runtime scaling, with competitive throughput at million-
+point resolutions on a single GPU. Future work includes
+a branched MSPT variant for specialized surface/volume
+coupling, and improved pooling and partitioning strategies
+to further enhance global communication.
+8
+References
+[1] Benedikt Alkin, Andreas F¨urst, Simon Schmid, Lukas Gruber,
+Markus Holzleitner, and Johannes Brandstetter. Universal
+physics transformers: A framework for efficiently scaling
+neural operators. InNeurIPS, 2024. 2, 6, 7
+[2] Benedikt Alkin, Maurits Bleeker, Richard Kurle, Tobias Kron-
+lachner, Reinhard Sonnleitner, Matthias Dorfer, and Johannes
+Brandstetter. Ab-upt: Scaling neural cfd surrogates for high-
+fidelity automotive aerodynamics simulations via anchored-
+branched universal physics transformers, 2025. 2, 5, 6, 7, 13,
+15
+[3] Neil Ashton, Danielle Maddix, Samuel Gundry, and Parisa
+Shabestari. Ahmedml: High-fidelity computational fluid dy-
+namics dataset for incompressible, low-speed bluff body aero-
+dynamics.arXiv preprint arXiv:2407.20801, 2024. 5, 12
+[4] Maurits Bleeker, Matthias Dorfer, Tobias Kronlachner, Rein-
+hard Sonnleitner, Benedikt Alkin, and Johannes Brandstetter.
+Neuralcfd: Deep learning on high-fidelity automotive aerody-
+namics simulations.CoRR, abs/2502.09692, 2025. 1
+[5] Shuhao Cao. Choose a transformer: Fourier or galerkin. In
+NeurIPS, 2021. 1, 2, 5, 7
+[6] Angel X Chang, Thomas Funkhouser, Leonidas Guibas, Pat
+Hanrahan, Qixing Huang, Zimo Li, Silvio Savarese, Manolis
+Savva, Shuran Song, Hao Su, et al. Shapenet: An information-
+rich 3d model repository.arXiv preprint arXiv:1512.03012,
+2015. 5, 12
+[7] Xiangning Chen, Chen Liang, Da Huang, Esteban Real,
+Kaiyuan Wang, Yao Liu, Hieu Pham, Xuanyi Dong, Thang
+Luong, Cho-Jui Hsieh, Yifeng Lu, and Quoc V . Le. Symbolic
+discovery of optimization algorithms, 2023. 13
+[8] Zhang Cheng, Haocheng Wan, Xinyi Shen, and Zizhao Wu.
+Patchformer: An efficient point transformer with patch atten-
+tion, 2022. 2
+[9] Jingyang Deng, Xingjian Li, Haoyi Xiong, Xiaoguang Hu,
+and Jinwen Ma. Geometry-guided conditional adaption for
+surrogate models of large-scale 3d PDEs on arbitrary geome-
+tries. InIJCAI, 2024. 12
+[10] Qian Deng, Yi Li, Yuxuan Zhang, Aiyi Zeng, Zhaohan Qiao,
+Hongyuan Z. Liu, Jianfei Zhang, Boxin Shi, Lin Gao, and Hao
+Dong. Geometry-guided conditional adaptation for surrogate
+models of large-scale 3d PDEs on arbitrary geometries. In
+IJCAI, 2024. 7
+[11] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is
+worth 16x16 words: Transformers for image recognition at
+scale.ArXiv, abs/2010.11929, 2020. 2
+[12] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is
+worth 16x16 words: Transformers for image recognition at
+scale, 2021. 2
+[13] Clive L Dym, Irving Herman Shames, et al.Solid mechanics.
+Springer, 1973. 11
+[14] Hongyang Gao and Shuiwang Ji. Graph u-nets. InICML,
+2019. 6, 7
+[15] John Guibas, Morteza Mardani, Zong-Yi Li, Andrew Tao,
+Anima Anandkumar, and Bryan Catanzaro. Adaptive fourier
+neural operators: Efficient token mixers for transformers.
+ArXiv, abs/2111.13587, 2021. 2
+[16] Gaurav Gupta, Xiongye Xiao, and Paul Bogdan.
+Multiwavelet-based operator learning for differential
+equations. InNeurIPS, 2021. 1, 5
+[17] Will Hamilton, Zhitao Ying, and Jure Leskovec. Inductive
+representation learning on large graphs.NeurIPS, 2017. 7
+[18] Zhongkai Hao, Chengyang Ying, Zhengyi Wang, Hang Su,
+Yinpeng Dong, Songming Liu, Ze Cheng, Jun Zhu, and Jian
+Song. Gnot: A general neural operator transformer for opera-
+tor learning.ICML, 2023. 1, 2, 5, 7
+[19] M King Hubbert. Darcy’s law and the field equations of the
+flow of underground fluids.Transactions of the AIME, 1956.
+11
+[20] Nikola B. Kovachki, Zong-Yi Li, Burigede Liu, Kamyar Az-
+izzadenesheli, Kaushik Bhattacharya, Andrew M. Stuart, and
+Anima Anandkumar. Neural operator: Learning maps be-
+tween function spaces with applications to pdes.J. Mach.
+Learn. Res., 24:89:1–89:97, 2023. 2
+[21] Zongyi Li, Nikola Borislavov Kovachki, Kamyar Azizzade-
+nesheli, Burigede liu, Kaushik Bhattacharya, Andrew Stuart,
+and Anima Anandkumar. Fourier neural operator for para-
+metric partial differential equations. InICLR, 2021. 1, 5,
+12
+[22] Zongyi Li, Nikola Borislavov Kovachki, Chris Choy, Boyi
+Li, Jean Kossaifi, Shourya Prakash Otta, Mohammad Amin
+Nabian, Maximilian Stadler, Christian Hundt, Kamyar Aziz-
+zadenesheli, and Anima Anandkumar. Geometry-informed
+neural operator for large-scale 3d PDEs. InNeurIPS, 2023.
+6, 7
+[23] Zongyi Li, Nikola Borislavov Kovachki, Chris Choy, Boyi
+Li, Jean Kossaifi, Shourya Prakash Otta, Mohammad Amin
+Nabian, Maximilian Stadler, Christian Hundt, Kamyar Az-
+izzadenesheli, et al. Geometry-informed neural operator for
+large-scale 3d pdes.arXiv preprint arXiv:2309.00583, 2023.
+2
+[24] Zijie Li, Kazem Meidani, and Amir Barati Farimani. Trans-
+former for partial differential equations’ operator learning.
+TMLR, 2023. 1, 2, 5, 6, 7
+[25] Zijie Li, Dule Shu, and Amir Barati Farimani. Scalable
+transformer for pde surrogate modeling.NeurIPS, 2023. 2, 5
+[26] Zong-Yi Li, Nikola B. Kovachki, Kamyar Azizzadenesheli,
+Burigede Liu, Kaushik Bhattacharya, Andrew Stuart, and
+Anima Anandkumar. Neural operator: Graph kernel net-
+work for partial differential equations.arXiv preprint
+arXiv:2003.03485, 2020. 7
+[27] Zong-Yi Li, Nikola B. Kovachki, Kamyar Azizzadenesheli,
+Burigede Liu, Kaushik Bhattacharya, Andrew M. Stuart, and
+Anima Anandkumar. Fourier neural operator for parametric
+partial differential equations.ArXiv, abs/2010.08895, 2020. 2
+[28] Zong-Yi Li, Daniel Z. Huang, Burigede Liu, and Anima
+Anandkumar. Fourier neural operator with learned defor-
+mations for pdes on general geometries.arXiv preprint
+arXiv:2207.05209, 2022. 5, 7, 11, 12
+9
+[29] Xinliang Liu, Bo Xu, and Lei Zhang. HT-net: Hierarchical
+transformer based operator learning model for multiscale
+PDEs.arXiv preprint arXiv:2210.10890, 2022. 2, 5
+[30] Xinliang Liu, Bo Xu, and Lei Zhang. Ht-net: Hierarchi-
+cal transformer-based operator learning model for multiscale
+pdes.arXiv preprint arXiv:2210.10890, 2022. 2
+[31] Ilya Loshchilov and Frank Hutter. Decoupled weight decay
+regularization. InICLR, 2019. 13
+[32] Huakun Luo, Haixu Wu, Hang Zhou, Lanxiang Xing, Yichen
+Di, Jianmin Wang, and Mingsheng Long. Transolver++: An
+accurate neural solver for pdes on million-scale geometries. In
+Forty-second International Conference on Machine Learning,
+2025. 15
+[33] Sharanya Majumdar, Juanzhen Sun, Brian Golding, Paul Joe,
+Jimy Dudhia, Olivier Caumont, K C Gouda, Peter Steinle,
+Beatrice Vincendon, Jianjie Wang, and Nusrat Yussouf. Mul-
+tiscale forecasting of high-impact weather: Current status and
+future challenges.Bulletin of the American Meteorological
+Society, 102:1–65, 2020. 1
+[34] Barnes W McCormick.Aerodynamics, aeronautics, and flight
+mechanics. John Wiley & Sons, 1994. 12
+[35] Doug McLean. Continuum fluid mechanics and the navier-
+stokes equations.Understanding Aerodynamics: Arguing
+from the Real Physics, 2012. 11
+[36] Tobias Pfaff, Meire Fortunato, Alvaro Sanchez-Gonzalez, and
+Peter Battaglia. Learning mesh-based simulation with graph
+networks. InICLR, 2021. 7
+[37] Charles R Qi, Hao Su, Kaichun Mo, and Leonidas J Guibas.
+Pointnet: Deep learning on point sets for 3d classification and
+segmentation. InCVPR, 2017. 6, 7
+[38] Md Ashiqur Rahman, Zachary E Ross, and Kamyar Azizzade-
+nesheli. U-no: U-shaped neural operators.TMLR, 2023. 2,
+5
+[39] Charles Spearman. The proof and measurement of association
+between two things. 1961. 13
+[40] Alasdair Tran, Alexander Mathews, Lexing Xie, and
+Cheng Soon Ong. Factorized fourier neural operators. In
+ICLR, 2023. 1, 5
+[41] Nobuyuki Umetani and Bernd Bickel. Learning three-
+dimensional flow for interactive aerodynamic design.ACM
+Transactions on Graphics (TOG), 2018. 5, 12
+[42] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkor-
+eit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. InConference on
+Neural Information Processing Systems (NeurIPS), pages
+5998–6008, 2017. 3
+[43] Sifan Wang, Jacob H. Seidman, Shyam Sankaran, Hanwen
+Wang, George J. Pappas, and Paris Perdikaris. Cvit: Continu-
+ous vision transformer for operator learning. InInternational
+Conference on Learning Representations, 2024. 2
+[44] Tian Wang and Chuang Wang. Latent neural operator for
+solving forward and inverse PDE problems. InNeurIPS,
+2024. 6, 7
+[45] Gege Wen, Zongyi Li, Kamyar Azizzadenesheli, Anima
+Anandkumar, and Sally M Benson. U-fno–an enhanced
+fourier neural operator-based deep-learning model for multi-
+phase flow.Advances in Water Resources, 2022. 5
+[46] Haixu Wu, Tengge Hu, Huakun Luo, Jianmin Wang, and
+Mingsheng Long. Solving high-dimensional pdes with latent
+spectral models. InICML, 2023. 5
+[47] Haixu Wu, Huakun Luo, Haowen Wang, Jianmin Wang, and
+Mingsheng Long. Transolver: A fast transformer solver for
+pdes on general geometries. InInternational Conference on
+Machine Learning (ICML), 2024. 1, 2, 5, 6, 7, 12, 13, 15
+[48] Zipeng Xiao, Zhongkai Hao, Bokai Lin, Zhijie Deng, and
+Hang Su. Improved operator learning by orthogonal attention.
+InICML, 2024. 1, 2, 5, 13
+[49] Maksim Zhdanov, Max Welling, and Jan-Willem van de
+Meent. Erwin: A tree-based hierarchical transformer for
+large-scale physical systems. InInternational Conference on
+Machine Learning (ICML), 2025. 2, 3, 4, 5, 11
+10
+A. Implementation
+A.1. Balltree Partitioning
+Ball trees.A ball tree is a hierarchical spatial partitioning data structure that recursively decomposes a point set into nested
+metric balls. Given a set of points P ⊂RD, each node u in the tree stores a subset Pu ⊆ Ptogether with a center cu ∈R D
+and radiusr u >0such that
+Pu ⊆B(c u, ru) :={x∈R D :∥x−c u∥2 ≤r u}.
+The root node contains all points. Internal nodes recursively split their point set into two (approximately) balanced children,
+each associated with a tighter enclosing ball, until a prescribed leaf capacity is reached.
+Construction.In our implementation we build a balanced binary ball tree from the point coordinates using the public
+balltree-erwin[49]. Starting from the full setP, each internal nodeuis constructed by:
+1. choosing a splitting direction based on a pair of distant points inP u;
+2. partitioningP u into two subsets of roughly equal size along this direction;
+3. fitting enclosing balls for each child subset by setting the center to the mean and the radius to the maximal distance to that
+mean.
+This produces a tree of depthO(logN)withO(N)nodes, and the overall construction cost isO(NlogN).
+Leaf ordering and patch extraction.To obtain patches for PMSA, we traverse the leaves of the ball tree in depth-first order
+and record the points in that leaf order. This induces a permutation π of {1, . . . , N}such that nearby indices in the permuted
+sequence correspond to spatially close points. We then form patches by taking contiguous blocks of length L in this ordered
+sequence:
+Pk =
+
+pπ((k−1)L+1), . . . ,pπ(kL)
+	
+, k= 1, . . . , K,
+with padding applied if N is not divisible by L. In this view, each patch can be interpreted as a collection of leaves and small
+subtrees that occupy a localized region of the domain. Once the permutation π is fixed, all subsequent transformer blocks
+operate on the reordered sequence and can use simple linear splitting into contiguous patches.
+Reuse across blocks.We emphasize that the ball tree is constructedonceper input sample, based solely on the initial
+coordinates. The induced permutation and patch layout are reused across all MSPT blocks. This avoids the cost of rebuilding
+trees at each layer while preserving spatial locality throughout the network. For inputs that already come with a natural
+ordering on a regular grid, we skip the ball-tree construction and directly apply linear partitioning, which can be viewed as a
+degenerate case of ball-tree partitioning.
+A.2. Benchmarks
+The model is evaluated on eight benchmarks (see Table 1) covering three types of partial differential equations (PDEs):Solid
+material(Elasticity and Plasticity) [ 13],Navier-Stokes equations for fluid[ 35] (Airfoil, Pipe, Navier-Stokes, Shape-Net Car,
+AhmedML), andDarcy flow[19]. The specific details of each benchmark are provided below.
+ElasticityThis benchmark estimates internal stress in elastic materials from their structure, discretized into 972 points [ 28].
+Each input is a 972×2 tensor for 2D positions, and the output is a 972×1 stress tensor. There are 1000 training samples with
+various structures and 200 test samples.
+PlasticityThis benchmark predicts the future deformation of plastic materials subjected to impact from an arbitrarily shaped
+die [28]. For each case, the input is the die shape, discretized into a structured mesh and represented as a 101×31 tensor. The
+output is the deformation at each mesh point over 20 future time steps, recorded as a 20×101×31×4 tensor, capturing
+deformation in four directions. The experimental protocol utilizes 900 training samples with diverse die shapes and 80 test
+samples.
+AirfoilThis task estimates the Mach number based on the airfoil shape, with the input discretized into a structured mesh
+of size 221×51 and the output representing the Mach number at each mesh point [ 28]. All shapes are derived from the
+NACA-0012 case provided by the National Advisory Committee for Aeronautics. The dataset comprises 1000 training samples
+with various airfoil designs and 200 samples for testing.
+11
+PipeThis benchmark estimates the horizontal fluid velocity based on the pipe structure [ 28]. Each case discretizes the pipe
+into a structured mesh of size 129×129 . The input tensor, shaped 129×129×2 , encodes the positions of the discretized
+mesh points, while the output tensor, shaped 129×129×1 , represents the velocity at each point. The training set includes
+1000 samples with varying pipe shapes, and 200 test samples are generated by modifying the pipe centerline.
+Navier-StokesThis benchmark models incompressible and viscous flow on a unit torus, with constant fluid density and
+viscosity set to 10−5 [21]. The fluid field is discretized into a 64×64 regular grid. The task involves predicting the fluid state
+for the next 10 time steps based on observations from the previous 10 steps. The dataset consists of 1000 training samples with
+varying initial conditions and 200 samples for testing.
+DarcyThis benchmark models fluid flow through a porous medium [ 21]. The process is initially discretized into a 421×421
+regular grid and subsequently downsampled to 85×85 resolution for the main experiments, following Wu et al. [47]. The
+model input is the structure of the porous medium, and the output is the fluid pressure at each grid point. The dataset includes
+1000 training samples and 200 test samples, each with distinct medium structures.
+Shape-Net CarThis benchmark addresses the estimation of drag coefficients for moving cars, a critical factor in automotive
+design. A total of 889 samples with diverse car shapes are generated to simulate driving at 72 km/h [41], using car models
+from the ShapeNet ”car” category [6]. The simulation discretizes the space into an unstructured mesh with 32,186 points,
+capturing both the surrounding air and surface pressure. Following the experimental setup in 3D-GeoCA [9], 789 samples
+are used for training and 100 for testing. Each input mesh is preprocessed to include mesh point positions, signed distance
+functions, and normal vectors. The model predicts velocity and pressure at each point, enabling subsequent calculation of the
+drag coefficient from the estimated physical fields.
+AhmedMLAhmedML [ 3] provides 500 parameterized geometries simulated with a hybrid RANS–LES solver (OpenFOAM
+v2212) for 80 convective time units on ∼20 M-cell unstructured meshes. Each case includes the body surface mesh, full
+volumetric fields (velocity and pressure), boundary slices, geometry parameters, and time-averaged forces.
+A.3. Metrics
+Since our experiment consists of standard benchmarks and practical design tasks, we also include several design-oriented
+metrics in addition to the relativeL 2 for physics fields.
+Relative L2 for physics fieldsGiven the physics field u and the model-predicted field bu, the relative L2 of the model
+prediction is calculated as follows:
+Relative L2 = ∥u− bu∥
+∥u∥ . (12)
+Relative L2 for drag coefficientFor ShapeNet-Car, the drag coefficient is calculated based on the estimated physics fields,
+following the same implementation as Wu et al. [47]. For a unit-density fluid, the coefficient is defined as
+C= 2
+v2A
+Z
+∂Ω
+p(ξ)
+
+bn(ξ)·bi(ξ)
+
+dξ+
+Z
+∂Ω
+τ(ξ)· bi(ξ)dξ
+
+,(13)
+where v is the speed of the inlet flow, A is the reference area, ∂Ω is the object surface, p denotes the pressure, bnis the outward
+unit normal vector of the surface,bi is the direction of the inlet flow, and τ denotes wall shear stress on the surface. τ can be
+calculated from the air velocity near the surface [34], and is usually much smaller than the pressure term. For ShapeNet-Car, bi
+is set as (−1,0,0) and A is the area of the smallest rectangle enclosing the front of the car. The relative L2 is defined between
+the ground-truth drag coefficient and the coefficient calculated from the predicted velocity and pressure fields.
+Spearman’s rank correlation for drag coefficientGiven M samples in the test set with ground-truth drag coefficients
+T={T 1,···, T M } and model-predicted coefficients bT={ bT1,···, bTM }, the Spearman correlation coefficient is defined as
+the Pearson correlation coefficient between the rank variables:
+ρ=
+cov
+
+R(T), R(bT)
+
+σR(T) σR( bT)
+,(14)
+12
+where R is the ranking function, cov denotes the covariance, and σ represents the standard deviation of the rank variables.
+This metric quantifies how well the model preserves the ordering of designs by drag, which is directly relevant for design
+optimization: higherρindicates that it is easier to identify good designs from the model’s predictions [39].
+A.4. Implementation Details
+For the Standard PDE Benchmarks and ShapeNet-Car, we follow the training procedure outlined by Wu et al.[47], using
+theNeural Solver Library 6. For AhmedML, we adopt a training protocol similar to AB-UPT [2], using 400 training samples,
+50 validation samples, and 50 testing samples selected at random. To fit within a single A100 GPU (40 GB), each AhmedML
+mesh is partitioned into non-overlapping sub-meshes of 320k points (160k for surface and 160k for volume), enabling multiple
+blocks to be processed concurrently. For models trained with the LION optimizer [7], we use a peak learning rate of 5×10 −5,
+weight decay of 5×10 −2, and a linear warmup over the first 5% of training, followed by cosine decay to a final learning rate
+of 1×10 −6, as detailed in AB-UPT [2]. Models not trained with LION use the optimizer, and learning rate configurations
+implemented in theNeural Solver Library. The complete training and model configurations for all benchmarks are summarized
+in Table 6.
+Table 6. Training and model configurations of MSPT. Here Lv and Ls represent the loss on volume and surface fields respectively. As for
+Darcy, we adopt an additional spatial gradient regularization termLg following ONO [48].
+BENCHMARKS
+TRAININGCONFIGURATION(SHARED IN ALL BASELINES) MODELCONFIGURATION
+LOSSEPOCHSINITIALLR OPTIMIZERBATCHSIZE LAYERSLHEADSCHANNELSCPATCHESKSUPERNODESQPOOLING
+ELASTICITY
+500
+10−6 LION [7] 1
+8 8
+128 32
+PLASTICITY
+10−3 ADAMW [31]
+8 128 64
+AIRFOIL RELATIVE4 128 106
+PIPE L2 4 128 64 1 MEAN
+NAVIER–STOKES 2 256 32
+DARCY LrL2+ 0.1Lg 10−6 LION [7] 1 128 300
+SHAPE-NETCAR Lv + 0.5Ls
+200 10−6 LION [7] 1 12 8 256 170 1 MEANAHMEDML 100 400
+6https://github.com/thuml/Neural-Solver-Library
+13
+B. Additional Visualizations
+In this section, we provide additional results comparing the performance of MSPT and Transolver on a set of benchmark
+PDE problems.
+Airfoil
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4
+Ground-truth
+0.05
+0.04
+0.03
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03 MSPT (Ours)
+0.05
+0.04
+0.03
+0.02
+0.01
+0.00
+0.01
+0.02
+0.03 Transolver
+Elasticity
+200
+400
+600
+800
+Ground-truth
+3
+2
+1
+0
+1
+2
+3 MSPT (Ours)
+3
+2
+1
+0
+1
+2
+3 Transolver
+Darcy
+0.002
+0.004
+0.006
+0.008
+0.010
+0.012
+0.014
+0.016
+Ground-truth
+0.0003
+0.0002
+0.0001
+0.0000
+0.0001
+0.0002
+0.0003 MSPT (Ours)
+0.0003
+0.0002
+0.0001
+0.0000
+0.0001
+0.0002
+0.0003 Transolver
+Figure 6. Visual comparison of per-point relative error maps across standard PDE benchmarks. Each row corresponds to one dataset (Airfoil,
+Elasticity, Darcy), and columns show the ground-truth field, MSPT, and Transolver.
+14
+C. Reproducibility Results
+C.1. Transolver++
+Transolver++ [32] is a parallelizable and more efficient successor to Transolver [47]. We trained Transolver++ using the
+official implementation7 and adapted it to all geometries following the Transolver setup, with only minimal adjustments for
+structured meshes. Training was carried out using the Neural-Solver-Library framework8, matching the experimental settings
+reported in Luo et al. [32].
+As shown in Tables 7 and 8, Transolver++ (repr.) performs worse than both Transolver and MSPT. Similar reproduction
+differences were also reported by AB-UPT [2]. To avoid over-interpreting discrepancies, we do not include Transolver++ in
+the main benchmark comparisons and instead report its reproduced results here for completeness.
+Table 7.Reproducibility comparison on standard PDE benchmarks.Relative L2 errors are reported. “Transolver++ (repr.)” refers to our
+reproduction using the official implementation. “/” indicates inapplicability. All values are shown in units of×10 −2.
+Model
+Point Cloud Structured Mesh Regular Grid
+Elasticity Plasticity Airfoil Pipe Navier DarcyStokes
+Transolver [47] 0.64 0.12 0.53 0.33 9.00 0.57
+Transolver++ [32] 0.52 0.11 0.48 0.27 7.19 0.49
+Transolver++ (repr.) [32] 1.54 0.54 0.75 0.55 12.30 0.90
+MSPT (Ours)0.48 0.10 0.51 0.31 6.32 0.76
+Table 8.Reproducibility comparison on ShapeNet-Car.Relative L2 errors for volume and surface fields, and drag coefficient ( CD);
+Spearman ρD for ranking quality. “Transolver++ (repr.)” refers to our reproduction using the official implementation. All models are trained
+under identical experimental conditions. Values are shown in units of×10 −2.
+Model ShapeNet-Car
+V olume↓Surf↓(C D)↓(ρ D)↑
+Transolver [47] 2.07 7.45 1.03 99.35
+Transolver++ (repr.) [32] 2.37 8.37 1.41 99.24
+MSPT (Ours)1.89 7.41 0.98 99.41
+C.2. AB-UPT
+Since the official AB-UPT [2] training pipeline is not publicly available, we reproduced its results using theNeural-Solver-
+Library(following the same training procedure as Wu et al. [47]) for the ShapeNet-Car dataset, and our own training pipeline
+for AhmedML, following the model configurations and hyperparameters (e.g., optimizer, learning rate, batch size) reported in
+their paper. The reproduced results differ from the originally published values, which is consistent with the authors’ note that
+their framework applies shared modifications across all models and that deviations can arise from training randomness and
+implementation details. In our experiments, similar discrepancies also appear when retraining other baselines under a unified
+pipeline, suggesting that part of the gap is due to differences in training frameworks rather than the architectures themselves.
+Accordingly, in the main text we report the original AB-UPT numbers for consistency with their publication, and provide our
+reproduced results and analysis here for completeness.
+7https://github.com/thuml/Transolver plus
+8https://github.com/thuml/Neural-Solver-Library
+15

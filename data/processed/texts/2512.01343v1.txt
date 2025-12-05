@@ -1,0 +1,336 @@
+Intrinsic Structure as a Proxy for Saliency:
+SVD-Based Weight Preservation for
+Mixed-Precision Quantization in Large Language
+Models
+Shashank Landge∗, Abhishek Patil †, Tejas kamble ‡, Bhushan Buddhivant § and Priyanka Joshi ¶
+Department of Computer Science,
+Indian Institute of Information Technology Pune
+Email: ∗author.one@add.on.net, †abhishekpramodpatil3151@gmail.com, ‡tejaskamble1018@gmail.com, §author.four@add.on.net
+, ¶priyanka@iiitp.ac.in
+Abstract—As Large Language Models (LLMs) continue to
+scale in parameter count, deploying them on commodity hard-
+ware has become increasingly challenging. Post-Training Quan-
+tization (PTQ) addresses this by reducing the precision of
+model weights, typically to 4-bit or lower. However, uniform
+quantization often leads to significant performance degradation
+due to the presence of “outlier features”—weights that, while few
+in number, are critical for maintaining model accuracy. Current
+state-of-the-art methods such as A WQ (Activation-aware Weight
+Quantization) and SpQR (Sparse Quantization Representations)
+rely on calibration data to identify these salient weights via
+activation magnitudes or Hessian sensitivity. In scenarios where
+data privacy is paramount or calibration data is unavailable,
+these methods are inapplicable.
+In this work, we propose a data-free, structure-aware hypoth-
+esis: that the weights identified as Principal Components via
+Singular Value Decomposition (SVD) are intrinsically important
+to the model’s downstream performance. We introduce a novel
+selection heuristic that preserves the top-kweights aligned with
+the principal components in FP32, while aggressively quantizing
+the residual weights. We compare our method against activation-
+aware (A WQ) and second-order (SpQR) methods across GLUE
+benchmarks (MRPC, RTE, QNLI) using a DistilBERT backbone.
+Our experiments reveal that structural importance is highly
+correlated with functional importance. On the challenging RTE
+task, our SVD-based method achieves an accuracy of 66.06%,
+outperforming both A WQ (65.34%) and SpQR (65.34%) at high
+protection budgets, validating that intrinsic matrix structure can
+serve as a robust proxy for weight saliency without the need for
+forward passes or calibration data.
+Index Terms—Large Language Models, Post-Training Quan-
+tization, Singular Value Decomposition, Mixed-Precision, A WQ,
+SpQR, Model Compression.
+I. INTRODUCTION
+The recent explosion in the capabilities of Large Language
+Models (LLMs), such as GPT-4 and Llama-2, has been driven
+largely by scaling laws that necessitate massive parameter
+counts. While effective, these sizes present a barrier to entry
+for deployment on edge devices or consumer-grade GPUs.
+Reducing the memory footprint of these models without
+retraining has become a critical area of research.
+Quantization, the process of mapping high-precision
+floating-point weights (e.g., FP16) to lower-precision integers
+(e.g., INT4), offers a promising solution. However, aggressive
+quantization often results in a collapse of model performance.
+Research has shown that this degradation is not uniform;
+rather, it is driven by a small subset of “salient” weights or
+“outlier features” that are extraordinarily sensitive to quanti-
+zation noise [5].
+A. The Challenge of Saliency Detection
+The core challenge in mixed-precision quantization is effi-
+ciently identifying which weights to preserve in high precision
+(the “salient” set) and which to compress. Existing state-of-
+the-art methods rely on data-driven metrics:
+•A WQ [1]:Observes activation magnitudes on a cali-
+bration set, hypothesizing that weights processing large
+activations are more important.
+•GPTQ [4] / SpQR [2]:Utilize second-order derivatives
+(Hessian matrix) computed from calibration data to de-
+termine which weights minimize reconstruction error.
+While effective, these methods introduce a dependency on
+calibration data. If the calibration set distribution differs from
+the deployment distribution, or if privacy constraints prevent
+access to data entirely, these methods cannot be applied.
+B. Our Contribution
+We propose a shift from data-aware importance to structure-
+aware importance. Drawing inspiration from Parameter-
+Efficient Fine-Tuning (PEFT) methods like PiSSA [3], which
+utilize Singular Value Decomposition (SVD) to identify train-
+able parameters, we hypothesize that the principal components
+of a weight matrix encode its primary linguistic capabilities.
+Hypothesis:The weights identified as Principal Compo-
+nents by SVD factorization are intrinsically important for the
+specific downstream task. Therefore, if we preserve thosek
+Principal weights in FP32 and quantize the rest of the original
+weights, the resulting model will retain high accuracy.
+arXiv:2512.01343v1  [cs.LG]  1 Dec 2025
+Our specific contributions are:
+1) We formalize an SVD-based heuristic for mixed-
+precision quantization that requires zero calibration data.
+2) We conduct a rigorous comparative analysis (“The Bat-
+tle”) against AWQ and SpQR on three GLUE tasks:
+MRPC, RTE, and QNLI.
+3) We demonstrate that our method is competitive with
+data-aware methods, and in specific low-resource
+regimes (like the RTE task), actually outperforms them.
+4) We analyze the Intersection over Union (IoU) of selected
+indices, proving that SVD intrinsically identifies 60-
+70% of the same weights that complex Hessian-based
+methods identify.
+II. RELATEDWORK
+A. Post-Training Quantization (PTQ)
+PTQ aims to compress models without the massive cost
+of retraining. Early methods like LLM.int8() [5] utilized
+vector-wise quantization to handle outliers. SmoothQuant [7]
+proposed mathematically smoothing activation outliers into
+weights to make quantization easier. These methods focus
+on making the entire model quantifiable, whereas our work
+focuses on selective preservation.
+B. Data-Aware Selection
+AWQ (Activation-aware Weight Quantization) [1] shifted
+the paradigm by noting that preserving 1% of salient weights
+can fix quantization error. Their heuristic, based on activa-
+tion magnitude|W|X, is fast but requires forward passes.
+SpQR (Sparse Quantization Representations) [2] takes this
+further by identifying sensitive weights via the Hessian inverse
+(Optimal Brain Surgeon framework [8]). While theoretically
+optimal, SpQR is computationally expensive (O(d3)) and data-
+dependent.
+C. Low-Rank Decomposition
+Low-Rank Adaptation (LoRA) [6] demonstrated that weight
+updates during fine-tuning have a low intrinsic rank. PiSSA
+[3] recently proposed initializing the LoRA adapters using
+the principal singular values of the original weight matrix.
+Our work adapts the PiSSA initialization logic for the distinct
+problem of quantization sensitivity, essentially asking: “Are
+the weights that are good for initialization also the weights
+that are bad to quantize?”
+III. METHODOLOGY
+We consider a pre-trained weight matrixW∈R dout×din .
+Our goal is to decomposeWinto a sparse high-precision
+componentS(Salient) and a dense low-precision component
+Q(Quantized), such that:
+W≈S+Q(1)
+whereSretains FP32 precision but has high sparsity (onlyk
+non-zero elements), andQis fully quantized to 4-bit.
+A. Selection Heuristics
+We compare three distinct heuristics for populating the set
+S.
+1) Baseline: Random Selection:As a lower bound, we
+selectkindices uniformly at random:
+Irand ∼Uniform(1, . . . ,|W|)(2)
+2) Data-Aware: AWQ:We pass a calibration batchX
+through the network. The importance score for weightw ij
+is:
+ScoreAWQ (wij) =|w ij| · ||Xj||2 (3)
+whereX j is the column of activations corresponding to input
+channelj. This prioritizes weights that act on large activation
+features.
+3) Second-Order: SpQR (Hessian):We compute the em-
+pirical HessianH= 2
+N XT X. The saliency is derived from
+the Optimal Brain Damage (OBD) objective:
+ScoreSpQR(wij) = w2
+ij
+[H−1]jj
+(4)
+Due to the computational cost of invertingH, we use a
+damped inverse withλ= 0.01. This identifies weights which,
+if perturbed, cause the maximum increase in L2 loss.
+4) Proposed: SVD-Based Selection (Our Method):We per-
+form Singular Value Decomposition on the weight matrixW:
+W=UΣV T (5)
+We define the “Principal Structure”W pri as the reconstruction
+using only the toprsingular values (we user= 8following
+PiSSA literature):
+Wpri =U :,:r ·diag(Σ :r)·V T
+:,:r (6)
+Our selection score is simply the magnitude of this principal
+reconstruction:
+ScoreSV D(wij) =|(W pri)ij|(7)
+The top-kindices with the highest scores are selected. Note
+that this method relies solely on the weightsWand requires
+no input dataX.
+B. Quantization Mechanism
+For the non-salient weights (the residual), we apply simu-
+lated symmetric linear quantization to 4 bits.
+q=round
+ w
+scale
+
+(8)
+scale= max(|w|)
+2b−1 −1 (9)
+We apply a clipping threshold of 2.50 based on the distribution
+ofWto filter outliers before quantization, a standard practice
+in NF4 (NormalFloat) quantization.
+IV. EXPERIMENTALSETUP
+A. Tasks and Models
+We utilize the GLUE benchmark suite, specifically choosing
+tasks that are sensitive to small linguistic nuances:
+•MRPC:Microsoft Research Paraphrase Corpus.
+•RTE:Recognizing Textual Entailment.
+•QNLI:Question-answering NLI.
+We use fine-tuned versions of
+distilbert-base-uncasedprovided by the TextAttack
+framework. These models are compact, making them highly
+sensitive to quantization noise, thus serving as a rigorous
+testbed.
+B. Implementation Details
+All experiments were run on a single NVIDIA T4 GPU.
+•Calibration:For AWQ and SpQR, we use 128 samples
+from the training set.
+•Protection Budgets (k):We varyk∈
+{1,16,64,256,1024,4096}parameters per linear
+layer.
+•Baselines:We compare against a “Q4 Unprotected”
+baseline (k= 0) and the original FP32 model.
+V. RESULTS ANDANALYSIS
+A. Comparative Accuracy Analysis
+1) Performance on MRPC:Table I presents the accuracy
+recovery on the MRPC task. The FP32 baseline accuracy is
+0.8578. Unprotected 4-bit quantization drops performance to
+0.8358.
+As shown in Fig. 1 (a), our SVD-based method outperforms
+the data-aware methods at extremely low budgets (k= 1,16),
+achieving 0.8554 accuracy immediately. This suggests that for
+MRPC, the “structural outliers” defined by SVD are more
+critical than the “activation outliers” defined by the calibration
+set.
+TABLE I
+MRPC ACCURACYRECOVERY VS. PROTECTIONBUDGET(k)
+kAWQ (Data) SpQR (Hessian) Our Method (SVD)
+1 0.8505 0.8480 0.8554
+16 0.8505 0.8456 0.8554
+64 0.8529 0.8480 0.8529
+256 0.8529 0.8480 0.8529
+1024 0.8505 0.8480 0.8529
+4096 0.8529 0.8480 0.8529
+2) Performance on RTE:RTE is traditionally a harder task
+for quantization due to the logical reasoning required. The
+baseline is 0.6570 and the Q4 floor is 0.6245.
+As seen in Table II and Fig. 1 (b), atk= 4096, our method
+achieves 0.6606, which effectively surpasses the original FP32
+baseline. This phenomenon where a quantized model outper-
+forms the original has been observed in other literature and
+is often attributed to the quantization acting as a regularizer,
+reducing overfitting on small datasets like RTE. Crucially, our
+method beats SpQR here, indicating that the Hessian computed
+from a small calibration set may have been noisy or overfit,
+whereas the intrinsic SVD structure was robust.
+TABLE II
+RTE ACCURACYRECOVERY VS. PROTECTIONBUDGET(k)
+kAWQ SpQR Our Method (SVD)
+1 0.6498 0.6498 0.6354
+16 0.6390 0.6426 0.6390
+64 0.6426 0.6426 0.6498
+256 0.6390 0.6426 0.6426
+1024 0.6498 0.6426 0.6498
+4096 0.6534 0.65340.6606
+3) Performance on QNLI:QNLI results show a tighter
+race. Baseline is 0.8849, Floor is 0.8775. Atk= 256, our
+method (0.8836) nearly recovers the full FP32 performance,
+significantly outpacing AWQ (0.8775).
+TABLE III
+QNLI ACCURACYRECOVERY
+kAWQ SpQR Our Method
+1 0.8803 0.8805 0.8788
+256 0.8775 0.8803 0.8836
+4096 0.8817 0.8845 0.8834
+B. Overlap Analysis
+Figure 2 answers a fundamental question:Is SVD finding
+the same weights as Hessian-based methods?
+The bars represent the Intersection over Union (IoU) of the
+indices selected by our method vs. the baselines.
+•High Overlap with SpQR:We observe overlaps as
+high as 67% with SpQR at lowkvalues. This is a
+profound finding. It implies that the weights with the
+highest singular value contribution are statistically likely
+to be the same weights that have high Hessian sensitivity.
+•Lower Overlap with A WQ:The overlap with AWQ is
+generally lower (≈30%). This suggests that “Activation
+Outliers” (what AWQ finds) and “Structural Outliers”
+(what SVD finds) are distinct populations, yet both are
+important. However, since SVD matches SpQR’s perfor-
+mance, the structural outliers appear to be a more robust
+proxy for true loss sensitivity than simple activation
+magnitude.
+VI. DISCUSSION
+A. Computational Complexity
+A major advantage of our method is computational effi-
+ciency during the quantization phase.
+•SpQR/GPTQ:Requires computingH=X T Xand
+inverting it. For a layer with hidden dimensiond, matrix
+inversion isO(d 3). Furthermore, collectingXrequires
+forward passes through the model.
+Fig. 1. Accuracy vs. Protection Budget (k). Comparing our SVD-based method (Blue) against AWQ (Green) and SpQR (Red). Our method consistently
+matches or beats the baselines without using any calibration data.
+Fig. 2. Selection Similarity (%). Intersection over Union (IoU) of the weights selected by our SVD method vs. AWQ (Teal) and SpQR (Maroon). The high
+overlap with SpQR confirms that SVD is a strong proxy for Hessian-based sensitivity.
+•Our Method:Requires SVD on the weight matrixW.
+While exact SVD is alsoO(d 3), we only need the top-
+ksingular vectors. Randomized SVD algorithms can
+approximate this inO(r·d 2), whereris the target
+rank. Crucially, this is purely static; no data movement,
+no forward passes, and zero GPU memory overhead for
+storing activations.
+B. The “Regularization” Effect
+The RTE results (Table II) are particularly interesting. By
+quantizing the “residual” weights (noise?) and keeping the
+“principal” weights (signal) in FP32, our method may be
+acting as a denoiser. The quantized residualQloses precision,
+perhaps stripping away overfitting patterns stored in the low-
+magnitude, low-rank tail of the weight spectrum, while the
+preserved structureSmaintains the core logic.
+VII. CONCLUSION
+We presented a comprehensive evaluation of structure-based
+weight preservation for LLM quantization. By leveraging the
+intrinsic algebraic structure of weight matrices via SVD, we
+demonstrated that it is possible to achieve state-of-the-art
+quantization performance without any calibration data.
+Our method, which we term SVD-based Weight Preser-
+vation, matches or exceeds the performance of activation-
+aware (AWQ) and Hessian-based (SpQR) methods on GLUE
+benchmarks. The high overlap between our selected weights
+and those chosen by SpQR suggests a fundamental link
+between the singular value spectrum and the loss landscape
+curvature. This opens new avenues for fully data-free model
+compression, essential for secure and private AI deployment.
+REFERENCES
+[1] J. Lin et al., “AWQ: Activation-aware Weight Quantization for LLM
+Compression and Acceleration,”arXiv preprint arXiv:2306.00978, 2023.
+[2] T. Dettmers et al., “SpQR: A Sparse-Quantized Representation for Near-
+Lossless LLM Weight Compression,”arXiv preprint arXiv:2306.03078,
+2023.
+[3] F. Meng et al., “PISSA: Principal Singular Values for Structure Adap-
+tation,”arXiv preprint arXiv:2404.02948, 2024.
+[4] E. Frantar et al., “GPTQ: Accurate Post-Training Quantization for
+Generative Pre-trained Transformers,” inICLR, 2023.
+[5] T. Dettmers et al., “LLM.int8(): 8-bit Matrix Multiplication for Trans-
+formers at Scale,” inNeurIPS, 2022.
+[6] E. J. Hu et al., “LORA: Low-Rank Adaptation of Large Language
+Models,” inICLR, 2022.
+[7] X. Xiao et al., “SmoothQuant: Accurate and Efficient Post-Training
+Quantization for Large Language Models,” inICML, 2023.
+[8] B. Hassibi and D. G. Stork, “Second order derivatives for network
+pruning: Optimal brain surgeon,” inNIPS, 1992.

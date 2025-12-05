@@ -1,0 +1,1277 @@
+Learning the Boundary of Solvability: Aligning LLMs to Detect Unsolvable
+Problems
+Dengyun Peng1,3* Qiguang Chen1* Bofei Liu1 Jiannan Guan1 Libo Qin2†
+Zheng Yan1 Jinhao Liu1 Jianshu Zhang3 Wanxiang Che1†
+1LARG, Research Center for Social Computing and Interactive Robotics, HIT
+2School of Computer Science and Engineering, Central South University
+3iFLYTEK
+Abstract
+Ensuring LLM reliability requires not only
+solving complex problems but also recogniz-
+ing when a problem is unsolvable. Current
+models often struggle to distinguishobjec-
+tive unsolvability(inherent contradictions in
+the problem) fromsubjective capability limi-
+tations(problems beyond the model’s compe-
+tence), which leads to hallucinations and over-
+confidence. To address this, we propose Un-
+solvableQA and UnsolvableRL to solve feasi-
+ble problems, detect inherent contradictions,
+and prudently refuse tasks beyond capabil-
+ity. Specifically, we constructUnsolvableQA,
+a dataset of paired solvable and unsolvable
+instances derived via a dual-track methodol-
+ogy: programmatic generation for logic puzzles
+and a novel “Reverse Construction” method
+that injects contradictions into valid reason-
+ing chains for mathematics. Building on this
+dataset, we introduce UnsolvableRL, a rein-
+forcement learning framework with three re-
+ward components jointly accounting for ac-
+curacy, unsolvability, and difficulty. Empir-
+ical results show that our approach achieves
+near-perfect unsolvability detection while also
+improving accuracy on solvable tasks. Cru-
+cially, we identify Capability Collapse, demon-
+strating that explicit exposure to unsolvable
+data is indispensable for preventing models
+from becoming systematically overconfident.
+Our code and data are available at https:
+//github.com/sfasfaffa/unsolvableQA.
+1 Introduction
+As Large Language Models (LLMs) achieve strong
+performance on complex reasoning tasks (Chen
+et al., 2025c; Wei et al., 2022; Guo et al., 2025;
+Jaech et al., 2024), a key research direction (Qin
+et al., 2025) is ensuring they recognize their own
+limitations and behave reliably. Earlier work on
+confidence calibration (Xiong et al., 2023; Li et al.,
+*Equal contribution
+†Corresponding Author
+Easy Hard
+Unsolvable
+Solvable
+Solution Space
+Question 
+Difficulty
+Need to Answer
+Unsolvable 
+& Easy
+Unsolvable 
+& Hard
+Solvable 
+& Easy
+Need to Answer
+Solvable & 
+Hard
+Need to Calibrate
+Need to Calibrate
+Easy Hard
+Unsolvable
+Solvable
+Solution Space
+Question 
+Difficulty
+(a) Previous works about response based on Subjective Calibration.
+(b) Response both based on Objective Detection and Subjective Calibration.
+Need to Answer
+Unsolvable 
+& Easy
+Unsolvable 
+& Hard
+Solvable 
+& Easy
+Need to Detect
+Solvable & 
+Hard
+Need to Calibrate
+Need to Calibrate
+Be ignored
+Figure 1: Comparison of alignment paradigms. We treat
+the solution space (solvable vs. unsolvable) and ques-
+tion difficulty (easy vs. hard) as orthogonal dimensions,
+requiring models toobjectively detectcontradictions
+andsubjectively calibrateconfidence.
+2024; Yoon et al., 2025) and selective classifica-
+tion (Fisch et al., 2022) during reasoning under-
+scores the need for models to know when not
+to answer. Further, studies on modelcapability
+boundaries(Chen et al., 2024) examine model
+self-awareness of their limitations to avoid unpro-
+ductive reasoning on problems they are likely to
+fail (Zhang et al., 2025; Mei et al., 2025; Kalai
+et al., 2025; Chen et al., 2025b). More recently,
+TruthRL (Wei et al., 2025) encourages models to
+refuse when uncertain through a ternary reward
+mechanism.
+However, a key limitation of these approaches is
+that they mainly focus on refusing questions that
+aresolvable but currently beyond the model’s capa-
+bilities(“Need to Calibrate” region in Figure 1 (a)).
+This focus neglects a complementary and arguably
+more fundamental challenge: identifying problems
+that areinherently unsolvable due to logical con-
+1
+arXiv:2512.01661v1  [cs.CL]  1 Dec 2025
+tradictions. As illustrated by the gray “Be ignored”
+region in Figure 1 (a), existing models treat such an
+unsolvability as mere high difficulty or hallucinate
+answers even for simple contradictions.
+To address this, our work distinguishes these
+scenarios by treatingSolution Space(solvable vs.
+unsolvable) andQuestion Difficulty(easy vs. hard)
+as orthogonal dimensions (Figure 1 (b)). We argue
+that a reliable AI system must exhibit two behav-
+iors: (1)Objective Detection, accurately identify-
+ing and flagging internally contradictory problems
+as “unsolvable” (top-left yellow quadrant); and (2)
+Subjective Calibration, safely refusing theoret-
+ically solvable problems that exceed the model’s
+current reasoning capacity. Without this distinction,
+models may confidently pursue hallucinations or
+unnecessarily reject solvable tasks.
+First, to enable deep analysis of unsolvability,
+we present a fully automated pipeline and intro-
+duceUnsolvableQA, a dataset of paired solvable
+and unsolvable instances spanning logic, puzzles,
+and mathematics. For programmatically verifiable
+tasks, we create provably unsolvable instances by
+systematically injecting logical contradictions at
+the code level. For domains such as mathematics
+that lack direct programmatic verification, inspired
+by Lightman et al. (2024); Ling et al. (2023), we
+propose a“Reverse Construction”methodology.
+This LLM-driven approach starts from a solvable
+problem and its correct Chain-of-Thought (CoT),
+inserts a controlled logical contradiction into the
+CoT, and reverse-engineers a corresponding unsolv-
+able problem aligned with the flawed reasoning.
+To train models that remain robust on both
+solvable and unsolvable inputs, we designUn-
+solvableRL, a dynamic reward alignment scheme
+based on GRPO (Shao et al., 2024) that enables
+the model to detectinherentunsolvability and cali-
+brate its confidence. Specifically, we assign distinct
+optimization objectives to two refusal types: (1) in-
+herent unsolvability is formulated as a supervised
+classification task, whereas (2) capability-based
+calibration is governed by a dynamic confidence
+threshold with the model’s evolving performance.
+Empirical results show a synergistic effect: Un-
+solvableRL achieves near-perfect precision in un-
+solvability detection and substantially higher rea-
+soning accuracy on solvable tasks, nearly doubling
+the combined score. Our analysis also reveals a
+capability collapsephenomenon: without explicit
+exposure to unsolvable data, especially smaller
+models face a severe decline in self-monitoring,
+becoming overconfident in their outputs.
+Our contributions are summarized as follows:
+• We propose a comprehensive alignment frame-
+work that treats objective unsolvability and
+subjective capability as orthogonal dimen-
+sions, establishing a robust three-way decision
+boundary for reliable reasoning.
+• We introduceUnsolvableQA, a dataset con-
+structed via a novel “Reverse Construction”
+methodology. This approach bridges the data
+gap by systematically injecting logical contra-
+dictions into valid Chain-of-Thought traces to
+generate verifiable unsolvable instances.
+• We proposeUnsolvableRL, a training
+paradigm leveraging dynamic confidence
+thresholds. This mechanism enables models
+to simultaneously learn to solve feasible tasks,
+detect inherent contradictions, and calibrate
+confidence on difficult problems.
+• Empirical results demonstrate synergistic im-
+provements in both detection and reasoning.
+Crucially, we identify the phenomenon of Ca-
+pability Collapse, revealing that explicit un-
+solvable data is essential to prevent model
+overconfidence.
+2 Related Work
+There are two primary areas related to our work:
+automated dataset construction for reasoning and
+reinforcement learning approaches for incentiviz-
+ing selective refusal.
+As the reliance of Large Language Models on
+data quality increases, Automated Dataset Con-
+struction (ADC) has emerged as a prominent re-
+search direction (Liu et al., 2024; Wang et al.,
+2023). In the realm of reasoning, recent efforts pri-
+marily focus on ensuring data solvability and veri-
+fiability through formal or programmatic means.
+Representative works such as Enigmata (Chen
+et al., 2025a) and BIGGSM (Chen et al., 2024)
+have significantly enriched the resources for solv-
+able reasoning tasks by employing synthetic puz-
+zles and difficulty-graded annotations, respectively.
+Concurrently, research on verifying the correctness
+of Chain-of-Thought (CoT) traces has also been
+advancing (Ling et al., 2023; Chen et al., 2025c).
+In contrast, progress in dataset construction regard-
+ing problem unsolvability has been relatively slow.
+2
+Although earlier benchmarks like SQuAD 2.0 (Ra-
+jpurkar et al., 2018) attempted to include unan-
+swerable questions, their task formats are overly
+simplistic (primarily extractive span selection) and
+fail to effectively evaluate the refusal capabilities
+of modern models in complex logical reasoning
+scenarios. Consequently, existing data synthesis
+efforts remain largely concentrated onsolvablein-
+stances, leaving a significant research gap.
+Beyond dataset construction, Reinforcement
+Learning (RL) (Ouyang et al., 2022; Schulman
+et al., 2017; Rafailov et al., 2024) has become a
+central approach for aligning LLMs with desired
+behaviors such as safety and truthfulness. Recent
+RL algorithms for reasoning, such as GRPO (Shao
+et al., 2024) and DAPO (Yu et al., 2025), fur-
+ther enhance models’ reasoning abilities (Sheng
+et al., 2025). Concurrent work also leverages RL
+to improve reasoning efficiency under cost con-
+straints (Tu et al., 2025; Team et al., 2025; Guo
+et al., 2025; Wang et al., 2025; Chen et al., 2025b).
+In parallel, advances such as TruthRL (Wei et al.,
+2025) introduce objectives that encourage models
+to refuse likely hallucinations, and research on self-
+awareness enables models to decline answering
+when appropriate (Zhang et al., 2025; Mei et al.,
+2025; Kalai et al., 2025; Steyvers et al., 2025).
+Despite these advancements, existing frame-
+works largely conflateobjective unsolvabilitywith
+subjective uncertainty. By focusing primarily on
+solvable instances or confidence calibration, they
+overlook the necessity of explicitly learning to iden-
+tify logical contradictions. We bridge this gap by
+systematically constructing guaranteed-unsolvable
+data to enforce a robust three-way decision bound-
+ary: solving feasible tasks, detecting inherent un-
+solvability, and Calibrating Refusal for problems
+beyond the model’s current capabilities.
+3 UnsolvableQA Construction
+Existing benchmarks mainly target solvable tasks,
+leaving models prone to hallucinations when judg-
+ing feasibility. To address this issue, we introduce
+UnsolvableQA, a dataset for detecting problem in-
+herent contradictions.
+To achieve this, we use a dual-track methodol-
+ogy (illustrated in Figure 2) tailored to the specific
+verification constraints of different domains.
+3.1 Mathematics Problem Generation via
+Reverse Construction
+For mathematical reasoning tasks (e.g., algebra,
+geometry, combinatorics from AIME datasets), di-
+rect programmatic verification is often infeasible.
+We introduce aReverse Constructionmethodol-
+ogy (see Figure 2 (a)) that leverages large language
+models to generate unsolvable problems by inject-
+ing logical contradictions into solvable seed prob-
+lems, yielding high-quality unsolvable mathemat-
+ics problems for training unsolvable policies.
+Our reverse construction pipeline operates
+through two sequential stages:
+Data Generation Process:First, we validate each
+seed problem by confirming that a strong reasoning
+model (DeepSeek-Reasoner) can correctly solve it
+and produce a complete chain-of-thought, ensuring
+sufficient reasoning capability. Then, we employ
+DeepSeek-Reasoner to design logical contradic-
+tions via two complementary strategies:Constraint
+Contradiction, which introduces conflicting exter-
+nal conditions, andAxiom Contradiction, which
+modifies reasoning steps to violate fundamental
+mathematical axioms. The model generates a struc-
+tured plan specifying the location and mechanism
+of contradiction injection.
+Validation Process:Based on this plan, the model
+then reverse-engineers a new problem statement
+that preserves the stylistic and complexity charac-
+teristics of the seed problem while embedding the
+designed contradiction. Finally, we implement a
+two-tier verification protocol: the generated prob-
+lem is first presented to DeepSeek-Reasoner to au-
+tonomously detect contradictions; if this fails, we
+explicitly provide the contradiction plan to assess
+genuine unsolvability. Only instances passing veri-
+fication are retained.
+3.2 Logic Puzzle Generation
+To acquire strictly unsolvable questions in logic
+puzzle scenarios, we implement automated genera-
+tors for four representative logic domains, follow-
+ing the sampling and verification process in Fig-
+ure 2 (b). Each domain uses a deterministic solver
+to verify solutions and confirm unsolvability.
+Game24.Solvability is checked by exhaustively
+enumerating all binary expression trees with ex-
+act rational arithmetic (Python Fraction) to avoid
+floating-point error. Unsolvable instances are ob-
+tained byrejection sampling, retaining number sets
+3
+Data Generate Process
+Solvable 
+Question
+Validation Process
+Filter out
+Correct 
+SolutionLLM
+Add 
+Contradiction
+Contractive 
+Solution LLM Unsolvable 
+Question
+Solvable 
+Solution
+Unsolvable 
+Solution
+LLM
+Unsolvable 
+Question+
+expected 
+contradiction
+Add More 
+Information
+Unsolvable 
+Set +1
+Solvable
+Set +1
+Unsolvable 
+Set +1
+Randomly Generate 
+Question
+Sampling Process
+(a) Mathematical Data Collection Methods. (b) Puzzle Data Collection Methods.
+Automated Verifier
+Figure 2: TheUnsolvableQAdata collection pipeline.(a) Mathematical Data Collection:We employ a “Reverse
+Construction” method where contradictions are injected into the solution path of solvable problems. The resulting
+instances are verified by an LLM to ensure they lead to a contradiction (unsolvable) rather than a valid solution.(b)
+Puzzle Data Collection:We utilize domain-specific programmatic generators and automated deterministic verifiers
+(e.g., SAT solvers, DFS) to rigorously classify randomly generated instances into solvable and unsolvable sets.
+for which the exhaustive search proves that no so-
+lution exists.
+Hamiltonian Cycle/Path.We encode graph
+traversability as a Boolean Satisfiability problem
+and verify randomly generated graphs using SAT
+solvers (MiniSat backend via pysat). Unsolvable
+instances are constructed by injecting structural
+impossibilities, such as removing critical edges to
+create bottlenecks or disconnecting components.
+Hitori.We formulate Hitori as a Constraint Satis-
+faction Problem and, using python-constraint,
+generate puzzles with unique solutions. For unsolv-
+able instances, we inject conflicting constraints, for
+example forcing a row or column to contain du-
+plicate numbers that cannot be removed without
+violating adjacency rules.
+Maze Navigation.Base mazes are generated via
+randomized Depth-First Search (DFS) to ensure
+nontrivial structure. To obtain unsolvable instances,
+we analyze all valid paths in a solvable maze and
+place an obstacle at acritical junctionshared by
+every path, then verify unsolvability using Breadth-
+First Search (BFS).
+3.3 Dataset Statistics and Quality Control
+We construct UnsolvableQA to have approximately
+balanced solvable and unsolvable instances per do-
+main, with minor residual imbalances caused by
+generator yields and verification constraints. Ta-
+ble 1 therefore reports aggregated statistics across
+the train and test partitions ofUnsolvableQA. The
+test set contains 699 problems (358 solvable, 341
+unsolvable), and the train set contains 637 prob-
+lems (348 solvable, 289 unsolvable). The train
+partition pools all Maze instances without diffi-
+culty splits, whereas the test partition preserves
+Split Domain Solvable Unsolvable Total
+Train Game24 50 50 100
+Train Hamiltonian Cycle 48 48 96
+Train Hamiltonian Path 50 50 100
+Train Hitori 50 50 100
+Train Maze 100 59 159
+Train AIME (1983–2023) 50 32 82
+Test Game24 50 50 100
+Test Hamiltonian Cycle 48 50 98
+Test Hamiltonian Path 50 50 100
+Test Hitori 50 50 100
+Test Maze(Easy) 100 94 194
+Test AIME (2024–2025) 60 47 107
+Train Total – 348 289 637
+Test Total – 358 341 699
+Table 1: Unified vertical statistics forUnsolvableQA
+train/test partitions. Train Maze has no difficulty split;
+AIME year ranges differ. (Note: AIME year ranges:
+train 1983–2023; test 2024–2025.)
+Maze Easy. The AIME partitions cover different
+year ranges. Test prompts are diversified and para-
+phrased, while train prompts follow templated for-
+mats for scalable generation. All instances pass
+automated quality-control checks: logic puzzles
+are verified with multiple SAT/CSP/graph solvers,
+maze and programmatic tasks with deterministic
+solvers, and mathematically constructed problems
+with multi-pass LLM-based verification.
+4 UnsolvableRL Methodology
+4.1 Problem Formulation
+We formulate the reasoning task as generating a
+response y for a problem instance x, sampled from
+a distribution D. Each instance x∈ D is either
+objectively solvable (x∈ S) or unsolvable ( x∈
+U), and is further categorized as subjectively easy
+(x∈ E) or hard (x∈ H).
+4
+Specifically, to satisfy three distinct behavioral
+objectives, our training framework optimizes a pol-
+icy πθ as follows. First, for solvable and easy in-
+stances within the model’s capabilities (x∈ S ∩E),
+the objective isReasoning Accuracy, requiring
+the model to produce correct reasoning chains and
+final answers. Second, for inherently unsolvable
+instances (x∈ U ∩ E), the objective isUnsolv-
+ability Detection: the model must explicitly rec-
+ognize the inconsistency and output a dedicated
+tag (e.g., <unsolvable>) instead of hallucinating
+a solution, which we treat as anobjective correct-
+nesstask. Third, for hard yet solvable instances
+(x∈ H) that exceed the model’s effective reason-
+ing capacity (as indicated by low internal confi-
+dence), the objective isCapability Calibration,
+where the model should prudently abstain (e.g., out-
+put <beyond_capacity>) to reduce false positives.
+4.2 Group-Relative Policy Optimization
+To efficiently optimize the policy across hetero-
+geneous objectives without training a separate
+value function, this work adopts Group Relative
+Policy Optimization (GRPO). For each input x,
+the policy samples a group of G outputs Y=
+{y1, y2, . . . , yG}. The optimization objective is de-
+fined as:
+J(θ) =E x,Y
+ 1
+G
+GX
+i=1
+min
+
+ri(θ)Ai,
+clip(ri(θ),1−ϵ,1 +ϵ)A i
+
+,
+(1)
+where ri(θ) = πθ(yi|x)
+πθold (yi|x) is the probability ratio,
+and ϵ is the clipping parameter. GRPO computes
+the advantage Ai for each output yi by normalizing
+rewards within the group instead of using a critic
+model:
+Ai = R(yi |x)−µ R
+σR +ϵ ,(2)
+where µR and σR are the mean and standard devia-
+tion of the rewardsR={R(y j |x)} G
+j=1 within the
+group. This group-based normalization can stabi-
+lize training due to reward-scale differences across
+solvable and unsolvable domains.
+4.3 Reward Design
+As illustrated in Figure 3, our framework explic-
+itly distinguishes between three types of model
+responses: (1)Reward for Reasoning Accuracy
+(providing a solution), (2)Reward for Unsolvabil-
+ity Detection(identifying inherent contradictions),
+and (3)Reward for Capability Calibration(ad-
+mitting capability limits). We design a composite
+reward function that applies distinct mechanisms to
+these behaviors to align objective correctness with
+subjective capability.
+Reward for Reasoning Accuracy (Racc).This
+component evaluates the correctness of the model’s
+judgments on verifiably solvable instances. (1)
+ACorrect Response ( +1)is assigned when the
+model outputs the correct answer for a solvable in-
+stance. (2) ForIncorrect Reasoning ( 0)on solvable
+instances, such as producing an incorrect final an-
+swer despite performing the calculation, the model
+receives a neutral reward. This asymmetric scheme
+emphasizes reasoning capability by rewarding suc-
+cessful problem solving while not explicitly penal-
+izing unsuccessful but genuine reasoning attempts
+on solvable tasks.
+Reward for Unsolvability Detection ( Rdetect).
+This component evaluates how accurately the
+model identifies inherently contradictory or ill-
+posed instances. (1) ACorrect-Detect Response
+(+1)is assigned when the model explicitly out-
+puts the canonical tag unsolvable for such an in-
+stance. (2) To prevent degenerate behavior, we
+impose aFalse Unsolvability Penalty (ρ=−0.5 ):
+if the model incorrectly declares a solvable prob-
+lemunsolvable, it receives a negative reward.
+We explicitly motivate this penalty value via a
+decision-theoretic analysis (formal proof in Ap-
+pendix A.1). Consider a model with an initial
+weak reasoning capability ϵ on solvable tasks (e.g.,
+ϵ≈0.1 ) and a posterior belief p that a given prob-
+lem is unsolvable. The model decides between two
+actions based on their expected rewards:
+(1) Attempting to Solve:The expected reward
+depends on the problem being solvable and the
+model answering correctly: E[Attempt]≈(1−p)·
+ϵ.
+(2) Declaring Unsolvable:The expected reward
+is the weighted sum of a correct rejection and a
+false rejection penalty: E[Reject] =p·1+(1−p)·ρ .
+The model will only attempt to reason if
+E[Attempt]>E[Reject] . Solving this inequality
+yields a critical threshold for the beliefp:
+p < ϵ−ρ
+1 +ϵ−ρ
+If we setρ= 0 (no penalty), the threshold collapses
+to p <0.09, meaning the model refuses to answer
+unless it is over 91% sure the problem is solvable.
+5
+Easy
+Hard
+Unsolvable
+Unsolvable 
+Question
+Hard 
+Question
+(b) Reward for Subjective Calibration.
+Policy 
+Model
+Policy 
+Model Reward: +0
+Reward: +1
+Policy 
+Model
+Policy 
+Model
+Solvable 
+Question
+Solvable
+Easy 
+Question
+Acc. Threshold: +1 Acc. Threshold: +2
+Sampling
+Sampling Acc.: +1 Sampling Acc.: +2
+Reward: +λ( − )
+Solvable
+Unsolvable
+Reward: +
+Unsolvable Reward: -0.5
+Solvable
+(a) Reward for Objective Detection.
+target accuracy 
+threshold: 
+ground truth 
+accuracy: 
+reward+ λ (a-b)
+compute single-
+problem multi-
+rollout acc
+Dynamic threshold a
+ for explore-exploit 
+compute single
+problem rollout 
+acc:  
+compute single
+problem rollout 
+acc:  
+if >
+ 
+Encourage refusal!
+Easy 
+Question
+Suppress refusal!
+if <
+ 
+Figure 3:UnsolvableRL Reward Framework.We decompose the alignment into two orthogonal components:
+(a) Objective Detection, which incentivizes the model to distinguish between solvable and unsolvable queries.
+Crucially, we impose a penalty (-0.5) for falsely labeling solvable problems as unsolvable to safeguard the model’s
+reasoning drive.(b) Subjective Calibration, which dynamically regulates refusal behavior. By comparing the
+target threshold (τ) with the model’s rollout accuracy (β), the mechanism encourages refusal on hard tasks (where
+τ > β) and suppresses it on easy ones (whereτ < β) via the dynamic reward termλ(τi −β i).
+This leads to a local optimum ofuniversal rejec-
+tion. By setting ρ=−0.5 , we relax this threshold
+to p <0.375. This “Threshold Expansion” effec-
+tively encourages the model to attempt reasoning
+even under moderate uncertainty, preventing the
+collapse of reasoning capabilities.
+(3) ForError-Detect Reasoning ( 0)on unsolv-
+able instances, such as hallucinating a solution
+instead of outputting unsolvable, the model re-
+ceives a neutral reward.
+Reward for Subjective Calibration ( Rcal).
+When the model outputs the specific refusal token
+(e.g., beyond my capabilities), we do not apply
+a static score. Instead, we regulate refusal via a
+target accuracy threshold τ∈[0,1] . During each
+RL rollout, we compute the empirical accuracy β
+of the current group as:
+β= 1
+N
+NX
+i=1
+1[yi is correct],(3)
+where correctness includes both solving solvable
+problems and identifying unsolvable ones. The
+calibration reward is then defined as:
+Rcal(y) =λ(τ−β)1[yis a refusal].(4)
+Here, (τ−β) quantifies thereliability deficit—the
+gap between the target and the model’s actual per-
+formance. This creates a dynamic incentive mech-
+anism as shown in Figure 3(b): when the model’s
+reasoning capability on the current batch is poor
+(β < τ), the term is positive,encouraging refusal;
+conversely, when performance is high (β > τ), the
+reward becomes negative,suppressing refusalon
+easy questions.
+To enforce robust calibration, we implement a
+progressive schedulefor τ, increasing it steadily
+throughout training to approach 1. This curriculum
+balances exploration and caution: in early stages, a
+lower τ provides a lenient margin to encourage the
+explorationof reasoning paths; in later stages, as
+τ→1 , it enforces a strict standard, compelling the
+model to answerprudently.
+We mathematically justify the necessity of this
+dynamic schedule by analyzing the general condi-
+tion for refusal. The model should choose to refuse
+only if the reward for refusal exceeds the expected
+reward of answering:
+Rcal >E[R ans].(5)
+Note that the expected reward for answering is al-
+ways non-negative (E[Rans]≥0 ). If we were to use
+afixed threshold(e.g., τ= 0.5 ), as the model’s rea-
+soning capability improves, the batch accuracy β
+will likely surpass τ (i.e., β > τ). Once this occurs,
+the refusal reward becomesnegative( Rcal <0 ). In
+this regime, the inequality Rcal >E[R ans] becomes
+impossible to satisfy, as a negative reward cannot
+exceed a non-negative one. Consequently, for well-
+performed batches, the model is incentivized to
+suppress refusal entirely to avoid penalties. Our
+progressive schedule prevents this collapse by en-
+suring τ grows dynamically to maintain τ≳β ,
+keeping the refusal incentive positive for uncertain
+queries.
+The final per-trajectory reward is the sum of
+these components:
+R=R acc +R detect +R cal.(6)
+6
+Game24 HamCycle HamPath Hitori Maze(E) AIME24-25 OverallS U M S U M S U M S U M S U M S U MS U M
+Qwen3-4B-Instruct 81.0 17.0 49.0 37.5 57.0 47.3 37.0 56.5 46.8 34.5 6.5 20.5 32.7 55.6 44.1 67.9 25.3 46.6 48.4 36.3 42.4+ Solvable-Only 85.5 11.5 48.5 41.1 65.0 53.1 52.0 66.5 59.3 53.5 5.0 29.3 95.0 83.0 89.0 68.3 18.9 43.6 65.9 41.7 53.8+ UnsolvableRL-Mid 84.5 98.5 91.5 36.5 95.5 66.0 44.0 98.0 71.0 47.0 72.5 59.8 95.7 94.9 95.3 67.3 52.7 60.0 62.5 85.4 73.9+ Fixed-τ85.5 99.0 92.3 43.8 99.5 71.6 59.5 99.0 79.3 48.5 98.0 73.3 96.6 99.5 98.0 69.6 61.4 65.5 67.3 92.7 80.0+ UnsolvableRL-Final 92.0 99.0 95.5 41.1 94.5 67.8 55.0 96.5 75.8 63.5 94.5 79.0 96.0 98.9 97.5 69.2 85.0 77.1 69.5 90.9 80.3
+Qwen3-1.7B-Instruct 63.0 21.0 42.0 22.9 22.5 22.7 13.0 26.5 19.8 6.0 27.0 16.5 3.6 91.0 47.3 38.3 37.5 37.9 24.5 37.6 31.0+ Solvable-Only 78.5 1.0 39.8 23.4 2.0 12.7 13.5 2.5 8.0 4.5 1.5 3.0 5.7 0.0 2.9 41.7 2.1 21.9 27.9 1.5 14.7+ UnsolvableRL-Mid 70.5 90.5 80.5 19.3 85.5 52.4 17.0 91.5 54.3 11.0 56.0 33.5 4.1 92.0 48.1 39.2 39.6 39.4 26.9 75.9 51.4+ UnsolvableRL-Final 79.0 99.5 89.3 21.9 87.5 54.7 17.0 87.5 52.3 6.0 56.5 31.3 8.6 96.8 52.7 37.3 48.4 42.8 28.3 79.4 53.9
+Table 2: Per-domain performance for Qwen3 checkpoints. Values are percentages. For each test domain we report
+solvable accuracy (S), unsolvable rejection rate (U), and their mean (M = (S+U)/2). Overall metrics are unweighted
+means across all 6 domains. Model names indicate the training configuration and stage:UnsolvableRLis our main
+method trained on paired solvable/unsolvable data;Solvable-Onlyis an ablation trained exclusively on solvable
+instances (Step 60 for 1.7B, Step 120 for 4B);Fixed- τ is an ablation using a fixed calibration threshold. Suffixes
+MidandFinalrepresent intermediate (Step 60 for 1.7B, Step 120 for 4B) and extended (Step 360 for 1.7B, Step
+320 for 4B) trained models, respectively.
+Game24 HamCycle HamPath Hitori Maze(E) AIME24-25 OverallCheckpointCorr Rej C+R Corr Rej C+R Corr Rej C+R Corr Rej C+R Corr Rej C+R Corr Rej C+R Corr Rej C+R
+Qwen3-4B-Instruct 49.0 0.00 49.0 47.3 24.74 72.0 46.8 12.00 58.8 20.5 4.00 24.5 44.1 0.00 44.1 46.6 0.00 46.6 42.4 6.79 49.2+ Solvable-Only 48.5 0.00 48.5 53.1 20.57 73.7 59.3 7.50 66.8 29.3 1.50 30.8 89.0 0.00 89.0 43.6 0.00 43.6 53.8 4.93 58.7+ UnsolvableRL-Mid 91.5 0.00 91.5 66.0 19.01 85.0 71.0 13.00 84.0 59.8 1.50 61.3 95.3 0.00 95.3 60.0 0.00 60.0 73.9 5.59 79.5+ Fixed-τ92.3 0.00 92.3 71.6 17.19 88.8 79.3 10.00 89.3 73.3 1.00 74.3 98.0 0.00 98.0 65.5 0.00 65.5 80.0 4.70 84.7+ UnsolvableRL-Final 95.5 0.00 95.5 67.8 26.82 94.6 75.8 19.00 94.8 79.0 2.25 81.3 97.5 0.00 97.5 65.9 0.00 65.9 80.3 8.01 88.3
+Qwen3-1.7B-Instruct 42.0 0.00 42.0 22.7 9.38 32.1 19.8 9.25 29.0 16.5 0.50 17.0 47.3 0.00 47.3 37.9 0.21 38.1 31.0 3.22 34.3+ Solvable-Only 39.8 0.00 39.8 12.7 10.94 23.6 8.0 7.00 15.0 3.0 0.25 3.3 2.9 0.00 2.9 21.9 0.10 22.0 14.7 3.05 17.8+ UnsolvableRL-Mid 80.5 0.00 80.5 52.4 21.35 73.8 54.3 13.00 67.3 33.5 2.00 35.5 48.1 0.00 48.1 39.4 2.08 41.5 51.4 6.41 57.8+ UnsolvableRL-Final 89.3 0.25 89.6 54.7 23.44 78.1 52.3 18.00 70.3 31.3 1.75 33.0 52.7 0.00 52.7 42.8 1.88 44.7 53.9 7.55 61.4
+Table 3: Aggregated domain-level metrics for Qwen3 checkpoints. Each domain reports: Correctness (mean of
+solvable and unsolvable correct rates), Rejection (mean rejection rate), and Combined = Correctness + Rejection.
+Overall columns are unweighted means across domains.
+4.4 Answer Extraction and Verification
+For solvable tasks, deterministic verifiers (graph
+and constraint solvers, arithmetic evaluators, and
+reference-answer matchers) are applied. For un-
+solvable tasks, verification instead checks for the
+canonical unsolvable marker. For logic puzzles,
+domain-specific verifiers check the extracted an-
+swer against problem constraints and ground-truth
+solutions. For AIME and other mathematics prob-
+lems, “math_verify” is used for symbolic equiva-
+lence checking. Answers containing “beyond my
+capabilities” are treated as calibration and handled
+by the dynamic reward logic.
+5 Experiments
+We evaluated Qwen3-1.7B and Qwen3-4B (Yang
+et al., 2025) with think mode after training and test-
+ing on UnsolvableQA. For evaluation, we report
+average@8 on the AIME solvable and unsolvable
+partitions to account for higher variance, and aver-
+age@4 on all other datasets.
+UnsolvableRL substantially improves both ac-
+curacy and calibration.As shown in Table 3,
+fine-tuning on a mixture of solvable and unsolvable
+data yields a consistent increase in overall accuracy
+across all test sets for both models. Aggregated
+metrics indicate that Qwen3-4B’s combined perfor-
+mance score (C+R) increases from 49.2% to 88.3%
+under the UnsolvableRL-Final configuration. Cru-
+cially, UnsolvableRL significantly improves un-
+solvable detection capabilities: the mean rejection
+rate on unsolvable instances (Umean) surged from
+36.3% to 90.9% for Qwen3-4B, and from 37.6%
+to 79.4% for Qwen3-1.7B. In complex reasoning
+domains such as Game24 and Hamiltonian Path,
+the model attains rejection rates above 94% on un-
+solvable instances while maintaining, and in some
+cases improving, performance on solvable ones;
+for example, solvable accuracy on Game24 im-
+proves from 81.0% to 92.0%. Together, these re-
+sults demonstrate that our training methodology
+enables the models to reliably distinguish between
+solvable and unsolvable problems and to exhibit
+the desired behavior of either answering correctly
+or abstaining.
+Training on solvable-only data is fundamentally
+insufficient for learning robust calibration.We
+further conducted an ablation study by training
+7
+/uni00000013/uni00000015/uni00000018/uni00000018/uni00000013/uni0000001a/uni00000018/uni00000014/uni00000013/uni00000013/uni00000014/uni00000015/uni00000018
+/uni00000036/uni00000057/uni00000048/uni00000053/uni00000056
+/uni00000013/uni00000011/uni00000013
+/uni00000013/uni00000011/uni00000015
+/uni00000013/uni00000011/uni00000017
+/uni00000013/uni00000011/uni00000019
+/uni00000013/uni00000011/uni0000001b/uni00000038/uni00000051/uni00000056/uni00000052/uni0000004f/uni00000003/uni00000024/uni00000046/uni00000046
+/uni00000014/uni00000011/uni0000001a/uni00000025/uni00000003/uni0000000b/uni0000005a/uni0000004c/uni00000057/uni0000004b/uni00000003/uni00000047/uni00000044/uni00000057/uni00000044/uni0000000c
+/uni00000014/uni00000011/uni0000001a/uni00000025/uni00000003/uni0000000b/uni00000051/uni00000052/uni00000003/uni00000047/uni00000044/uni00000057/uni00000044/uni0000000c
+/uni00000017/uni00000025/uni00000003/uni0000000b/uni0000005a/uni0000004c/uni00000057/uni0000004b/uni00000003/uni00000047/uni00000044/uni00000057/uni00000044/uni0000000c
+/uni00000017/uni00000025/uni00000003/uni0000000b/uni00000051/uni00000052/uni00000003/uni00000047/uni00000044/uni00000057/uni00000044/uni0000000c
+Figure 4: Evolution of Unsolvable Accuracy during
+training. The curves represent the average detection
+accuracy across unsolvable instances from the evaluated
+domains. Models trained withUnsolvableQA(solid
+lines) steadily improve their ability to identify contradic-
+tions. In contrast, the “No Data” ablation (dashed lines)
+leads to stagnation or, specifically for the 1.7B model, a
+catastrophic collapse in unsolvability detection.
+models on a variant of our data with all unsolvable
+instances removed (Solvable-Only). We compare
+the Solvable-Only model with the full-training (Un-
+solvableRL) model at the same RL steps. As shown
+in Table 2, the Qwen3-1.7B-Solvable-Only model’s
+mean unsolvable rejection rate collapses to 1.5%,
+compared to 75.9% for the UnsolvableRL model.
+This catastrophic failure underscores the necessity
+of explicitly including unsolvable examples during
+training to prevent over-confidence.
+Dynamic thresholds achieve a more favorable
+trade-off between performance and calibration.
+To assess the effectiveness of the Reward for Sub-
+jective Calibration, we compare our main model
+with aFixed- τ variant that uses a static low thresh-
+old. As shown in Table 3, the dynamic mecha-
+nism substantially increases refusal under uncer-
+tainty, raising the mean rejection rate on solvable
+instances from 4.70% (Fixed- τ) to 8.01%. This
+behavior arises from the interaction between model
+capability and reward. As training progresses and
+the model’s reasoning capability improves, the em-
+pirical accuracy β increases. Under Fixed-τ, once
+performance exceeds the static threshold (β > τ),
+the calibration reward term λ(τ−β) becomes neg-
+ative, penalizing refusal and effectively forcing
+the model to hallucinate answers on difficult prob-
+lems. In contrast, our dynamic mechanism adjusts
+τ based on β, maintaining a positive incentive for
+refusal only when necessary. We provide a formal
+proof of thisCapability-Refusal Trade-offin Ap-
+pendix A.2. Consequently, the dynamic approach
+achieves a better balance, maintaining strong ac-
+curacy (Overall S of 69.5% vs. 67.3%) alongside
+safer behavior.
+Training without unsolvable instances leads to
+the collapse of unsolvability detection.To fur-
+ther assess the role of negative supervision, we an-
+alyze the training dynamics in Figure 4. We track
+theUnsolvable Accuracy, defined as the accuracy
+of detecting unsolvable instances averaged across
+our evaluation domains. Models trained with our
+paired data (solid lines) steadily improve at de-
+tecting inherent contradictions, whereas ablation
+models without unsolvable samples (dashed lines)
+fail to generalize. This gap is most pronounced in
+the 1.7B model, which exhibits a sharpcapability
+collapse, with its accuracy on unsolvable problems
+approaching zero. We attribute this toGradient
+Interferencein smaller models, where optimization
+for answering solvable questions suppresses the
+features required for detection (see Appendix A.3
+for a theoretical derivation). These results demon-
+strate that explicit exposure to unsolvable problems
+is crucial for preventing overconfidence.
+6 Conclusion
+In this paper, we enhance the reliability of large
+language models (LLMs) by introducing two novel
+perspectives: detecting inherently unsolvable prob-
+lems and calibrating model behavior on problems
+beyond their capabilities. To this end, we construct
+UnsolvableQA using a novel Reverse Construction
+methodology and align models with UnsolvableRL,
+which incorporates a dynamic refusal mechanism.
+Our approach enables models to effectively refuse
+both unsolvable and highly uncertain queries with-
+out degrading their reasoning performance. We
+expect this work to advance the development of
+LLMs that understand not only how to solve prob-
+lems, but also when not to attempt them.
+7 Future Work
+We plan to extend this work in three directions.
+First, we will construct diverse Out-of-Distribution
+(OOD) test sets to rigorously assess the general-
+ization of refusal boundaries. Second, we aim to
+empirically investigate the root cause of Capability
+Collapse in smaller models, verifying our gradi-
+ent interference hypothesis via feature space anal-
+ysis. Finally, we will validate the scalability of
+our framework by applying it to a broader range of
+model architectures.
+8
+References
+Jiangjie Chen, Qianyu He, Siyu Yuan, Aili Chen,
+Zhicheng Cai, Weinan Dai, Hongli Yu, Qiying Yu,
+Xuefeng Li, Jiaze Chen, and 1 others. 2025a. Enig-
+mata: Scaling logical reasoning in large language
+models with synthetic verifiable puzzles.arXiv
+preprint arXiv:2505.19914.
+Qiguang Chen, Dengyun Peng, Jinhao Liu, HuiKang
+Su, Jiannan Guan, Libo Qin, and Wanxiang Che.
+2025b. Aware first, think less: Dynamic bound-
+ary self-awareness drives extreme reasoning effi-
+ciency in large language models.arXiv preprint
+arXiv:2508.11582.
+Qiguang Chen, Libo Qin, Jinhao Liu, Dengyun Peng,
+Jiannan Guan, Peng Wang, Mengkang Hu, Yuhang
+Zhou, Te Gao, and Wanxiang Che. 2025c. Towards
+reasoning era: A survey of long chain-of-thought
+for reasoning large language models.arXiv preprint
+arXiv:2503.09567.
+Qiguang Chen, Libo Qin, Jiaqi Wang, Jingxuan Zhou,
+and Wanxiang Che. 2024. Unlocking the capabili-
+ties of thought: A reasoning boundary framework to
+quantify and optimize chain-of-thought.Advances in
+Neural Information Processing Systems, 37:54872–
+54904.
+Adam Fisch, Tommi Jaakkola, and Regina Barzilay.
+2022. Calibrated selective classification.arXiv
+preprint arXiv:2208.12084.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao
+Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shi-
+rong Ma, Peiyi Wang, Xiao Bi, and 1 others. 2025.
+Deepseek-r1: Incentivizing reasoning capability in
+llms via reinforcement learning.arXiv preprint
+arXiv:2501.12948.
+Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richard-
+son, Ahmed El-Kishky, Aiden Low, Alec Helyar,
+Aleksander Madry, Alex Beutel, Alex Carney, and 1
+others. 2024. Openai o1 system card.arXiv preprint
+arXiv:2412.16720.
+Adam Tauman Kalai, Ofir Nachum, Santosh S. Vem-
+pala, and Edwin Zhang. 2025. Why language models
+hallucinate.Preprint, arXiv:2509.04664.
+Loka Li, Zhenhao Chen, Guangyi Chen, Yixuan Zhang,
+Yusheng Su, Eric Xing, and Kun Zhang. 2024. Con-
+fidence matters: Revisiting intrinsic self-correction
+capabilities of large language models.arXiv preprint
+arXiv:2402.12563.
+Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-
+son Edwards, Bowen Baker, Teddy Lee, Jan Leike,
+John Schulman, Ilya Sutskever, and Karl Cobbe.
+2024. Let’s verify step by step. InThe Twelfth Inter-
+national Conference on Learning Representations.
+Zhan Ling, Yunhao Fang, Xuanlin Li, Zhiao Huang,
+Mingu Lee, Roland Memisevic, and Hao Su. 2023.
+Deductive verification of chain-of-thought reasoning.
+Advances in Neural Information Processing Systems,
+36:36407–36433.
+Minghao Liu, Zonglin Di, Jiaheng Wei, Zhongruo Wang,
+Hengxiang Zhang, Ruixuan Xiao, Haoyu Wang, Jin-
+long Pang, Hao Chen, Ankit Shah, and 1 others. 2024.
+Automatic dataset construction (adc): Sample col-
+lection, data curation, and beyond.arXiv preprint
+arXiv:2408.11338.
+Zhiting Mei, Christina Zhang, Tenny Yin, Justin Li-
+dard, Ola Shorinwa, and Anirudha Majumdar. 2025.
+Reasoning about uncertainty: Do reasoning mod-
+els know when they don’t know?arXiv preprint
+arXiv:2506.18183.
+Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Car-
+roll L. Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, John
+Schulman, Jacob Hilton, Fraser Kelton, Luke Miller,
+Maddie Simens, Amanda Askell, Peter Welinder,
+Paul Christiano, Jan Leike, and Ryan Lowe. 2022.
+Training language models to follow instructions with
+human feedback.Preprint, arXiv:2203.02155.
+Libo Qin, Qiguang Chen, Xiachong Feng, Yang Wu,
+Yongheng Zhang, Yinghui Li, Min Li, Wanxiang
+Che, and Philip S. Yu. 2025. Large language models
+meet nlp: A survey.Preprint, arXiv:2405.12819.
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano
+Ermon, Christopher D. Manning, and Chelsea Finn.
+2024. Direct preference optimization: Your lan-
+guage model is secretly a reward model.Preprint,
+arXiv:2305.18290.
+Pranav Rajpurkar, Robin Jia, and Percy Liang. 2018.
+Know what you don’t know: Unanswerable questions
+for squad.Preprint, arXiv:1806.03822.
+John Schulman, Filip Wolski, Prafulla Dhariwal,
+Alec Radford, and Oleg Klimov. 2017. Prox-
+imal policy optimization algorithms.Preprint,
+arXiv:1707.06347.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu,
+Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan
+Zhang, YK Li, Yang Wu, and 1 others. 2024.
+Deepseekmath: Pushing the limits of mathematical
+reasoning in open language models.arXiv preprint
+arXiv:2402.03300.
+Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin
+Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin
+Lin, and Chuan Wu. 2025. Hybridflow: A flexible
+and efficient rlhf framework. InProceedings of the
+Twentieth European Conference on Computer Sys-
+tems, pages 1279–1297.
+Mark Steyvers, Heliodoro Tejeda, Aakriti Kumar, Cata-
+rina Belem, Sheer Karny, Xinyue Hu, Lukas W.
+Mayer, and Padhraic Smyth. 2025. What large lan-
+guage models know and what people think they know.
+Nature Machine Intelligence, 7(2):221–231.
+9
+Kimi Team, Angang Du, Bofei Gao, Bowei Xing,
+Changjiu Jiang, Cheng Chen, Cheng Li, Chenjun
+Xiao, Chenzhuang Du, Chonghua Liao, and 1 others.
+2025. Kimi k1.5: Scaling reinforcement learning
+with llms.arXiv preprint arXiv:2501.12599.
+Songjun Tu, Jiahao Lin, Qichao Zhang, Xiangyu Tian,
+Linjing Li, Xiangyuan Lan, and Dongbin Zhao. 2025.
+Learning when to think: Shaping adaptive reasoning
+in r1-style models via multi-stage rl.arXiv preprint
+arXiv:2505.10832.
+Jiakang Wang, Runze Liu, Lei Lin, Wenping Hu, Xiu Li,
+Fuzheng Zhang, Guorui Zhou, and Kun Gai. 2025.
+Aspo: Asymmetric importance sampling policy opti-
+mization.Preprint, arXiv:2510.06062.
+Zige Wang, Wanjun Zhong, Yufei Wang, Qi Zhu, Fei Mi,
+Baojun Wang, Lifeng Shang, Xin Jiang, and Qun Liu.
+2023. Data management for training large language
+models: A survey.arXiv preprint arXiv:2312.01700.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+and 1 others. 2022. Chain-of-thought prompting elic-
+its reasoning in large language models.Advances
+in neural information processing systems, 35:24824–
+24837.
+Zhepei Wei, Xiao Yang, Kai Sun, Jiaqi Wang, Rulin
+Shao, Sean Chen, Mohammad Kachuee, Teja Golla-
+pudi, Tony Liao, Nicolas Scheffer, and 1 others. 2025.
+Truthrl: Incentivizing truthful llms via reinforcement
+learning.arXiv preprint arXiv:2509.25760.
+Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie
+Fu, Junxian He, and Bryan Hooi. 2023. Can llms
+express their uncertainty? an empirical evaluation
+of confidence elicitation in llms.arXiv preprint
+arXiv:2306.13063.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, Chujie Zheng, Day-
+iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao
+Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41
+others. 2025. Qwen3 technical report.Preprint,
+arXiv:2505.09388.
+Dongkeun Yoon, Seungone Kim, Sohee Yang, Sunky-
+oung Kim, Soyeon Kim, Yongil Kim, Eunbi Choi,
+Yireun Kim, and Minjoon Seo. 2025. Reason-
+ing models better express their confidence.arXiv
+preprint arXiv:2505.14489.
+Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan,
+Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan,
+Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin,
+Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan
+Tong, Chi Zhang, Mofan Zhang, Wang Zhang, and
+16 others. 2025. Dapo: An open-source llm re-
+inforcement learning system at scale.Preprint,
+arXiv:2503.14476.
+Qingjie Zhang, Yujia Fu, Yang Wang, Liu Yan, Tao Wei,
+Ke Xu, Minlie Huang, and Han Qiu. 2025. On the
+self-awareness of large reasoning models’ capability
+boundaries.arXiv preprint arXiv:2509.24711.
+10
+A Appendix
+A.1 Theoretical Justification for False Unsolvability Penalty
+In this section, we provide a theoretical derivation to demonstrate why the penalty ρ=−0.5 is critical for
+preventing reward hacking, specifically the phenomenon of “collapse to universal rejection.”
+Problem Setup.Let x be an input problem. Let S and U denote the sets of solvable and inherently
+unsolvable problems, respectively. Based on our dataset distribution, we assume balanced prior probabili-
+ties P(x∈ S) =P(x∈ U) = 0.5. Let the model have a weak initial reasoning capability ϵ on solvable
+tasks (e.g., ϵ≈0.1 ), meaning the probability of generating a correct solution given a solvable attempt is
+P(correct|x∈ S,attempt) =ϵ. Conversely, identifying unsolvability is a binary decision: if the model
+predicts “unsolvable”, it receives a reward of +1 if x∈ Uand a penalty ρ if x∈ S(False Unsolvability).
+Decision Analysis.Consider the model’s decision process for a given input x where the model has a
+posterior belief p=P(x∈ U) that the problem is unsolvable. The model compares the expected rewards
+E[R]of two actions: Attempting to Solve versus Rejecting.
+For theAttemptaction, the model tries to generate a solution. The expected reward is the probability
+the problem is solvable multiplied by the success rateϵ:
+E[Rattempt] = (1−p)·ϵ·(+1) +p·0 = (1−p)ϵ.(7)
+Note that attempting to solve an inherently unsolvable problem yields 0 reward (hallucination).
+For theRejectaction, the model outputs “unsolvable”. The expected reward is the probability the
+problem is truly unsolvable plus the penalty for a false rejection:
+E[Rreject] =p·(+1) + (1−p)·ρ.(8)
+The Attempt Threshold.The model will choose toAttemptonly when E[Rattempt]>E[R reject].
+Substituting the values, we get (1−p)ϵ > p+ (1−p)ρ . Solving for p, we derive the critical condition
+for attempting reasoning:
+p < ϵ−ρ
+1 +ϵ−ρ .(9)
+This inequality defines theAttempt Threshold T. The model attempts reasoning only if its suspicion of
+unsolvabilitypis lower thanT.
+Case 1: No Penalty ( ρ= 0 ).Substituting ϵ= 0.1 and ρ= 0 , we get Tzero = 0.1
+1+0.1 ≈0.09 . This
+implies the model will only attempt to solve if it is more than91% surethe problem is solvable. Given
+the uncertainty in early training stages (where p is often near 0.5), the condition p <0.09 is rarely met.
+The optimal strategy collapses to“Always Reject”, as it guarantees a risk-free average reward of 0.5
+(since 50% of data is unsolvable) compared to the meager 0.05 expected from attempting.
+Case 2: With Penalty ( ρ=−0.5 ).Substituting ϵ= 0.1 and ρ=−0.5 , we get Tpenalty =
+0.1−(−0.5)
+1+0.1−(−0.5) = 0.6
+1.6 = 0.375. The threshold expands significantly from 0.09 to 0.375 (a 4× increase). The
+model becomes willing to attempt reasoning even when it has moderate uncertainty about the problem’s
+solvability. This negative constraint effectively counteracts the low initial reasoning accuracy, forcing the
+model to explore solvable paths rather than collapsing into the local optimum of universal rejection.
+A.2 Theoretical Analysis of Capability-Refusal Dynamics
+In this section, we derive the mathematical relationship between the model’s reasoning capability and its
+tendency to refuse, explaining why a dynamic threshold is essential for preventing hallucination as the
+model becomes stronger.
+Decision Model.For a given solvable input x, let the model’s internal confidence (probability of
+generating the correct answer) be pcorrect. The model chooses between two actions:AnswerorRefuse.
+The expected reward for answering is:
+E[Ranswer] =p correct ·(+1) + (1−p correct)·0 =p correct (10)
+11
+The expected reward for refusing is determined by the current batch accuracy β and the target threshold τ:
+E[Rrefuse] =λ(τ−β)(11)
+The model will choose toRefuseonly if the expected reward of refusing exceeds that of answering:
+λ(τ−β)> p correct =⇒p correct < λ(τ−β)(12)
+Dynamics under Training.During the training process, the model’s reasoning capability improves,
+which leads to two simultaneous changes: 1. For a specific difficult problem, the model’s confidence
+pcorrect increases. 2. The overall batch accuracy β increases as the model solves more easy/medium
+problems correctly.
+Failure of Fixed Threshold (Fixed-τ).If we fix the threshold τ to a constant value (e.g., τ= 0.5 ),
+as the model converges, the batch accuracy β will likely surpass τ (i.e., β > τ). When β > τ, the term
+λ(τ−β)becomesnegative. Substituting this into Inequality 12, the condition becomes:
+pcorrect <Negative Value (13)
+Since probability pcorrect ∈[0,1] is always non-negative, this condition isimpossible to satisfy. Therefore,
+the model willneverrefuse, even if its confidence pcorrect is extremely low (e.g., 0.01). It is forced to
+hallucinate an answer to avoid the penalty of refusal. This explains the lower rejection rate and lower
+accuracy observed in the Fixed-τexperiments.
+Success of Dynamic Threshold.By dynamically setting τ (e.g., slightly higher than the moving
+average of β), we ensure that (τ−β) remains positive or near-zero. This maintains a valid decision
+boundary on the right side of Inequality 12, allowing the model to rationally refuse when its confidence
+pcorrect is truly low, regardless of how strong the model becomes overall.
+A.3 Theoretical Analysis of Capability Collapse in Small Models
+In this section, we propose a theoretical hypothesis for thecapability collapseobserved in smaller models
+(e.g., 1.7B) under the “No Data” setting. We frame this phenomenon as a potential instance ofGradient
+Interferencearising from shared feature representations.
+Problem Definition.Let x be an input problem. We define the model’s refusal policy via a scalar logit
+hθ(x) =w ⊤ϕ(x), where ϕ(x) represents the features in the last hidden layer and w is the weight vector
+of the refusal classification head. The probability of rejection isP(reject|x) =σ(h θ(x)).
+Training Dynamics under “No Data”.In the ablation setting, the training set Dtrain contains only
+solvable problems (xs ∈ S). The objective is to maximize the probability of answering (accepting) these
+problems. The loss function for a solvable sample xs can be formulated as minimizing the negative
+log-likelihood of not rejecting:
+L(θ) =−log(1−P(reject|x s)) =−log(1−σ(w ⊤ϕ(xs)))(14)
+Computing the gradient with respect tow, we obtain:
+∇wL= 1
+1−σ · ∂(1−σ)
+∂h ·ϕ(x s) =σ(w ⊤ϕ(xs))·ϕ(x s) =P(reject|x s)·ϕ(x s)(15)
+Assuming simplified SGD with learning rateα, the weight update is:
+∆w∝ −∇wL=−α·P(reject|x s)·ϕ(x s)(16)
+Intuitively, whenever the model assigns a non-zero probability to rejecting a solvable problem (a false
+rejection), the optimizer pushes the weight vector w in the direction opposite to ϕ(xs) to suppress this
+behavior.
+Hypothesized Impact on Unsolvable Test Data.Consider an unsolvable test instance xu ∈ U. The
+resulting change in its refusal logith(x u)would be:
+∆h(xu) = (∆w)⊤ϕ(xu)∝ −α·P(reject|xs)·
+
+ϕ(xs)⊤ϕ(xu)
+
+(17)
+12
+Algorithm 1Game24 Generation and Verification
+Require:Difficulty levelD(determines countk∈ {4,5,6}), TargetT= 24
+Ensure:A paired instance(S,Label)
+1:FunctionVERIFY(S):
+2:T ←All binary expression trees for setS
+3:foreach treet∈ Tdo
+4:Evaluateval←tusingRational Arithmetic
+5:ifval==Tthen returnSOLVABLE,t
+6:end for
+7:returnUNSOLVABLE,∅
+8:End Function
+9:repeat
+10:Sample a set ofkintegersS← {n 1, . . . , nk}wheren i ∈[1,13]
+11:Status, P roof←VERIFY(S)
+12:ifgoal isSolvableandStatus==SOLVABLE:
+13:return(S, P roof)
+14:else ifgoal isUnsolvableandStatus==UNSOLVABLE:
+15:return(S,“Unsolvable”)
+16:untilValid instance found
+This derivation suggests that the impact on unsolvable instances depends critically on the geometric
+relationship between the feature representations of solvable and unsolvable problems:
+• High Capacity Models (e.g., 4B+):We hypothesize that larger models can learn distinct, nearly or-
+thogonal representations for solvable versus inherently contradictory problems (i.e., ϕ(xs)⊤ϕ(xu)≈
+0). In this case, suppressing rejection onx s has minimal impact on the model’s ability to rejectx u.
+• Low Capacity Models (e.g., 1.7B):Smaller models may suffer from feature entanglement, relying
+on shared heuristics (such as sentence complexity or topic) to represent both problem types. If ϕ(xs)
+andϕ(x u)are positively correlated (ϕ(x s)⊤ϕ(xu)>0), the term∆h(x u)becomes negative.
+Conclusion.Under the assumption of feature entanglement in smaller models, training to answer
+solvable questions implicitly generates a negative gradient for the refusal logits of unsolvable questions.
+Without explicit negative samples (xu) in the training set to provide a counter-gradient, this interference
+likely drives the refusal probability for unsolvable data toward zero, resulting in the observed capability
+collapse.
+A.4 Logic Puzzle Generation Algorithms
+A.4.1 Game24 Generation
+The Game24 task involves combining a set of integers using arithmetic operations (+,−,×,÷) to equal
+24. To ensure absolute correctness, particularly for unsolvable instances, we employ an exhaustive search
+over all possible binary expression trees. Crucially, we utilize exact rational arithmetic (e.g., Python’s
+Fraction) rather than floating-point calculations to prevent precision errors that could misclassify
+instances (e.g.,23.99999̸= 24).
+For unsolvable instances, we use a rejection sampling strategy: we randomly sample integer sets and
+retain only those for which the exhaustive solver proves the solution set is empty.
+A.4.2 Hamiltonian Cycle and Path Generation
+The Hamiltonian Cycle problem asks whether a graph contains a closed loop visiting every vertex exactly
+once, while the Hamiltonian Path problem asks for a linear path visiting every vertex. Since these problems
+are NP-complete, we utilize a SAT-based verification pipeline to guarantee ground-truth labels.
+13
+Algorithm 2Hamiltonian Graph Generation
+Require:TypeT∈ {Cycle,Path}, Node countN
+Ensure:A graphG= (V, E)with label
+1:FunctionVERIFYSAT(G, T):
+2:Construct CNF formulaϕbased on adjacency matrix ofG
+3:Add bijection constraints toϕ
+4:ifT==Cycle: Add closure constraintv N−1 ↔v 0
+5:returnSAT-SOLVER(ϕ)
+6:End Function
+7:repeat
+8:Initialize empty graphGonNnodes
+9:ifgoal isSolvable:
+10:Create a random permutationPof vertices
+11:Add edges(P i, Pi+1)to form a base Path/Cycle
+12:Add random noise edges to increase density
+13:else ifgoal isUnsolvable:
+14:Select strategyσ∈ {Disconnect,Bottleneck,DeadEnd}
+15:ConstructGsatisfyingσ(e.g., partitionVintoV 1, V2 with no edges between them)
+16:Add random noise edges strictly preservingσ
+17:IsF easible←VERIFYSAT(G, T)
+18:until(IsF easiblematches goal)
+19:returnG
+SAT Encoding.We encode the existence of a path/cycle as a Boolean Satisfiability Problem. Let N
+be the number of vertices. We introduce boolean variables xv,i indicating that vertex v occupies the i-th
+position in the sequence (0≤i < N). The constraints are defined as follows:Bijectionrequires thatP
+v xv,i = 1 for all i and P
+i xv,i = 1 for all v.Adjacencymandates that for all i∈[0, N−2] , if xu,i
+and xv,i+1 are true, then (u, v)must be an edge in E. Finally,Cycle Closure (Cycle Only)ensures
+that if xu,N−1 and xv,0 are true, then (u, v)∈E . We use the Minisat solver (via pysat) to determine
+satisfiability.
+Unsolvability Injection.Instead of purely random sampling, we inject structural properties that inher-
+ently prevent Hamiltonian traversals. These include:Structural Bottlenecks, where graphs are generated
+with “bridge” nodes or articulation points that partition the graph into components that cannot be traversed
+in a single pass;Degree Constraints, where we inject nodes with degree <2 (dead ends) for cycles,
+or ensure the presence of >2 nodes with degree 1 for paths; andDisconnectivity, where we explicitly
+construct graphs with multiple connected components.
+A.4.3 Hitori Generation
+Hitori is a logic puzzle played on an N×N grid. The goal is to shade cells such that no number appears
+more than once in any row or column, shaded cells do not touch orthogonally, and all unshaded cells
+remain connected.
+We model the puzzle as a Constraint Satisfaction Problem (CSP). We define binary variables xi,j ∈
+{0,1} for each cell (1 denotes shaded). The key constraints are:Uniqueness, which requires that if a
+number v appears k times in any row/column, at least k−1 occurrences must be shaded;Non-adjacency,
+ensuring that for any adjacent cells u, v, xu +x v ≤1 ; andConnectivity, verified via BFS to ensure all
+cells wherex i,j = 0form a single connected component.
+Solvable instances are filtered to ensure auniquesolution. Unsolvable instances are those where the
+CSP solver (combined with connectivity checks) returns a solution count of 0.
+14
+Algorithm 3Hitori Generation via CSP
+Require:Grid sizeN
+Ensure:A validated Hitori gridG
+1:FunctionSOLVEHITORI(G):
+2:Initialize CSP solverP
+3:ApplyRow/Col constraints: Eliminate duplicates
+4:ApplyAdjacency constraints: No adjacent black cells
+5:S local ←P.getSolutions()
+6:S valid ← ∅
+7:foreach solutions∈ S local do
+8:ifCHECKCONNECTIVITY(s)thenS valid.add(s)
+9:end for
+10:return|S valid|
+11:End Function
+12:repeat
+13:Generate randomN×NgridGwith values∈[1, N]
+14:Count←SOLVEHITORI(G)
+15:ifgoal isSolvableandCount== 1:
+16:returnG{Unique solution found}
+17:else ifgoal isUnsolvableandCount== 0:
+18:returnG{Provably no valid configuration}
+19:untilValid instance found
+A.4.4 Maze Navigation Generation
+The Maze Navigation task requires finding a valid path from a start position (S) to an end position (E) in a
+grid-based maze, where movement is restricted by walls.
+Verification Logic.We employ Breadth-First Search (BFS) to determine solvability. BFS guarantees
+finding the shortest path if one exists. A maze isSolvableif a path from S to E exists, andUnsolvableif
+the set of reachable cells from S does not contain E.
+Construction Pipeline.We first generate a complex solvable maze using a randomized Depth-First
+Search (DFS) algorithm, which ensures a spanning tree structure. To increase complexity, we selectively
+remove walls to introduce cycles and multiple potential paths, while validating that the solution remains
+unique or manageable using BFS.
+To constructUnsolvable Instances, we employ aStrategic Blockagemethod rather than random wall
+placement. We analyze the solvable maze to identify all valid paths from S to E, and then select aCritical
+Junction—a coordinate (x, y)that lies on a valid path (or is shared by multiple paths). We place an
+obstacle (wall) at (x, y)and rigorously verify unsolvability using BFS. If the maze remains solvable (e.g.,
+via a detour), we discard the instance or iteratively block remaining paths until connectivity is severed.
+This approach ensures that unsolvable mazes are structurally similar to solvable ones, often requiring the
+model to explore deep into the maze before realizing the path is blocked, thereby penalizing premature
+"give up" or hallucinated paths.
+A.5 Hyperparameters
+We implement our training pipeline using the verl (HybridFlow) framework (Sheng et al., 2025), which
+supports efficient reinforcement learning. The specific hyperparameters used for Group Relative Policy
+Optimization (GRPO) are detailed in Table 4. We set the group sizeG (denoted as rollout.n in verl)
+to 12. Notably, we explicitly set use_kl_loss=False, meaning the KL divergence penalty term was
+disabled during optimization, relying instead on the probability ratio clipping to maintain policy stability.
+We differentiate the batch size for Qwen3-1.7B and Qwen3-4B to accommodate their respective memory
+footprints.
+15
+Algorithm 4Maze Generation with Strategic Blockage
+Require:DimensionsW, H, DifficultyD
+Ensure:A maze gridMand labelL
+1:FunctionVERIFY(M):
+2:returnBFS(M, Start, End)
+3:End Function
+4:repeat
+5:M base ←GENERATESOLVABLEDFS(W, H)
+6:ifgoal isSolvable:
+7:return(M base, VERIFY(M base))
+8:else ifgoal isUnsolvable:
+9:P ←All paths inM base from Start to End
+10:Select pathP∈ Pbased on difficultyD
+11:Select obstacle pointo∈P(excluding Start/End)
+12:M blocked ←M base ∪ {o}
+13:if notVERIFY(M blocked):
+14:return(M blocked, “Unsolvable”)
+15:untilValid instance found
+Table 4: Hyperparameter settings used in our experiments. We employ Group Relative Policy Optimization (GRPO)
+with the KL divergence penalty explicitly disabled to encourage broader exploration within the solution space.
+Hyperparameter Value
+General Optimization & Generation
+RL Algorithm GRPO
+Group Size (G) 12
+KL Penalty Term Disabled
+PPO Mini-Batch Size 8
+Sampling Temperature 0.6
+Sampling Top-k45
+Max Prompt Length 2048
+Infrastructure
+Hardware 8×NVIDIA A100 GPUs
+Tensor Parallelism (TP) 2
+Model-Specific Settings
+Qwen3-1.7B
+Training Batch Size32×12
+Max Response Length 32,000
+Qwen3-4B
+Training Batch Size14×12
+Max Response Length 32,000
+16

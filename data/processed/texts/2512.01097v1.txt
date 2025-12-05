@@ -1,0 +1,545 @@
+Discriminative classification with generative features: bridging
+Naive Bayes and logistic regression
+Zachary Terner∗ Alexander Petersen† Yuedong Wang‡
+November 2025
+Abstract
+We introduce Smart Bayes, a new classification framework that bridges generative and dis-
+criminative modeling by integrating likelihood–ratio–based generative features into a logistic-
+regression-style discriminative classifier. From the generative perspective, Smart Bayes relaxes
+the fixed unit weights of Naive Bayes by allowing data-driven coefficients on density-ratio
+features. From a discriminative perspective, it constructs transformed inputs as marginal log-
+density ratios that explicitly quantify how much more likely each feature value is under one
+class than another, thereby providing predictors with stronger class separation than the raw
+covariates. To support this framework, we develop a spline-based estimator for univariate
+log-density ratios that is flexible, robust, and computationally efficient. Through extensive
+simulations and real-data studies, Smart Bayes often outperforms both logistic regression and
+Naive Bayes. Our results highlight the potential of hybrid approaches that exploit generative
+structure to enhance discriminative performance.
+∗Corresponding author: zterner@ucsb.edu. This author was partly funded by the National Science Foundation
+Graduate Research Fellowship.
+†Brigham Young University
+‡University of California, Santa Barbara
+1
+arXiv:2512.01097v1  [stat.ML]  30 Nov 2025
+1 Introduction
+The challenge of classifying new observations into one of two (or more) classes is an old and ongoing
+problem in statistics and machine learning. Many existing classifiers can be categorized as being
+eithergenerativeordiscriminative. As noted by Ng and Jordan [12], generative classifiers learn
+a model of the joint probabilityp(x, y),wherexrepresents the inputs andythe response, and
+use Bayes’ rule to computep(y|x) to make predictions. Discriminative classifiers, however, model
+p(y|x) explicitly without specifying the marginal distribution ofx. Since this approach is more
+direct, these classifiers often perform better in terms of minimizing misclassification rates. Using
+the generative-discriminative pair of Naive Bayes and logistic regression, Ng and Jordan suggest that
+discriminative classifiers tend to have lower asymptotic errors than their generative counterparts,
+but a generative classifier may approach its asymptotic error rate more quickly. Thus, Naive Bayes
+may outperform logistic regression in settings of small sample sizes, but logistic regression should
+perform better as sample sizes increase.
+By virtue of this pairing, Naive Bayes and logistic regression are fundamentally connected. The
+Naive Bayes classifier, rather than estimate the joint density of each class, invokes the factorization
+theorem to factor the joint densities, conditional on class membership, into the products of assumed
+independent marginals. Taking the log of this product allows one to compute the log marginal
+density ratio for each feature. New observations are assigned to a class if the sum of the log density
+ratios exceeds or falls below a threshold dependent on the prior class probabilities. In contrast,
+logistic regression avoids computing density ratios and learns a model ofp(y|x) using the features
+themselves. Building a model with logistic regression can also provide interpretations that one does
+not normally gain from Naive Bayes.
+In this paper, we demonstrate that incorporating generative features into a discriminative clas-
+sification framework can outperform both standard Naive Bayes and conventional discriminative
+methods. Specifically, our simulations and empirical experiments demonstrate that a logistic re-
+gression with marginal log density ratios as features can outperform not only Naive Bayes but also
+a logistic regression using the features themselves.
+To build this classifier, we compute marginal log-density ratios as done in Naive Bayes. Rather
+2
+than applying the Naive Bayes rule directly, these ratios are entered into a logistic regression
+model as features. Under this formulation, Naive Bayes arises as a special case in which all model
+coefficients are fixed to one. We refer to the proposed method as Smart Bayes (SB), reflecting its
+more flexible utilization of generative information. Importantly, the weights of the log density ratios
+can be interpreted similarly to the coefficients in a logistic regression. This approach can also be
+applied to other classification methods, such as decision trees and support vector machines, which
+may similarly benefit from incorporating log-density ratios as features.
+Smart Bayes can also be interpreted through the lens of the likelihood ratio. In Smart Bayes, the
+original features in a logistic regression are replaced with log-transformed marginal density ratios.
+These may be more discriminative than the raw inputs, since they quantify how likely it is that each
+component of the observed feature vector originated from one class over the other. Therefore, they
+can serve as more informative predictors for classification than the original features themselves.
+To treat density ratios as features in a regression, one must first construct estimates of density
+ratios. The estimation of density ratios pervades many areas of statistics, from building classification
+models, outlier detection [7], changepoint detection [10], deep learning [20], and machine learning
+in general [17]. See [18] for additional application areas and references regarding density ratio
+estimation. We introduce a new method of estimating density ratios directly using splines, which is
+based on previous techniques by Silverman and Kanamori [16, 9]. Although we use this method to
+estimate marginal log density ratios, it can be applied more generally to estimate joint log density
+ratios of features.
+The paper is structured as follows. In Section 2, we review Naive Bayes, logistic regression,
+and their relationship. In Section 3, we introduce Smart Bayes and describe some of its properties.
+Section 3.2 introduces the method of direct estimation of marginal density ratios using splines,
+which we use in the simulation and real data examples in Sections 4. These real data examples are
+constructed using the same datasets as Ng and Jordan [12] to show Smart Bayes’s behavior relative
+to Naive Bayes and logistic regression. Empirically, Smart Bayes outperforms both alternatives on
+a variety of datasets. Section 5 concludes the paper with a discussion.
+3
+2 Logistic regression and Naive Bayes
+2.1 Naive Bayes
+The Bayes classifier is known to minimize misclassification rates [1, 26, 2, 8]. LetYbe our class
+labels and denoteXas ourpmultivariate predictors. The Bayes classifier can be written as
+ˆy= arg max
+y
+P(Y=y|X=x).(1)
+In other words, we assign new observationsxto the class which has the maximum posterior prob-
+ability [4]. In the two-class problem, whereY∈ {0,1},let
+f(x) = P(Y= 1|X=x)
+P(Y= 0|X=x) .(2)
+The Bayes classifier assigns observations to classY= 1 iff(x)>1.In this case, we compute the
+posterior conditional probabilities of the two classes and take the ratio to determine which class
+has the higher posterior probability. By applying Bayes’ theorem,
+f(x) = P(Y= 1)P(X=x|Y= 1)
+P(Y= 0)P(X=x|Y= 0) ,(3)
+where we have switched the conditioning to require a density of the data conditional on the class,
+P(X=x|Y=y).The class probabilities,P(Y=y),can be estimated by computing the proportion
+of instances in each class. However, the conditional probabilities in (3) can be very difficult to
+estimate in practice, especially whenpis large, due to the curse of dimensionality [15].
+One common assumption used to compute the joint densities in (3) is to assume that the
+predictor variables are independent, conditional on class membership. Letg y(x) be the density
+function ofXconditional onY=y. LetX= (X 1, . . . , Xp) andg yk be the marginal density
+function ofX k conditional onY=y. By the factorization theorem, if the predictor variables are
+independent conditional on the class label, we can write
+f(x) = P(Y= 1)g 1(x)
+P(Y= 0)g 0(x) = P(Y= 1) Qp
+k=1 g1k(xk)
+P(Y= 0) Qp
+k=1 g0k(xk).(4)
+4
+Since (4) contains only products, we can take the log to convert the products into a sum. This
+creates the traditional Naive Bayes classifier, which we denote asf n(x) :
+fn(x) = log P(Y= 1)
+P(Y= 0) +
+pX
+k=1
+log g1k(xk)
+g0k(xk).(5)
+In (5), we simply need to compute the log density ratio of each marginal variable. The class label
+is assigned based on whether the sum of the log density ratios and the prior probabilities is positive
+(Y= 1) or negative (Y= 0).
+2.2 Logistic regression
+Working on the log density ratio
+fl(x)≜log P(Y= 1|X=x)
+P(Y= 0|X=x) (6)
+directly can be justified by the exponential criterion [5]. A simple model forf l is the logistic
+regression model
+fl(x) =β 0 +
+pX
+k=1
+βkxk.(7)
+Instead of computing marginal density ratios, logistic regression uses the featuresx k directly to
+build the function that separates the classes. The coefficientsβ k and an interceptβ 0 can be learned
+as maximizers of the likelihood [6]. New observations are assigned to Class 1 if the estimate off l(x)
+is above a certain threshold, and to Class 0 otherwise.
+Logistic regression is considered discriminative since it directly connects the featuresx k to
+P(Y|X=x). In contrast, Naive Bayes is generative since it approximates the joint probability
+P(X, Y) and uses Bayes rule to calculateP(Y|X=x).Ng and Jordan show that generative
+classifiers approach their asymptotic error rate more quickly than discriminative classifiers, though
+discriminative classifiers have a lower asymptotic error rate [12]. Therefore, Naive Bayes is expected
+to outperform logistic regression only when sample sizes are small.
+Both Naive Bayes and logistic regression methods have their limitations. To approximate the
+joint probability, Naive Bayes ignores any dependence between the features by (naively) assuming
+5
+the features are independent. The conditional independence between predictors is a strong assump-
+tion that, in general, does not hold in practice. Logistic regression does not make this assumption,
+but does assume a parametric model for the log odds.
+3 Smart Bayes
+Section 3.1 introduces the Smart Bayes method, and Section 3.2 outlines our procedure for esti-
+mating the marginal log density ratio. We discuss how to interpret the coefficients in Smart Bayes
+in Section 3.3.
+3.1 Discriminative classifier with generative features
+When the class-conditional distributions ofxare specified, the logistic regression classifier can be
+written as
+fl(x) = log P(Y= 1)
+P(Y= 0) + log g1(x)
+g0(x).(8)
+From a generative perspective, logistic regression attempts to approximate the log-density ratio
+using a linear combination of the original featuresx k and an intercept. The key idea of our
+proposed method is that an affine function of the marginal log-density ratios may provide a more
+accurate approximation tof l(x).
+Define generative featuresz k = log{g1k(xk)/g0k(xk)}.When the featuresX k are mutually con-
+ditionally independent, we can write
+fl(x) = log P(Y= 1)
+P(Y= 0) +
+pX
+k=1
+zk,(9)
+which coincides with the Naive Bayes classifierf n in 5.
+To accommodate dependence among the features, the proposed Smart Bayes approach, defined
+asf s below, fits the following logistic regression model with generative featuresz k:
+fs(x) =α 0 +
+pX
+k=1
+αkzk.(10)
+6
+The Smart Bayes method extends the Naive Bayes classifier by replacing its fixed unit coefficients
+with learnable weightsα k, allowing the contribution of each generative feature to be determined
+from the data. At the same time, Smart Bayes can be viewed as an extension of logistic regression,
+obtained by substituting the original featuresx k with possibly more informative generative features
+zk. Thus, Smart Bayes retains the strengths of both approaches by leveraging generative information
+while preserving the flexibility of discriminative modeling.
+As in standard logistic regression, interaction terms or higher-order transformations ofz k may
+be incorporated to capture more complex relationships. Moreover, the generative featuresz k can be
+used as predictors in other machine-learning classifiers, such as support vector machines or decision
+trees, potentially improving performance by leveraging informative log-density-ratio features.
+The Smart Bayes classifier offers a few notable properties. When both classes are Gaussian,
+Smart Bayes can recover the optimal Bayes classifier in two cases: when the two classes have a
+difference in means but a shared covariance, and when the two classes have different means and
+different covariances, but the same variances. In general, Smart Bayes can recover the optimal
+Bayes solution when the marginal density ratiosz k are all linear inx. It is additionally easy to
+see that there are many cases where coefficients in the Smart Bayes classifier should not only differ
+from one, but should in fact be negative. See [19] for additional details.
+3.2 Direct density ratio estimation using splines
+In this section, we introduce a method for estimating marginal density ratios, which are typically
+unknown in practice. We extend Silverman’s method [16] to a more general model space and a
+broader class of penalties. A related approach appears in [9], but the method presented here is
+more general.
+We estimate the conditional density ratio for each random variable inX= (X 1, . . . , Xp). For
+simplicity, we omit the subscript in the following discussion. Suppose that we observe (X, Y) where
+Y= 1 orY= 0, X∈ XandXis an arbitrary set. Letg 0(x) andg 1(x) denote the conditional
+density ofX|Y= 0 andX|Y= 1, respectively.
+7
+Using Bayes’ theorem, we can write
+p(x)≜P(Y= 1|X=x) = π1g1(x)
+π1g1(x) +π 0g0(x) = rd(x)
+1 +rd(x) ,(11)
+whererrepresents the ratio of prior probabilities,π 1/π0,andd(x) represents the density ratio,
+g1(x)/g0(x).
+The logistic probability can be written as
+η(x) = log p(x)
+1−p(x) = logr+ logd(x).(12)
+Given data{(x i, yi), i= 1, . . . , n}, we estimateη(x) nonparametrically as the minimizer of the
+penalized likelihood:
+−
+nX
+i=1
+yiη(xi) +
+nX
+i=1
+log(1 + expη(xi)) +λJ(η),(13)
+whereηbelongs to a reproducing kernel Hilbert space (RKHS)Hdefined on the domainX,J(η) is a
+penalty, andλis a smoothing parameter [22, 23]. The choices of the model spaceXand penaltyJ(η)
+depend on the domainXand prior knowledge. The assumption thatXtakes values in an arbitrary
+setXallows the framework to accommodate different types of random variables in a unified manner.
+For example, ifXis a univariate continuous variable with bounded support, we may takeXas the
+support and chooseHto be an appropriate Sobolev space; ifXis supported onR, a thin-plate
+spline space may be used instead. See [23] for additional examples of suitable model spaces. More
+generally, when prior knowledge indicates that a subset of variables inXis correlated, one may
+estimate their joint density rather than marginal densities for individual variables. Nevertheless, in
+the remainder of this work, we focus on methods based solely on estimates of marginal densities.
+Standard smoothing methods can be used to obtain the minimizer of the penalized likelihood
+withy i as binary outcomes. The smoothing parameterλmay be selected using generalized cross-
+validation (GCV), generalized maximum likelihood (GML), or other established criteria [23]. The
+estimate of the log density ratio using the RKHS, ˆd,is defined as
+ˆd(x)≜ˆη(x)−log ˆr,(14)
+8
+where ˆris an estimate ofr. A simple estimate is ˆr= Pn
+i=1 yi/(n− Pn
+i=1 yi).In comparison,
+Silverman [16] justified his method via the connection between inhomogeneous Poisson processes
+and density functions. He used the likelihood conditioned on sufficient statistics and treated the
+sum of intensity functions as a nuisance parameter. Therefore, his method is limited to density
+ratios defined on the real line. Note that the negative log-likelihood in the first two terms in (13)
+has the same form as the conditional log-likelihood presented in [16]. Therefore, with the same
+model space and penalty, these two approaches lead to the same estimate.
+The Bayes rule based on this estimated density ratio is equivalent to nonparametric logistic
+regression: the Bayes rule assigns an observation to Class 1 whenrd(x)≥1, which is equivalent to
+η(x)≥0 [22]. In Smart Bayes, we estimate marginal density ratios and then fit logistic regression
+models with these estimated log density ratios as features. Specifically, for multivariateX=
+(X1, . . . , Xp), we first estimate marginal density ratiosd k(xk) =g 1k(xk)/g0k(xk) fork= 1, . . . , p
+and then fit a logistic regression model withz k = logd k(xk) as features. Therefore, we only
+need to solve (13) for univariate spline models for each marginal density ratio. Note that Bayes
+rule traditionally uses the full likelihoodf(y|x)f(x) while logistic regression uses the conditional
+likelihood,f(y|x).In our approach, we estimate the density ratio using the conditional likelihood
+and treat the prior densityf(x) as a nuisance parameter.
+3.3 Interpretation of Smart Bayes coefficients
+As with standard logistic regression models, exp(αk) in the proposed Smart Bayes model represents
+the hazard ratio associated with a one-unit increase in the log likelihood ratioz k. In Smart Bayes,
+at% change inz k corresponds to a factor (1 +t/100) change in the likelihood or density ratio.
+AssumeX|Y=yfollows an exponential family distribution,
+f(x|y) = exp
+θ(y)x−b(θ(y))
+a(ϕ) +c(x, ϕ)
+
+,
+whereθandϕdenote the canonical and dispersion parameters. Under this model, the log density
+9
+ratioz(omitting the subscript) is a linear transformation ofx:
+z(x) = θ(1)−θ(0)
+a(ϕ) x−
+ 
+b(θ(1))−b(θ(0))
+
+=γx+δ,
+whereγ={θ(1)−θ(0)}/a(ϕ) andδ=b(θ(0))−b(θ(1)). The resulting scaling factorγhas the
+following forms for several common distributions:
+γ=
+
+
+
+µ1 −µ 0
+σ2 ,Gaussian,
+logit(µ1)−logit(µ 0),Bernoulli,
+logµ 1 −logµ 0,Poisson,
+whereµ y = E(X|Y=y) andσ 2 = Var(X|Y=y). In these cases, a one-unit increase in
+zcorresponds to an increase inxof size 1/γ, the reciprocal of the separation between the two
+classes.
+4 Numerical Experiments
+Below we evaluate the performance of Smart Bayes versus Naive Bayes and logistic regression on
+simulated and empirical data. We begin by showing the performance of Smart Bayes on data gen-
+erated from the Gaussian and t-distributions. We then present the performance of these classifiers
+on seven empirical datasets.
+All logistic regressions plotted below were fit using the standardglmfunction in R. The naive
+Bayes classifiers were built using thenaive bayesfunction from thenaivebayespackage in R [11].
+To estimate the marginal log density ratios, we used thegamfunction withfamily = "binomial"
+from themgcvpackage [24] in R. The code used to generate the results in this paper is available
+online at GitHub.
+10
+4.1 Multivariate Gaussian and t-distribution simulations
+In this simulation, we consider four data-generating distributions: a multivariatetwith degrees of
+freedomd f= 5,d f= 10, andd f= 30, as well as a multivariate Gaussian distribution. For each
+training sizem, we generatemobservations from Class 0 andmobservations from Class 1. We
+then randomly sample half of all the observations and assign them to the training set and assign
+the remainder to the test set. The means and covariances for the classes in this simulation are
+the sample means and covariances from the two classes of the ionosphere dataset in Section 4.2.
+Figure 1 reports the average misclassification rate over 100 replications for Naive Bayes, Smart
+Bayes, and logistic regression.
+In each of these simulations, Smart Bayes has the lowest misclassification rate as the training
+size grows large. Smart Bayes always outperforms logistic regression and outperforms Naive Bayes
+at large sample sizes; however, when the data generating distributions have heavier tails (fewer
+degrees of freedom), Smart Bayes overtakes Naive Bayes even at smaller sample sizes. Naive Bayes
+appears to have a lower asymptotic error rate than logistic regression as the degrees of freedom
+increase.
+11
+Gaussian
+Multivariate t, df = 30
+Multivariate t, df = 10
+Multivariate t, df = 5
+120 180 240 300 360 420 480 540 600 660 720 780 840 900 960
+0.05
+0.10
+0.15
+0.20
+0.05
+0.10
+0.15
+0.20
+0.05
+0.10
+0.15
+0.20
+0.05
+0.10
+0.15
+0.20
+Training size
+Misclassification rate
+Legend Logistic Regression Naive Bayes Smart Bayes
+Misclassification rate vs. Training size for Gaussian and t simulations
+Figure 1: Average misclassification rate over 100 replications at different training sizes for the
+multivariatetwith 5, 10, and 30 degrees of freedom and the Gaussian. Error rates were computed
+at every 30 observations. These simulations usedp= 32 covariates, where the mean vectorµand
+the covariancesΣused in the data generation were the sample means and covariances for the two
+classes in the ionosphere dataset.
+4.2 Real data experiments
+We evaluate the performance of the proposed Smart Bayes classifier versus Naive Bayes and logistic
+regression on seven real datasets from the UCI Machine Learning Repository [3]. All datasets
+12
+except for the abalone dataset were used in Ng and Jordan [12]. We reproduce their comparisons
+while adding the Smart Bayes classifier using the spline-based density-ratio estimation method.
+As done by Ng and Jordan [12], we evaluate the performance of these classifiers at different
+training sizes. At each training sizem, we randomly selectmobservations as training samples and
+assign the rest of the observations in the dataset to the test sample. We conduct 200 replications
+at each training size and report the average misclassification rate on out-of-sample data. These
+are plotted in the figures below. The general shapes of the plots below match those of the same
+figures in [12], but there are minor differences. Although we attempted to choose the same variables
+as Ng and Jordan, we may have omitted or included variables that they did not omit or include,
+since their description only states that non-continuous variables were excluded from the analysis.
+It is also likely that their implementations of logistic regression and Naive Bayes differ from those
+used here. Experiments were conducted on an AWS EC2 instance of sizet2.xlargeusing the
+clustermqpackage [14] in version 4.3.2 of R [13].
+In the experiments, there are several instances where the Smart Bayes classifier outperforms both
+Naive Bayes and logistic regression. In particular, the adult dataset in Figure 3, the ionosphere
+dataset in Figure 5, and the sonar dataset in Figure 8 all demonstrate that the Smart Bayes classifier
+can yield lower misclassification rates than the other methods. These differences generally arise at
+larger training sizes, mimicking logistic regression’s relationship with Naive Bayes as described
+by [12]. The Smart Bayes classifier also relies on an ability to estimate density ratios, which the
+Naive Bayes classifier requires and logistic regression does not. These two properties reinforce Smart
+Bayes’s need for sufficient training observations.
+13
+0 500 1000 1500 2000 2500
+0.15 0.20 0.25
+Size of training data
+Misclassification rate
+Misclassification rates: abalone
+LR
+NB
+SB
+Figure 2: Average misclassification rate over 200 replications at different training sizes for the
+abalone dataset. Observations corresponding to the middle two quartiles of the response variable
+were removed from the dataset, so classification took place on data that were above the 3rd quartile
+(Class 1) or below the 1st quartile (Class 0).
+14
+200 400 600 800 1000
+0.23 0.24 0.25 0.26 0.27 0.28 0.29
+Size of training data
+Misclassification rate
+Misclassification rates: adult
+LR
+NB
+SB
+Figure 3: Average misclassification rate over 200 replications at different training sizes for the adult
+dataset. Non-continuous variables were removed from the classification.
+15
+100 200 300 400 500
+0.00 0.05 0.10 0.15 0.20 0.25
+Size of training data
+Misclassification rate
+Misclassification rates: boston
+LR
+NB
+SB
+Figure 4: Average misclassification rate over 200 replications at different training sizes for the
+Boston housing dataset. The response variable was whether the median value of the home exceeded
+the median value of all homes. Non-continuous variables were removed from the classification. This
+dataset is namedBostonand is available via the MASS library [21].
+16
+50 100 150 200 250 300
+0.10 0.15 0.20 0.25
+Size of training data
+Misclassification rate
+Misclassification rates: ionosphere
+LR
+NB
+SB
+Figure 5: Average misclassification rate over 200 replications at different training sizes for the
+ionosphere dataset. Non-continuous variables were removed from the classification.
+17
+100 200 300 400 500
+0.25 0.30 0.35 0.40 0.45 0.50
+Size of training data
+Misclassification rate
+Misclassification rates: liver
+LR
+NB
+SB
+Figure 6: Average misclassification rate over 200 replications at different training sizes for the liver
+dataset. Non-continuous variables were removed from the classification.
+18
+100 200 300 400 500 600 700
+0.22 0.24 0.26 0.28 0.30 0.32
+Size of training data
+Misclassification rate
+Misclassification rates: pima
+LR
+NB
+SB
+Figure 7: Average misclassification rate over 200 replications at different training sizes for the Pima
+dataset. Non-continuous variables were removed from the classification.
+19
+80 100 120 140 160 180 200
+0.20 0.25 0.30 0.35
+Size of training data
+Misclassification rate
+Misclassification rates: sonar
+LR
+NB
+SB
+Figure 8: Average misclassification rate over 200 replications at different training sizes for the Sonar
+dataset. Non-continuous variables were removed from the classification.
+5 Discussion
+We proposed a hybrid classifier, Smart Bayes, that uses density ratios as features within a logistic
+regression framework. Smart Bayes generalizes Naive Bayes by allowing flexible weighting of density
+ratios. To build the classifier, we developed a spline-based method for estimating log density ratios
+in Section 3.2.
+We compared the performance of the Smart Bayes classifier to both Naive Bayes and logistic
+regression in simulation experiments in Section 4.1 and in real data experiments in Section 4.2. The
+20
+simulations show cases where Smart Bayes outperforms logistic regression and Naive Bayes as the
+training size increases. The simulations also demonstrate that there are cases where Naive Bayes
+appears to have a lower asymptotic error rate than logistic regression, as discussed in [25].
+The empirical experiments, which use some of the same datasets and are presented in the style
+of [12], also show that Smart Bayes can outperform its competitor methods. We do not present a
+theoretical explanation for when Smart Bayes outperforms the other two methods. As noted in [25],
+there is no general criterion for deciding whether to use a discriminative or generative classifier.
+However, this work demonstrates that there may benefits to blending the two approaches.
+There are several promising directions for future research. Smart Bayes may be enhanced by
+incorporating additional terms, such as higher-order interactions between generative features, and
+by using regularization methods to select among them. While this work focused on features de-
+rived from likelihood ratios of univariate marginal densities, extending the approach to multivariate
+marginal densities, guided by prior knowledge or graphical structure, may yield further improve-
+ments and produce classifiers closer to the optimal Bayes rule. Theoretical work that delineates
+when and why Smart Bayes outperforms Naive Bayes and logistic regression would also be worth-
+while.
+Another direction is to integrate these generative features into other machine learning models,
+such as support vector machines, transformers, and other deep learning architectures to assess
+whether they offer similar gains in classification performance. Propensity score matching is also an
+area where Smart Bayes could be useful, since its potential to approach the optimal Bayes classifier
+may yield better propensity scores than logistic regression.
+References
+[1] Peter J Bickel, Elizaveta Levina, et al. Some theory for Fisher’s linear discriminant function,
+naive Bayes’, and some alternatives when there are many more variables than observations.
+Bernoulli, 10(6):989–1010, 2004.
+[2] Pedro Domingos and Michael Pazzani. On the optimality of the simple Bayesian classifier
+under zero-one loss.Machine learning, 29(2-3):103–130, 1997.
+21
+[3] Dheeru Dua and Casey Graff. UCI machine learning repository, 2017.
+[4] Emily Fox. Bayes optimal classifier and naive Bayes, 2017. Course notes from University of
+Washington.
+[5] Jerome Friedman, Trevor Hastie, Robert Tibshirani, et al. Additive logistic regression: a sta-
+tistical view of boosting (with discussion and a rejoinder by the authors).Annals of Statistics,
+28(2):337–407, 2000.
+[6] Geof H Givens and Jennifer A Hoeting.Computational statistics, volume 703. John Wiley &
+Sons, 2012.
+[7] Shohei Hido, Yuta Tsuboi, Hisashi Kashima, Masashi Sugiyama, and Takafumi Kanamori.
+Statistical outlier detection using direct density ratio estimation.Knowledge and information
+systems, 26(2):309–336, 2011.
+[8] Gareth James, Daniela Witten, Trevor Hastie, and Robert Tibshirani.An introduction to
+statistical learning, volume 112. Springer, 2013.
+[9] Takafumi Kanamori, Shohei Hido, and Masashi Sugiyama. A least-squares approach to direct
+importance estimation.Journal of Machine Learning Research, 10(Jul):1391–1445, 2009.
+[10] Song Liu, Makoto Yamada, Nigel Collier, and Masashi Sugiyama. Change-point detection in
+time-series data by relative density-ratio estimation.Neural Networks, 43:72–83, 2013.
+[11] Michal Majka.naivebayes: High Performance Implementation of the Naive Bayes Algorithm
+in R, 2019. R package version 0.9.6.
+[12] Andrew Y Ng and Michael I Jordan. On discriminative vs. generative classifiers: A comparison
+of logistic regression and naive Bayes. InAdvances in neural information processing systems,
+pages 841–848, 2002.
+[13] R Core Team.R: A Language and Environment for Statistical Computing. R Foundation for
+Statistical Computing, Vienna, Austria, 2023.
+22
+[14] Michael Schubert. clustermq enables efficient parallelisation of genomic analyses.Bioinfor-
+matics, May 2019.
+[15] Cosma Rohilla Shalizi. Estimating distributions and densities, 2016. Course notes from
+Carnegie Mellon University.
+[16] Bernard W Silverman. Density ratios, empirical likelihood and cot death.Journal of the Royal
+Statistical Society: Series C (Applied Statistics), 27(1):26–33, 1978.
+[17] Masashi Sugiyama, Taiji Suzuki, and Takafumi Kanamori.Density ratio estimation in machine
+learning. Cambridge University Press, 2012.
+[18] Masashi Sugiyama, Makoto Yamada, Paul Von Buenau, Taiji Suzuki, Takafumi Kanamori,
+and Motoaki Kawanabe. Direct density-ratio estimation with dimensionality reduction via
+least-squares hetero-distributional subspace search.Neural Networks, 24(2):183–198, 2011.
+[19] Zachary Terner.Classification methods for multivariate and functional data using features from
+density ratio estimation. PhD thesis, University of California, Santa Barbara, 2020.
+[20] Masatoshi Uehara, Issei Sato, Masahiro Suzuki, Kotaro Nakayama, and Yutaka Matsuo.
+Generative adversarial nets from a density ratio estimation perspective.arXiv preprint
+arXiv:1610.02920, 2016.
+[21] W. N. Venables and B. D. Ripley.Modern Applied Statistics with S. Springer, New York,
+fourth edition, 2002. ISBN 0-387-95457-0.
+[22] Grace Wahba, Yuedong Wang, Chong Gu, Ronald Klein, Barbara Klein, et al. Smoothing
+spline ANOVA for exponential families, with application to the Wisconsin Epidemiological
+Study of Diabetic Retinopathy: the 1994 Neyman Memorial Lecture.The Annals of Statistics,
+23(6):1865–1895, 1995.
+[23] Yuedong Wang.Smoothing splines: methods and applications. CRC Press, 2011.
+[24] S.N Wood.Generalized Additive Models: An Introduction with R. Chapman and Hall/CRC,
+2 edition, 2017.
+23
+[25] Jing-Hao Xue and D Michael Titterington. Comment on “on discriminative vs. generative
+classifiers: A comparison of logistic regression and naive bayes”.Neural processing letters,
+28(3):169–187, 2008.
+[26] Tzay Y Young and Thomas W Calvert.Classification, estimation, and pattern recognition.
+Elsevier, 1974.
+24

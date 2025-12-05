@@ -1,0 +1,1330 @@
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 1
+2D-ThermAl: Physics-Informed Framework for Therm al Analysis of
+Circuits using Generative A I
+Soumyadeep Chandra, Sayeed Shafayet Chowdhury, and Kaushik RoyFellow, IEEE
+Abstract—Thermal analysis is increasingly critical in modern
+integrated circuits, where non-uniform power dissipation and
+high transistor densities can cause rapid temperature spikes
+and reliability concerns. Traditional methods such as FEM-based
+simulations offer high accuracy but computationally prohibitive
+for early-stage design, often requiring multiple iterative redesign
+cycles to resolve late-stage thermal failures. To address these
+challenges, we propose‘ThermAl’, a physics-informed generative
+AI framework which effectively identifies heat sources and esti-
+mates full-chip transient and steady-state thermal distributions
+directly from input activity profiles. ThermAl employs a hybrid
+U-Net architecture enhanced with positional encoding and a
+Boltzmann regularizer to maintain physical fidelity. Our model
+is trained on an extensive dataset of heat dissipation maps for
+more than 200 circuit configurations, ranging from simple logic
+gates (e.g., inverters, NAND, XOR) to complex designs, generated
+via COMSOL and Cadence EDA flows. The dataset captures
+diverse activity patterns, and we note that material-dependent
+thermal properties may require targeted fine-tuning to ensure
+accuracy across different fabrication contexts. Experimental
+results demonstrate that ThermAl delivers precise temperature
+mappings for large circuits, with a root mean squared error
+(RMSE) of only0.71 ◦C and outperforms conventional FEM tools
+by running up to∼200×faster. We analyze performance across
+diverse layouts and workloads, and discuss its applicability to
+large-scale EDA workflows. While thermal reliability assessments
+often extend beyond 85 ◦C for post-layout signoff, our focus here
+is on early-stage hotspot detection and thermal pattern learning.
+To ensure generalization beyond the nominal operating range
+(25−55 ◦C), we additionally performed cross-validation on an
+extended dataset spanning25−95 ◦C maintaining a high accuracy
+(<2.2%full-scale RMSE) even under elevated temperature
+conditions representative of peak power and stress scenarios.
+Limitations such as 2D-only modeling and real-world validation
+are addressed with concrete future directions, including 3D
+extension, generalization across technology nodes, and transfer
+learning strategies. The code and dataset are publicly available
+at: https://github.com/soumyadeepchandra/2D-ThermAl
+Index Terms—Thermal estimation, Finite element method
+(FEM), Generative AI model, Physics-aware regularisation
+I. INTRODUCTION
+T
+HERMAL management has become a paramount concern
+in modern microprocessor design, as power densities
+The authors are with the Department of Electrical and Computer En-
+gineering, Purdue University, West Lafayette, IN, USA - 47906 (e-mail:
+chand133@purdue.edu, chowdh23@purdue.edu, kaushik@purdue.edu).
+This work was supported in part by the Center for Co-design of Cognitive
+Systems (CoCoSys), one of the seven centers in JUMP 2.0, a Semiconductor
+Research Corporation (SRC) program sponsored by DARPA, by the SRC,
+the National Science Foundation, Intel Corporation, the DoD Vannevar Bush
+Fellowship, and by the U.S. Army Research Laboratory. All authors declare
+that they have no conflicts of interest.
+Corresponding author: Soumyadeep Chandra (e-mail:
+chand133@purdue.edu)
+Manuscript received April 19, 2021; revised August 16, 2021.
+continue to escalate with each generation of technology [1],
+[2]. The failure of Dennard scaling has dissolved the tra-
+ditional transistor scaling–power balance, leading to chips
+that are increasingly constrained by thermal and reliability
+limits over pure performance [2]. To prevent overheating and
+thermal-induced failures, designers must integrate accurate
+temperature estimation and control mechanisms early in the
+design flow, enabling techniques such as clock gating, power
+gating, dynamic voltage and frequency scaling (DVFS), and
+task migration to operate effectively in real time [3]–[6].
+Current thermal-analysis techniques fall into two groups:
+high-fidelity finite-element analysis (FEA) and coarse-grain
+models. FEA tools capture detailed heat-transfer physics but
+incur prohibitive runtimes and setup complexity for full-chip,
+iterative exploration. In contrast, coarse methods—from ana-
+lytical RC networks to infrared imaging—compromise spatial
+resolution, missing fine-grain hotspots that drive localized
+failure modes [7], [8]. These trade-offs leave a pressing need
+for predictive methods that simultaneously deliver circuit-level
+accuracy, computational efficiency, and seamless integration
+into early-stage design.
+Although crucial, circuit-level thermal estimates are chal-
+lenging to make due to complex heat transfer coupled with
+non-uniform patterns of power dissipation within current-
+day microprocessors. Early integration of thermal predictions
+aids designers in keeping thermal constraints within reach
+and eliminating expensive redesigns. Early identification of
+potential hotspots streamlines development. Traditional ap-
+proaches based on core-wise or functional-unit power mea-
+surements lack the resolution to capture fine-grained hotspot
+behavior [9]–[12]. Inverse thermal-map techniques recover
+power maps from thermal measurements via optimization and
+machine learning [13]–[20], but they struggle to generalize
+at circuit-level granularity when heat fluxes become highly
+localized.
+FEM commercial tools provide high fidelity, high com-
+putational cost, and difficulty setting them up render them
+unsuitable for large-scale, real-time applications, and even
+optimized methods like HotSpot [31], Power Blurring [32],
+and PACT [33] grow costly at finer resolutions. Compact
+thermal models such as 3D-ICE [34] and MTA [35] improve
+runtime efficiency for stacked 3D ICs and architecture-level
+exploration, but their grid coarseness limits spatial accuracy
+for dense sub-block thermal variations.
+More recently, there have been more advanced learning-
+based methods. One approach utilizes spatial Laplace trans-
+forms to identify heat sources [21], while another employs
+GANs to predict full-chip thermal maps from performance
+metrics [22]. Deep neural approaches like DeepOHeat [36]
+arXiv:2512.01163v1  [cs.LG]  1 Dec 2025
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 2
+Activity Guided local heat map generationGenerated Thermal Output
+T1 T2
+T3T4
+T1 T2
+T3T4
+Multiphysics analysis/FEA
+Commercial FEM Analysis tools
+Thermal Output
+ThermAl network
+Our Approach using ThermAlHeat sources (T)Heat dissipationThermal Resistance
+Slow to implement and lacks flexibility for large circuits
+∆𝑇=𝑃𝑜𝑤𝑒𝑟∗𝑅!"𝑇#$%&=𝑇'()+	∆𝑇
+GDS 
+Fig. 1. As transistor density in modern microprocessors increases, traditional
+thermal estimation methods often struggle with complex heat dissipation,
+leading to inaccuracies in temperature profiling. While commercial FEM tools
+offer high fidelity, they can be too slow and computationally inefficient for
+full-chip modeling. Simultaneously, thermal cameras tend to lack the high-
+resolution detail needed for analysis at the circuit level. ThermAl tackles
+these limitations by using a generative neural network to deliver fast and
+accurate thermal estimation. More importantly, it integrates easily into the
+design exploration stage of the GDS generation, allowing designers to identify
+and correct thermal hotspots early on. Thermal-sensitive flow can prevent
+numerous iterations of designs, induced by thermal failures discovered late in
+the process, and thus simplify the overall circuit optimization process.
+have attempted to infer steady-state temperature fields directly
+from power distributions, yet they often rely on data-driven
+correlations without explicit physical grounding, leading to
+limited generalization under new boundary conditions or ma-
+terials. However, these remain reliant on imprecise, coarse-
+grained analysis due to limitations of thermal camera resolu-
+tion or imperfect power-thermal coupling.
+Moving beyond these challenges, we introduce a hybrid
+solution integrating detailed power estimation, circuit-level
+boundary values, and sophisticated thermal simulation.
+We integrate equivalent thermal RC networks [25], [26],
+architecture-level models [27], [28], and FEM methodolo-
+gies [29] (Fig.1) to accurately compute temperature gradients.
+We introduceThermAl, a conditional generative framework
+that frames thermal analysis as an image-to-image translation
+task. The model generates steady-state and transient thermal
+maps by conditioning on a sample pair of images{E, E ′},
+capturing non-uniform heat dissipation, material heterogeneity,
+and dynamic boundary conditions.
+Our dataset captures a wide spectrum of spatial and tempo-
+ral activity patterns; however, the resulting thermal behavior is
+jointly determined by these activity patterns and the underlying
+material properties. Parameters such as thermal conductivity,
+specific heat capacity, and layer stack composition critically
+modulate how localized power dissipation evolves into spatial
+temperature distributions. Consequently, identical activity can
+yield substantially different hotspot intensities and diffusion
+profiles across substrates, interconnect materials, and thermal
+interface layers. This intrinsic coupling between activity-
+induced and material-dependent variability necessitates train-
+ing strategies—such as targeted fine-tuning or transfer learn-
+ing—that preserve ThermAl’s predictive accuracy and general-
+izability across diverse technology nodes and packaging con-
+figurations without compromising inference speed. While the
+current framework is primarily developed and validated within
+a moderate temperature range of25−55 ◦C, corresponding to
+typical early-design power densities, we further conduct cross-
+validation on an extended dataset spanning25−95 ◦C to assess
+model robustness under elevated thermal stress. As detailed in
+Section VI-B,ThermAlmaintains high predictive fidelity (full-
+scale RMSE<2.2%) even across this wider range, demon-
+strating strong generalization to high-temperature scenarios
+representative of peak power and reliability conditions.
+Beyond prior generative AI and data-driven thermal mod-
+eling approaches,ThermAlexplicitly incorporates physics-
+informed learning within its neural architecture, addressing
+key limitations observed in purely data-driven frameworks.
+A physics-aware regularizer guides the network to learn heat
+diffusion dynamics that adhere to fundamental physical laws,
+thereby improving accuracy in both transient and steady-state
+regimes—particularly near complex thermal boundaries and
+hotspot regions. Compared to traditional FEM-based tools,
+ThermAlinfers hundreds of times faster while providing high
+accuracy to enable quick, real-time thermal decision-making.
+The model achieves high prediction accuracy, with an RMSE
+of only0.71 ◦C for a256×256resolution grid. Additionally,
+the model supports higher-resolution inputs, achieving an
+RMSE of1.18 ◦C for512×512thermal maps.
+Our main contributions are as follows:
+1) Unlike commercial FEM tools, which tends to be
+excessively slow and memory-hungry at high resolu-
+tions,ThermAlemploys a generative machine-learning
+architecture integrated with physics-based constraints,
+enabling accurate thermal analysis. This framework
+achieves an RMSE of only0.71 ◦C, while decreasing
+inference times by nearly200×compared to classic
+FEM in both transient and steady-state heat problems.
+2) We assemble an extensive database of heat dissipation
+maps for over 200+ circuit configurations, ranging from
+simple logic gates (inverters, NAND, XOR) to complex
+workloads. These maps are generated using off-the-shelf
+commercial finite element-based Multiphysics software
+(such as COMSOL) to provide an exhaustive range of
+physical and geometrical boundary conditions required
+for learning and verification.
+3) Developing proposedThermAlemploys an advanced
+hybrid U-Net architecture augmented with positional
+embeddings, feature-level concatenation, and physics-
+informed regularization. These enhancements signifi-
+cantly improve both spatial consistency and prediction
+accuracy of transient and steady-state thermal maps. By
+directly integrating fundamental heat transfer principles
+into the training loss, ThermAl effectively extrapo-
+lates thermal diffusion patterns within complex designs,
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 3
+achieving fast and precise temperature mapping.
+4) To evaluate generalization beyond nominal operat-
+ing conditions (25–55 ◦C), we perform extended-range
+cross-validation over a small dataset spanning25–95 ◦C.
+Results demonstrate thatThermAlmaintains high ac-
+curacy (full-scale RMSE<2.2%) and strong spatial
+consistency, confirming its robustness across both early-
+stage design and elevated thermal stress scenarios.
+The remainder of this article is organized as follows: Sec-
+tion II summarizes state-of-the-art thermal-analysis methodol-
+ogy, emphasizing key principles and limitations. Section III
+provides a comprehensive overview of the dataset generation
+using commercial EDA and FEA tools. Section IV introduces
+our conditional generative machine-learning model, detailing
+architectural choices and training methodology. Section V
+describes the experimental system and performance evaluation
+metrics. Section VI presents the inference speed, accuracy,
+and efficiency of the model for varied scenarios. Section VII
+discusses an ablation study that validates key design choices,
+and Section VIII summarizes principal findings and potential
+avenues for future work.
+II. BACKGROUND ANDRELATEDWORK
+A. System-Level Thermal Management
+System-level schemes monitor package- or die-level tem-
+peratures and react by throttling performance or migrating
+workload. Brooks et al. [3] introduced thermal feedback-driven
+dynamic voltage/frequency scaling (DVFS), which reduced
+average junction temperatures but often overthrottled to avoid
+worst-case hotspots. Hanumaiah and Ranka [4] proposed
+proactive DVFS by predicting thermal trends based on per-
+formance counters, improving responsiveness but remaining
+limited by coarse-grained sensor data. Liu et al. [5] and Wang
+et al. [6] advanced these techniques with fine-grained task
+migration across cores and sockets, balancing load to flatten
+temperature peaks. However, these methods primarily rely on
+chip- or core-level averages, rendering them ineffective at de-
+tecting sub-circuit hotspots and thus limiting their capacity to
+prevent localized reliability degradation (e.g., electromigration
+or negative bias temperature instability).
+B. Inverse Thermal Mapping
+Inverse thermal mapping frames power reconstruction as
+an ill-posed optimization problem: estimating the underlying
+spatial power distribution given a temperature field. Wang et
+al. [13] applied conjugate-gradient inversion with Tikhonov
+regularization, recovering coarse power maps but suffering
+from smoothing artifacts. Nowroz et al. [14], [16] improved
+stability through multi-resolution wavelet bases and edge-
+preserving priors, improving hotspot localization but necessi-
+tating dense sensor arrays. Reda et al. [15], [20] developed
+blind deconvolution techniques using learned point-spread
+functions, enabling power recovery from sparse measurements
+but still constrained by solution non-uniqueness. Ranieri et al.
+[17] and Paek et al. [18] proposed dimensionality reduction via
+eigenbasis representations, simplifying inversion complexity
+but limiting adaptability to arbitrary layouts. Collectively,
+Circuit Netlist
+Activity Table
+Generate Power Consumption table
+Initial (t0) Temperature Map
+Output Temperature Map
+Atomistic AnalysisEach Lumped Zone ∆𝑇=𝑃𝑜𝑤𝑒𝑟∗	𝑅!"
+Finite Element Analysis (FEA)
+Create 3D geometry and perform Finite Element Analysis (FEA) to generate Thermal Maps 
+t1 t2 tn-1… tn
+Electronic design automation (EDA)
+Fig. 2. Workflow for Dataset Generation: Circuit designs and power dis-
+tribution data are first generated using standard EDA tools. These, along
+with specified thermal parameters, are input into FEM-based time-stepped
+simulations that capture transient heat flow, producing thermal maps at
+various intervals. The resulting comprehensive dataset serves as ground truth
+for trainingThermAl, enabling accurate predictions across diverse circuit
+configurations and thermal conditions.
+these approaches demonstrate the potential of inverse methods
+for power profiling but struggle with localized, circuit-level
+granularity and measurement noise.
+C. Thermal-modeling Frameworks
+Analytical models such as HotSpot [31] conceptualize the
+die as an RC network for rapid temperature estimation but
+require manual grid tuning and struggle with fine-grained,
+sub-circuit accuracy, limiting their utility for highly dense
+modern layouts. Power Blurring [32] improves spatial pre-
+cision by convolving detailed power maps with precomputed
+impulse response kernels, though it introduces significant setup
+complexity and limited flexibility under dynamic workloads.
+PACT [33] offers a parameterizable thermal modeling engine
+that decomposes the die into reusable thermal units calibrated
+offline, enabling rapid, workload-aware estimation while still
+demanding significant preprocessing and facing challenges
+in scaling to highly heterogeneous layouts. Although these
+methods reduce runtime compared to full finite-element anal-
+ysis (FEA), their reliance on manual tuning and complex
+configuration hinders seamless integration into contemporary
+electronic design automation (EDA) workflows. More compre-
+hensive solvers like 3D-ICE [34] and the Manchester Thermal
+Analyzer (MTA) [35] explicitly couple chip, interconnect,
+and heat-sink domains to model full 3D thermal interactions,
+reporting speedups of up to975×and>100×respectively
+over conventional FEM tools. However, their reliance on de-
+tailed package-level characterization, extensive preprocessing,
+and solver-based numerical integration often restricts their use
+during early design exploration.
+D. Learning-Based Thermal Estimation
+Deep learning has recently been applied to directly map
+performance counters or low-resolution thermal inputs to full-
+chip thermal fields. Sadiqbatcha et al. [21] introduced a CNN
+leveraging Laplacian spectral features to improve hotspot
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 4
+detection beyond analytical models, but lacking transient-state
+predictions. Jin et al. [22] trained a conditional GAN on
+synchronized performance data and infrared camera outputs to
+synthesize realistic steady-state and transient maps; however,
+reliance on external imaging hardware limited resolution to
+millimeter scales, hereby constraining practical scalability.
+More recently, Chen et al. [23] utilized a UNet architecture to
+regress high-resolution thermal maps from simulated power
+traces, demonstrating subpixel accuracy in synthetic bench-
+marks. Transformer-based architectures [24] have also been
+explored to capture long-range heat diffusion patterns, though
+they incur high training costs and require extensive datasets to
+generalize across layouts. Recent operator-learning approaches
+such as DeepOHeat [36] achieve10 3–105×speedups with
+sub-degree accuracy, but rely on large-scale 3D datasets, long
+convergence times, and high memory overhead.
+By synthesizing insights from system-level controls, in-
+verse mapping, learning-based inference, and hybrid modeling
+strategies, our proposedThermAlframework adopts a balanced
+strategy—embedding physics-based priors within a generative
+U-Net to maintain physical consistency while preserving the
+low-latency benefits of learning-based inference. It directly
+learns circuit-scale thermal dynamics across diverse bound-
+ary conditions and delivers near-real-time predictions without
+requiring a customized grid setup or external hardware. This
+positions ThermAl between analytical compact solvers and
+heavy operator-learning models, offering a tractable, layout-
+aware framework for rapid thermal estimation during early
+EDA design stages.
+III. DATASETGENERATION
+The construction of a comprehensive and diverse dataset is
+a cornerstone for effectively training our generative AI frame-
+work for thermal analysis. This dataset supports the ability of
+the model to generalize and predict thermal behavior in a wide
+variety of circuit designs and operational configurations. In this
+work, we generate over 200 synthetic thermal maps represent-
+ing a broad spectrum of circuit configurations. These include
+simple combinational elements, such as inverters, NAND, and
+XOR gates; mid-level designs like adders and multiplexers;
+and complex functional blocks as summarized in Table I. Each
+configuration was simulated under multiple power profiles and
+boundary conditions to ensure coverage of practical thermal
+scenarios. Such breadth ensures comprehensive coverage of
+operational scenarios essential for both training and inference.
+TABLE I
+OVERVIEW OFCIRCUITBENCHMARKCONFIGURATIONS
+Circuit Type Examples Instances Gate Count
+Basic Logic Gates Inverter, NAND, XOR 120 <50
+Sequential Elements Flip-Flops, Latches 60 ∼50–100
+Combinational Blocks Adder, Multiplexer 40 ∼100–400
+To generate such a varied dataset, we employ Electronic
+Design Automation (EDA) tools such asCADENCE[37],
+which provide detailed insights into power distribution and
+transistor activity under varied operating conditions (Fig. 3(a)).
+Standard cell libraries, such as the TSMC 65nm [38], serve
+as the foundational design space, capturing key electrical
+characteristics, including netlists and extensive power profiles,
+across multiple scenarios. By pairing this electrical data with
+thermal parameters (Rth = 1×10 4 K/W) outlined in [39], we
+capture the microscopic interplay between material properties
+and heat flow dynamics. The current setup assumes constant
+thermal resistance at the die-ambient interface, effectively
+modeling air-cooled conditions. While suitable for algorithmic
+benchmarking, this simplification omits heat sink dynamics
+and varying boundary conditions (e.g., water cooling). Extend-
+ing ThermAl to include coupled package–sink modeling is a
+planned direction for future work.
+Initial (t0) Temperature Map
+Steady-state (tn) Temperature Map
+t1 t2 tn-1 tn…
+t3 tn-2…
+Transient Thermal Flow Map
+(a)
+(b)
+Fig. 3. (a) Comprehensive library of steady-state and transient thermal
+behaviors across diverse workloads and initial conditions, generated using
+the commercial finite element-based Multiphysics software (COMSOL). (b)
+Transient snapshots illustrate the time-evolving evolution of heat flow, high-
+lighting changes in temperature profiles over time within the circuit.
+We integrate the electrical data into Finite Element-based
+Methods (FEM) using COMSOL Multiphysics® software [40]
+to generate detailed thermal simulations for each circuit con-
+figuration, as shown in Fig. 2. Each thermal image consists of
+a256×256pixel grid, mapping to a die area of1,mm×1,mm
+and assigning each pixel to approximately3.9, µm×3.9, µm
+of physical silicon. The pixel pitch of3.9, µm aligns well
+with the characteristic thermal diffusion length in silicon over
+microsecond time scales. Using a typical thermal diffusivity
+(α≈1×10 −4m2/s), the diffusion lengthL=
+√
+αtis about
+15–20µm, which indicates that heat from a localized hotspot
+spreads over roughly this range. As each pixel covers3.9µm,
+this spread spans around 3–5 pixels, ensuring that transient
+hotspots and thermal gradients are adequately resolved. Fea-
+tures smaller than this diffusion length would naturally blur
+due to heat spreading, so a finer spatial resolution would
+not yield significantly more information. For larger dies or
+package-scale modeling, we plan to explore hierarchical train-
+ing strategies with adaptive spatial resolutions.
+COMSOLcaptures both steady-state and transient heat flow
+dynamics, as illustrated in Fig. 3(b), by providing time-
+resolved temperature gradients, heat flux distributions, and
+potential hotspot identification across multiple time steps. The
+dataset covers a temperature range of approximately 25 ◦C to
+55◦C, targeting nominal and moderately stressed operating
+regimes typically observed during early design phases such
+as placement and floorplanning. While thermal reliability
+assessments often extend beyond 85 ◦C for post-layout sig-
+noff, our focus here is on early-stage hotspot detection and
+thermal pattern learning. To ensure generalization beyond this
+nominal range, we additionally performed cross-validation on
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 5
+an extended small dataset spanning 25–95 ◦C as discussed
+in Section VI-B. The dataset can be found in the link:2D-
+ThermAl Dataset.
+To ensure high-fidelity thermal simulations, it is crucial
+to define boundary conditions and material properties with
+precision. In our simulations, the die and substrate are assigned
+thermophysical parameters—such as thermal conductivity,
+density, and specific heat capacity—based on experimentally
+measured or literature-sourced values. Rigorous boundary con-
+dition settings, including insulated walls (to restrict external
+heat loss) and appropriate thermal loading, ensure accurate
+modeling of heat retention and dissipation under operational
+stresses. By integrating these thermally rich datasets with elec-
+trical insights fromCADENCE, we create a multidimensional
+dataset that captures the intricate interaction between electrical
+and thermal characteristics, forming a robust foundation for
+training our generative AI model.
+IV. METHODOLOGY
+We reframe thermal analysis as an image-to-image trans-
+lation task, extending the classic U-Net framework [41] to
+address heatflow-specific challenges. Although the original
+U-Net excels at segmentation, it lacks certain mechanisms
+required for the dense spatial transformations intrinsic to
+thermal analysis. Our objective is to predict an output image
+I′ from a query imageI, given a pair of sample images
+E, E′. We adopt feature-level concatenation and positional
+embedding (illustrated in Fig. 4) to represent the intricate
+spatial relationships governing heat diffusion across different
+parts of the circuit. These enhancements allow the network
+to embed higher level semantic context, enabling it to predict
+both steady-state and transient thermal states in complex work-
+loads. The following subsections describes each component
+of our model: input data encoding, feature concatenation with
+positional embedding, image reconstruction, and our physics-
+informed loss function.
+A. Input Data and Encoder
+The model input comprises a source–target image pairE, E′
+and a query imageI, each representing 2D thermal heatmaps
+of sizeH×W, where pixel intensity encodes temperature
+gradients. Here,Icorresponds to the current thermal state
+provided as model input, whileEandE ′ represent reference
+thermal maps from current and desired time steps, respectively,
+sampled under different workloads. During training, the ref-
+erence pairE, E′ serves as contextual guidance, enabling the
+network to learn temporal transitions and spatial correspon-
+dences across thermal states. Each image is processed by an
+independent encoder to extract high-level feature representa-
+tions:f s = Enc(E), ft = Enc(E ′), fin = Enc(I),where
+fs,f t, andf in ∈R H×W×C denote the encoded feature maps
+for the source, target, and query images, respectively. Each
+encoder employs dilated convolutions to capture both multi-
+scale spatial structures and localized temperature variations.
+Progressive downsampling is applied to reduce spatial resolu-
+tion while preserving essential information about temperature
+gradients, yielding compact, high-level feature embeddings.
+B. Feature Concatenation and Positional Encoding
+A key architectural design choice is the use of feature-
+space concatenation rather than pixel-level concatenation to
+model spatial dependencies. The encoded query feature map
+fin is concatenated channel-wise with the sourcef s and target
+ft feature maps to form a unified content representation:
+(fc = Concat(f in, fs, ft)), wheref c ∈R H×W×3C aggre-
+gates spatial context from the reference mapsE, E′, enriching
+the query representation and improving transformation infer-
+ence. To enhance geometric consistency, a positional encoding
+functionf pos(x, y)is introduced to embed explicit spatial
+coordinates:
+fpos(x, y) =
+h
+sin
+  x
+100002i/d
+
+,cos
+  x
+100002i/d
+
+,
+sin
+  y
+100002i/d
+
+,cos
+  y
+100002i/d
+i
+(1)
+where(x, y)are pixel coordinates,idenotes the dimension
+index, anddis the total encoding dimensionality. The posi-
+tional encoding is concatenated with the content feature map
+to produce the merged feature tensor(f m = Concat(fc, fpos))
+which preserves both absolute coordinate information and
+learned feature correlations. By embedding positional cues
+directly into the feature space, the network achieves improved
+spatial alignment and more accurate transformation prediction.
+C. Decoder and Image Reconstruction
+The concatenated feature mapf c, enriched with positional
+encodings, is passed through a decoder module that recon-
+structs the thermal map at the original resolution. The decoder
+employs transposed convolutions with a stride of 2 and a3×3
+kernel at each upsampling stage to progressively restore spatial
+dimensions. Skip connections from corresponding encoder
+layers are integrated to preserve fine-grained spatial details,
+ensuring that localized temperature variations are accurately
+recovered. To further enhance reconstruction quality and sup-
+press checkerboard artifacts, the upsampled outputs are option-
+ally refined using bilinear interpolation and anti-aliasing filters.
+The final output of the decoder, denoted asI ′, is spatially
+aligned with the query inputIand trained to approximate
+the ground truth map ˆI, enabling precise prediction of heat
+distribution under complex thermal flow conditions.
+D. Loss Function with Physics-Aware Regularization
+Our training objective combines pixel-level accuracy with
+physics-based consistency to ensure both visual fidelity and
+thermodynamic realism. The primary loss component is a
+pixel-wise Root Mean Squared Error (RMSE) that measures
+discrepancies between the predicted thermal mapI ′ and the
+ground truth ˆI:
+LRMSE =
+vuut 1
+H×W
+HX
+i=1
+WX
+j=1
+ 
+I′(i, j)−ˆI(i, j)
+2
+.(2)
+MinimizingL RMSE (or equivalently,ℓ2 loss) encourages the
+network to reproduce average temperature patterns and achieve
+high pixel-level fidelity. However, such data-driven loss func-
+tions do not enforce the underlying heat conduction physics,
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 6
+ThermAl
+Ground Truth (𝐼!)
+RMSELoss
+Input (I)
+ Output (I’)
+Image Pair (E,E’)
+Source
+Ta rg e t
+Encoder
+DecoderFeature concatenationfin
+fs ft fin
+fs
+ft
+Encoder
+Positional encoding
+Training only*
+Automatic Differentiation
+Physics Aware RegularizationMean𝜕𝑇!"#$𝜕𝑡+𝜏𝜕%𝑇!"#$𝜕𝑡%−	𝛼	∇%𝑇!"#$%
+Encoder Decoder
+E’IE
+Conv2dReLUMaxPoolFeature VectorPositional EncodingUpscalingConvTrans2dForwardResidual/Skip OutputInput Feature Concatenation
+…
+i/p
+o/p
+Input
+Output
+i/p
+o/p
+𝑋!!"#i/p
+o/p𝑋!!
+𝑋!"
+𝑋!#
+𝑋!$
+Fig. 4. Overview of the ThermAl framework: A novel hybrid U-Net network combining CNN and positional embedding for feature extraction and processing.
+The network accepts a pair of source-target images{E:source, E ′ :target}, along with a input query image,{I}, and processes them through separate UNet-
+based encoders to extract multi-scale features. The resulting feature maps are concatenated to formf c, which is then augmented with positional embeddings
+fpos and fed into a decoder to generate a dense prediction. The framework is trained using a composite loss function that combines the RMSE loss with a
+physics-aware regularizer, ensuring that predictions adhere to the underlying heat conduction dynamics. The flow-diagram illustrates how the model predicts
+transient heat dissipation and thermal flow over various time intervals, capturing the temporal evolution of thermal behavior.
+particularly in transient regimes, nor guarantee that the pre-
+dicted temperature fields obey causality or finite propagation
+speeds. To address this limitation, we introduce aphysics-
+awareregularization term inspired from a simplified Boltz-
+mann Transport Equation (BTE) framework. Rather than in-
+voking the full BTE, which requires strong assumptions about
+phonon distributions, we employ the Cattaneo–Vernotte (CV)
+form of the hyperbolic heat equation under the relaxation-time
+approximation, assuming near-equilibrium phonon transport.
+This formulation better captures finite propagation speed and
+thermal relaxation effects than classical Fourier diffusion,
+which assumes instantaneous heat conduction. The corre-
+sponding residual loss measures the deviation of the predicted
+temperature fieldT pred from this conduction model:
+Lphysics = Mean
+
+∂Tpred
+∂t +τ ∂2Tpred
+∂t2 −α∇ 2Tpred
+
+2
+,(3)
+whereτdenotes the characteristic relaxation time (approxi-
+mately10 −13 s for Si) andαrepresents the thermal diffusivity
+(on the order of10 −4 m2/s). This residual explicitly penalizes
+physically inconsistent heat dynamics, ensuring the model
+adheres to non-Fourier, finite-speed conduction behavior. The
+final composite objective balances data fidelity and physics
+coherence:
+L=L RMSE +λL physics,(4)
+whereλis a weighting factor controlling the trade-off between
+reconstruction accuracy and physical plausibility. As shown in
+our ablation study (Table VII-A), removing the physics-aware
+term leads to higher prediction errors, particularly in high-
+gradient or fast-transient regions, confirming that it enhances
+both boundary accuracy and physical consistency beyond raw
+data fitting.
+V. EXPERIMENTALSETUP
+This section outlines the experimental setup used to evaluate
+the proposed thermal prediction framework. We describe the
+training configuration and implementation details, followed by
+an overview of the evaluation metrics and analysis methods.
+All experiments are designed to ensure reproducibility and to
+reflect realistic thermal behavior in integrated circuit environ-
+ments.
+A. Training Procedure
+We train our network in a supervised learning setting,
+pairing source and target thermal images. The complete model
+is implemented in Python 3.7 using the PyTorch framework
+(version 2.3.1) [42], a widely adopted open-source library
+for machine learning. Training is conducted for 100 epochs
+on a Linux server equipped with an AMD EPYC 7502 32-
+Core Processor and four Nvidia A40 GPUs, using a batch
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 7
+size of 50. The Adam optimizer is employed with an initial
+learning rate of10 −6 and momentum of0.999, ensuring stable
+convergence. Our dataset comprises a large set of synthetic 2D
+image pairs tailored for robust image matching, with 75% used
+for training and 25% reserved for validation. As illustrated
+in Fig. 4, the transient evolution of thermal distributions is
+tracked from the initial condition to the final steady state. Each
+training pair corresponds to consecutive frames(t, t+ ∆t)
+from the same transient simulation, where∆t≈1ms. During
+training, the model’s predicted output at time(t+ ∆t)is
+compared against the ground truth frame (teacher signal) to
+compute the supervised one-step prediction loss. We do not
+unroll predictions for multi-step training. During inference,
+the model operates in a free-running rollout mode, where its
+own output is recursively used as input for subsequent steps
+without ground truth injection. To mitigate overfitting and
+enhance generalization, we apply regularization strategies such
+as data augmentation, early stopping, and dropout. Specifi-
+cally, we use a dropout rate of 0.25, early stopping with a
+patience of 10 epochs, random Gaussian noise (σ= 0.01)
+for augmentation, and a learning rate decay factor of 0.9
+every 20 epochs. These strategies collectively prevent over-
+parameterization, ensuring the model remains robust to unseen
+circuit configurations and diverse thermal conditions.
+B. Evaluation Metrics
+To evaluate the performance of our model in dense im-
+age matching, we utilize three primary metrics:Root Mean
+Squared Error(RMSE),Normalized Pixel Difference(NPD),
+and theStructural Similarity Index(SSIM). These metrics
+collectively offer a comprehensive view of how precisely
+the model reconstructs images and captures their perceptual
+qualities.
+1) RMSE (Root Mean Squared Error):The RMSE quanti-
+fies the square root of the average squared differences between
+the pixel intensities of the predicted imageI ′ and the GT
+image ˆI. By minimizing RMSE as defined in Eq. (2), the
+model is guided to match the target at a pixel-by-pixel level.
+2) NPD (Normalized Pixel Difference):NPD evaluates the
+average absolute deviation betweenI ′ and ˆI, normalized by
+the maximum pixel value MAX I. It provides an intuitive
+measure of relative error, bounded between 0 and 1; values
+closer to 0 suggest more accurate predictions:
+NPD= 1
+H×W
+HX
+i=1
+WX
+j=1
+ˆI(i, j)−I ′(i, j)
+
+MAXI
+(5)
+3) SSIM (Structural Similarity Index):The SSIM evaluates
+the perceptual similarity between the predicted and ground
+truth images by jointly consideringstructural information,
+luminance, andcontrastin images.
+SSIM(I′, ˆI) =
+(2µI′ µˆI +C 1) (2σI′,ˆI +C 2)
+(µ2
+I′ +µ 2
+ˆI +C 1) (σ2
+I′ +σ 2
+ˆI +C 2) (6)
+whereµ I′ andµ ˆI denote the local means of the predicted and
+GT images,σ 2
+I′ andσ 2
+ˆI are their respective local variances,
+andσ I′,ˆI represents the local covariance. The constantsC 1
+andC 2 help stabilize the division. SSIM values range from−1
+to1, with1signifying perfect structural match. This metric
+is particularly adept at detecting perceptual differences due to
+variations in overall image structure.
+VI. RESULTS
+A. Thermal Map Estimation Accuracy
+OnceThermAlis fully trained, it can process thermal maps
+from any time point as input and generate realistic full-
+chip temperature distributions, effectively predicting pixel-
+level variation across the chip. We evaluate the model’s per-
+formance using the metrics outlined in Section V-B, assessing
+both local and global deviations between generated thermal
+maps and ground truth (GT) data.
+TABLE II
+PERFORMANCE METRICS ACROSS DIFFERENTTRANSIENT STAGES
+Time/Epoch NPD↓ RMSE( ◦C)↓ SSIM↑Start End
+Intermediate
+1 5 0.27 0.69 0.98
+5 10 0.29 0.74 0.96
+10 20 0.29 0.68 0.97
+20 50 0.34 0.71 0.97
+50 100 0.32 0.73 0.98
+Average 1 100 0.32 0.71±0.26 0.97±0.01
+Thermal maps are represented as256×256pixel im-
+age, where each pixel corresponds to a discrete temperature
+reading. Over the test set, we observe an average RMSE
+of0.71 ◦C(std. dev. 0.26 ◦C), as summarized in Table II.
+The overall temperature range in these samples spans from
+25◦C to 55 ◦C, which aligns with standard operating ranges
+for integrated circuitsd uring early design stages such as
+placement and floorplanning. Relative to this 30 ◦C variation
+window, ThermAl achieves an average full-scale estimation
+error of only1.4%(std. dev. 0.25%). These consistently
+low errors across diverse configurations highlight the model’s
+robust generalization, suggesting it is well-suited for real-
+world thermal monitoring tasks.
+Figure 5 illustrates howThermAlestimates a steady-state
+thermal map by progressing through multiple transient steps.
+Each intermediate stage captures dynamic heat flow inter-
+actions across the chip surface, reflecting evolving diffusion
+patterns dictated by the FEM boundary conditions. The model
+accurately reconstructs steady-state maps while maintaining
+low error rates, even in regions characterized by high heat flux
+and steep thermal gradients. In most regions, prediction errors
+remain within 0.61 ◦C and rarely exceed 1 ◦C, demonstrating
+the precision of the model in modeling uniform and non-
+uniform heat distributions.
+In the present study, validation is predominantly conducted
+using high-fidelity synthetic datasets. It allows exhaustive
+coverage of thermal conditions and circuit configurations, from
+simple logic gates to complex workloads, at high resolutions
+and accuracy levels that are often prohibitively costly or prac-
+tically unattainable with experimental thermal imaging tech-
+niques, such as infrared (IR) thermography, due to resolution
+limitations and calibration complexities. However, validation
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 8
+against real-world experimental data remains an essential step
+for practical applicability.
+t = 5t = 10 t = 20 t = 50t = 100t = 100t = 1InputIntermediate StepsOutputGTError Map
+02010
+Fig. 5. Qualitative results of ThermAl: The image demonstrates the generation
+of thermal maps from an initial sample (leftmost column), showing the
+progression of heat distribution over time (intermediate output columns).
+These steps capture the dynamic heat flow over time stepst= 1,5,10,20,50,
+with the final predicted output map att= 100compared against the ground
+truth (GT) in the rightmost columns. The error maps highlight the pixel-wise
+differences between the predicted and true simulated thermal maps.
+B. Cross-Validation on Extended Thermal Range
+To further validateThermAl’s robustness under broader op-
+erating conditions, we performed cross-validation experiments
+on an independent dataset comprising 500 thermal maps gen-
+erated from diverse input activity patterns across 100 circuit
+instances. Unlike the main evaluation set, this dataset spans
+a wider thermal range of 25 ◦C to 95 ◦C, designed to emulate
+high-power workloads and stress conditions characterized by
+stronger spatial gradients. Despite this 70 ◦C full-scale vari-
+ation,ThermAlsustains high predictive fidelity, achieving an
+average RMSE of1.5 ◦C, corresponding to less than2.2%full-
+scale error. These results confirm that the model generalizes
+effectively to unseen operating regimes while preserving fine-
+grained, pixel-level accuracy.
+To complement the quantitative analysis, Figure 6 presents
+qualitative error maps illustrating prediction fidelity across
+representative samples. Each row includes: (a) the input at time
+t= 0, (b) the ground-truth thermal map, (c) the corresponding
+ThermAlprediction, and (d) the pixel-level absolute error dis-
+tribution. The results show that errors remain spatially uniform
+across most of the chip, with slightly elevated deviations
+concentrated near localized hotspots where transient gradients
+are steepest. Even in these high-variation regions, the deviation
+rarely exceeds 2 ◦C, indicating thatThermAleffectively cap-
+tures both uniform and non-uniform heat propagation patterns.
+These findings directly address concerns regarding gener-
+alization and practical deployment. The model’s ability to
+maintain low error over a substantially wider temperature span
+demonstrates that it is not overfitted to a narrow synthetic
+domain. Instead, it adapts effectively to more realistic and di-
+verse conditions. This cross-validation experiment strengthens
+confidence inThermAl’s applicability for early-stage thermal
+modeling and real-time chip monitoring, paving the way for
+seamless integration with experimental validation.
+t = 1Input
+t = 100Output
+Error Map0
+7035
+t = 100GT
+Fig. 6. Qualitative results from the extended-range cross-validation dataset.
+Each row displays: (a) the input at timet= 0, (b) the ground-truth thermal
+map, (c) theThermAl-predicted map, and (d) the absolute error map. The
+model shows strong spatial consistency and maintains low residual errors
+even across a wide temperature range (25–95 ◦C).
+C. Comparison to Commercial FEM Tools
+While trainingThermAlrequires substantial computational
+resources (approximately 18 hours to reach convergence),
+inference operates in near real time. Once trained, the
+full simulation—from initial input to steady-state predic-
+tion—completes within 7–10 milliseconds per sample, corre-
+sponding to an inference rate exceeding 100 thermal maps
+per second. In contrast, commercial FEM solvers such as
+COMSOL[40] provide high physical fidelity but at the cost
+of long runtimes (3–4 seconds per map) under comparable
+hardware and workload conditions, limiting their practicality
+for iterative design exploration. Although optimized numerical
+solvers offer moderate runtime improvements, as shown in
+Table III, the millisecond-level inference capability ofThermAl
+delivers an effective speedup of approximately200×, offering
+a significant advantage for large-scale design workflows that
+require rapid thermal feedback and iterative optimization.
+D. Comparison with State-of-the-Art Models
+Beyond commercial FEM solvers, we benchmarkThermAl
+against several contemporary machine learning (ML) and
+semi-analytical approaches to evaluate its efficiency, scalabil-
+ity, and predictive accuracy. Table III summarizes this compar-
+ison in terms of latency, accuracy, and modeling assumptions
+across representative techniques. Overall,ThermAlachieves
+a favorable balance between computational speed, physical
+interpretability, and ease of deployment.
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 9
+TABLE III
+COMPARISON WITHREPRESENTATIVESTATE-OF-THE-ART(SOTA) THERMALMODELINGFRAMEWORKS
+Approach Methodology Latency RMSE (◦C)↓ Grid / Model SizeSpeedup vs FEM Key Limitations
+Solver- and Compact-Model-Based Methods
+COMSOL [40] FEM Solver ≥3–4 s Reference Any mesh 1× High resource usage; Non-real-time
+HotSpot [31] Thermal RC Network 25.8 ms 2–4.2◦C ∼160×160 ∼150× Manual calibration; coarse grid
+Power Blurring [32]Green’s Function Convolution ∼0.1 s ≤2% 192×192 ∼40× Static kernel; limited dynamic flexibility
+PACT [33] Compact Thermal Solver ∼200 ms ≤3.3% Up to 512×512 ∼20× Parallel solver; setup overhead
+3D-ICE [34] Compact 3D Solver ∼50 ms ≤3.4◦C Full 3D Stack ∼975× Requires detailed package model
+MTA [35] Numerical / Compact Hybrid30–40 s (steady) ∼2◦C Multi-layer 3D 100×–1000× Heavy pre-processing; slower for fine steps
+Learning-Based Methods
+LSTM+DCT [30] ML Regression 19 ms ≤2.26% 128×128 ∼200× Requires historical data
+ThermGAN [22] GAN (Generative Model) 7.5 ms 0.47◦C 128×128 ∼300× Needs IR camera / paired data
+DeepOHeat [36] Neural Operator Learning ∼5 ms 0.1–0.5◦C 3D domain 103–105× Requires 3D dataset; large training cost
+ThermAl (Ours) NN + Physics Regularizer ≤10 ms 0.71◦C 256×256 ∼200× Limited boundary modeling; 2D only
+* Reported metrics are approximate and depend on hardware, boundary conditions, and dataset configurations. FEM runtimes (COMSOL) used as baseline for relative speedups.
+Compact thermal modeling frameworks such as
+HotSpot[31],PACT[33], and3D-ICE[34] offer faster
+runtimes but rely heavily on manual calibration and explicit
+package modeling. ML-based thermal estimators further
+reduce latency but often depend on specialized infrared (IR)
+imaging systems or dense sensor arrays [22], exhibit limited
+scalability for 3D heat-flow analysis [32], or require extensive
+historical sensor data [30]. Operator-learning frameworks
+such asDeepOHeat[36] achieve extreme acceleration—up
+to10 3–105×faster than FEM—with minimal steady-state
+error; however, they face challenges in scalability, model
+complexity, and generalization when boundary conditions or
+material parameters change.
+Within this landscape,ThermAlestablishes an effective mid-
+dle ground between high-fidelity physics-based simulators and
+data-intensive operator-learning models. It achieves sub-degree
+accuracy (RMSE≈0.71 ◦C) with millisecond-level inference
+latency, eliminating the need for boundary reconfiguration or
+retraining. These characteristics make it particularly suitable
+for early-stage placement and floorplanning tasks in thermal-
+aware electronic design automation (EDA). Although the cur-
+rent implementation abstracts heat-sink dynamics and assumes
+fixed boundary resistance,ThermAldistinguishes itself through
+its balanced trade-off among speed, accuracy, and integration
+simplicity—offering a practical and scalable solution for rapid,
+layout-aware thermal estimation in modern design workflows.
+E. Extending Modeling to Complex Workloads
+Finally,ThermAlextends beyond circuit-level tasks to han-
+dle high-complexity workloads and higher spatial resolutions,
+as demonstrated in Figure 7. In this setting, the model pro-
+cesses large-scale, heterogeneous circuit layouts at resolu-
+tions up to512×512, enabling fine-grained prediction of
+temperature gradients. Despite the increased resolution and
+complexity,ThermAlmaintains strong predictive performance,
+achieving an average RMSE of only 1.08 ◦C. This capability
+supports proactive power-thermal management strategies and
+offers deeper insights into thermal behavior at the system level.
+VII. ABLATIONSTUDY
+Beyond our baseline RMSE-driven training procedure, we
+incorporate three major enhancements to improve thermal
+prediction fidelity:
+1) Physics-based regularizer.
+Initial Thermal Map
+PredictedThermal Map
+Fig. 7.ThermAlidentifying hotspots across challenging workloads. Its scal-
+ability ensures detailed temperature monitoring even under high-complexity
+scenarios.
+2) Source-target image pair.
+3) Feature-level concatenation.
+This section examines each improvement in detail, supported
+by both quantitative results (Tables IV and V) and visual
+evidence (see Fig. 8).
+Without Physics Regularizer
+❌
+WithPhysics Regularizer
+✅
+(a) Workload-Dependent Error Distribution: Effects of Integrating Physics
+Residual Map
+Stage t-1
+(b) Residual Discrepancies in Temporal Predictions
+Without Physics-Aware Regularizer
+With Physics-Aware Regularizer
+Stage t
+0
+256
+2560 128
+128
+0
+256
+2560 128
+128
+0
+256
+2560 128
+128
+0
+256
+2560 128
+128
+0
+256
+2560 128
+128
+Fig. 8. Visualizing the Impact of Physics-Aware Regularization. (a) Workload-
+Dependent Error Distribution: The top row displays error maps without
+the physics-based loss, revealing higher inaccuracies in complex hotspots;
+the bottom row demonstrates how physics constraints notably reduce these
+deviations. (b) Residual Discrepancies in Temporal Predictions: Transition
+stagest−1totshow that the physics term diminishes spurious residuals in
+high-flux regions, leading to more stable and physically consistent predictions.
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 10
+A. Impact of Physics-Aware Learning
+Heat conduction in solids is fundamentally governed by
+partial differential equations (PDEs) that describe both spa-
+tial and temporal temperature evolution. To ensure that our
+model remains consistent with these physical principles, we
+incorporate a physics-informed regularization term based on a
+simplified form of the Boltzmann Transport Equation (BTE).
+Specifically, we employ the Cattaneo–Vernotte (CV) formu-
+lation of the hyperbolic heat equation under the relaxation-
+time approximation, which captures finite thermal propagation
+speeds and transient relaxation effects beyond classical Fourier
+diffusion. This additional loss term stabilizes training and
+improves prediction fidelity, particularly in regions with steep
+temperature gradients or rapid transients.
+As illustrated in Fig. 8(a), incorporating the physics-aware
+loss substantially reduces spurious artifacts and produces
+smoother, more physically consistent thermal maps. The resid-
+ual error maps in Fig. 8(b) further reveal how the inclusion
+of physical constraints mitigates localized deviations from
+expected heatflow dynamics. Quantitatively, as summarized
+in Table IV, the physics-aware regularizer lowers the RMSE
+from 1.12 ◦C to 0.76 ◦C and the normalized prediction
+deviation (NPD) from 0.42 to 0.32. These improvements are
+particularly pronounced near high-gradient regions, confirming
+that the added physical constraint enhances model robustness
+and boundary accuracy beyond raw data fitting.
+While this BTE-inspired approach effectively models
+phonon transport at the microscale, its accuracy diminishes
+at sub-7 nm technology nodes, where quantum confinement,
+ballistic transport, and grain boundary scattering introduce
+non-local effects that classical PDE-based formulations cannot
+fully capture. Future extensions ofThermAlmay incorporate
+quantum-aware transport approximations or learned phonon
+interaction models to improve nanoscale thermal accuracy.
+Although the current physics-aware formulation slightly in-
+creases model size (up to 450 MB), the corresponding gains
+in physical realism and prediction stability justify this trade-
+off. Further enhancements such as adaptive mesh refinement,
+multi-scale learning, or higher-order regularization terms could
+provide additional robustness in capturing abrupt hotspot tran-
+sitions and fine-grained thermal behavior.
+TABLE IV
+EXPERIMENTALRESULTS: IMPACT OFSOURCE-TARGETIMAGEPAIR AND
+PHYSICSREGULARIZER
+Image Physics NPD↓RMSE ( ◦C)↓SSIM↑ Model Size Params
+0.42 1.12±0.43 0.91 330 MB 17M
+✓ 0.36 0.84±0.24 0.95 446 MB 23M
+✓ 0.35 0.76±0.18 0.96 333 MB 17.4M
+✓ ✓ 0.32 0.71±0.26 0.97 450 MB 23.6M
+B. Impact of condition-based learning via Source-Target Im-
+age Pairs
+Our second enhancement uses a source-target image pair to
+provide contextual references for how thermal patterns should
+evolve. By seeing a pair{E, E ′}in addition to the query
+I, the model learns to map initial and final states of the heat
+distribution. Table IV shows that merely introducing the image
+pair lowers the RMSE from 1.12 ◦C to 0.84 ◦C and boosts the
+SSIM from 0.91 to 0.95. Even without the physics constraint,
+condition-based learning alone yields a notable improvement
+in capturing both local and global heat transfer processes.
+TABLE V
+FEATURE-LEVEL VERSUS PIXEL-LEVEL CONCATENATION COMPARISON
+NPD↓RMSE ( ◦C)↓SSIM↑
+Pixel-level 0.45 1.18±0.72 0.87±0.02
+Feature-level 0.32 0.71±0.26 0.97±0.01
+C. Effectiveness of Feature-Level Concatenation
+Feature-level concatenation enhances our model by merging
+feature maps from the query, source, and target images at a
+deeper level to capture complex spatial and contextual rela-
+tionships necessary for thermal image transformation, shown
+in Table V. While pixel-level concatenation is effective for
+segmentation tasks, it lacks the depth required to interpret both
+global patterns and nuanced local details for accurate thermal
+predictions. By operating within this feature space, our model
+can synthesize diverse types of information, such as gradients,
+textures, and abstracted heat flow relationships, leading to an
+informed representation for subsequent thermal predictions.
+VIII. FUTUREWORKS ANDCONCLUSION
+The proposedThermAlframework offers afast, physically
+consistent, and data-driven approach to on-chip thermal analy-
+sis by integrating generative modeling with physics-informed
+regularization and a comprehensive library of 2D thermal
+simulations. Capable of achieving high predictive accuracy
+(mean error of 0.71 ◦C at256×256resolution) with inference
+times under 10 ms—up to200×faster than conventional
+FEM solvers—ThermAlenables rapid thermal feedback during
+early-stage IC design. This capability significantly reduces the
+risk of late-stage thermal bottlenecks and supports efficient
+exploration of power-performance trade-offs within electronic
+design automation (EDA) workflows. The model demonstrates
+strong generalization across a diverse set of synthetic layouts
+and transient heat scenarios, making it a practical candidate
+for integration into thermal-aware placement and floorplanning
+tools.
+Despite its promising results, several directions remain for
+future improvement. Enhancing prediction accuracy around
+hotspot boundaries remains a challenge due to steep gradients
+and abrupt material transitions. Future work will explore
+adaptive mesh refinement, boundary-aware loss functions, and
+multi-scale architectures to better capture localized variations.
+Moreover, the current implementation is limited to 2D heat
+diffusion and does not account for vertical heat transfer across
+stacked dies or packaging layers. Extending the framework to
+3D thermal modeling using volumetric FEM datasets and 3D
+convolutional or transformer-based architectures is a key next
+step.ThermAlhas been developed and validated primarily on
+65 nm technology data; evaluating its adaptability to advanced
+nodes and novel floorplan styles will further strengthen its
+applicability. Transfer learning and domain adaptation strate-
+gies will be explored to facilitate cross-node generalization
+with minimal retraining effort. Additionally, experimental
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 11
+validation using real-world measurements—such as infrared
+thermography and on-die temperature sensors—will be critical
+for establishing physical robustness under realistic operating
+conditions. In summary,ThermAlprovides a scalable and
+physically grounded framework for fast, layout-aware thermal
+prediction in integrated circuits. Its ability to deliver accurate,
+real-time thermal estimation enables early detection of poten-
+tial hotspots and supports efficient power-performance trade-
+off exploration during design. Additional cross-validation
+over an extended thermal range further confirmedThermAl’s
+robustness, maintaining low error and stable generalization
+even under high-power, high-gradient conditions representative
+of real-world workloads. Together, these results highlight
+ThermAl’s potential as a foundational step toward real-time
+thermal monitoring and active thermal management in next-
+generation chip designs, where increasing power densities and
+performance demands require both precision and adaptability.
+REFERENCES
+[1] Taylor, M. A landscape of the new dark silicon design regime.IEEE
+Micro.33, 8-19 (2013)
+[2] Esmaeilzadeh, H., Blem, E., St. Amant, R., Sankaralingam, K. & Burger,
+D. Dark silicon and the end of multicore scaling.Proceedings Of The 38th
+Annual International Symposium On Computer Architecture. pp. 365-376
+(2011)
+[3] Brooks, D. & Martonosi, M. Dynamic thermal management for high-
+performance microprocessors.Proceedings HPCA Seventh International
+Symposium On High-Performance Computer Architecture. pp. 171-182
+(2001)
+[4] Hanumaiah, V . & Vrudhula, S. Energy-efficient operation of multicore
+processors by DVFS, task migration, and active cooling.IEEE Transac-
+tions On Computers.63, 349-360 (2012)
+[5] Liu, Z., Tan, S., Huang, X. & Wang, H. Task migrations for distributed
+thermal management considering transient effects.IEEE Transactions On
+Very Large Scale Integration (VLSI) Systems.23, 397-401 (2014)
+[6] Wang, H., Ma, J., Tan, S., Zhang, C., Tang, H., Huang, K. & Zhang, Z.
+Hierarchical dynamic thermal management method for high-performance
+many-core microprocessors.ACM Transactions On Design Automation
+Of Electronic Systems (TODAES).22, 1-21 (2016)
+[7] Skadron, K., Stan, M., Huang, W., Velusamy, S., Sankaranarayanan,
+K. & Tarjan, D. Temperature-aware microarchitecture.ACM SIGARCH
+Computer Architecture News.31, 2-13 (2003)
+[8] Kong, J., Chung, S. & Skadron, K. Recent thermal management tech-
+niques for microprocessors.ACM Computing Surveys (CSUR).44, 1-42
+(2012)
+[9] Joseph, R. & Martonosi, M. Run-time power estimation in high perfor-
+mance microprocessors.Proceedings Of The 2001 International Sympo-
+sium On Low Power Electronics And Design. pp. 135-140 (2001)
+[10] Isci, C. & Martonosi, M. Runtime power monitoring in high-end
+processors: Methodology and empirical data.Proceedings. 36th An-
+nual IEEE/ACM International Symposium On Microarchitecture, 2003.
+MICRO-36.. pp. 93-104 (2003)
+[11] Wu, W., Jin, L., Yang, J., Liu, P. & Tan, S. Efficient power modeling
+and software thermal sensing for runtime temperature monitoring.ACM
+Transactions On Design Automation Of Electronic Systems (TODAES).
+12, 1-29 (2008)
+[12] Dev, K., Nowroz, A. & Reda, S. Power mapping and modeling of multi-
+core processors.International Symposium On Low Power Electronics And
+Design (ISLPED). pp. 39-44 (2013)
+[13] Wang, X., Farsiu, S., Milanfar, P. & Shakouri, A. Power trace: An
+efficient method for extracting the power dissipation profile in an IC
+chip from its temperature map.IEEE Transactions On Components And
+Packaging Technologies.32, 309-316 (2009)
+[14] Nowroz, A., Cochran, R. & Reda, S. Thermal monitoring of real
+processors: Techniques for sensor allocation and full characterization.
+Proceedings Of The 47th Design Automation Conference. pp. 56-61
+(2010)
+[15] Reda, S., Cochran, R. & Nowroz, A. Improved thermal tracking for
+processors using hard and soft sensor allocation techniques.IEEE Trans-
+actions On Computers.60, 841-851 (2011)
+[16] Nowroz, A., Woods, G. & Reda, S. Power mapping of integrated circuits
+using AC-based thermography.IEEE Transactions On Very Large Scale
+Integration (VLSI) Systems.21, 1398-1409 (2012)
+[17] Ranieri, J., Vincenzi, A., Chebira, A., Atienza, D. & Vetterli, M.
+EigenMaps: Algorithms for optimal thermal maps extraction and sensor
+placement on multicore processors.Proceedings Of The 49th Annual
+Design Automation Conference. pp. 636-641 (2012)
+[18] Paek, S., Shin, W., Sim, J. & Kim, L. PowerField: A probabilistic
+approach for temperature-to-power conversion based on Markov random
+field theory.IEEE Transactions On Computer-Aided Design Of Integrated
+Circuits And Systems.32, 1509-1519 (2013)
+[19] Beneventi, F., Bartolini, A., Vivet, P. & Benini, L. Thermal analysis
+and interpolation techniques for a logic+ wideio stacked dram test chip.
+IEEE Transactions On Computer-Aided Design Of Integrated Circuits
+And Systems.35, 623-636 (2015)
+[20] Reda, S., Dev, K. & Belouchrani, A. Blind identification of thermal
+models and power sources from thermal measurements.IEEE Sensors
+Journal.18, 680-691 (2017)
+[21] Sadiqbatcha, S., Zhao, H., Amrouch, H., Henkel, J. & Tan, S. Hot spot
+identification and system parameterized thermal modeling for multi-core
+processors through infrared thermal imaging.2019 Design, Automation
+& Test In Europe Conference & Exhibition (DATE). pp. 48-53 (2019)
+[22] Jin, W., Sadiqbatcha, S., Zhang, J. & Tan, S. Full-chip thermal map
+estimation for commercial multi-core CPUs with generative adversar-
+ial learning.Proceedings Of The 39th International Conference On
+Computer-Aided Design. pp. 1-9 (2020)
+[23] Chen, C., Chandra, S., Han, Y ., & Seo, H. (2021). Deep learning-based
+thermal image analysis for pavement defect detection and classification
+considering complex pavement conditions.Remote Sensing, 14(1), 106.
+[24] Ma, F., Wang, Y ., Fu, Z., Tang, Y ., Dai, J., Li, C., & Dong, W. (2022).
+Thermal ageing mechanism of a natural rock-modified asphalt binder
+using Fourier Transform Infrared Spectroscopy analysis.Construction and
+Building Materials, 335, 127494.
+[25] Lasance, C., Vinke, H., Rosten, H. & Weiner, K. A novel approach
+for the thermal characterization of electronic parts.Proceedings Of 1995
+IEEE/CPMT 11th Semiconductor Thermal Measurement And Manage-
+ment Symposium (SEMI-THERM). pp. 1-9 (1995)
+[26] Gerstenmaier, Y . & Wachutka, G. Rigorous model and network for
+transient thermal problems.Microelectronics Journal.33, 719-725 (2002)
+[27] Liu, P., Li, H., Jin, L., Wu, W., Tan, S. & Yang, J. Fast thermal simulation
+for runtime temperature tracking and management.IEEE Transactions On
+Computer-Aided Design Of Integrated Circuits And Systems.25, 2882-
+2893 (2006)
+[28] Li, D., Tan, S., Pacheco, E. & Tirumala, M. Architecture-level thermal
+characterization for multicore microprocessors.IEEE Transactions On
+Very Large Scale Integration (VLSI) Systems.17, 1495-1507 (2009)
+[29] Gurrum, S., Joshi, Y ., King, W., Ramakrishna, K. & Gall, M. A compact
+approach to on-chip interconnect heat conduction modeling using the
+finite element method.Journal Of Electronic Packaging, Transactions Of
+The ASME.130, 310011-310018 (2008)
+[30] Sadiqbatcha, S., Zhao, Y ., Zhang, J., Amrouch, H., Henkel, J., & Tan, S.
+X. D. (2020, January). Machine learning based online full-chip heatmap
+estimation.In 2020 25th Asia and South Pacific Design Automation
+Conference (ASP-DAC) (pp. 229-234). IEEE.
+[31] Huang, W., Stan, M. R., Skadron, K., Sankaranarayanan, K., Ghosh, S.,
+& Velusam, S. Compact thermal modeling for temperature-aware design.
+In Proceedings of the 41st annual Design Automation Conference (pp.
+878-883).
+[32] Ziabari, A., Park, J. H., Ardestani, E. K., Renau, J., Kang, S. M., &
+Shakouri, A. (2014). Power blurring: Fast static and transient thermal
+analysis method for packaged integrated circuits and power devices.IEEE
+Transactions on Very Large Scale Integration (VLSI) Systems, 22(11),
+2366-2379.
+[33] Yuan, Z., Shukla, P., Chetoui, S., Nemtzow, S., Reda, S., & Coskun, A.
+K. (2021). PACT: An extensible parallel thermal simulator for emerging
+integration and cooling technologies.IEEE Transactions on Computer-
+Aided Design of Integrated Circuits and Systems, 41(4), 1048-1061.
+[34] S. Timarchi et al., “3D-ICE: Fast Compact Thermal Modeling for 3D
+ICs,”ICCAD, 2010.
+[35] J. W. Kelly et al., “The Manchester Thermal Analyzer (MTA): An
+Advanced Thermal Simulator for Integrated Systems,”IEEE TCAD, 2018.
+[36] Z. Chen et al., “DeepOHeat: Operator Learning for Fast and Accurate
+Thermal Modeling,”arXiv:2302.12949, 2023.
+[37] Cadence Design Systems Cadence Virtuoso. (2024),
+https://www.cadence.com, Version 6.7.1, EDA tool for custom IC
+design
+JOURNAL OF LATEX CLASS FILES, VOL. 14, NO. 8, AUGUST 2021 12
+[38] Taiwan Semiconductor Manufacturing Company (TSMC) TSMC 65nm
+Technology Library. (2024),https://www.tsmc.com, Standard Cell Library
+for 65nm Process Technology.
+[39] Cass ´e, M., Ghibaudo, G. & Kazi, S. Low temperature characterization
+and modeling of FDSOI transistors for cryo CMOS applications. (Inte-
+chOpen,2022)
+[40] COMSOL Multiphysics®,Heat Transfer Module User’s Guide. COM-
+SOL, Stockholm, Sweden, 2014.
+[41] Ronneberger, O., Fischer, P. & Brox, T. U-net: Convolutional net-
+works for biomedical image segmentation.Medical Image Computing
+And Computer-assisted Intervention–MICCAI 2015: 18th International
+Conference, Munich, Germany, October 5-9, 2015, Proceedings, Part III
+18. pp. 234-241 (2015)
+[42] Paszke, A., Gross, S., Chintala, S., Chanan, G., Yang, E., DeVito, Z.,
+Lin, Z., Desmaison, A., Antiga, L. & Lerer,A. Automatic differentiation
+in pytorch.(2017)
+IX. BIOGRAPHYSECTION
+Soumyadeep Chandrareceived his B.Tech degree
+in Electrical and Telecommunication Engineering
+from Jadavpur University, Kolkata, India in 2020.
+Currently, he is a 4th year Ph.D. student in the
+School of Electrical and Computer Engineering at
+Purdue University, West Lafayette, IN, under the
+mentorship of Prof. Kaushik Roy. His ongoing re-
+search focuses on areas such as computational biol-
+ogy, scene understanding, surgical workflow anal-
+ysis, generative AI for hardware, and AI-driven
+thermal modeling. His work explores the intersection
+of machine learning and physical systems, leveraging data-driven approaches
+to predict and optimize thermal behavior in complex hardware architectures.
+Sayeed Shafayet Chowdhuryreceived his B.Sc.
+degree in Electrical & Electronic Engineering from
+Bangladesh University of Engineering and Technol-
+ogy in 2016. He won the IEEE Signal Processing
+Cup (SP Cup) competition in 2015 and 2016, and
+also obtained 3rd position in the IEEE Video & Im-
+age Processing Cup (VIP Cup) competition in 2017.
+He graduated a Ph.D. graduate student from the
+School of Electrical and Computer Engineering at
+Purdue University, West Lafayette, IN, under the
+guidance of Prof. Kaushik Roy. His current research
+interests include neuromorphic computing, specifically, developing energy-
+efficient algorithms for deep spiking neural networks (recognition, inference,
+analytics), visual reasoning, etc.
+Kaushik Roy(Fellow, IEEE) is the Edward G.
+Tiedemann, Jr., Distinguished Professor of Electrical
+and Computer Engineering at Purdue University. He
+received his BTech from the Indian Institute of Tech-
+nology, Kharagpur, PhD from the University of Illi-
+nois at Urbana-Champaign in 1990, and joined the
+Semiconductor Process and Design Center of Texas
+Instruments, Dallas, where he worked for three
+years on FPGA architecture development and low-
+power circuit design. His current research focuses
+on cognitive algorithms, circuits, and architecture
+for energy-efficient neuromorphic computing/ machine learning, and neuro-
+mimetic devices. Kaushik has supervised more than 100 PhD dissertations and
+his students are well placed in universities and industry. He is the co-author
+of two books on Low Power CMOS VLSI Design (John Wiley & McGraw
+Hill).
+Dr. Roy received the National Science Foundation Career Development
+Award in 1995, IBM faculty partnership award, ATT/Lucent Foundation
+award, 2005 SRC Technical Excellence Award, SRC Inventors Award, Purdue
+College of Engineering Research Excellence Award, Outstanding Mentor
+Award in 2021, Humboldt Research Award in 2010, 2010 IEEE Circuits
+and Systems Society Technical Achievement Award (Charles Desoer Award),
+IEEE TCVLSI Distinguished Research Award in 2021, Distinguished Alum-
+nus Award from Indian Institute of Technology (IIT), Kharagpur, Fulbright-
+Nehru Distinguished Chair, DoD Vannevar Bush Faculty Fellow (2014-2019),
+SRC Aristotle Award in 2015, Purdue Arden L. Bement Jr. Award in 2020,
+SRC Innovation Award in 2022, honorary doctorate from Aarhus University
+in 2023, and best paper awards at 1997 International Test Conference,
+IEEE 2000 International Symposium on Quality of IC Design, 2003 IEEE
+Latin American Test Workshop, 2003 IEEE Nano, 2004 IEEE International
+Conference on Computer Design, 2006 IEEE/ACM International Symposium
+on Low Power Electronics & Design, 2005 and 2019 IEEE Circuits and
+system society Outstanding Young Author Award (Chris Kim, Abhronil
+Sengupta), 2006 IEEE Transactions on VLSI Systems best paper award,
+2012 ACM/IEEE International Symposium on Low Power Electronics and
+Design best paper award, 2013 IEEE Transactions on VLSI Best paper award.
+Dr. Roy was a Purdue University Faculty Scholar (1998-2003). He was a
+Research Visionary Board Member of Motorola Labs (2002) and held the M.
+Gandhi Distinguished Visiting Faculty at the Indian Institute of Technology
+(Bombay) and Global Foundries visiting Chair at the National University of
+Singapore. He has been on the editorial board of IEEE Design and Test, IEEE
+Transactions on Circuits and Systems, IEEE Transactions on VLSI Systems,
+and IEEE Transactions on Electron Devices. He was Guest Editor for a Special
+Issue on Low-Power VLSI in the IEEE Design and Test (1994) and IEEE
+Transactions on VLSI Systems (June 2000), IEE Proceedings – Computers and
+Digital Techniques (July 2002), and IEEE Journal on Emerging and Selected
+Topics in Circuits and Systems (2011). Dr. Roy is a fellow of IEEE.

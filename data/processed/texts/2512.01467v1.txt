@@ -1,0 +1,1266 @@
+Differentiable Weightless Controllers:
+Learning Logic Circuits for Continuous Control
+Fabian Kresse1 Christoph H. Lampert 1
+Abstract
+We investigate whether continuous-control poli-
+cies can be represented and learned as discrete
+logic circuits instead of continuous neural net-
+works. We introduce Differentiable Weightless
+Controllers (DWCs), a symbolic-differentiable
+architecture that maps real-valued observations
+to actions using thermometer-encoded inputs,
+sparsely connected boolean lookup-table layers,
+and lightweight action heads. DWCs can be
+trained end-to-end by gradient-based techniques,
+yet compile directly into FPGA-compatible cir-
+cuits with few- or even single-clock-cycle la-
+tency and nanojoule-level energy cost per action.
+Across five MuJoCo benchmarks, including high-
+dimensional Humanoid, DWCs achieve returns
+competitive with weight-based policies (full pre-
+cision or quantized neural networks), matching
+performance on four tasks and isolating network
+capacity as the key limiting factor on HalfCheetah.
+Furthermore, DWCs exhibit structurally sparse
+and interpretable connectivity patterns, enabling
+a direct inspection of which input thresholds in-
+fluence control decisions.
+1. Introduction
+Deep Learning has transformed countless fields, from natu-
+ral language processing (Vaswani et al., 2017; Radford et al.,
+2019) and computer vision (Krizhevsky et al., 2012; Doso-
+vitskiy, 2021) to game playing (Mnih et al., 2013; Silver
+et al., 2016). The paradigm has successfully been transferred
+to continuous control asdeep reinforcement learning(RL),
+where neural network policies serve as real-valued func-
+tion approximators, trained to solve highly complex tasks,
+such as quadrotor racing (Kaufmann et al., 2023), robot
+locomotion (Miller et al., 2025), and even fusion-plasma
+control (Degrave et al., 2022).
+1ISTA (Institute of Science and Technology Austria), 3400
+Klosterneuburg, Austria. Correspondence to: Fabian Kresse
+<fabian.kresse@ist.ac.at>.
+Preprint. December 2, 2025.
+Obs.
+obs1
+...
+obsN
+Encoding
+...
+Lookup Tables
+1 1
+1 0
+0 0
+1 0
+0 1
+1 0
+1 0
+0 1
+0 1
+1 0
+0 1
+0 1
+1 1
+0 0
+0 1
+1 1
+0 1
+1 0
+0 1
+0 0
+0 0
+0 1
+0 0
+1 1
++
+...
++
+Memory
+RAM
+...
+RAM
+Acts.
+act0
+...
+actA
+Figure 1.Differentiable Weightless Controllers (DWCs): real-
+valued observations are thermometer-encoded into bitvectors, pro-
+cessed by two layers of multi-input boolean-output lookup tables
+(here drawn with 2 inputs), aggregated by group summation, and
+mapped via per-action memory lookups to final action values.
+However, policies implemented as neural networks rely
+on large numbers of compute-intensive multiply and accu-
+mulate operations, making their applications on resource-
+constrained hardware platforms, such as UA Vs and mobile
+robots, difficult. In such cases, policies implemented as
+small and discrete-valued functions are preferable, as these
+allow efficient implementation on embedded hardware, such
+as FPGAs.
+Because low-precision floating point or integer-only oper-
+ations have efficiency advantages even on high-end GPUs,
+several prior works have studied either converting standard-
+trained deep networks into aquantizedrepresentation (post-
+training compressions, PTQ), or learning deep networks di-
+rectly in quantized form (quantization-aware training, QAT),
+see e.g. Gholami et al. (2022) for a recent survey. However,
+most such works target a static supervised or next-word-
+prediction setting, in which the input and output domains
+are discrete to start with, and the task involves predicting
+individual outputs for individual inputs.
+The setup ofcontinuous control, i.e. learning control poli-
+cies for cyber-physical systems such as autonomous robots
+or wearable devices, is more challenging, because input
+statesand outputactionscan be continuous-valued instead
+of categorical, and the controller is meant to be run repeat-
+edly over long durations, such that even small errors in the
+1
+arXiv:2512.01467v1  [cs.LG]  1 Dec 2025
+Differentiable Weightless Controllers
+control signal might accumulate over time.
+Consequently, only few methods for quantized policy learn-
+ing have been proposed so far. Krishnan et al. (2022) dis-
+cuss PTQ from a perspective of reducing resources during
+training in RL and, in QAT ablations, find that low-bit quan-
+tization often does not harm returns. Ivanov et al. (2025)
+investigate both QAT and pruning (i.e., reducing the number
+of weights) jointly, finding that the combination of high
+sparsity and 8-bit weight quantization does not reduce con-
+trol performance. Very recently, Kresse & Lampert (2025)
+showed that controllers can be trained using QAT with neu-
+rons that have weights and internal activation values of only
+2 or 3 bits; we evaluate our approach against this baseline
+in the experiment section.
+In this work, we challenge the necessity of relying onweight-
+basedneural networks, i.e., those that rely on large matrix
+multiplications during inference, for learning continuous
+control policies. Instead, we introduceDWCs (Differ-
+entiable Weightless Controllers), a symbolic-differentiable
+architecture for continuous control in which dense matrix
+multiplication is replaced with sparse boolean logic. Fig-
+ure 1 illustrates the inference pipeline.
+At their core liedifferentiable weightless networks
+(DWNs)(Bacellar et al., 2024), an FPGA-compatible and
+alternative variant oflogic-gate networks (LGNs)(Pe-
+tersen et al., 2022) that were originally proposed for high-
+throughput, low-energy classification tasks. We extend the
+DWN architecture to the continuous RL domain, enabling
+synthesis of control policies that are digital circuits instead
+of real-valued functions. Specifically, we introduce a data-
+adaptive input encoding that converts real-valued input sig-
+nals into binary vectors, and a trainable output decoding
+that converts binary output vectors into real-valued actions
+of suitable range and scale. The resulting DWCs are com-
+patible with gradient-based RL, and we demonstrate experi-
+mentally that the learned DWCs match weight-based neural
+network baselines (full precision or quantized) on standard
+MuJoCo benchmarks, including the high-dimensional Hu-
+manoid task.
+At deployment time, DWCs process continuous observa-
+tions by quantizing them using quantile binning and ther-
+mometer encoding, resulting in a fixed-width bitvector rep-
+resentation for each observation dimension. The bitvectors
+are concatenated and processed by a DWN, which consists
+of sparsely-connected layers of boolean-output lookup ta-
+bles (LUTs) (Bacellar et al., 2024). The final layer produces
+a fixed number of bit outputs per action dimension. These
+are summed using apopcountoperation and converted to
+a final action value using a single-cycle (SRAM) memory
+lookup.
+As a consequence, DWCs are compatible with embedded
+hardware platforms, especially FPGA platforms that explic-
+itly support LUT operations. Here, DWCs can run with few-
+or even single-cycle latency and minuscule (e.g. Nanojoule-
+level) energy per operation, as we demonstrate for the case
+of an AMD Xilinx Artix-7.
+Besides their efficiency, DWCs also have high potential
+for interpretability, because they cconsist of sparse, dis-
+crete, and symbolic elements instead of dense, continuous,
+matrix-multiplications in standard networks. For instance,
+the sparse connectivity in the first layer allows for direct
+identification of the input dimensions and thresholds utilized
+by the controller.
+Contributions.To summarize,our main contribution is
+the symbolic-differentiable DWC architecturethat ex-
+tends previous DWNs from classification to continuous con-
+trol tasks. We demonstrate that
+• DWCs can be trained successfully using standard RL
+algorithms, reaching parity with floating-point policies
+(full precision or quantized) in most of our experi-
+ments.
+• DWCs are orders of magnitude more efficient than pre-
+viously proposed architectures, achieving few- or even
+single-clock-cycle latency and nanojoule-level energy
+cost per action when compile to FPGA hardware.
+• DWCs allow for straightforward interpretation of some
+aspects of the policies they implement, specifically
+which input dimensions matter for the decisions, and
+what the relevant thresholds are.
+2. Background
+We briefly review deep reinforcement learning for continu-
+ous control, and provide background details on DWNs.
+2.1. Reinforcement Learning (RL)
+Reinforcement learning studies how an agent can learn,
+through trial and error, to maximizereturn(cumulative
+reward) while interacting with an environment (Sutton &
+Barto, 2018). There exist various reinforcement learning
+algorithms that are compatible with our setting of continu-
+ous control (continuous actions and observations). In the
+main body of this work we investigate the performance
+of DWCs with the state-of-the-artSoft-Actor Critic (SAC)
+method (Haarnoja et al., 2018). Results forDeep Deter-
+ministic Policy Gradient (DDPG)(Lillicrap et al., 2016)
+andProximal Policy Optimization (PPO)(Schulman et al.,
+2017) can be found in Appendix B.
+SAC is an off-policy method, which keeps a buffer of pre-
+vious state transitions and taken actions. It updates the
+parameters of the policy network based on this buffer with
+advantage estimations from two auxiliary networks (called
+2
+Differentiable Weightless Controllers
+critics). Actions during training are sampled stochastically
+from a normal distribution, parametrized asN(µ θ, σθ), with
+θ being learned parameters. During deployment, the mean
+action is used deterministically.
+2.2. Differentiable Weightless Neural Networks
+Weightless networks (Aleksander, 1983; Ludermir & de
+Oliveira, 1994) rely on table lookups instead of arith-
+metic (specifically matrix multiplications): each neuron
+is a lookup table (LUT) withk binary inputs and a single-bit
+output. Because each LUT input is connected to precisely
+one of the preceding layer outputs, this structure results in
+a sparsely connected computation graph. Signals remain
+binary throughout the network, enabling multiplication-free
+inference that maps directly to LUTs available on FPGAs.
+For the special case ofk= 2 (two binary inputs per neuron),
+one recovers the case of logic-gate networks (Petersen et al.,
+2022).
+Although traditional weightless networks were hard to
+train due to their discrete, non-differentiable structure, re-
+cently Bacellar et al. (2024) introduced a way to construct
+efficient surrogate gradients and a learnable interconnect,
+calling the resulting networksDifferentiable Weightless Net-
+works(DWNs). Below, we summarize the DWN forward
+and training mechanisms.
+Thermometer encoding.DWNs operate on binary signals,
+so any real-valued observation has to be discretized. For
+any input x∈R and predefined thresholds τ1 <···< τ B,
+define thethermometerencoding (Carneiro et al., 2015),
+E(x) =
+
+1{x≥τ 1},···,1{x≥τ B}
+
+∈ {0,1}B.
+For d-dimensional signals, each dimension is encoded indi-
+vidually, and the results are concatenated, yielding a B×d -
+dimensional bitvector overall.
+Logic Layers.A DWN with L layers comprises binary
+activation maps b(ℓ) ∈ {0,1}Dℓ, ℓ= 0, . . . , L. Where
+D0 is the size of the encoded input, and for ℓ >0 , Dℓ
+denotes the number of LUTs in layer ℓ. Each LUT is a
+boolean function with arityk. For LUT i we form an address
+a(ℓ+1)
+i ∈ {0,1}k by selectingkbits fromb (ℓ):
+a(ℓ+1)
+i =
+ 
+b(ℓ)
+c1 , . . . , b(ℓ)
+ck
+
+.
+The selection indices (c1, . . . , ck) define theinterconnect.
+They are learned via straight-through estimation during
+training, as described in Bacellar et al. (2024). While Ba-
+cellar et al. (2024) only train the first layers interconnect,
+we also make the later ones learnable. This is inspired by
+results in Kresse et al. (2025b), where training accuracy con-
+sistently improves if later-layer interconnects are learnable.
+Each LUT stores a table, T, of 2k binary values. The output
+bit is the addressed entry,
+b(ℓ+1)
+j =T (ℓ+1)
+i
+
+addr(a(ℓ+1)
+j )
+
+,
+−10 0 10
+Figure 2.DWC thermometer threshold positions.
+where addr(·) maps the k-bit vector to its integer index.
+Concatenating all output bits yieldsb (ℓ+1).
+Group aggregation.To allow for multi-dimensional out-
+puts, the final binary features b(L) of a DWN are partitioned
+into disjoint groups. For a group G, agroup sumis com-
+puted,
+sG = 1
+τ
+X
+i∈G
+b(L)
+i ,
+with a temperature τ >0 used as a scale during training.
+For classification, these sG serve as logits for a softmax; at
+inference, the operation reduces to efficient popcount and
+argmax operations.
+Gradient surrogate.Because the forward pass is dis-
+crete, DWNs rely on surrogate gradients for training. We
+follow Bacellar et al. (2024), who propose anextended finite-
+difference(EFD) estimator that perturbs the LUT address
+and aggregates contributions from all possible addresses
+with weights proportional to their Hamming distances.
+3. Differentiable Weightless Controllers
+We now provide details on how DWCs extend DWNs to
+continuous control tasks. In terms of architecture, we adapt
+the input quantization, such that it can deal with changing
+input distributions during training, and we adapt the output
+layer to allow for multi-dimensional continuous actions.
+Subsequently, we describe the RL training procedure.
+3.1. Input Encoding
+We map observations to binary inputs via clipped normal-
+ization and thermometer encoding. For each dimension j,
+we normalize with running mean and standard deviation,
+subsequently clipping: ˆxj = clip
+ 
+(xj −µj)/σj,−10,10
+
+.
+While in deep RL, normalization is often considered op-
+tional, we employ italways, as we are projecting from R
+to a restricted, a priori known interval, for which we can
+subsequently choose thermometer thresholds Ej. After nor-
+malization, we employ the same thermometer thresholds for
+all dimensionsd in.
+Using anoddnumber of bits B, we place thresholds at
+stretched-Gaussian quantiles: let qm =m/B for m=
+1, . . . B−1and an additional quantile at 1
+2 , and set a stretch
+factor
+s= 10Φ−1( 1
+B )
+,
+where Φ−1 is the inverse cumulative probability distribution
+of the standard Gaussian. Define τj,m =sΦ −1(qm) for
+3
+Differentiable Weightless Controllers
+m= 1, . . . , Bso that the first/last thresholds land exactly
+at ±10, and the additional threshold at 0. The thermometer
+code is Ej(ˆxj) = [1{ˆxj ≥τ j,1}, . . . ,1{ˆxj ≥τ j,B}]∈
+{0,1}B, concatenated over j to form b(0) for the first DWN
+layer. Figure 2 illustrates the resulting input thresholds.
+3.2. Continuous-control head
+To produce continuous actions we reinterpret the group
+aggregation as a bank of scalar heads, one per action dimen-
+sion. Let {G1, . . . , Gdact } be a partition of the final bits b(L).
+For dimensiondwe first normalise the group sum:
+zd = sGd
+|Gd| − 1
+2 ∈[− 1
+2, 1
+2].(1)
+We then apply a per-dimension affine transformation:
+ld =α d zd +β d,
+with learnable scales αd >0 and bias βd ∈R . To en-
+sure positive αd, we parameterize αd =e αd,p. This head
+is fully differentiable and integrates with policy-gradient
+objectives. The emitted ld is the generated logit, which is
+passed through an additional tanh in the case of SAC before
+computing the final action. The initialization value of αd
+restricts the initial policy actions to a subinterval of the pos-
+sible action space. This is comparable to initializing the final
+layer parameters with a low standard deviation, a strategy
+that has been shown to improve learning in RL (Andrychow-
+icz et al., 2020).
+At deployment, the initial threshold operations required
+for the thermometer encoding should be implemented in a
+platform-dependent way. Commonly, actual sensor readings
+are obtained as integers from ananalog-to-digital converter
+(ADC), in which the initial bitvectorb(0) can be computed as
+fixed integer-to-thermometer lookup per sensor channel (the
+constants used for normalization and clipping are fixed after
+training, so they can be folded into the threshold values).
+Subsequently, actions can be computed using only LUT eval-
+uations, popcounts and SRAM memory lookups: starting
+with b(0), the bitvectors propagate through L LUT layers to
+produce b(L). For each action head d, we popcount its group
+Gd to obtain the integer sGd. An SRAM then implements
+the mapping from this popcount to the emitted control word,
+i.e., sGd 7→α d
+ 
+sGd/|Gd| −1
+2
+
++β d and, e.g. for SAC,
+the subsequent tanh. In practice, the table would output an
+integer actuator command. Note that, unlike the standard
+DWN classification head, no temperature parameter τ is
+required, simplifying hyperparameter tuning.
+3.3. Training
+The learnable components of DWCs are the LUT entries,
+their connectivity, and the mapping from popcounts to action
+Table 1.Policy returns in different environments (median and the
+25% and 75% quantiles over 10 trained models) for the proposed
+DWCs, standard floating point (FP), and low-precision quantized
+networks (Quant) of Kresse & Lampert (2025). Highest values
+are marked in bold. DWC returns are comparable to FP and at
+least as good as Quant across four of the five tasks (all except
+HalfCheetah).
+Environment FP Quant DWC
+Ant 5.6k [4.3k,5.8k] 4.7k[3.9k,4.9k] 5.7k[5.5k,5.9k]
+HalfCheetah11.5k [10.1k,11.9k] 10.5k[9.6k,11.0k] 7.5k[7.1k,7.9k]
+Hopper 2.8k [2.1k,3.3k] 1.9k[1.1k,3.3k] 3.1k[2.8k,3.4k]
+Humanoid6.2k [6.0k,6.7k] 6.0k[5.8k,6.1k] 6.1k[5.8k,6.6k]
+Walker2d5.0k [4.7k,5.2k] 4.7k[4.4k,5.0k] 5.0k[4.5k,5.2k]
+values. The latter are parameterized as an affine transfor-
+mation, potentially followed by an additional hyperbolic
+tangent, so standard gradient-based learning is applicable.
+To learn the former two in a differentiable way, we rely on
+the connection learning and the extended finite difference
+surrogate gradients of Bacellar et al. (2024), making DWCs
+overall compatible with any gradient-based reinforcement
+learning algorithm.
+Note that, similar to previous work on quantized neural
+networks (Kresse & Lampert, 2025), during RL training we
+onlyparametrize the policy networks as DWCs, because
+only these are required at deployment time. All auxiliary
+networks, such as the critic networks and the σθ head for
+SAC can remain as standard floating-point networks.
+4. Experiments
+We evaluate the proposed Differentiable Weightless Con-
+trollers on five MuJoCo tasks (Todorov et al., 2012): Ant-v4,
+HalfCheetah-v4, Hopper-v4, Humanoid-v4 and Walker2d-
+v4, using SAC for training. We also investigate returns for
+DDPG and PPO in Appendix B.
+Baselines.As baselines, we use two weight-based neural
+network setups: First, we use full-precision (FP) models
+trained with the CleanRL implementation (Huang et al.,
+2022) of SAC, as reported in Kresse & Lampert (2025).
+Here, the network has 256 neurons in the hidden layer. In
+contrast to the original CleanRL implementation, the net-
+works use running input normalization, as this has been
+found to improve return for SAC for our tasks. Second, we
+compare against the QAT-trained low-precision models (2-
+or 3-bit weights and activations) from Kresse & Lampert
+(2025), which were designed to match the FP baselines at
+more compact network sizes.
+DWC.We adopt the same architectures as in the baseline
+implementations, except that we use DWCs for the policy
+networks. Unless stated otherwise, DWCs are instantiated
+with two layers of k=6 input LUTs. We employ 1024 LUTs
+4
+Differentiable Weightless Controllers
+0 0.5M 1M0
+2,000
+4,000
+6,000
+Reward
+Ant
+FP32
+DWC (Dℓ = 256)
+DWC (Dℓ = 1024)
+0 0.5M 1M0
+5,000
+10,000
+HalfCheetah
+FP32
+DWC (Dℓ = 256)
+DWC (Dℓ = 1024)
+0 0.5M 1M0
+1,000
+2,000
+3,000
+4,000
+Hopper
+FP32
+DWC (Dℓ = 256)
+DWC (Dℓ = 1024)
+0 0.5M 1M0
+2,000
+4,000
+6,000
+Humanoid
+FP32 DWC (Dℓ = 256) DWC (Dℓ = 1024)
+0 0.5M 1M0
+2,000
+4,000
+6,000
+Walker2d
+FP32
+DWC (Dℓ = 256)
+DWC (Dℓ = 1024)
+Figure 3.Mean return and standard deviation for ten models evaluated across the training steps, ten evaluation episodes per datapoint and
+model. Except for HalfCheetah (see main text), training trajectories are comparable to the FP baseline.
+Environment Reward LUTs FFs B DSP Lat [µs] P [W] TP E.p.A. [J]
+Dℓ = 256
+Ant 4.5k [3.4k,5.2k] 0.8k 0.5k 0 00.010.1051.0×10 8 1.1×10 −9
+HalfCheetah 7.1k [6.0k,7.9k] 0.8k 0.4k 0 00.010.1051.0×10 8 1.1×10 −9
+Hopper3.3k [3.0k,3.5k] 0.9k 0.3k 0 00.010.1161.0×10 8 1.2×10 −9
+Humanoid 5.7k [5.5k,5.8k] 0.9k 1.1k 0 00.010.1021.0×10 8 1.0×10 −9
+Walker2d 4.6k [4.5k,4.7k] 0.8k 0.4k 0 00.010.1071.0×10 8 1.1×10 −9
+Dℓ = 1024
+Ant5.7k [5.5k,5.9k] 3.2k 1.7k 0 00.020.2251.0×10 8 2.3×10 −9
+HalfCheetah 7.5k [7.1k,7.9k] 3.0k 2.2k 0 00.030.2081.0×10 8 2.1×10 −9
+Hopper 3.1k [2.8k,3.4k] 3.2k 2.0k 0 00.030.2281.0×10 8 2.3×10 −9
+Humanoid6.1k [5.8k,6.6k] 3.2k 3.7k 0 00.020.2191.0×10 8 2.2×10 −9
+Walker2d5.0k [4.5k,5.2k] 2.8k 2.1k 0 00.030.2061.0×10 8 2.1×10 −9
+Kresse &
+Lampert
+(2025)
+Ant 4.7k [3.9k,4.9k] 2.7k 4.5k 3 452.290.394.4×10 5 8.9×10 −7
+HalfCheetah10.5k [9.6k,11.0k] 4.3k 4.6k 15 11243.230.334.1×10 3 8.0×10 −5
+Hopper 1.9k [1.1k,3.3k] 2.4k 2.0k 0 450.210.314.8×10 6 6.5×10 −8
+Humanoid 6.0k [5.8k,6.1k] 2.3k 3.1k 1.5 4515.360.336.5×10 4 5.1×10 −6
+Walker2D 4.7k [4.4k,5.0k] 1.9k 1.6k 2 4162.230.176.2×10 3 2.8×10 −5
+Table 2.Post-synthesis resource utilization for one synthesized model, BRAM (B), end-to-end latency (Lat) in microseconds, power
+estimated by the Xilinx Power Estimator (P) in Watts, peak throughput (TP) in actions per second, and energy per action (E.p.A.) in Joule
+on a Artix-7 XC7A15T−1at100 MHz. Shown reward is the median over all ten models.
+per layer, padding the last layer with LUTs to be divisible
+by the action dimension. Observations are discretized to
+63 thermometer thresholds per dimension, as described in
+Section 3. Ablation studies on these choices are available in
+Section 5.
+Hyperparameters.We adopt the protocol used in CleanRL,
+hence we use the same hyperparameters across each algo-
+rithm for all investigated tasks. For training the DWCs
+we use the same hyperparameters as for the baselines, as
+specified in Appendix C.
+Training and Evaluation.For each configuration, we train
+10 models with different random seeds. Each model is
+trained for 1 million environment steps and then its undis-
+counted return is estimated from 1000 rollouts of the fixed
+policy from random starting states. Compared to the default
+CleanRL implementation, we perform all evaluation rollouts
+without exploration noise.
+4.1. Results: Quality
+Figure 3 shows the training dynamics of DWCs versus the
+FP baseline. Table 1 shows the resulting returns after train-
+ing, also including results for quantized networks. Clearly,
+DWCs learn policies of comparable quality to the floating
+point networks, and hence they can readily serve as more
+drop-in replacements, from a reward perspective. An excep-
+tion is the HalfCheetah environment, where we observe a
+substantial return gap. Note that models with a cumulative
+reward of 7.5k on HalfCheetah are not performing badly at
+all, indeed they learn torun, i.e. master the environment.
+However, they do so at a slower pace than, e.g., the FP
+models with11.5k reward.
+Our findings confirm the observation from Kresse & Lam-
+pert (2025) that HalfCheetah is the task most resistant to
+network reduction and quantization, presumably because
+the task iscapacity-limited. We study this phenomenon
+further in Section 5 and the Appendix.
+5
+Differentiable Weightless Controllers
+4.2. Noise Robustness
+Following Duan et al. (2016), we also assess the ro-
+bustness of DWCs to observation noise. We inject
+zero-mean Gaussian noise with standard deviations σ∈
+{0.1,0.2,0.3,0.4,0.5} into normalized observations (unit
+variance) and compare DWCs to the FP baseline and the
+quantized noise robustness results from Kresse & Lampert
+(2025). Figure 5 reports the results, which show that DWCs
+achieve noise robustness profiles comparable to that of the
+quantized network, and generally on the same level as or
+even better than floating point networks. The only excep-
+tions are the compact (Dℓ = 256) models, which perform
+worse on Humanoid under high noise.
+4.3. Results: Efficiency
+The main advantage of DWCs over standard deep controllers
+is that they consist exclusively of elements that have di-
+rect representations on low-energy hardware platforms. To
+demonstrate this, we perform synthesis and implementation
+(place-and-route) of the resulting networks for an FPGA,
+reporting required resources and energy estimates based on
+the manufacturer-provided tools.
+We run out-of-context (OOC) synthesis and implementation
+with the AMD Vivado toolchain (2022.2), targeting an AMD
+Xilinx Artix-7 XC7A15T (speed grade −1), see Table 10 in
+Appendix F for the available device resources. Note that the
+selected FPGA only has a total of 10,400 LUT-6s and twice
+this amount of flip-flops (FFs), which is a much smaller
+FPGA than previous investigations of DWNs (Bacellar et al.,
+2024). Instead, our setup is directly comparable to Kresse
+& Lampert (2025), who used the same reference FPGA
+platform and tool chain.
+We target a clock frequency of 100 MHz, inserting up to
+two pipeline stages—the first one between the two LUT
+layers, and the second one before the popcount—until we
+meet the desired timing. As our design is implemented
+OOC we do not consider any overhead due to I/O interfaces.
+Furthermore, we assume that all observation normalization
+steps and the final BRAM lookup for the action scaling take
+place outside of the FPGA, because these depend on the
+specific application (e.g. the input format depends on the
+type of ADCs, the output format on the type of DACs).
+Table 2 reports Reward, LUTs, FFs, BRAMs (B), Latency
+(Lat), Power (P), Throughput (TP), and Energy per Action
+(E.p.A) for each setup. Since full precision policies are
+not practical on the selected hardware, we compare to the
+quantized networks from Kresse & Lampert (2025). The
+only difference to their setup is that our values for power
+estimation are based on the toolchain’s post-implementation
+power report, rather than the less accurate Vivado Power
+Estimator.
+The results show that DWCs exhibit orders of magnitude
+lower latency and energy per action compared to the low-
+bitwidth quantized networks. For our standard Dℓ = 1024
+setup, latency is only 2 or 3 clock cycles, the throughput is
+the maximal possible of 108 actions per second, and the en-
+ergy usage is in the range of 2 Nanojoule per action. In con-
+trast, Kresse & Lampert (2025) reports orders of magnitude
+higher and much more heterogeneous resource usage: their
+latencies range from 21 cycles to over 162,000 cycles, their
+throughput between 4.1×10 3 and 4.8×10 6 actions per sec-
+ond, and their energy usage per action between 2.8×10 −5
+and6.5×10 −8 Joule.
+Additionally, in contrast to the quantized models, the compu-
+tational core of DWCs does not require any BRAM or DSP
+resources, making them deployable on even more limited
+hardware than the already small FPGA investigated here.
+To illustrate the scaling behavior, we include results for
+even smaller DWCs with layer width Dℓ = 256 in Table 2.
+This results in single-clock-cycle latency, still maximum
+throughput, and energy usage per action reduced further by
+a factor of approximately 2.
+5. Ablation Studies and Model Interpretability
+In this section we report ablation studies on the scaling
+behavior of DWCs with respect to their layer widths and the
+input size to the LUTs. Subsequently, we demonstrate how
+the sparse binary nature of DWCs allows for insights into
+their learned policies.
+5.1. Network Capacity
+We first investigate the effect of different network capacities.
+Concretely, we study the effect of varying the layer sizes
+(widths) and the number of inputs to each LUT. Further
+ablations on the impact of input resolution and number of
+layers are available in Appendix E.
+Layer Width.Assuming that the number of layers is fixed,
+a large impact on the network capacity comes from the
+layer width, Dℓ, i.e. the number of LUTs. We run experi-
+ments in the previous setting with layer width varying across
+{128,256,512,1024,2048,4096} , where the last layer is
+padded to be divisible by the action dimension, and report
+the results in Figure 4. For four of the tasks, the quality is
+relatively stable with respect to layer widths, with per-layer
+sizes above 256 generally exhibiting returns similar to the
+floating-point baseline. This indicates that these learning
+tasks are not capacity limited, but that at the same time no
+overfitting effects seem to emerge. As previously observed,
+HalfCheetah is an exception, where we observe that the
+quality of the policy increases monotonically with the width
+of the layers. There are two possible explanations for this
+phenomenon observed on HalfCheetah: 1) smoother actions,
+6
+Differentiable Weightless Controllers
+Ant HalfCheetah Hopper Humanoid Walker2d0
+5
+10
+*
+Reward ×1000
+FP Quant l = 128 l = 256 l = 512 l = 1024 l = 2048 l = 4096
+Figure 4.Policy returns for FP, Quant and DWCs with varying LUT layer widths. Generally, already models with 256 to 512 LUTs per
+layer achieve returns on par with the FP baseline. Only for HalfCheetah, we observe a monotonically increasing median return with
+increasing LUT layer width. * indicates a special high-capacity model with 16k-LUTs per layer and 255-bit per input dimension, see
+Section 5.
+due to a higher output layer width, resulting in more possi-
+ble actions, as each action head has a resolution of the size
+of the partition Gd; and 2) higher representation capacity
+and input layer resolution, as more LUTs can connect to dif-
+ferent bits in the first layer. In light of the results in Kresse &
+Lampert (2025) that a 3-bit resolution suffices for HalfChee-
+tah in the output actions; and hidden capacity appears to
+be the major bottleneck in quantized neural networks, we
+hypothesize that 2) is the case.
+To explore this further, we investigate a significantly larger
+DWC with Dℓ = 16,384 LUTs per layer and inputs quan-
+tized to 255 levels (instead of 63). Due to the larger layer
+size, we do not train the second layer interconnect, but ini-
+tialize it randomly and keep it fixed; the remaining training
+setup remains unchanged. Results are depicted in Figure 4
+(dashed light gray entry). With a median return value above
+10.3k, this setup now matches the returns of the quantized
+baseline (median return 10.4k) and falls within the region
+of uncertainty of the floating-point policy (median return
+11.5k). Notably, even at the increased layer width, DWCs
+requires only 32klookups(and six popcounts, in the case
+of HalfCheetah)—substantially fewer than 70k+ multiply-
+accumulate operations by the two baselines. We take this
+result as evidence that DWNs can scale to such tasks, if
+required.
+LUT SizeBesides the number of LUTs, also the number of
+inputs per LUT, k, impacts the network capacity, as more in-
+puts imply that layers are more densely connected, and that
+the LUTs themselves can express more complex relations.
+In Figure 8 in the appendix, we report average returns for
+all tasks with k varied from {2,3,4,5,6} and constant layer
+width Dℓ = 1024. In line with the previous experiments, we
+observe capacity effects limiting returns only for HalfChee-
+tah, while the other returns remain largely unaffected. This
+suggests that in practice, the number of LUT inputs can be
+chosen based on what matches the available hardware. For
+FPGAs, built-in support for k= 6 is common, whereas on
+custom ASICs, any k larger than 2 could be prohibitively
+expensive.
+5.2. Diagnostics and Interpretability
+Deep networks are often criticized asblack boxes(Molnar,
+2020; V ouros, 2022), where the trained policy offers little
+insight into which feature values drive specific actions.
+Here, we demonstrate how binary sparse DWCs can poten-
+tially contribute to overcoming this issue to some extent.
+Because input bits correspond to specific input thresholds
+and connections to processing LUTs are both sparse and
+learned, we can infer feature importance simply by count-
+ing outgoing connections. Figure 6 illustrates the number
+of connections received per observation dimension, aver-
+aged over the ten trained models (Dℓ = 1024). The entries
+are sorted after aggregation according to the mean number
+of connections. The data shows that connectivity is non-
+uniform: some input dimensions receive substantially more
+connections than others, especially for higher-dimensional
+observation tasks, i.e. Ant and Humanoid. The low standard
+deviations across independent models indicate that the net-
+work consistently identifies the same specific dimensions as
+relevant for solving the task.
+Interestingly, for Humanoid, a large number of observa-
+tion dimensions receive no connections at all (on average
+275 out of 376 receive a connection). Because the trained
+model nevertheless attains performance comparable to the
+FP model, we conclude that the unconnected dimensions are
+not necessary for good control. In contrast,torso velocity
+observationsreceive the highest number of connections for
+Humanoid. As the reward function is heavily dependent on
+forward velocity, this suggests the DWC has identified the
+features most directly correlated with the reward signal.
+Figure 7 shows the distribution of connections across input
+threshold bits, averaged over dimensions and over trained
+models. Recall that the input bit with index 31 out of 63
+7
+Differentiable Weightless Controllers
+.0 .1 .2 .3 .4 .50
+2
+4
+6
+Reward [×1000]
+Ant
+FP Quantized Model (Kresse & Lampert, 2025) DWC (l = 256)
+DWC (l = 1024)
+.0 .1 .2 .3 .4 .50
+5
+10
+HalfCheetah
+FP Quantized Model (Kresse & Lampert, 2025) DWC (l = 256)
+DWC (l = 1024)
+.0 .1 .2 .3 .4 .50
+1
+2
+3
+Hopper
+FP Quantized Model (Kresse & Lampert, 2025) DWC (l = 256) DWC (l = 1024)
+.0 .1 .2 .3 .4 .50
+2
+4
+6
+Humanoid
+FP Quantized Model (Kresse & Lampert, 2025) DWC (l = 256)
+DWC (l = 1024)
+.0 .1 .2 .3 .4 .50
+2
+4
+6
+Walker2d
+FP Quantized Model (Kresse & Lampert, 2025) DWC (l = 256)
+DWC (l = 1024)
+Figure 5.Reward performance under injected observation noise with varying noise level σ. Floating-point (FP), QAT policies from Kresse
+& Lampert (2025) and our DWCs on MuJoCo tasks. Bands show one standard deviation across trained models. The quantized models and
+DWCs perform better, or on par, with the FP baseline under injection, except for Humanoid, where the smaller DWCs show reduced
+rewards for larger noise.
+0 10 20
+0
+200
+400Connections
+Ant
+0 5 10 15
+HalfCheetah
+0 5 10
+Hopper
+0 100 200 300
+Humanoid
+0 5 10 15
+Walker2d
+Figure 6.Number of connections received for (sorted) input dimension averaged over trained DWCs (Dℓ = 1024) for all five environments.
+0 32
+0
+100
+200
+300
+400Connections
+Ant
+0 32
+HalfCheetah
+0 32
+Hopper
+0 32
+Humanoid
+0 32
+Walker2d
+Figure 7.Distribution of connections per threshold bit index across all environments. We consistently observe a two-modal distribution
+slightly left and right of the center (index 31, corresponding to normalized observation value 0).
+corresponds to the normalized observation value of 0, index
+0 corresponds to the normalized value of −10 and index 63
+to10(Section 3).
+Perhaps unsurprisingly, the highest connectivity density is
+typically found around the normalized observation value
+of zero. However, instead of a Normal distribution, we ob-
+serve two distinct modes left and right of the center. This
+is potentially explained by the reduced probability density
+captured by the 0 threshold, which is artificially inserted
+between the two thresholds to its left and right. Furthermore,
+some tasks (Hopper, Walker, and HalfCheetah) show heav-
+ier tails than the others (Ant, Humanoid). We hypothesize
+that the heavier tails are explainable by the lower observa-
+tion dimensionality of their respective tasks, and not due
+to an increased importance of extreme observation values.
+This hypothesis is supported by Figure 11 in Appendix E,
+showing the same plot for DWCs with Dℓ = 128, which
+generally exhibit similar return performance (see Figure
+4). Here, the tails are lighter, with the maximal number of
+possible first-layer connections having been significantly
+reduced to just k×D ℓ = 768 , indicating that the heav-
+ier tails observed for the larger models are indeed due to
+the higher number of possible connections, suggesting that
+many connections might not be contributing significantly.
+6. Summary and Discussion
+In this work, we introduced DWCs (Differentiable Weight-
+less Controllers), which are differentiable weightless net-
+works adapted to handle continuous input states and output
+continuous actions. Furthermore, they can be trained using
+standard gradient-based reinforcement learning algorithms.
+DWCs allow for highly efficient implementation on low-
+energy embedded hardware, as we demonstrated by compil-
+ing them for an Xilinx Artix-7 FPGA at 100 MHz, where
+8
+Differentiable Weightless Controllers
+the resulting networks have extremely low resource require-
+ments at substantially lower inference time (2–3 clock cycle
+latency, even down to a single cycle for smaller DWCs;
+nanojoule-level energy usage per action). At the same time,
+they can achieve return parity with standard floating-point
+networks even on high-dimensional, difficult RL tasks.
+Furthermore, we highlight the interpretability and capacity
+properties of DWCs through a sequence of experiments and
+ablation studies, particularly on the HalfCheetah environ-
+ment, which is the most capacity-limited one of the studied
+MuJoCo tasks.
+An existing limitation is the high computational cost at
+training time, which significantly exceeds the cost at de-
+ployment, because of the relaxations required to allow for
+gradient-based training. This aspect also means that train-
+ing is currently only doable in simulated environments, not
+interactively on-device.
+References
+Acharya, K., Raza, W., Dourado, C., Velasquez, A., and
+Song, H. H. Neurosymbolic reinforcement learning and
+planning: A survey.IEEE Transactions on Artificial
+Intelligence, 2023.
+Akiba, T., Sano, S., Yanase, T., Ohta, T., and Koyama, M.
+Optuna: A next-generation hyperparameter optimization
+framework. InACM SIGKDD International Conference
+on Knowledge Discovery & Data Mining, 2019.
+Aleksander, I. Emergent intelligent properties of progres-
+sively structured pattern recognition nets.Pattern Recog-
+nition Letters, 1983.
+Anderson, G., Verma, A., Dillig, I., and Chaudhuri, S. Neu-
+rosymbolic reinforcement learning with formally verified
+exploration.Conference on Neural Information Process-
+ing Systems (NeurIPS), 2020.
+Andrychowicz, M., Raichuk, A., Sta´nczyk, P., Orsini, M.,
+Girgin, S., Marinier, R., Hussenot, L., Geist, M., Pietquin,
+O., Michalski, M., et al. What matters in on-policy rein-
+forcement learning? a large-scale empirical study.arXiv
+preprint arXiv:2006.05990, 2020.
+Bacellar, A. T., Susskind, Z., Breternitz Jr, M., John, E.,
+John, L. K., Lima, P. M., and Franc ¸a, F. M. Differentiable
+weightless neural networks. InInternational Conference
+on Machine Learning (ICML), 2024.
+Bastani, O., Pu, Y ., and Solar-Lezama, A. Verifiable rein-
+forcement learning via policy extraction.Conference on
+Neural Information Processing Systems (NeurIPS), 2018.
+B¨uhrer, S., Plesner, A., Aczel, T., and Wattenhofer, R. Re-
+current deep differentiable logic gate networks.arXiv
+preprint arXiv:2508.06097, 2025.
+Carneiro, H. C., Franc ¸a, F. M., and Lima, P. M. Multilingual
+part-of-speech tagging with weightless neural networks.
+Neural Networks, 2015.
+Chevtchenko, S. F. and Ludermir, T. B. Combining STDP
+and binary networks for reinforcement learning from im-
+ages and sparse rewards.Neural Networks, 2021.
+Degrave, J., Felici, F., Buchli, J., Neunert, M., Tracey, B.,
+Carpanese, F., Ewalds, T., Hafner, R., Abdolmaleki, A.,
+de las Casas, D., Donner, C., Fritz, L., Galperti, C., Hu-
+ber, A., Keeling, J., Tsimpoukelli, M., Kay, J., Merle, A.,
+Moret, J.-M., Noury, S., Pesamosca, F., Pfau, D., Sauter,
+O., Sommariva, C., Coda, S., Duval, B., Fasoli, A., Kohli,
+P., Kavukcuoglu, K., Hassabis, D., and Riedmiller, M.
+Magnetic control of tokamak plasmas through deep rein-
+forcement learning.Nature, 2022.
+Dosovitskiy, A. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. InInternational
+Conference on Learning Representations (ICLR), 2021.
+Duan, Y ., Chen, X., Houthooft, R., Schulman, J., and
+Abbeel, P. Benchmarking deep reinforcement learning
+for continuous control. InProceedings of The 33rd Inter-
+national Conference on Machine Learning, 2016.
+Gerlach, L., Kauffman, E., V ˚age, L. H., and Ojalvo,
+I. Rapid inference of logic gate neural networks for
+anomaly detection in high energy physics.arXiv preprint
+arXiv:2511.01908, 2025a.
+Gerlach, L., V˚age, L., Gerlach, T., and Kauffman, E. W ARP-
+LUTs-walsh-assisted relaxation for probabilistic look up
+tables.arXiv preprint arXiv:2510.15655, 2025b.
+Gholami, A., Kim, S., Dong, Z., Yao, Z., Mahoney, M. W.,
+and Keutzer, K. A survey of quantization methods for ef-
+ficient neural network inference. InLow-power computer
+vision (LPCV). 2022.
+Graesser, L., Evci, U., Elsen, E., and Castro, P. S. The
+state of sparse training in deep reinforcement learning. In
+International Conference on Machine Learning (ICML),
+2022.
+Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft
+actor-critic: Off-policy maximum entropy deep reinforce-
+ment learning with a stochastic actor. InInternational
+Conference on Machine Learning (ICML), 2018.
+Huang, S., Dossa, R. F. J., Ye, C., Braga, J., Chakraborty,
+D., Mehta, K., and Ara´ujo, J. G. CleanRL: High-quality
+9
+Differentiable Weightless Controllers
+single-file implementations of deep reinforcement learn-
+ing algorithms.Journal of Machine Learning Research
+(JMLR), 2022.
+Ivanov, D. A., Larionov, D. A., Maslennikov, O. V ., and
+V oevodin, V . V . Neural network compression for rein-
+forcement learning tasks.Scientific Reports, 2025.
+Kadokawa, Y ., Tsurumine, Y ., and Matsubara, T. Bina-
+rized p-network: Deep reinforcement learning of robot
+control from raw images on FPGA.IEEE Robotics and
+Automation Letters, 2021.
+Kaptein, M.Interpretable Reinforcement Learning for Con-
+tinuous Action Environments. PhD thesis, Delft Univer-
+sity of Technology, 2025.
+Kaufmann, E., Bauersfeld, L., Loquercio, A., M ¨uller, M.,
+Koltun, V ., and Scaramuzza, D. Champion-level drone
+racing using deep reinforcement learning.Nature, 2023.
+Kim, Y . Deep stochastic logic gate networks.IEEE Access,
+2023.
+Kresse, F. and Lampert, C. H. Learning quantized con-
+tinuous controllers for integer hardware.arXiv preprint
+arXiv:2511.07046, 2025.
+Kresse, F., Yu, E., Lampert, C., and Henzinger, T. A. Logic
+gate neural networks are good for verification. InInter-
+national Conference on Neuro-symbolic Systems (NeuS),
+2025a.
+Kresse, F., Yu, E., and Lampert, C. H. Scalable inter-
+connect learning in boolean networks.arXiv preprint
+arXiv:2507.02585, 2025b.
+Krishnan, S., Lam, M., Chitlangia, S., Wan, Z., Barth-
+Maron, G., Faust, A., and Reddi, V . J. QuaRL: Quan-
+tization for fast and environmentally sustainable rein-
+forcement learning.Transactions on Machine Learning
+Research (TMLR), 2022.
+Krizhevsky, A., Sutskever, I., and Hinton, G. E. Imagenet
+classification with deep convolutional neural networks.
+InConference on Neural Information Processing Systems
+(NeurIPS), 2012.
+Lazarus, C. and Kochenderfer, M. J. Deep binary reinforce-
+ment learning for scalable verification.arXiv preprint
+arXiv:2203.05704, 2022.
+Lillicrap, T. P., Hunt, J. J., Pritzel, A., Heess, N., Erez, T.,
+Tassa, Y ., Silver, D., and Wierstra, D. Continuous con-
+trol with deep reinforcement learning. InInternational
+Conference on Learning Representations (ICLR), 2016.
+Lu, H., Alemi, M., and Rawassizadeh, R. The impact of
+quantization and pruning on deep reinforcement learning
+models.arXiv preprint arXiv:2407.04803, 2024.
+Ludermir, T. B. and de Oliveira, W. R. Weightless neural
+models.Computer Standards & Interfaces, 1994.
+Miller, A., Yu, F., Brauckmann, M., and Farshidian, F. High-
+performance reinforcement learning on spot: Optimizing
+simulation parameters with distributional masures.arXiv
+preprint arXiv:2504.17857, 2025.
+Miotti, P., Niklasson, E., Randazzo, E., and Mordvintsev, A.
+Differentiable logic cellular automata: From game of life
+to pattern generation.arXiv preprint arXiv:2506.04912,
+2025.
+Mnih, V ., Kavukcuoglu, K., Silver, D., Graves, A.,
+Antonoglou, I., Wierstra, D., and Riedmiller, M. Playing
+atari with deep reinforcement learning. InNeurIPS Deep
+Learning Workshop, 2013.
+Molnar, C.Interpretable machine learning. lulu.com, 2020.
+Petersen, F., Borgelt, C., Kuehne, H., and Deussen, O. Deep
+differentiable logic gate networks. InConference on
+Neural Information Processing Systems (NeurIPS), 2022.
+Petersen, F., Kuehne, H., Borgelt, C., Welzel, J., and Ermon,
+S. Convolutional differentiable logic gate networks. In
+Conference on Neural Information Processing Systems
+(NeurIPS), 2024.
+Radford, A., Wu, J., Child, R., Luan, D., Amodei, D.,
+Sutskever, I., et al. Language models are unsupervised
+multitask learners. 2019.
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and
+Klimov, O. Proximal policy optimization algorithms.
+arXiv preprint arXiv:1707.06347, 2017.
+Silva, A., Killian, T., Jimenez, I., Son, S.-H., and Gombo-
+lay, M. Optimization methods for interpretable differen-
+tiable decision trees applied to reinforcement learning.
+InInternational conference on artificial intelligence and
+statistics (AISTATS), 2020.
+Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre, L.,
+van den Driessche, G., Schrittwieser, J., Antonoglou, I.,
+Panneershelvam, V ., Lanctot, M., Dieleman, S., Grewe,
+D., Nham, J., Kalchbrenner, N., Sutskever, I., Lillicrap,
+T. P., Leach, M., Kavukcuoglu, K., Graepel, T., and Has-
+sabis, D. Mastering the game of go with deep neural
+networks and tree search.Nature, 2016.
+Sutton, R. S. and Barto, A. G.Reinforcement Learning: An
+Introduction. MIT Press, 2018.
+10
+Differentiable Weightless Controllers
+Tan, Y ., Hu, P., Pan, L., Huang, J., and Huang, L. RLx2:
+Training a sparse deep reinforcement learning model from
+scratch. InIEEE International Conference on Robotics
+and Automation (ICRA), 2023.
+Todorov, E., Erez, T., and Tassa, Y . MuJoCo: A physics
+engine for model-based control. InIEEE/RSJ inter-
+national conference on intelligent robots and systems
+(IROS), 2012.
+Valencia, R., Sham, C.-W., and Sinnen, O. Using neuroe-
+volved binary neural networks to solve reinforcement
+learning environments. InIEEE Asia Pacific Conference
+on Circuits and Systems (APCCAS), 2019.
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones,
+L., Gomez, A. N., Kaiser, L., and Polosukhin, I. Attention
+is all you need. InConference on Neural Information
+Processing Systems (NeurIPS), 2017.
+V ouros, G. A. Explainable deep reinforcement learning:
+state of the art and challenges.ACM Computing Surveys,
+2022.
+Yousefi, S., Plesner, A., Aczel, T., and Wattenhofer, R. Mind
+the gap: Removing the discretization gap in differentiable
+logic gate networks.arXiv preprint arXiv:2506.07500,
+2025.
+Yue, C. and Jha, N. K. Learning interpretable differen-
+tiable logic networks.IEEE Transactions on Circuits and
+Systems for Artificial Intelligence, 2024.
+11
+Differentiable Weightless Controllers
+A. Related Work
+Here, we discuss more related work regarding quantization and pruning for RL, and variants of weightless neural networks.
+Prunning and Quantization for RLPrevious work explored quantizing (Krishnan et al., 2022) and pruning deep
+continuous control RL policies, or both simultaneously (Ivanov et al., 2025; Lu et al., 2024)—which reduces their memory
+footprint and computational cost— showing that substantial pruning (≥95% ) (Graesser et al., 2022; Tan et al., 2023) and
+quantization of most of the network to 3 or 2-bits is possible without harming policy returns (Kresse & Lampert, 2025).
+Additionally, there has been work on binary, one-bit, quantized RL policies (Lazarus & Kochenderfer, 2022; Kadokawa
+et al., 2021; Chevtchenko & Ludermir, 2021; Valencia et al., 2019). However, these focus on discrete action spaces or only
+partially binarize the network. In contrast, our DWCs are fully one-bit policies for continuous control tasks, which has not
+been shown to be feasible in prior work.
+Deep Boolean Networks (DBNs)Petersen et al. (2022) proposedDifferentiable Logic Networks(Petersen et al., 2022),
+later extending them to a convolution-style architecture (Petersen et al., 2024), training layers of 2-input LUTs (boolean
+gates) end-to-end with gradient descent.
+Since then there have been several extensions and variants of DLNs, improving various aspects. Notably, interconnect
+learning was introduced (Bacellar et al., 2024; Yue & Jha, 2024) and the original formulation, which required2kk
+parameters
+for k-input LUTs was improved to only require 2k parameters per LUT (Bacellar et al., 2024; Gerlach et al., 2025b). Various
+other improvements to scalability and convergence have also been performed (Kim, 2023; Yousefi et al., 2025; Yue & Jha,
+2024).
+Most commonly, DBNs have been applied to small-scale image and tabular classification tasks. Lately, this has been
+expanded to include anomaly detection (Gerlach et al., 2025a), recurrent image generation (Miotti et al., 2025), and recurrent
+language modeling (B¨uhrer et al., 2025). In these applications, scalability to larger datasets has proven to be challenging,
+due to the high compute requirements during training, as in current work at least four floating point parameters are required
+per limited expressivity, boolean 2-input gate. Last DBNs have shown to be promising for formal verification (Kresse et al.,
+2025a). Networks for continuous control tasks, however, are typically small, and as they are safety-critical, could benefit
+greatly from formal verification, making them an ideal fit for DBNs as explored in this work.
+Neuro-Symbolic Approaches for RLAs our work touches upon the intersection of symbolic and neural methods, we
+very briefly review closely related work in this area. A more comprehensive overview can be found in (Acharya et al., 2023).
+Bastani et al. (2018) investigates continuous control, distilling policies into decision trees, their approach scales at least to
+HalfCheetah. Anderson et al. (2020) project policies to a symbolic space. In both approaches, the policy is not directly
+learned with gradient descent as we do here. Silva et al. (2020) and Kaptein (2025) directly learn a decision tree; however, it
+is not clear if this approach scales to high-dimensional continuous tasks. In contrast to these works, DWCs directly learn a
+propositional structure with gradient descent, which scales to high-dimensional continuous control tasks such as Humanoid.
+B. DDPG and PPO returns
+In this appendix we provide results for training DWCs with DDPG and PPO. Table 3 shows results for all investigated tasks
+and algorithms. For SAC and DDPG we use the same hyperparameters for both DWCs and the FP32 baseline. DWCs trained
+with DDPG use 1024 LUTs per layer. For PPO we perform hyperparameter tuning for both FP32 and DWCs separately,
+resulting in 256 LUTs per layer for DWCs. Hyperparameters and search details are provided in Appendix C.
+For PPO we directly use the generated logit la as the action. While for DDPG, we compute the action with a tanh as in
+SAC.
+For the DDPG FP baseline, we report results withunnormalizedobservations, as this outperforms observation normalization
+on our tasks (Kresse & Lampert, 2025). All other experiments (SAC, PPO) use observation normalization also for the FP
+model. While SAC shows very consistent results for FP and DWCs across all tasks, DDPG and PPO results vary, with
+DWCs sometimes outperforming and sometimes underperforming FP32. Overall, for DDPG the performance gap for
+HalfCheetah remains the largest, similar to SAC.
+12
+Differentiable Weightless Controllers
+Alg. Environment FP±sd DWC±sd FP median [q 25, q75] DWC median [q 25, q75]
+SAC
+Ant-v4 5.1k ±0.9k 5.7k±0.3k 5.6k[4.3k,5.8k] 5.7k[5.5k,5.9k]
+HalfCheetah-v4 11.1k ±1.2k 7.5k±0.7k 11.5k[10.1k,11.9k] 7.5k[7.1k,7.9k]
+Hopper-v4 2.7k ±0.7k 3.0k±0.6k 2.8k[2.1k,3.3k] 3.1k[2.8k,3.4k]
+Humanoid-v4 6.3k ±0.5k 6.2k±0.5k 6.2k[6.0k,6.7k] 6.1k[5.8k,6.6k]
+Walker2d-v4 5.0k ±0.4k 4.7k±0.9k 5.0k[4.7k,5.2k] 5.0k[4.5k,5.2k]
+DDPG
+Ant-v4 1.1k ±0.6k 1.3k±0.9k 1.0k[0.6k,1.4k] 1.4k[1.0k,1.6k]
+HalfCheetah-v4 11.2k ±0.6k 7.4k±0.8k 11.3k[10.9k,11.4k] 7.3k[6.7k,7.9k]
+Hopper-v4 2.3k ±0.8k 2.0k±0.4k 2.2k[2.0k,3.0k] 2.0k[1.8k,2.2k]
+Humanoid-v4 1.9k ±0.6k 1.3k±0.2k 1.7k[1.5k,2.4k] 1.2k[1.1k,1.2k]
+Walker2d-v4 1.7k ±0.5k 2.1k±0.8k 1.5k[1.4k,1.8k] 2.3k[1.4k,2.6k]
+PPO
+Ant-v4 0.9k ±0.4k 1.6k±0.1k 0.7k[0.6k,0.9k] 1.6k[1.5k,1.7k]
+HalfCheetah-v4 1.6k ±0.6k 2.1k±0.6k 1.5k[1.4k,1.6k] 2.1k[1.6k,2.5k]
+Hopper-v4 1.9k ±0.6k 1.7k±0.6k 2.1k[1.5k,2.4k] 1.9k[1.5k,2.0k]
+Humanoid-v4 0.5k ±0.0k 0.5k±0.0k 0.5k[0.5k,0.6k] 0.5k[0.5k,0.5k]
+Walker2d-v4 2.2k ±1.1k 1.4k±0.3k 2.4k[1.3k,2.9k] 1.3k[1.1k,1.6k]
+Table 3.Return performance for DWCs and FP baseline. Showing mean ± standard deviation and median [25th percentile, 75th percentile]
+over 10 trained models. In contrast to SAC, results for DDPG and PPO are more inconsistent, with DWCs sometimes exceeding and
+sometimes falling short of FP performance.
+C. Hyperparameters
+Table 4 and Table 5 show SAC and DDPG hyperparameters, respectively. Table 6 shows the PPO floating-point hyperparam-
+eters used in our experiments, while Table 7 shows the PPO hyperparameters used for DWCs.
+Major differences between FP and DWCs PPO hyperparameters are a ×10 learning rate for DWCs, a lower entropy
+coefficient, and a lower max gradient norm. The initial log α is conceptually similar to the floating-point std parameter,
+which corresponds to the initialization of the policy network’s output variance.
+Tables 8 shows the search space for the PPO hyperparameter tuning for DWCs, while Table 9 shows the search space for
+the PPO hyperparameter tuning for the FP baseline. Remaining hyperparameters were set to the values in Table 6, which
+correspond to CleanRL (Huang et al., 2022) defaults. Hyperparameter tuning was performed jointly across Ant, Hopper,
+Walker, and HalfCheetah, optimizing for return after 1M timesteps over 3 seeds. Hyperparameter search was performed
+with Optuna (Akiba et al., 2019) using the Tree-Structured Parzen Estimator with 100 trials. The hyperparameter search for
+DWCs took 25 days of compute, which we distributed over 10 GPUs.
+Table 4.SAC hyperparameters.
+Hyperparameter Value
+Total timesteps1,000,000
+Replay buffer size1×10 6
+Discountγ0.99
+Target smoothingτ0.005
+Batch size 256
+Learning starts5×10 3
+Policy LR3×10 −4
+Q-network LR1×10 −3
+Policy update frequency 2
+Target network frequency 1
+Entropy autotune
+D. LUT Input Ablation
+Figure 8 shows an ablation over the LUT input size k from 2 to 6 inputs. Larger k increases the expressivity of each LUT,
+but also exponentially increases the number of parameters per layer.
+Clearly, already k= 2 achieves good results across all tasks, being comparable for all except for HalfCheetah. For
+13
+Differentiable Weightless Controllers
+Table 5.DDPG hyperparameters.
+Hyperparameter Value
+Total timesteps1,000,000
+Learning rate3×10 −4
+Replay buffer size1×10 6
+Discountγ0.99
+Target smoothingτ0.005
+Batch size 256
+Exploration noise (std) 0.1
+Learning starts2.5×10 4
+Policy update frequency 2
+Table 6.PPO FP hyperparameters.
+Hyperparameter Value
+Total timesteps1,000,000
+Learning rate7.82×10 −4
+Number of environments 1
+Steps per environment 2048
+Number of minibatches 32
+Update epochs 10
+Discountγ0.99
+GAEλ0.95
+Clip coefficient 0.2
+Entropy coefficient6.8×10 −5
+Value function coefficient 0.5
+Max gradient norm 0.811
+Floating-point std 0.00212
+Adamϵ1×10 −5
+Anneal LR True
+Norm advantages True
+Clip value loss True
+Table 7.PPO DWCs hyperparameters. Not shown hyperparameter are equivalent to Table 6.
+Hyperparameter Value
+Learning rate6.76×10 −3
+Entropy coefficient3.37×10 −4
+Max gradient norm 1.92
+Initial logα-3.18
+LUT width 256
+Table 8.Hyperparameter search space for DWCs.
+Hyperparameter Search Space
+Learning rate Log-uniform[7×10 −4,10 −2]
+Max gradient norm Uniform[0.5,2.5]
+Hidden layer size Categorical{128,256,512}
+Entropy coefficient Uniform[0,0.05]
+Initial logαUniform[−6.0,−0.3]
+HalfCheetah, we observed similar capacity-limited returns as we observed in our size ablation.
+E. Input Layer Bit & Layer Number Ablation
+Figure 9 shows an ablation over the number of thermometer bits used in the input layer. We observe that while performance
+suffers at 5 input threshold bits, policy performance does not completely collapse. For 63 bits and l= 128 , Figure 11 shows
+14
+Differentiable Weightless Controllers
+Table 9.Hyperparameter search space for FP baseline.
+Hyperparameter Search Space
+Learning rate Log-uniform[7×10 −4,10 −2]
+Max gradient norm Uniform[0.5,2.5]
+Entropy coefficient Uniform[0,0.05]
+Floating-point std Uniform[10 −3,0.1]
+Ant HalfCheetah Hopper Humanoid Walker2d0
+5
+10Reward ×1000
+FP Quant k = 2 k = 3 k = 4 k = 5 k = 6
+Figure 8.Showing floating-point (FP) baseline returns across environments and DWCs with varying LUT-inputs (l= 1024). Generally,
+already models with 2-input LUTs achieve returns comparable to the FP baseline. Only for HalfCheetah, we observe a generally
+monotonically increasing median return with increasing LUT table size.
+Ant HalfCheetah Hopper Humanoid Walker2d0
+5
+10Reward ×1000
+FP Quant B = 5 B = 31 B = 63 B = 127 B = 255
+Figure 9.Showing floating-point baseline and DWCs return across enviroments with varying input bit width B. While having only 5
+threshold bits per layer can harm policy performance. For most environments, 63 input bits suffice to saturate returns. As in other cases,
+the exception is HalfCheetah, which benefits monotonically from more fined-grained input binarizations.
+the learned per-bit index connectivity for all environments. Figure 10 shows an ablation on the number of layers.
+F. XC7A15T FPGA resources
+Resources for the AMD Xilinx Artix-7 XC7A15T–FGG484–1 device are shown in Table 10.
+15
+Differentiable Weightless Controllers
+Ant HalfCheetah Hopper Humanoid Walker2d0
+5
+10Reward ×1000
+FP Quant LGN 1 LGN 2 LGN 3
+Figure 10.Showing floating-point baseline and DWCs return across environments with varying number of layers L. For Dℓ=1024, one
+layer generally suffices for attaining floating-point performance. Again, HalfCheetah, seems to benefit from additional layers, and hence,
+increased capacity.
+0 32
+0
+20
+40
+60
+80
+Bit Index
+Connections
+Ant
+0 32
+Bit Index
+Hopper
+0 32
+Bit Index
+Walker2d
+0 32
+Bit Index
+Humanoid
+0 32
+Bit Index
+HalfCheetah
+Figure 11.Distribution of connections per Bit Index across all environments.l= 128
+Table 10.XC7A15T–FGG484–1 device resources.
+Resource Quantity
+LUTs 10,400
+Flip-flops 20,800
+DSPs 45
+Block RAM (36 Kb) 25
+Max user I/O pins 250
+16

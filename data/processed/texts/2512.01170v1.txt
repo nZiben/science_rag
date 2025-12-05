@@ -1,0 +1,1276 @@
+Data assimilation and discrepancy modeling with
+shallow recurrent decoders
+Yuxuan Bao∗, J. Nathan Kutz∗,†
+∗Department of Applied Mathematics, University of Washington, Seattle, WA
+†Department of Electrical and Computer Engineering, University of Washington, Seattle, WA
+December 2, 2025
+Abstract
+The requirements of modern sensing are rapidly evolving, driven by increasing demands for data
+efficiency, real-time processing, and deployment under limited sensing coverage. Complex physical sys-
+tems are often characterized through the integration of a limited number of point sensors in combination
+with scientific computations which approximate the dominant, full-state dynamics. Simulation models,
+however, inevitably neglect small-scale or hidden processes, are sensitive to perturbations, or oversim-
+plify parameter correlations, leading to reconstructions that often diverge from the reality measured
+by sensors. This creates a critical need for data assimilation, the process of integrating observational
+data with predictive simulation models to produce coherent and accurate estimates of the full state of
+complex physical systems. We propose a machine learning framework for Data Assimilation with a SHal-
+low REcurrent Decoder (DA-SHRED) which bridges the simulation-to-real (SIM2REAL) gap between
+computational modeling and experimental sensor data. For real-world physics systems modeling high-
+dimensional spatiotemporal fields, where the full state cannot be directly observed and must be inferred
+from sparse sensor measurements, we leverage the latent space learned from a reduced simulation model
+via SHRED, and update these latent variables using real sensor data to accurately reconstruct the full
+system state. Furthermore, our algorithm incorporates a sparse identification of nonlinear dynamics
+(SINDy) based regression model in the latent space to identify functionals corresponding to missing dy-
+namics in the simulation model. We demonstrate that DA-SHRED successfully closes the SIM2REAL
+gap and additionally recovers missing dynamics in highly complex systems, demonstrating that the com-
+bination of efficient temporal encoding and physics-informed correction enables robust data assimilation
+under sparse sensing constraints.
+1 Introduction
+Data-driven science and engineering is being revolutionized by advancements in machine learning and AI
+algorithms [1]. Leveraging sensor measurements, often in combination with scientific computation proxies,
+such algorithms aim to learn effective models for a diversity of downstream tasks, including reconstruction,
+forecasting, and control in challenging environments that include noisy measurements and or parametric
+variability. A grand challenge in the deployment of such algorithms is the fact that many physical systems are
+not amenable to full state measurements, but rather only discrete point sensor measurements at prescribed
+and limited locations. In fact, the only knowledge of the full state space is typically approximated by
+simulations of the underlying governing equations which are often given by partial differential equations
+(PDEs). For example, our knowledge of the full dynamics of nuclear reactors, plasma physics, rocket engines,
+and many complex flow fields has only been estimated and/or constructed by simulation proxies. Some
+nuclear reactors, for instance, are modeled by up to 20 coupled PDEs that detail the complex interactions
+between the fluid dynamics, thermodynamics, ion concentrations, etc [2]. None of the 20 fields have been
+measured in practice in deployed reactors. Rather, in reality only one or two of the fields (e.g. temperature,
+pressure) can be measured at discrete point sensor locations on the walls of the reactor. This presents a
+significant modeling challenge for closing the simulation-to-reality (SIM2REAL) gap [3, 4], especially as the
+1
+arXiv:2512.01170v1  [cs.LG]  1 Dec 2025
+(a) Simulation
+Real Physics:
+·u=N(u,x,t)Model
+Data
+Sensors
+S=[s1 s2 … sm]∈ℝp×m
+(p≪n)
+·u′ =M(u′ ,x,t)Model
+DataX′ = | | |u′ 1 u′ 2 … u′ m| | | ∈ℝn×m
+Unobserved Observed
+S′ =[s′ 1 s′ 2 … s′ m]∈ℝ(p+q)×m
+X= | | |u1 u2 … um| | | ∈ℝn×m
+SHRED
+˜X
+(b) Train on Simulation
+(c) Deploy on Real Sensors
+˜X′ 
+X′ −truth
+Update to reality
+Figure 1: The algorithmic structure of the DA-SHRED structure. With real physics unobserved, the model exploits
+the latent space trained on known simulation data using traditional SHRED network, and deploys it on real sensor
+data to close the discrepancy. It is assumed that the full state-space of the real physics is never observed in practice.
+The variables, data and models are summarized in the figure table 2.
+PDEs we simulate often poorly approximate the real physics of such complex systems. Using the recently
+developed SHallow REcurrent Decoder (SHRED) architecture [5, 6, 7], we demonstrate a data-driven method
+for (i) updating a SHRED model to reality when trained only on simulations and (ii) additionally learning
+the missing physics of the simulation proxy. Our data assimilation SHRED (DA-SHRED) thus provides
+an effective algorithm for closing the SIM2REAL gap in many complex systems, as demonstrated in the
+challenging examples presented here which include applications in rocket engines, chemical reactors and
+turbulent flows.
+Data assimilation has become the leading method for closing the SIM2REAL gap across science and
+engineering [8], with extensive theoretical and computational developments over the past two decades [9,
+10]. Based upon Kalman filtering, data assimilation is potentially one of the most useful and broadly
+deployed data-driven modeling technique available today as we are rarely without access to some underlying
+governing equations or without experimental measurements. By assuming that both the model used and
+the measurements acquired have known error distributions, ensemble Kalman filtering methods [11, 12] can
+be used to generate optimal statistical predictions. Weather forecasting has been revolutionized by data
+assimilation, with state-of-the-art methods like the 4DVAR architecture [13, 14] providing a remarkable
+improvement in our modern forecasting capabilities. Data assimilation, however, does not typically use the
+SIM2REAL mismatch to learn updates to the underlying model. Thus the SIM2REAL gap often persists.
+Discrepancy modeling for dynamic systems [15, 16, 17] attempts to address this issue by using the SIM2REAL
+gap to propose updates to the underlying model in order to correct the physics towards reality. Discrepancy
+modeling is thus driven by sensor measurements which are a direct assessment of reality modulo noise or bias
+in the measurements. A challenge for both data assimilation and discrepancy modeling is that simulations
+allow access to all variables at all spatial and temporal points of a computational mesh or grid. In contrast,
+discrete temporal measurements of reality are typically only acquired at a limited number of spatial positions,
+and typically only a subset of the variables are actually observed. Thus the goal of updating the underlying
+PDE (governing equations) is exceptionally challenging, with only limited methods proposed thus far.
+The DA-SHRED algorithm proposed here, illustrated in Fig. 1, is based upon the SHRED architecture [5,
+2
+Simulation Reality
+State Space
+Sensor Data
+Data Matrix
+Sensor Matrix
+Sampling Matrix
+Governing Equations
+Eigenvalue Problem (linear)
+uk=u(x,tk)∈ℝn×1 u′ k=u′ (x,tk)∈ℝn×1
+sk=Muk∈ℝp×1 s′ k∈ℝp×1
+X=[u1u2⋯up]∈ℝn×m X′ =[u′ 1u′ 2⋯u′ p]∈ℝn×m
+S=[s1s2⋯sp]∈ℝp×m S′ =[s′ 1s′ 2⋯s′ p]∈ℝ(p+q)×m
+M∈ℝp×n
+ut=Lu orut=N(u,x,t) u′ t=(L+L′ )u′ oru′ t=M(u′ ,x,t)
+Lψn=λnψn (L+L′ )ψ′ n=λ′ nψ′ n
+Figure 2: Summary of variables, data and models used in the DA-SHRED formulation. The state space is of
+dimension n, there are m snapshots of temporal measurements using p sensors for SHRED training with an additional
+q sensors deployed in reality.
+6, 7] which leverages three key mathematical concepts: (i) the separation of variables, (ii) Takens embed-
+ding theorem, and (iii) a decoding only strategy. Separation of variables is the foundation of many analytic
+solutions techniques for solving PDEs and it has been deployed as the infrastructure for numerical time
+stepping methods for PDEs. Takens’ embedding theorem states that the time-history information at a single
+measurement location can provide a diffeomorphic representation of the entire state-space of a dynamical
+system. With modern machine learning, this diffeomorphism can be learned with training data. Finally, the
+decoding only strategy avoids the ill-conditioned learning of inverse operators required of standard autoen-
+coder/decoder pairs. In combination, they provide SHRED with a robust framework for sensing [5], model
+reduction [6], and physics discovery [7]. The innovations presented here leverage the SHRED architecture to
+not only close the SIM2REAL gap, but to also learn the missing physics in the original simulations. SHRED
+is trained initially on the simulation data, and then updated by the acquisition of temporal sensor data
+deployed on the real physical system. This gives an optimization pathway for updating the weights of the
+DA-SHRED model trained on simulation to minimize the error between the sensors observations and the
+SHRED predictions at the sensor locations. In addition to minimizing the SIM2REAL error, the updated
+DA-SHRED model can then be used to estimate the missing physics terms which are responsible for the
+error in the SIM2REAL gap. Specifically, the latent space of the DA-SHRED architecture is embedded with
+a sparse identification of nonlinear dynamics (SINDy) [18, 19] loss functional in order to extract the parsi-
+monious missing physics from a library of potential candidate terms. Thus we propose a 2-stage scheme for
+both data assimilation and discrepancy modeling. The success of the method is demonstrated on a number
+of challenging models that include the 2D Kuramoto-Sivanshinsky equations, the 2D Kolmogorov flow, the
+2D Gray-Scott reaction-diffusion equations, and a rotating detonation engine example. In each case, the
+DA-SHRED is shown to be effective in closing the SIM2REAL gap and learning the missing physics. The
+algorithm is further robust to noise, requires only minimal training data, and can be trained in a compressive
+framework which allows for efficient laptop level computing.
+2 The Data-Assimilation SHRED (DA-SHRED) Architecture
+The overall goal is to close the SIM2REAL gap using the underlying SHRED architecture [5]. Specifically,
+can we formally show that this can be done under suitable assumptions outlined here. Thus given simulation
+data X for training a SHRED model, can we estimate the full state-space of real data X′ given only limited
+3
+point sensor measurements of reality S′. Or more formally:
+input: X , S′
+output: X ′
+Or more precisely, we want a model mapping reality measurements to reality full-state estimates
+X′ = Fθ(S′) (1)
+where we will learn a neural network model F with weights θ from training on simulation data X and
+updating it to match reality at the p + q sensors deployed in reality. Additionally, we can also perform the
+following discrepancy modeling task with the DA-SHRED architecture:
+input: X , S′
+output: X ′, L′
+Thus we not only update the simulation to reality by learning Fθ, but we also explicitly learn the missing
+physics term L′ using the SINDy method [18, 16].
+2.1 Linear, constant coefficient PDEs
+For this case, we can explicitly compute how the DA-SHRED architecture is able to update the model to
+data. The dynamics of the linear PDE model approximating reality are given by the governing equations
+ut = Lu (2)
+with some specified boundary conditions. Note that we don’t actually know the evolution equations for u′.
+For constant coefficient operator L and the corresponding reality model L + L′ (See Fig. 2), solutions can
+be easily calculated via separation of variables (approximated with N modes) so that
+u =
+NX
+n=1
+anψn exp(λnt) (3)
+and
+u′ =
+NX
+n=1
+a′
+nψ′
+n exp(λ′
+nt). (4)
+The problem: we don’t actually know the triplet a′
+n, ψ′
+n, λ′
+n since we don’t know L′. It was shown in [6] that
+we can solve the sensor boundary value problem (SBVP) using point measurements and time trajectories at
+arbitrary sensor locations to uniquely determine the an in (3). This is instead of of the standard initial value
+problem (IBVP) which requires the entire state-space be known at a given instance of time for solving the
+PDE and determining the an.
+Assuming that the solution of (5) can be approximated by the basis of (3), the solution for u′ is instead
+given by:
+u′ =
+NX
+n=1
+a′
+nψn exp(λ′
+nt). (5)
+Then we would use S′ to update the simulation values to reality by computing a′
+n and λ′
+n from these
+measurements. As shown in [6], this can be done with simple linear algebra. Thus the SIM2REAL gap can
+be shown to be explicitly closed for linear, constant coefficient PDEs provided a common basis is sufficient
+for the approximation.
+This gives a theoretical construct for understanding how the DA-SHRED architecture works. Additional
+complexity arises for nonlinear PDEs. If they are weakly nonlinear PDEs, then under mild assumptions,
+the above arguments hold perturbatively. For strongly nonlinear dynamics, DA-SHRED is enacted compu-
+tationally to show that the arguments above hold. This will be shown in the four challenging examples of
+this paper. Importantly, the underlying assumption in all these cases is that the learned decoder bases of
+4
+the simulation remain a good approximation basis for real physics. Otherwise, updating the bases to reality
+also needs to be considered.
+As a final point, we highlight how the missing physics is found. This is done by using a SINDy regression
+to model the missing physics [18, 15, 16]:
+L′ = Θξ (6)
+where Θ is the library of candidate functions and ξ is the loading vector which is required to be sparse.
+We should be easily able to do this as this is directly related to what has been done previously for learning
+discrepancy terms [15, 16].
+As noted previously, if the basis representation shifts significantly between the simulation model and
+reality, then the decoder must be updated to more accurately represent the reality basis modes. This
+remains challenging to do as there are no measurements for the reality modes, only a limited number of
+point measurements. Thus the DA-SHRED model has no capability of modeling this out-of-distribution
+data. This is beyond the scope of the current work. However, in the models considered here, the assumption
+of using the basis learned from the simulation data appears to be sufficient to give highly accurate models.
+2.2 Port-Hamiltonian Systems
+Port-Hamiltonian systems (PHS) are a framework for modeling physical dynamics that exhibit energy con-
+servation, interconnection and dissipation structures. Originating from classical Hamiltonian mechanics,
+PHS models have been formalized largely in the past two decades as an extension for modeling interactions,
+dissipation and enabling control inputs.
+The input-state-output PHS, with no constraint on the state space variables, is typically represented in
+terms of the following equation[20]:
+˙x = (J(x) − R(x))∂H
+∂x + g(x)u
+And the output equation is:
+y = gT (x)∂H
+∂x
+where u and y are input–output pairs, H(x) is a Hamiltonian function, J(x) is skew-symmetric ( JT (x) =
+−J(x)), R(x) is a symmetric positive semi-definite dissipation matrix ( R(x) = RT (x) ≥ 0) that specifies a
+resistive structure, and g is the input matrix.
+Theorem 1 (Persistence of PHS form under natural perturbations). Let (17) be a PHS on a simply connected
+domain X. Consider perturbations ∆J, ∆R, ∆G (matrix fields) and a 1-form perturbation δ so that the
+perturbed dynamics are
+˙x =
+ 
+(J + ∆J) − (R + ∆R)
+ 
+∇H + δ
+
++ (G + ∆G)u.
+Assume:
+1. ∆J is skew-symmetric on X,
+2. ∆R is symmetric and small enough on compact subsets to keep R + ∆R ⪰ 0,
+3. δ is closed: dδ = 0 on X.
+Then there exists eH = H + ε with dε = δ and
+eJ := J + ∆J, eR := R + ∆R, eG := G + ∆G
+such that the perturbed system can be written globally in PHS form
+˙x = ( eJ − eR)∇ eH + eG u.
+5
+simulation real physics DA-SHRED
+t=12
+t=15
+L′ = {(u, ∇u)} L′ = {(u, ∇u, ∇3u)}
+(a) (b) (c)
+(d)
+Figure 3: The result of 2D damped Kuramoto-Sivashinsky equation. Figures on the same row are taken at the
+same timestep. The left column (a) represents the undamped simulation model (2D KS equation without damping);
+the middle column (b) represents unknown real physics (2D KS equation with damping); and the right column (c)
+represents state space restored by DA-SHRED. The error for the DA-SHRED correction to reality is shown in (d)
+where an order of magnitute improvement in accuracy is achieved within T = 20.
+In an eigenspace-preserving PHS, the evolution of the dynamics is maintained within a specific decompo-
+sition of the state space. Such invariant could be useful in multiple fields including structured mechanical[21],
+electrical[22], or fluid [23] systems where distinct eigenmodes are expected under the PHS structure. In prac-
+tice, the preservation of eigenspaces in port-Hamiltonian systems often involves the careful design ofJ and R
+matrices, such that the transformation follows the spectral properties of the Hamiltonian [24]. Importantly,
+the PHS is a broad class of systems for which the decocder space is preserved and invariant. Thus training
+DA-SHRED on PHS allows the decoder to discover an approximation of the invaraiant space.
+3 Results
+DA-SHRED provides an effective algorithm for closing the SIM2REAL gap in many complex physical sys-
+tems, as demonstrated in the challenging examples presented here which include applications in rocket
+engines, chemical reactors and turbulent flows. These examples generalize the underlying theory presented
+in the preceding section and establish the effectiveness of the algorithm on highly nontrivial spatio-temporal
+systems.
+3.1 2D damped Kuramoto–Sivashinsky equation
+The first example considered is the 2D version of the damped Kuramoto-Sivashinsky (2DKS) equation [25,
+26]. The KS equation is one of the simplest canonical PDE models that produces spatio-temporal chaos.
+It models a wide range of phenomena including instabilities of a laminar flame fronts, the dynamics of thin
+liquid films on inclined plane, and trapped-ion instabilities in a plasma. The typical 2DKS, whose dynamics
+are illustrated in Fig. 3, is given by the evolution equation
+ut + 1
+2|∇u|2 + ∇2u + ν∇4u = 0. (7)
+We assume this to be our model of reality. However, the true physics in our example will be given by a
+damped version of the 2DKS [27] which is given by
+u′
+t + 1
+2|∇u′|2 + ∇2u′ + ν∇4u′ + (v · ∇)u′ − γu′ = 0 (8)
+6
+with the additional damping term ( v · ∇)u′ − γu′. These additional terms represent the discrepancy from
+reality that must be learned in order to produce an effective model for prediction and characterization. Thus
+DA-SHRED must first learn how to map from u to u′ before eventually learning the additional damping
+terms. Without loss of generality, we set the parameter ν = 1. Figure 3 exhibits the 2D evolution at times
+t = 12 and t = 15 on a domain of size x ∈ [0, 64] × y ∈ [0, 64]. The panels display the true physics (20)
+(middle panels (b)) in comparison with the simulation of presumed reality (7) (left panels (a)) and the
+DA-SHRED improvement to reality (right panels (c)). Importantly, not only does the DA-SHRED close
+the SIM2REAL gap, but it does so in almost real time as shown by the red error plot in the right panel
+(d) of Fig. 3. In contrast, the simulation model approximating reality continues to diverge from the true
+dynamics as shown by the blue error curve. The behavior exhibited for the 2DKS is representative of all the
+other models considered here, i.e. the DA-SHRED architecture can be deployed to quickly update the model
+predictions and close the SIM2REAL gap. Specifially, within a short evolution window, the DA-SHRED
+closes the SIM2REAL gap by approximately an order of magnitude in the error. And as will be shown in
+the next section, the DA-SHRED architecture further allows for learning of the unknown discrepancy term
+of reality L′. This will be discussed in the algorithms of the next section.
+3.2 2D Kolmogorov flow
+In the second example we consider the two-dimensional (2D) Kolmogorov flow, which is a canonical model in
+fluid dynamics. Originally introduced by Arnold and Meshalkin in the 1960s to study hydrodynamic stability
+under periodic forcing [28, 29]. It is governed by the incompressible Navier–Stokes equations subject to a
+sinusoidal body force, typically expressed as f(x, y) = F sin(ky) ˆx, which induces a laminar base flow that
+can lose stability as the Reynolds number increases. Despite its conceptual simplicity, the 2D Kolmogorov
+flow exhibits a rich spectrum of dynamical behaviors, including secondary instabilities, chaotic attractors,
+and quasi-periodic motion [30]. These features make it an ideal platform for investigating the mechanisms
+underlying turbulence transition and the emergence of coherent structures in two-dimensional flows [31, 32].
+The system’s fully periodic boundary conditions and analytically tractable base state allow detailed numerical
+and theoretical studies of bifurcation sequences and energy transfer across scales [32, 33]. More recent work
+has employed the Kolmogorov flow as a benchmark for reduced-order modeling, instability analysis, and
+prediction of extreme events such as rogue waves [34].
+In what follows, the 2D Kolmogorov flow is used as a fundamental testbed for understanding the per-
+formance of DA-SHRED. Our simulation model is a 2D Navier–Stokes equation with Kolmogorov forcing,
+which is given by
+∂u
+∂t + u · ∇u + ∇p = ν∇2u + F,
+∇ ·u = 0
+(9)
+where u is a two-dimensional velocity field, with pressure p, forcing F and viscosity ν = 1
+Re
+. Reformulated
+in terms of vorticity ω = ∇ ×u, the governing equation can be rewritten as [35]
+∂ω
+∂t + u · ∇ω = ν∇2ω + f,
+∇u = 0
+(10)
+This gives a model of idealized 2D Kolmogorov flow. The true physics is similarly assumed to be a damped
+version of the 2D Kolmogorov flow, given by
+∂ω′
+∂t + u′ · ∇ω′ + αω′ = ν∇2ω′ + f,
+∇u′ = 0
+(11)
+with ν = 0.01, linear damping coefficient α = 0.12, and f = µ sin(y) where µ is the forcing amplitude.
+Figure 4 exhibits the 2D Kolmogorov evolution of the x and y components of velocity (top and bottom
+panels respectively) on the domain x ∈ [0, 64] × y ∈ [0, 64] for times t = 30 and t = 35. As displayed
+previously, the panels show the true physics (11) (middle panels (b)) in comparison with the simulation of
+presumed reality (10) (left panels (a)) and the DA-SHRED improvement to reality (right panels (c)). As
+7
+simulation real physics DA-SHRED
+t=35.0
+t=30.0
+L′ = {(ω)} L′ = {(ω, ω∇2ω)}
+Figure 4: The result of 2D damped Kolmogorov flow. Figures on the same row are taken at the same timestep. The
+left column represents the undamped simulation model (2D Kolmogorov flow without damping); the middle column
+represents unknown real physics (2D Kolmogorov flow with linear damping); and the right column represents state
+space restored by DA-SHRED.
+with the 2DKS, not only does the DA-SHRED close the SIM2REAL gap, but it does so in almost real time
+as shown by the error plot in the right panel (d) of Fig. 4. The error plots show the short-time and long-time
+decay of the error as the DA-SHRED continues to refine the solution approximation to reality.
+It is important to emphasize that achieving the strong DA-SHRED restoration performance in this
+example required a relatively larger number of randomly placed sensors ( p + q = 20) for the real physics
+to adequately span the state space. By contrast, the simulation model is more forgiving - a conventional
+SHRED architecture can often reconstruct the full state space using only a few sensors ( p = 3), since the
+simulation is self-consistent and lacks the SIM2REAL discrepancies presented in real physics.
+When the number of sensors in the real physical system is low, it is still possible to match the sensor
+measurements reasonably well. However, this is often achieved through a reformulation of the latent space,
+which produces a low loss at the sensor level but can correspond to major differences in the full-field restora-
+tion. One potential source of these discrepancies is the nontrivial transient stage of the system - the SHRED
+may overfit to the transient behavior captured by the sensors, or conversely overfit to steady-state patterns,
+depending on which phase dominates the limited sensor data. Critically, because the true physical state
+remains unobserved at the state-space level in our problem setting, there is no straightforward way to detect
+these discrepancies. In other words, insufficient sensors may lead not only to inaccurate discrepancy models
+but also to a false sense of confidence, since standard sensor-based metrics may appear acceptable.
+Increasing the number of excess sensors q therefore plays a crucial role in closing the SIM2REAL gap.
+In practice, additional sensors provide broader coverage of state-space regions where the system exhibits
+relatively silent or weakly active dynamics, such as during nontrivial transient stages. By including these
+regions in the sensor set, the SHRED is less likely to overfit to specific patterns in the active transients,
+reducing latent-space misalignment and improving the robustness of full-field restoration. In this experiment,
+8
+simulation real physics DA-SHRED
+L′ = {(U2V )} L′ = {(U2V, V3)}
+L′ = {(V 2)} L′ = {(V 2, UV, V3)}
+Figure 5: The result of 2D damped Grey Scott model. The left figure represent the undamped simulation model;
+the right one represents the real model and the bottom one represents the DA-SHRED result towards convergence.
+the total number of sensors could be further reduced ( p + q = 10) with additional strategies - for example,
+with prior knowledge about the transition from transient to steady-state behavior together with reweighting
+techniques that prioritize steady-state patterns.
+It is worth noting that in the 2D Kuramoto–Sivashinsky equation studied above, the transient stage
+was relatively silent, and thus the DA-SHRED architecture was less sensitive to sensor placement. In more
+general systems, however, transient dynamics can be highly nontrivial, and without prior knowledge of when
+the flow transitions to a steady-state, one must rely on a denser sensor network to ensure reliable restoration.
+In these cases, increasing the number of sensors deployed for real physics(q) is a practical safeguard to capture
+the latent dynamics and close the gap for SIM2REAL discrepancies.
+3.3 2D reaction-diffusion system
+The third example we consider is the two-dimensional (2D) Gray–Scott reaction–diffusion model, which is a
+prototypical system for studying pattern formation and spatiotemporal dynamics in nonlinear chemical and
+biological systems. Originally derived as a simplified representation of autocatalytic chemical reactions [36],
+the model describes the interaction between two chemical species, U and V , undergoing local reactions and
+diffusive transport. The governing equations take the form
+∂U
+∂t = Du∇2U − UV 2 + F(1 − U), ∂V
+∂t = Dv∇2V + UV 2 − (F + k)V (12)
+where Du and Dv are diffusion coefficients, while F and k represent feed and removal rates, respectively.
+Depending on parameter choices and initial conditions, the Gray–Scott model exhibits a wide variety of
+self-organized patterns — including spots, stripes, labyrinths, and oscillatory structures [37, 38]. It has since
+become a canonical system for exploring nonlinear instabilities, Turing mechanisms, and pattern formation
+9
+in reaction–diffusion dynamics [39, 40, 41, 42]. The simplicity and rich phenomenology of the Gray–Scott
+equations make them an essential benchmark for numerical experiments, data assimilation, and reduced-order
+modeling of spatiotemporal processes [43]
+The true physics is similarly a damped version of it, given by
+∂U ′
+∂t = Du′∇2U′ − U′V ′2 − αV ′2 + F(1 − U′), ∂V ′
+∂t = Dv′∇2V ′ + U′V ′2 − (F + k)V ′ (13)
+with damping coefficient α, and f, k are feed and kill rates, respectively. Simulation results for this are given
+by the top rows of Fig. 5. As before, the real physics for U and V is given by the middle row of panels,
+the left panels are our simulation of reality, and the right panels are the DA-SHRED updates with the error
+curves given in the far right.
+In a second discrepancy modeling experiment, we make the damping term a functional involving both
+parameters as following
+∂U ′
+∂t = Du′∇2U′ − U′V ′2 − βU ′2V ′ + F(1 − U′) ∂V ′
+∂t = Dv′∇2V ′ + U′V ′2 − (F + k)V ′ (14)
+with damping coefficient β, and f, k are feed and kill rates, respectively. The results of this SIM2REAL
+gap and the ability of DA-SHRED to close the gap is given in Fig. 5 (bottom panels). Consistent with the
+previous case, the middle panels show the true dynamics of U and V , the left panels present our simulated
+result, and the right panels depict the DA-SHRED reconstructions with corresponding error curves in the
+outermost column.
+3.4 Rotating Detonation Engines (RDEs)
+Over recent decades, the concept of rotating detonation engines has emerged as a pathway towards realizing
+pressure-gain combustion for propulsion and power-generation systems. Unlike conventional deflagration-
+based combustion, which proceeds subsonically at nearly constant pressure, RDEs sustain supersonic det-
+onation fronts that continuously propagate in the azimuthal direction of an annular combustor. It enables
+rapid and efficient energy release, offering potential improvements in thermal efficiency and specific impulse
+compared with constant-pressure Brayton-cycle engines. [44]
+The applications of RDEs has been most prominently investigated for aerospace applications, especially
+air-breathing and rocket propulsion systems. In rocket propulsion, RDEs have demonstrated the capacity
+to improve specific impulse and reduce propellant consumption due to their inherently higher stagnation
+pressures compared to conventional combustors. In air-breathing engines, they offer compact architectures
+with reduced turbomachinery requirements and enhanced fuel efficiency [45]. Moreover, RDEs are also being
+explored for stationary power generation, particularly as a means of improving gas-turbine cycle performance
+and reducing fuel consumption [46].
+The modeling of RDEs requires capturing the coupled dynamics of compressible flow, shock propagation,
+and chemical reactions within an annular channel [48, 49, 50]. Such coupled processes have been analyzed in
+both experimental and numerical studies of RDEs, revealing the intricate interplay between detonation fronts
+and the reacting flow field [51, 52] and showing a diverse range of bifurcations and instabilities [50] that are
+characteristic of damp-driven systems [53]. These processes occur over disparate spatial and temporal scales,
+where detonation fronts propagate at supersonic speeds while chemical reactions and mixing evolve on much
+smaller scales. The interaction between the detonation front, the unsteady flow field, and the continuous
+injection of reactants produces strong pressure and temperature gradients that challenge conventional steady-
+state or quasi-one-dimensional assumptions [54]. Even simplified flow geometries exhibit complex wave
+structures. As discussed in recent thermodynamic analyses of RDE [49], the inherently transient nature
+of detonation waves and their sensitivity to boundary conditions, injector dynamics, and heat release make
+numerical modeling both computationally demanding and physically intricate. Accurately representing these
+multi-physics couplings is therefore essential to predict the thermodynamic trends, stability, and efficiency of
+RDE operation. To reduce this complexity while retaining the essential detonation dynamics, the following
+simplified 1D model is considered, which captures the primary propagation behavior of the detonation front.
+10
+simulation real physics DA-SHRED
+L′ = {(u, u3)} L′ = {(u, u3, λ2u)}
+L′ = {(u)} L′ = {(u)}
+Figure 6: The annotated figure on the left is from Koch’s et al [47] depicting the canonical flowfield of the Rotating
+Detonation Engine. The figures on the right depict DA-SHRED result of 1D damped RDE model. One simulation
+model is deployed on two different real physics settings, and the rightmost column represents the corresponding
+two DA-SHRED results towards convergence. The RMSE of the simulation model versus the DA-SHRED model is
+provided on the bottom left.
+∂u
+∂t + u∂u
+∂x = q k(1 − λ)e
+u−uc
+α − ϵu2 (15a)
+∂λ
+∂t = k(1 − λ)e
+u−uc
+α − β(u, up, s)λ (15b)
+The first equation describes energy input output and the second equation describes gain depletion and
+recovery, where up is the injection threshold parameter and β(u, up, s) = sup
+1+er(u−up) .
+Data assimilation problems with RDEs are often difficult because the state estimations have to contend
+with the highly nonlinear, discontinuous, and transient nature of detonation waves. Even for the simplified
+simulation model, the PDEs are not only nonlinear but also extremely sensitive to initial and boundary
+conditions. The presence of steep gradients at the detonation front further challenges our ability to close
+the gap between simulation and reality as slight errors can easily propogate and lead to different modes and
+instabilities. Therefore, data assimilation must not only correct the evolving state but also converge on the
+inferrence of the damping parameters. Parameter estimation in such nonlinear, stiff systems are notoriously
+unstable.
+In this example, we use the above system of equations as the simulation model, while the real physics
+is a damped version. We explored three different damping scenarios, given by adding a diffusive effect on
+overall energy, perturbing the gain depletion, and perturbing the energy output. The true physics model we
+construct is the following governing set of equations
+∂u′
+∂t + u′ ∂u′
+∂x = q k(1 − λ′)e
+u′−u′
+c
+α − ϵu′2 + ϵ2(u′ − u′3) (16a)
+∂λ′
+∂t = k(1 − λ′)e
+u′−u′
+c
+α − β(u′, u′
+p, s)λ′. (16b)
+11
+Figure 7: The full list of missing terms L′ in real physics compared to our DA-SHRED restoration L′ for the
+experiments outlined in the previous section. The two columns illustrating the recovery highlight the trade-off
+between targeting the reduction of RMSE (middle column) and sparsity (right column). With an unknown L′, a
+balance between RMSE and sparsity must be hyper-parameter tuned for the best discrepancy model.
+Simulations of reality and the computational model are given in Fig. 6 for two different discrepancy models.
+Figure 6 shows how the DA-SHRED model can successfully track the detonation front without delays
+while keeping the conservation structure of the governing equations. When distortions are not too strong and
+abrupt, perturbations of different kinds can be reconciled well with the data assimilation model. As before,
+the real physics for U (red line) and λ (blue line) are given by the middle row of panels, the left panels are
+our simulation of reality, and the right panels are the DA-SHRED updates with the error curves given in the
+bottom left. As illustrated in every model considered, the DA-SHRED quickly lowers the SIM2REAL error
+by an order of magnitude as data is collected.
+4 Discrepancy Modeling with DA-SHRED
+In the DA framework introduced above, the SIM2REAL gap is modeled as the discrepancy between the
+simulation model ut = N(u, x, t), which captures the approximate governing physics, and the real, unknown
+dynamics u′
+t = M(u′, x, t) = N(u′, x, t) + L′(u′, x, t), where L′ denotes a small, state-space dependent
+perturbation term that encodes the unknown or unresolved physics. While the data assimilation step reduces
+the effective mismatch between the two systems, it does not in itself provide the explicit functional structure
+of the missing physics. Recovering the exact form of the missing functional terms L′ remains an open inverse
+problem. To address this challenge, we present below two SINDy-based [18] algorithms that augment the
+DA-SHRED framework and aim to identify the unknown terms directly from SIM2REAL trajectories by
+sparse regression (6).
+In practical settings, the recovery of L′ has an inherent trade-off between predictive accuracy and struc-
+tural sparsity. As shown in the original SINDy formulation [18], models that achieve extremely low prediction
+error often do so by selecting additional terms in the library to lower RMSE, effectively over-parameterizing
+the dynamics. Similarly, the DA-SHRED model that minimizes RMSE tends to incorporate additional can-
+didate functions - reflecting noise, numerical artifacts, or overfitting to uninformative directions - resulting
+in expressions that may deviate from the true physical process. However, identifying the stopping point
+for sparsification remains challenging, as excessive sparsity risks eliminating essential operators, whereas
+12
+Algorithm 1 Compressed search SINDy
+Input:
+A simulation model ˙u = N(u, x, t)
+A multivariate time-series of simulation state space {ui}m
+i=1 and corresponding sensor measurements of the
+system {si}m
+i=1
+A multivariate time-series of real state space {u′
+i}m
+i=1 and corresponding sensor measurements of the system
+{s′
+i}m
+i=1
+A DA-SHRED architecture G({s′
+i}t
+i=t−k; WR) = T (G({si}t
+i=t−k; WS); WT ) and a shallow decoder F for
+restoration from the compressed latent space
+A library of functional candidates Θ = {θj}n
+j=1
+Algorithm:
+At time step t, perform the following
+Generate ˜u′
+t = F(G({s′
+i}t
+i=t−k; WR)) of the current restored real state space
+Compute ˜u′
+t,j = ˜u′
+t−1,j + (N(˜u′
+t−1,j, x, t) + θj(˜u′
+t−1,j, x, t))dt of perturbed state space
+Acquire proxies in the latent space using the trained SHRED model Gt( ˙u) = G(˜u′
+t; WS) and
+Ht(Θ) = G({˜u′
+t,j}n
+j=1; WS)
+Optimize ξ ∈ argminξ 1
+2 ||Gt( ˙u) − Ht(Θ)ξ||2
+2 + K(ξ), where K(ξ) = ||ξ||1 is a regularizer chosen to promote
+sparsity in ξ. It can be solved by sparsity-promoting SINDy method
+insufficient sparsity retains spurious terms. This characteristic tradeoff is illustrated in in Figure 7, where
+sparser DA–SHRED reconstructions more accurately recover the true governing operators despite yielding
+slightly worse numerical fits to the data in regards to RSME.
+The ability to determine how many terms are missing from the simulation model N(u′, x, t) depends
+critically on available physical prior knowledge. In systems derived from well-studied PDEs, symmetry
+arguments, conservation laws, or known operator hierarchies, the missing physics can be constrained within
+a small set of candidate terms, such as higher-order diffusion, nonlinear advection, or corrections in the
+form of divergence. In these situations, classical closure models and scale-separation theory [55, 56] often
+provide clear expectations about the number and type of missing contributions, making sparse discovery
+more reliable.
+Conversely, in systems where external forcing, boundary interactions, unmeasured actuation, or nonlocal
+effects play a dominant role, little or no prior knowledge exists regarding the dimensionality of the missing
+operator space. In such cases, the accuracy–sparsity trade-off becomes even more influential, and overfitting
+or underfitting risks are elevated due to the lack of constraints on the candidate library.
+4.1 In the compressed space
+The first algorithm we propose is a SINDy-based regression procedure applied directly to the difference
+dynamics expressed in the compressed (latent) space. In a well-behaved DA–SHRED assimilation, we ob-
+tain accurate latent-space representations of both the simulation operator N(u′, x, t) and the real dynamics
+M(u′, x, t) = N(u′, x, t) + L′. Consequently, the discrepancy between these two representations - in the
+form of a latent-space difference matrix -encodes the action of the missing physics projected onto the com-
+pressed manifold. Recovering the physical operators responsible for this discrepancy reduces the algorithm
+to identifying the functional terms whose latent-space signatures reconstruct this difference. This motivates
+the use of sparsity-promoting regression to extract only the dominant contributors.
+To accomplish this, we first evaluate the compressed reassembly of every candidate functional in the
+original library by pushing each operator through the encoder and computing its corresponding action in
+latent space. This yields a transformed library whose columns represent how much each candidate operator
+influences the compressed coordinates. With this latent-space library in hand, we then apply a sparsity-
+promoting SINDy regression to determine the minimal combination of candidate operators whose compressed
+signatures reconstruct the observed difference dynamics. The resulting sparse coefficient vector identifies the
+specific physical functionals that together constitute L′, thereby completing the discrepancy modeling.
+13
+Algorithm 2 Compressed advancing SINDy
+Input:
+A simulation model ˙u = N(u, x, t)
+A multivariate time-series of simulation state space {ui}m
+i=1 and corresponding sensor measurements of the
+system {si}m
+i=1
+A multivariate time-series of real state space {u′
+i}m
+i=1 and corresponding sensor measurements of the system
+{s′
+i}m
+i=1
+A DA-SHRED architecture G({s′
+i}t
+i=t−k; WR) = T (G({si}t
+i=t−k; WS); WT ) and a shallow decoder F for
+restoration from the compressed latent space
+A library of functional candidates Θ = {θj}n
+j=1
+Algorithm:
+At time step t, perform the following -
+Generate ˜u′
+t = F(G({s′
+i}t
+i=t−k; WR)) of the current restored real state space
+Compute ˜u′
+t,j = ˜u′
+t,j + Pm
+i=1 θj(˜u′
+t,j, si, t)dt of possible local perturbations at sensor locations
+Acquire proxies in the latent space using the trained SHRED model
+Gt( ˙u) = (G({s′
+i}t+1
+i=t+1−k; WR) + G({s′
+i}t
+i=t−k; WR) and Ht(Θ) = G({˜u′
+t,j}n
+j=1; WS) − G(˜u′
+t; WS)
+Optimize ξ ∈ argminξ 1
+2 ||Gt( ˙u) − Ht(Θ)ξ||2
+2 + K(ξ), where K(ξ) = ||ξ||1 is a regularizer chosen to promote
+sparsity in ξ. It can be solved by sparsity-promoting SINDy method
+4.2 Advancing in the compressed space
+For certain state spaces, the limitations of the above algorithm become apparent. First, computing the com-
+pressed response of every perturbation functional defined on the original state space can be computationally
+demanding, especially when the functional library is large or when high-dimensional fields must be encoded
+repeatedly. Second, because the algorithm relies on derivatives obtained via finite-difference or interpolation
+schemes, the resulting numerical artifacts may be amplified during compression. This noise propagation can
+corrupt the latent-space representations and ultimately prevent the sparse regression from converging to a
+stable solution. These issues highlight the need for alternative formulations that avoid noise accumulation
+and reduce the computational burden associated with evaluating the full scale operator library.
+To address the limitations above, we propose a second SINDy-based algorithm that avoids operating
+on the difference matrix formed from compressed reassemblies. Instead, this method constructs the target
+regression signal directly from timestep-to-timestep differences in the latent space. By focusing on the
+temporal increments of the trajectory, the algorithm bypasses the need to repeatedly evaluate and compress
+the full operator library, thereby reducing both computational cost and sensitivity to derivative estimates
+and noise.
+Moreover, rather than applying each candidate functional to the entire original state space, we restrict
+the perturbation evaluations to local neighborhoods surrounding the sensor locations. Although these local-
+ized perturbations are not sufficient to reproduce the exact latent-space temporal differences, they provide
+informative proxies whose aggregated behavior reflects the underlying physical corrections present in the
+true dynamics. In practice, these localized operator responses capture the dominant directional influences
+that DA–SHRED extracts with its time-delay embedding, and thus serve as meaningful surrogate signatures
+for sparse regression. By leveraging these localized proxies instead of full-field operator projections, the
+method substantially reduces computational complexity while still enabling the recovery of the functionals
+comprising L′ in the missing physics.
+The results of the recovery algorithms are already presented in Figs. 3–6. Specifically, each of these figures
+shows the true L′ versus the discovered terms of L′ from DA-SHRED. Figure 7 also shows the trade-offs of
+the DA-SHRED algorithm between RMSE and sparsity. Focusing on RMSE can lead to additional terms
+being found in the sparse regression framework. Alternatively, the focus on sparsity tends to recover the
+correct missing physics terms while producing a higher RMSE.
+14
+5 Conclusion and Discussions
+In this work, we introduced the Data Assimilation with Shallow Recurrent Decoder (DA-SHRED) framework,
+a hybrid machine learning and physics-informed architecture designed to bridge the simulation-to-reality
+(SIM2REAL) gap in dynamic systems. By leveraging a reduced-order latent space learned from simulation
+data and deploying it with sparse sensor measurements on the real physical system, DA-SHRED achieves
+accurate state reconstruction and identifies missing physics in complex, nonlinear systems. The framework
+extends the foundational SHRED model by incorporating data assimilation principles and embedding a sparse
+identification of nonlinear dynamics (SINDy) regression within the latent space to extract parsimonious model
+representation of the discrepancy between modeled and observed dynamics.
+Through a series of challenging test cases - including the 2D damped Kuramoto–Sivashinsky equation,
+2D Kolmogorov flow, Gray-Scott reaction–diffusion system, and rotating detonation engine (RDEs) - we
+demonstrated that DA-SHRED model can robustly reconstruct unobserved system states and capture per-
+turbative and damping effects that are absent from the original simulation models. The framework exhibits
+rapid convergence once sufficient temporal information is gathered, even under sparse sensing constraints.
+Notably, in the RDE example, the DA-SHRED model captured broadening behavior of the detonation front
+induced by injector dynamics, emphasizing the framework’s ability to reconcile simplified computational
+models with real-world complexity.
+Theoretically, we established that DA-SHRED preserves the representational structure of the underlying
+system under suitable assumptions. For linear systems, the closure of the SIM2REAL gap can be shown
+analytically, while for nonlinear systems, convergence needs to be validated computationally. Moreover, in
+the supplemental material, we provide further connection to port-Hamiltonian systems which gives a rigorous
+example for understanding eigenspace preservation under perturbations, supporting the assumption that the
+latent basis trained on simulation data remains valid when applied to perturbed real physics.
+Several limitations and potential avenues for future work naturally emerge from this work. The current
+DA–SHRED formulation relies on the assumption that the simulation and real systems share a sufficiently
+similar latent basis. When significant modal shifts occur - due to nonstationary dynamics, regime changes,
+or structural mismatches - the assimilation accuracy may degrade, which in turn complicates the reliable
+discovery of missing functionals. To address this, incorporating adaptive basis updates or transfer-learning
+mechanisms can potentially allow the latent representation to adjust dynamically to new regimes, while
+preserving consistency with previously learned structures.
+An adaptive SHRED framework can extend beyond merely assimilating data into a fixed latent space,
+enabling the model to navigate changing conditions autonomously. For instance, in settings involving non-
+stationary dynamics, changing boundaries, or heterogeneous data quality, new latent embeddings could be
+constrained to remain close to historical structures unless the data provides strong evidence of a regime shift.
+Mechanistically, this could be achieved using multi-timescale updates, such as a fast–slow clock architecture
+with coupled LSTMs or other recurrent networks, allowing rapid adjustments to transient deviations while
+maintaining stability over longer-term trends. Such an approach could enhance robustness to evolving dy-
+namics, improve the fidelity of missing physics discovery, and expand the applicability of DA–SHRED to
+more complex, real-world systems.
+Additionally, multi-scale systems which exhibit dynamics on widely separated temporal or spatial scales
+are particularly challenging to model in the current framework. Fast, high-frequency fluctuations may be un-
+derrepresented in latent embeddings that primarily capture dominant, slow modes. As a result, interactions
+between slow and fast processes - and the missing physics associated with them - can be difficult to accu-
+rately identify and assimilate. Addressing these challenges requires methods capable of resolving multiple
+scales simultaneously, such as scale-aware functional libraries or multi-timescale latent updates. Extensions
+of SINDy designed for multiscale and noisy data settings [57, 58] provide a valuable starting point, but
+their principles need to be leveraged within the SHRED architecture to address similar problems. Stochastic
+systems also pose significant challenges because the underlying deterministic dynamics can be obscured. In
+the current framework, latent embeddings and discrepancy modeling may inadvertently capture noise as
+spurious dynamics and fail to resolve subtle stochastic effects. Prior work on SINDy-type regressions [59]
+provides guidance by demonstrating approaches for identifying both drift and diffusion terms in stochastic
+differential equations, but assimilation efforts on stochastic systems remain fundamentally challenging and
+may require libraries of candidate functions that explicitly include stochastic terms.
+15
+Finally, as recent developments in physics-informed and PDE-aware deep learning architectures have sim-
+ilarly aimed to merge data-driven inference with governing physical constraints [60, 61], data assimilation for
+PDEs with nonlocal constraints still presents significant challenges. Unlike local PDE systems, where updates
+depend primarily on nearby states, nonlocal terms - such as integral or fractional operators - introduce global
+dependencies that complicate the SHRED architecture. This global coupling makes traditional assimilation
+techniques less effective, as small perturbations can propagate and subject to constrains nonlocally, leading
+to instability or slow convergence. Addressing these issues may require specialized reformulations, such as
+hierarchical or multi-resolution representations to separate local and global effects, or latent space embed-
+dings that explicitly capture nonlocal interactions. Such strategies might enable DA-SHRED framework to
+handle a broader class of PDEs with complex, nonlocal dynamics.
+Overall, DA-SHRED demonstrates a powerful synergy between data assimilation, reduced-order mod-
+eling, and physics-informed model discovery. By unifying temporal encoding, sparse sensing, and inter-
+pretable discrepancy modeling within a single architecture, it offers a promising pathway toward real-time,
+data-efficient closure of the SIM2REAL gap in scientific and engineering applications.
+Code and Data
+All code and data can be found at: https://github.com/Capella22/DA-SHRED
+Acknowledgements
+This work was supported in part by the US National Science Foundation (NSF) AI Institute for Dynamical
+Systems (dynamicsai.org), grant 2112085. JNK further acknowledges support from the Air Force Office of
+Scientific Research (FA9550-24-1-0141) and from the AFOSR/AFRL Center of Excellence in Assimilation
+of Flow Features in Compressible Reacting Flows under award number FA9550-25-1-0011, monitored by Dr.
+Chiping Li and Dr. Ramakanth Munipalli.
+References
+[1] Steven L Brunton and J Nathan Kutz. Data-driven science and engineering: Machine learning, dy-
+namical systems, and control . Cambridge University Press, 2022.
+[2] Stefano Riva et al. “Robust state estimation from partial out-core measurements with shallow recurrent
+decoder for nuclear reactors”. In: arXiv preprint arXiv:2409.12550 (2024).
+[3] Sebastian H¨ ofer et al. “Sim2real in robotics and automation: Applications and challenges”. In: IEEE
+transactions on automation science and engineering 18.2 (2021), pp. 398–400.
+[4] Abhishek Kadian et al. “Sim2real predictivity: Does evaluation in simulation predict real-world per-
+formance?” In: IEEE Robotics and Automation Letters 5.4 (2020), pp. 6670–6677.
+[5] Jan P Williams, Olivia Zahn, and J Nathan Kutz. “Sensing with shallow recurrent decoder networks”.
+In: Proceedings of the Royal Society A 480.2298 (2024), p. 20240054.
+[6] Matteo Tomasetto et al. “Reduced order modeling with shallow recurrent decoder networks”. In: arXiv
+preprint arXiv:2502.10930 (2025).
+[7] Mars Liyao Gao, Jan P Williams, and J Nathan Kutz. “Sparse identification of nonlinear dynamics and
+Koopman operators with Shallow Recurrent Decoder Networks”. In: arXiv preprint arXiv:2501.13329
+(2025).
+[8] Kody Law, Andrew Stuart, and Kostas Zygalakis. “Data assimilation”. In: Cham, Switzerland: Springer
+214 (2015), p. 52.
+[9] Geir Evensen. Data assimilation: the ensemble Kalman filter . Springer, 2009.
+[10] Sebastian Reich and Colin Cotter. Probabilistic forecasting and Bayesian data assimilation. Cambridge
+University Press, 2015.
+16
+[11] Geir Evensen. “The ensemble Kalman filter: Theoretical formulation and practical implementation”.
+In: Ocean dynamics 53.4 (2003), pp. 343–367.
+[12] Peter L Houtekamer and Herschel L Mitchell. “Ensemble kalman filtering”. In: Quarterly Journal of the
+Royal Meteorological Society: A journal of the atmospheric sciences, applied meteorology and physical
+oceanography 131.613 (2005), pp. 3269–3289.
+[13] Andrew C Lorenc. “Modelling of error covariances by 4D-Var data assimilation”. In: Quarterly Journal
+of the Royal Meteorological Society: A journal of the atmospheric sciences, applied meteorology and
+physical oceanography 129.595 (2003), pp. 3167–3182.
+[14] Michael Fisher and Erik Andersson. “Developments in 4D-Var and Kalman filtering”. In: (2001).
+[15] Kadierdan Kaheman et al. “Learning discrepancy models from experimental data”. In: arXiv preprint
+arXiv:1909.08574 (2019).
+[16] Megan R Ebers, Katherine M Steele, and J Nathan Kutz. “Discrepancy modeling framework: Learning
+missing physics, modeling systematic residuals, and disambiguating between deterministic and random
+effects”. In: SIAM Journal on Applied Dynamical Systems 23.1 (2024), pp. 440–469.
+[17] Matthew Levine and Andrew Stuart. “A framework for machine learning of model error in dynamical
+systems”. In: Communications of the American Mathematical Society 2.07 (2022), pp. 283–344.
+[18] Steven L Brunton, Joshua L Proctor, and J Nathan Kutz. “Discovering governing equations from data
+by sparse identification of nonlinear dynamical systems”. In: Proceedings of the national academy of
+sciences 113.15 (2016), pp. 3932–3937.
+[19] Samuel H Rudy et al. “Data-driven discovery of partial differential equations”. In: Science advances
+3.4 (2017), e1602614.
+[20] Arjan Van Der Schaft. “Port-Hamiltonian systems: an introductory survey”. In: Proceedings of the
+international congress of mathematicians . Vol. 3. suppl 2. Marta Sanz-Sole, Javier Soria, Juan Luis
+Verona, Joan Verdura, Madrid, Spain. 2006, pp. 1339–1365.
+[21] Alexander Warsewa et al. “A port-Hamiltonian approach to modeling the structural dynamics of
+complex systems”. In: Applied Mathematical Modelling 89 (2021), pp. 1528–1546.
+[22] Hannes Gernandt et al. “Port-Hamiltonian formulation of nonlinear electrical circuits”. In: Journal of
+Geometry and Physics 159 (2021), p. 103959.
+[23] Ramy Rashad et al. “Port-Hamiltonian modeling of ideal fluid flow: Part I. Foundations and kinetic
+energy”. In: Journal of Geometry and Physics 164 (2021), p. 104201.
+[24] Arjan van der Schaft. “Interconnections of input-output Hamiltonian systems with dissipation”. In:
+2016 IEEE 55th Conference on Decision and Control (CDC) . IEEE. 2016, pp. 4686–4691.
+[25] C Jayaprakash, F Hayot, and Rahul Pandit. “Universal properties of the two-dimensional Kuramoto-
+Sivashinsky equation”. In: Physical review letters 71.1 (1993), p. 12.
+[26] Anna Kalogirou, Eric E Keaveny, and Demetrios T Papageorgiou. “An in-depth numerical study of
+the two-dimensional Kuramoto–Sivashinsky equation”. In: Proceedings of the Royal Society A: Math-
+ematical, Physical and Engineering Sciences 471.2179 (2015), p. 20140932.
+[27] Mehdi Dehghan and Vahid Mohammadi. “Two-dimensional simulation of the damped Kuramoto–
+Sivashinsky equation via radial basis function-generated finite difference scheme combined with an ex-
+ponential time discretization”. In: Engineering Analysis with Boundary Elements 107 (2019), pp. 168–
+184.
+[28] V. I. Arnold and L. D. Meshalkin. Seminar on Hydrodynamic Stability. Moscow State University, 1960.
+[29] LD Meshalkin and Ia G Sinai. “Investigation of the stability of a stationary solution of a system
+of equations for the plane movement of an incompressible viscous liquid”. In: Journal of Applied
+Mathematics and Mechanics 25.6 (1961), pp. 1700–1705.
+[30] Nathan Platt, Lawrence Sirovich, and Nessan Fitzmaurice. “An investigation of chaotic Kolmogorov
+flows”. In: Physics of Fluids A: Fluid Dynamics 3.4 (1991), pp. 681–696.
+17
+[31] Uriel Frisch and Andre˘ ı Nikolaevich Kolmogorov.Turbulence: the legacy of AN Kolmogorov. Cambridge
+university press, 1995.
+[32] Gary J Chandler and Rich R Kerswell. “Invariant recurrent solutions embedded in a turbulent two-
+dimensional Kolmogorov flow”. In: Journal of Fluid Mechanics 722 (2013), pp. 554–595.
+[33] Dan Lucas and Rich Kerswell. “Spatiotemporal dynamics in two-dimensional Kolmogorov flow over
+large domains”. In: Journal of fluid mechanics 750 (2014), pp. 518–554.
+[34] Mohammad Farazmand and Themistoklis P Sapsis. “Reduced-order prediction of rogue waves in two-
+dimensional deep-water waves”. In: Journal of Computational Physics 340 (2017), pp. 418–434.
+[35] Vadim Borue and Steven A Orszag. “Numerical study of three-dimensional Kolmogorov flow at high
+Reynolds numbers”. In: Journal of Fluid Mechanics 306 (1996), pp. 293–323.
+[36] Peter Gray and Stephen K Scott. “Autocatalytic reactions in the isothermal, continuous stirred tank
+reactor: Oscillations and instabilities in the system A+ 2B → 3B; B→ C”. In: Chemical Engineering
+Science 39.6 (1984), pp. 1087–1097.
+[37] John E Pearson. “Complex patterns in a simple system”. In: Science 261.5118 (1993), pp. 189–192.
+[38] Kyoung J Lee et al. “Pattern formation by interacting chemical fronts”. In: Science 261.5118 (1993),
+pp. 192–194.
+[39] Ehud Meron. “Pattern formation in excitable media”. In: Physics reports 218.1 (1992), pp. 1–66.
+[40] Marc R Roussel and Jichang Wang. “Pattern formation in excitable media with concentration-dependent
+diffusivities”. In: The Journal of chemical physics 120.17 (2004), pp. 8079–8088.
+[41] YN Kyrychko et al. “Control of spatiotemporal patterns in the Gray–Scott model”. In: Chaos: An
+Interdisciplinary Journal of Nonlinear Science 19.4 (2009).
+[42] Ishtiaq Ali and Maliha Tehseen Saleem. “Spatiotemporal dynamics of reaction–diffusion system and its
+application to turing pattern formation in a gray–scott model”. In: Mathematics 11.6 (2023), p. 1459.
+[43] Fabio Giampaolo et al. “Physics-informed neural networks approach for 1D and 2D Gray-Scott sys-
+tems”. In: Advanced Modeling and Simulation in Engineering Sciences 9.1 (2022), p. 5.
+[44] Piotr Wola´ nski. “Detonative propulsion”. In: Proceedings of the combustion Institute 34.1 (2013),
+pp. 125–158.
+[45] Frank K Lu and Eric M Braun. “Rotating detonation wave propulsion: experimental challenges, mod-
+eling, and engine concepts”. In: Journal of Propulsion and Power 30.5 (2014), pp. 1125–1142.
+[46] Jorge Sousa, Guillermo Paniagua, and Elena Collado Morata. “Thermodynamic analysis of a gas
+turbine engine with a rotating detonation combustor”. In: Applied energy 195 (2017), pp. 247–256.
+[47] James Koch. “Nonlinear dynamics of rotating detonation waves”. PhD thesis. 2020.
+[48] James Koch et al. “Mode-locked rotating detonation waves: Experiments and a model equation”. In:
+Physical Review E 101.1 (2020), p. 013106.
+[49] James Koch and J Nathan Kutz. “Modeling thermodynamic trends of rotating detonation engines”.
+In: Physics of Fluids 32.12 (2020).
+[50] James Koch et al. “Multiscale physics of rotating detonation waves: Autosolitons and modulational
+instabilities”. In: Physical Review E 104.2 (2021), p. 024210.
+[51] Manabu Hishida, Toshi Fujiwara, and Piotr Wolanski. “Fundamentals of rotating detonations”. In:
+Shock waves 19.1 (2009), pp. 1–10.
+[52] Douglas Schwer and Kailas Kailasanath. “Numerical investigation of the physics of rotating-detonation-
+engines”. In: Proceedings of the combustion institute 33.2 (2011), pp. 2195–2202.
+[53] J Nathan Kutz et al. “Universal dynamics of damped-driven systems: the logistic map as a normal
+form for energy balance”. In: arXiv preprint arXiv:2211.11748 (2022).
+[54] Rei Kawashima et al. “A quasi-one-dimensional analytic model of rotating detonation combustors”.
+In: arXiv preprint arXiv:1712.02915 (2017).
+18
+[55] Stephen B Pope. “Turbulent flows”. In: Measurement Science and Technology 12.11 (2001), pp. 2020–
+2021.
+[56] Pierre Sagaut. Large eddy simulation for incompressible flows: an introduction . Springer, 2006.
+[57] Kathleen P Champion, Steven L Brunton, and J Nathan Kutz. “Discovery of nonlinear multiscale
+systems: Sampling strategies and embeddings”. In: SIAM Journal on Applied Dynamical Systems 18.1
+(2019), pp. 312–333.
+[58] Urban Fasel et al. “Ensemble-SINDy: Robust sparse model discovery in the low-data, high-noise limit,
+with active learning and control”. In: Proceedings of the Royal Society A 478.2260 (2022), p. 20210904.
+[59] Lorenzo Boninsegna, Feliks N¨ uske, and Cecilia Clementi. “Sparse learning of stochastic dynamical
+equations”. In: The Journal of chemical physics 148.24 (2018).
+[60] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. “Physics-informed neural networks: A deep
+learning framework for solving forward and inverse problems involving nonlinear partial differential
+equations”. In: Journal of Computational physics 378 (2019), pp. 686–707.
+[61] Nicholas Geneva and Nicholas Zabaras. “Modeling the dynamics of PDE systems with physics-constrained
+deep auto-regressive networks”. In: Journal of Computational Physics 403 (2020), p. 109056.
+19
+Supplemental Material
+A Preservation of the eigenspace
+In the formulation of our model, we made a bold assumption that provided we have enough sensors, the
+real physics in the latent space could be well-represented by the same eigenspace we have for the simulation
+model. Such behavior cannot be easily shown, as introduced in Section 2.1, and may not even hold for
+general dynamical systems. However, for a certain type of dynamical system and damping models that are
+port-Hamiltonian, eigenspaces can be deliberately designed to be preserved, which allow us to use the same
+basis for simulation and perturbed reality[20].
+A.1 A simple case - damped pendulum
+In this example we use a damped pendulum as our real physics to be studied, which is given by:
+˙ω = −g
+l sin(θ) − d
+ml2 ω + u
+ml2
+˙θ = ω
+where θ is the pendulum angle, ω is the angular momentum, d is the damping coefficient, and u is external
+input.
+Therefore, the Hamiltonian function, representing the total energy, is given by
+H(θ, ω) = 1
+2ml2ω2 + mgl(1 − cos θ).
+And in the port-Hamiltonian architecture, the system can be reformulated as:
+ ˙θ
+˙ω
+
+=
+ 0 1
+−1 0
+
+−
+0 0
+0 d
+ml2
+ ∂H
+∂θ∂H
+∂ω
+
++
+0
+1
+
+u.
+where
+• J =
+ 0 1
+−1 0
+
+is skew-symmetric.
+• R =
+0 0
+0 d
+ml2
+
+imports dissipation through damping.
+Therefore, with the simulation model corresponds to a simple pendulum while the underlying physics
+reflect a damped pendulum, the eigenspace structure of the state space remains preserved. Consequently,
+one can expect the deployment on this eigenspace to satisfy the same favorable criteria, yielding accurate
+matches even with a limited number of sensors, as illustrated in Figure 8. The DA-SHRED model effectively
+bridges the discrepancy, despite the presence of a moderate 5% noise level in the input data.
+20
+Figure 8: The DA-SHRED restoration of damped pendulum dynamics. The angular displacement and angular
+velocity are presented for three cases: the simulated simple-pendulum model, the unknown true dynamics (damped
+pendulum), and the DA-SHRED reconstruction.
+A.2 Detailed setup and notation
+Let X ⊆Rn be open and simply connected. A finite-dimensional port-Hamiltonian system (PHS) on X with
+inputs u ∈ Rm is written in coordinates as
+˙x =
+ 
+J(x) − R(x)
+
+∇H(x) + G(x) u, y = G(x)⊤∇H(x), (17)
+where:
+• H ∈ C2(X) is the Hamiltonian (energy) function,
+• J(x) ∈ Rn×n is skew-symmetric: J(x)⊤ = −J(x) (structure/interconnection),
+• R(x) ∈ Rn×n is symmetric positive semidefinite: R(x)⊤ = R(x) ⪰ 0 (dissipation),
+• G(x) ∈ Rn×m is the input (port) map.
+We write dH(x) or ∇H(x) interchangeably for the exterior derivative / gradient.
+In the next few sections, we show that under natural perturbations the perturbed dynamics can again be
+written in the form (17) (possibly with modifiedeH, eJ, eR, eG), i.e. the PHS “base” (the algebraic/skew/symmetric
+structure and the Dirac-type interconnection) persists.
+A.3 Differential-forms perspective and the integrability condition
+We regard ∇H as the exact 1-form dH. Suppose a perturbation of the gradient-term appears as an additive
+1-form δ(x) ∈ Ω1(X) so that the perturbed dynamics read
+˙x = (J − R)
+ 
+∇H + δ
+
++ G u. (18)
+21
+Proposition 1 (Exactness / Poincar´ e lemma). If X is simply connected and δ is a C1 1-form on X with
+exterior derivative dδ = 0 (i.e. δ is closed), then there exists a scalar function ε ∈ C2(X) such that δ = dε.
+Consequently, defining eH := H + ε yields
+∇ eH = ∇H + δ,
+and the perturbed system (18) is of port-Hamiltonian form with the same J, R, Gand Hamiltonian eH.
+Proof. This is a direct application of the Poincar´ e lemma: on a simply connected domain every closed 1-
+form is exact. If dδ = 0 then there exists ε with dε = δ. Set eH = H + ε. Substitute into (18) to obtain
+˙x = (J − R)∇ eH + Gu, which has the PHS form with unchanged J, R, G.
+Remark 1. The condition dδ = 0 is necessary for a global scalar potential ε to exist. If δ fails to be closed
+globally, one can still find a local potential on any contractible subdomain; thus the PHS form persists locally
+but not necessarily globally.
+A.4 Algebraic persistence under matrix perturbations
+Now consider perturbations to the structure/dissipation/port matrices. Replace ( J, R, G) by (J + ∆J, R+
+∆R, G+ ∆G). The perturbed dynamics become
+˙x =
+ 
+(J + ∆J) − (R + ∆R)
+
+∇H + (G + ∆G)u + (J − R)δ, (19)
+where the extra term (J−R)δ arises if we also perturb the gradient as above; we will handle that by absorbing
+δ into a modified Hamiltonian when possible.
+The algebraic constraints that define the PHS class are:
+J⊤ = −J, R ⊤ = R ⪰ 0.
+These constraints are preserved under small perturbations provided the perturbations respect skew/symmetry
+and positive semidefiniteness.
+Proposition 2 (Persistence under admissible matrix perturbations) . Let K ⊂ Xbe compact. Suppose
+∆J(x) is skew-symmetric for all x ∈ K, ∆R(x) is symmetric for all x ∈ K and small in operator norm so
+that R(x) + ∆R(x) ⪰ 0 for all x ∈ K, and ∆G(x) is small. Then the perturbed matrices
+eJ := J + ∆J, eR := R + ∆R, eG := G + ∆G
+satisfy eJ⊤ = − eJ and eR⊤ = eR ⪰ 0 on K, hence the algebraic PHS constraints remain valid on K.
+Proof. Immediate from linearity of transpose and continuity of eigenvalues (Weyl inequalities). A sum
+of skew-symmetric matrices is skew-symmetric. For symmetric R and symmetric ∆ R, eigenvalues vary
+continuously with the perturbation; choosing ∥∆R∥ less than the smallest strictly positive gap of R on K
+(or ensuring no negative eigenvalue crosses zero) guarantees eR ⪰ 0.
+Theorem 2 (Persistence of PHS form under natural perturbations). Let (17) be a PHS on a simply connected
+domain X. Consider perturbations ∆J, ∆R, ∆G (matrix fields) and a 1-form perturbation δ so that the
+perturbed dynamics are
+˙x =
+ 
+(J + ∆J) − (R + ∆R)
+ 
+∇H + δ
+
++ (G + ∆G)u.
+Assume:
+1. ∆J is skew-symmetric on X,
+2. ∆R is symmetric and small enough on compact subsets to keep R + ∆R ⪰ 0,
+3. δ is closed: dδ = 0 on X.
+22
+Then there exists eH = H + ε with dε = δ and
+eJ := J + ∆J, eR := R + ∆R, eG := G + ∆G
+such that the perturbed system can be written globally in PHS form
+˙x = ( eJ − eR)∇ eH + eG u.
+Proof. By the Poincar´ e lemma (closed ⇒ exact on simply connected X) there exists ε with dε = δ. Set
+eH = H + ε. Substitute into the perturbed dynamics and collect matrix perturbations into eJ, eR, eG. By
+Proposition 2 the algebraic PHS constraints hold for the perturbed matrices on compact subsets where ∆ R
+is small, hence the system is again PHS with ( eJ, eR, eH, eG).
+Remark 2. If δ is not closed globally, one may still obtain a local potential and hence a local PHS repre-
+sentation on contractible subsets. If δ is not expressible as an exact 1-form but can be decomposed as
+δ = δgrad + δng,
+where δgrad is exact and δng is of the form (∆J −∆R)∇ bH for some ∆J = −∆J⊤, ∆R = ∆R⊤ ⪰ 0 and some
+bH, then one can absorb δgrad into a modified Hamiltonian and interpret δng as further matrix perturbations.
+Such decompositions are problem-dependent and often possible for physically motivated perturbations.
+A.5 More examples
+A.5.1 Example 1: Mass–spring–damper (one degree of freedom)
+State x =
+q
+p
+
+with q position and p momentum. Hamiltonian
+H(q, p) = p2
+2m + kq2
+2 ,
+with m >0 mass and k >0 stiffness. Choose
+J =
+ 0 1
+−1 0
+
+, R =
+0 0
+0 c
+
+, G =
+0
+1
+
+,
+where c ≥ 0 is viscous damping and u is an external force. The PHS dynamics are
+˙x = (J − R)∇H + Gu =
+ 0 1
+−1 −c
+"
+kqp
+m
+#
++
+0
+1
+
+u.
+Now perturb the mass m 7→ m + ∆m with small ∆m. The new Hamiltonian is
+eH(q, p) = p2
+2(m + ∆m) + kq2
+2 .
+Hence the perturbation to the dynamics modifies only ∇H (an exact perturbation), and by Proposition 1 we
+may absorb this into eH while leaving J, R, Gunchanged. Thus the system remains PHS in the same base.
+If instead we perturb the damping c 7→ c + ∆c, this changes R to R + ∆R with
+∆R =
+0 0
+0 ∆ c
+
+,
+which is symmetric and (for ∆ c ≥ −c) preserves positive semidefiniteness; hence PHS algebraic constraints
+persist (Proposition 2).
+23
+A.5.2 Example 2: Series RLC circuit
+Consider a series RLC circuit with state variables
+x =
+
+ϕ
+q
+
+,
+where ϕ is the flux linkage in the inductor and q is the capacitor charge. Energies:
+H(ϕ, q) = ϕ2
+2L + q2
+2C ,
+with inductance L >0 and capacitance C >0. Take
+J =
+0 −1
+1 0
+
+, R =
+r 0
+0 0
+
+, G =
+1
+0
+
+,
+where r ≥ 0 is the resistance and the input u is a voltage source. The PHS equations are
+˙x = (J − R)∇H + Gu =
+0 −1
+1 −r
+
+
+ϕ
+Lq
+C
+
+ +
+1
+0
+
+u.
+Perturbing L or C (e.g. L 7→ L + ∆L) modifies H to
+eH(ϕ, q) = ϕ2
+2(L + ∆L) + q2
+2C ,
+which is an exact change to ∇H and hence absorbed into eH. Perturbing r modifies R directly in a symmetric
+way; small changes preserve R ⪰ 0. Thus practical component tolerances correspond to the admissible
+perturbation classes and the circuit remains representable in the same PHS base.
+A.5.3 Damped, forced wave equation
+Consider the damped wave equation
+∂2u
+∂t2 − c2∇2u + d ∂u
+∂t = f(x, t), x ∈ Ω ⊂ Rn.
+Introduce the state
+x =
+u
+p
+
+, p = ∂u
+∂t ,
+where u is displacement and p is momentum density. The Hamiltonian functional (total stored energy) is
+H(u, p) =
+Z
+Ω
+p2
+2 + c2
+2 ∥∇u∥2
+
+dx.
+Define the variational gradients
+∇H =
+"
+− c2∇2u
+p
+#
+.
+Choose the port-Hamiltonian structure matrices
+J =
+"
+0 1
+−1 0
+#
+, R =
+"
+0 0
+0 d
+#
+, G =
+"
+0
+1
+#
+,
+where d ≥ 0 is the damping coefficient and uin = f(x, t) is an external force density.
+24
+t = 0.0
+ t = 5.0
+ t = 10.0
+ t = 15.0
+Figure 9: The behavior of 2D Kuramoto-Sivashinsky equation without damping.
+The port-Hamiltonian dynamics are
+˙x = (J − R)∇H + G uin =
+"
+0 1
+−1 −d
+#"
+− c2∇2u
+p
+#
++
+"
+0
+1
+#
+f(x, t).
+Expanding the components gives
+˙u = p, ˙p = c2∇2u − d p+ f(x, t),
+which recovers the original PDE.
+A perturbation in the wave speed c 7→ c + ∆c modifies only the Hamiltonian (an exact perturbation),
+leaving J, R, Gunchanged; hence the system remains in the same port-Hamiltonian base. In contrast,
+perturbing the damping d 7→ d + ∆d alters the dissipation matrix to
+R + ∆R =
+"
+0 0
+0 d + ∆d
+#
+,
+which preserves symmetry and, for ∆ d ≥ −d, maintains positive semidefiniteness; therefore the port-
+Hamiltonian algebraic constraints are still satisfied.
+B Experimental Details
+Here we provide further experimental details and supplemental figures for the experiments in Section 3 of
+the main text.
+B.1 2D damped Kuramoto–Sivashinsky equation system
+In this setting, our data simulation model is the 2D version of damped Kuramoto-Sivashinsky equation (KS
+equation), which is given by
+ut + 1
+2|∇u|2 + ∇2u + ν∇4u = 0
+while the real physics is a damped version of the KS equation (DKS) [27], given by
+u′
+t + 1
+2|∇u′|2 + ∇2u′ + ν∇4u′ + (v · ∇)u′ − γu′ = 0 (20)
+with damping force ( v · ∇)u′ − γu′.
+Still, for simplicity we set the fourth order parameter to be ν = 1. Figure 9 exhibits its behavior on a
+2D map of range [0 , 64] × [0, 64].
+25
+B.2 2D Kolmogorov flow
+Figure 10 shows the results of the 2D damped Kolmogorov flow in earlier time steps. In contrast to the fast
+convergence from simpler examples, the DA-SHRED model did struggle a bit with perturbations on the 2D
+Kolmogorov flow.
+At the initial stages of the data assimilation process, the DA-SHRED model exhibited poor performance,
+as shown in Figure 9, likely due to an incomplete alignment between the model’s internal dynamics and the
+observed data. During this early period ( t <20), the system’s state estimates were still heavily influenced by
+prior uncertainties and insufficiently informed, leading to large discrepancies between DA-SHRED restora-
+tions and ground truth. However, afterwards, the model began to stabilize and progressively converge toward
+the real physics, suggesting that the assimilation updates had accumulated enough information to reduce
+model bias and variance, allowing the DA-SHRED framework to achieve a consistent alignment between its
+restored and unobserved real state spaces.
+simulation real physics DA-SHRED
+t=20.0
+t=15.0
+L = {(ω)} L′ = {(ω, ω∇2ω, ω3)}
+Figure 10: The result of 2D damped Kolmogorov flow. Figures on the same row are taken at the same timestep.
+The left column represents the undamped simulation model (2D Kolmogorov flow without damping); the middle
+column represents unknown real physics (2D Kolmogorov flow with linear damping); and the right column represents
+state space restored by DA-SHRED.
+B.3 1D rotating detonation engines
+Figure 11 shows the results of the 1D rotating detonation engines in later time steps after the meet of
+detonation fronts.
+In the one-dimensional rotating detonation engine (RDE) framework, simplified numerical models typ-
+ically represent the detonation front as a sharp and well-defined discontinuity. However, in practical RDE
+configurations, the injector dynamics — including spatial non-uniformities in fuel injection, local turbulence,
+and incomplete mixing — introduce complex flow features that effectively broaden the detonation front. This
+physical broadening arises from localized variations in pressure, temperature, and equivalence ratio near the
+26
+injection region, and leads to an extended reaction zone rather than an idealized, infinitesimally thin front.
+In the DA-SHRED experiments, this behavior was clearly observed in both figure 6 and figure 10: the det-
+onation front exhibited a wider structure compared to the corresponding simplified 1D simulations. This
+observation gives further hint on the critical role of injector-induced flow inhomogeneities in determining the
+effective detonation structure and underscores the necessity of incorporating realistic injector and mixing
+physics in data assimilation frameworks for accurate RDE modeling.
+simulation
+real physics
+L′ = {(u, u3)}
+DA-SHRED
+L′ = {(u, u3, λ2u)}
+L′ = {(u)}
+ L′ = {(u)}
+Figure 11: The DA-SHRED reconstruction of 1D damped RDE model at a later timestep beyond that displayed in
+Figure 6. Similarly, one simulation model is deployed on two different real physics settings, and the rightmost column
+represents the corresponding two DA-SHRED results towards convergence.
+27

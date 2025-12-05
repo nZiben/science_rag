@@ -1,0 +1,1657 @@
+Semantic-aware Random Convolution and Source Matching
+for Domain Generalization in Medical Image Segmentation
+Franz Thalera,b,c, Martin Urschlera,e,∗, Mateusz Kozinskia, Matthias AF Gsellb, Gernot Plankb,e, Darko ˇSternb,d
+aInstitute for Medical Informatics, Statistics and Documentation, Medical University of Graz, Auenbruggerplatz 2, Graz, 8010, Austria
+bGottfried Schatz Research Center: Medical Physics and Biophysics, Medical University of Graz, Neue Stiftingtalstraße 6, Graz, 8010, Austria
+cInstitute of Visual Computing, Graz University of Technology, Inffeldgasse 16, Graz, 8010, Austria
+dAVL List GmbH, Hans-List-Platz 1, Graz, 8020, Austria
+eBioTechMed-Graz, Mozartgasse 12, Graz, 8010, Austria
+Abstract
+Background and Objective:We tackle the challenging problem of single-source domain generalization (DG) for
+medical image segmentation. To this end, we aim for training a network on one domain (e.g., CT) and directly apply
+it to a different domain (e.g., MR) without adapting the model and without requiring images or annotations from the
+new domain during training.
+Methods: We propose a novel method for promoting DG when training deep segmentation networks, which we call
+SRCSM. During training, our method diversifies the source domain through semantic-aware random convolution,
+where different regions of a source image are augmented di fferently, based on their annotation labels. At test-time,
+we complement the randomization of the training domain via mapping the intensity of target domain images, making
+them similar to source domain data.
+Results: We perform a comprehensive evaluation on a variety of cross-modality and cross-center generalization
+settings for abdominal, whole-heart and prostate segmentation, where we outperform previous DG techniques in a
+vast majority of experiments. Additionally, we also investigate our method when training on whole-heart CT or MR
+data and testing on the diastolic and systolic phase of cine MR data captured with di fferent scanner hardware, where
+we make a step towards closing the domain gap in this even more challenging setting.
+Conclusions: Overall, our evaluation shows that SRCSM can be considered a new state-of-the-art in DG for medical
+image segmentation and, moreover, even achieves a segmentation performance that matches the performance of the
+in-domain baseline in several settings. The source code of SRCSM will be made publicly available upon acceptance.
+Keywords: image segmentation, domain generalization, data augmentation, cardiac, abdomen, prostate
+1. Introduction
+Deep neural networks are known to underperform in
+the presence of domain shift, especially when test data
+has been generated from a vastly di fferent distribution
+than the data used to train the network [1, 2]. Domain
+shift has a strong impact in the context of medical imag-
+ing tasks, where the same anatomy can be captured with
+different imaging modalities, but models trained in one
+modality, e.g., Magnetic Resonance (MR), may even
+fail completely when applied to another modality, e.g.,
+Computed Tomography (CT) [3, 4]. Consequently, to
+achieve state-of-the-art performance, medical imaging
+∗Corresponding author: martin.urschler@medunigraz.at
+applications require annotated data from all target do-
+mains, which is often prohibitively costly due to the ex-
+pertise required to produce the annotations.
+Single-source Domain Generalization (DG) meth-
+ods [5, 6] seek to address this problem by training-
+time techniques that promote generalization of the net-
+work to data from unseen domains. Many existing
+approaches rely on strong, randomized source data
+augmentation [7, 8, 9, 10, 11] or adversarial strate-
+gies [12, 13, 14, 15] to synthetically diversify the train-
+ing data. In doing so, these strategies aim to expand the
+model’s coverage towards unseen test data distributions
+by making the model more robust towards synthetically
+introduced differences. However, ensuring coverage of
+unseen test domains is inherently difficult. As shown in
+Preprint submitted to Computer Methods and Programs in Biomedicine (currently under revision) December 2, 2025
+arXiv:2512.01510v1  [cs.CV]  1 Dec 2025
+our evaluation in Section 5.2, existing methods are still
+far away from closing the performance gap between the
+source and target domains.
+To reduce this gap, we propose a single-source DG
+method for semantic segmentation based on two key
+contributions: First, we note that appearance di ffer-
+ences between images acquired with di fferent modal-
+ities are largely determined by the tissue type. Con-
+sequently, augmentation strategies that are oblivious to
+tissue types are unlikely to produce appearance changes
+that are expected between source and target domain
+data. We address this by introducing Semantic-aware
+Random Convolution (SRC), where a distinct, highly
+non-linear random augmentation is applied to each re-
+gion of source domain data that corresponds to a dif-
+ferent ground truth label. Second, we argue that it is
+much easier to shift test data towards the known dis-
+tribution of the training data than to su fficiently aug-
+ment the training data to ensure coverage of any un-
+known target domain. Driven by this observation, we
+propose to remap the intensity of test images at test-
+time in order to make them more similar to those of the
+training domain, which we call Source Matching (SM).
+We combine these two contributions with conventional
+augmentation strategies and propose a single-source DG
+method named Semantic-aware Random Convolution
+and Source Matching (SRCSM). An overview of our
+method is provided in Fig. 1.
+To assess the performance of SRCSM, we perform
+an extensive evaluation including cross- modality and
+cross-center generalization on four abdominal, eight
+cardiac and six prostate domains in multiple settings,
+resulting in a large variety of source-target combina-
+tions. Notably, we extend the common abdominal organ
+segmentation setting by using two additional, signifi-
+cantly larger domains: AMOS CT and AMOS MR [16].
+Further, besides the widely used four label setting for
+whole-heart cardiac segmentation employed in litera-
+ture, we also evaluate a more detailed setting that uses
+seven labels. Lastly, to the best of our knowledge, we
+are the first to benchmark generalization in the challeng-
+ing setting, where a model is trained on whole-heart CT
+or whole-heart MR data and evaluated on cardiac cine
+MR data. This setting results in a large and multifaceted
+domain gap, dramatically exceeding domain shifts eval-
+uated by prior work.
+In this massive set of experiments, SRCSM outper-
+forms a wide range of existing methods in a vast ma-
+jority of cases, setting a new state-of-the-art for cross-
+modality and cross-site single-source DG. Additionally,
+SRCSM even outperforms several Domain Adaptation
+(DA) and Test-time Adaptation (TTA) approaches that
+have an advantage over single-source DG methods as
+they adapt the model on target domain data. Most no-
+tably, SRCSM significantly alleviates the impact of do-
+main shift by achieving results that are close to or even
+in-line with the in-domain performance. We summarize
+our contributions as follows:
+• We introduce Semantic-aware Random Convolu-
+tion (SRC), a highly nonlinear augmentation strat-
+egy that accounts for semantic labels.
+• We propose to use an intensity quantile mapping
+called Source Matching (SM) to align target do-
+main images to the source domain at test-time.
+• We extend the popular abdominal organ segmen-
+tation task for single-source DG by adding a sec-
+ond CT and a second MR domain, leading to the
+most comprehensive evaluation on abdominal DG
+reported so far.
+• To the best of our knowledge, we are the first to
+evaluate generalization from whole-heart MR and
+CT data to diastolic and systolic cardiac cine MR
+data.
+• With our SRCSM approach, we establish a new
+state-of-the-art in abdominal organ, whole-heart
+and prostate segmentation, and achieve results that
+close in on or even match the in-domain baseline.
+2. Related Work
+In section 2.1, we review related techniques that ad-
+here to the DG scenario. To put our method in a broader
+context, in section 2.2 we highlight the di fferences be-
+tween DG and two other approaches of handling domain
+shift: DA and TTA.
+2.1. Domain Generalization
+In the DG scenario [5, 6], model parameters are ex-
+clusively updated based on source domain data and gen-
+eralization is commonly achieved by diversifying the
+source domain. DG methods can be separated into two
+groups based on whether they employ one or require
+multiple source domains for training. Multi-source do-
+main generalization methods [5, 6] commonly aim to
+conflate several source data distributions such that the
+model may better align unseen target domain data to
+this conflated space. In contrast, single-source DG as-
+sumes that data from only one source domain is avail-
+able [5, 6] which is inherently more challenging. In this
+2
+S
+0 
+S
+Test-time
+Training-time
+T1 T2
+T
+-1
+◦ SC C 2
+_
+T
+-1
+◦ SC C 1
+_
+Figure 1: We propose SRCSM, a single-source cross-modality domain generalization approach that (1) during training, expands the source data
+distribution (S) through our Semantic-aware Random Convolution (SRC), and (2) at test-time, shifts images from unseen target domains ( T1 and
+T2) towards the source domain (S) via our Source Matching (SM) strategy.
+work, we focus on single-source DG as it is more gen-
+eral and more relevant to medical imaging due to the
+scarcity of labeled data.
+The palette of methods to promote generalization is
+broad and includes conventional [7, 17] and adaptive
+data augmentation [18], dropping regions of the input
+image or features [19, 20], randomly perturbing the
+computed features [21], and mixing features computed
+for different object instances [22, 23]. While these ap-
+proaches can serve as a good baseline in some settings,
+they are often insu fficient in more challenging cross-
+modality scenarios. To increase the efficacy of data aug-
+mentation, the authors of SLAug [11] and PCSDG [24]
+proposed to remap the intensity of each semantically
+distinct region using a dedicated B ´ezier curve. This,
+however, limits these approaches to intensity alterations
+that can be expressed by such curves. In contrast,
+our method applies highly non-linear random convo-
+lutions to each semantic region, which allows a much
+larger variation of possible outcomes. As shown in Sec-
+tion 5.1, this lets our SRCSM systematically outperform
+SLAug [11], PCSDG [24] and other related augmenta-
+tion methods in multiple settings.
+Image augmentation was also used to promote feature
+alignment [21, 25, 26], or disentanglement of domain-
+specific and domain-invariant features [27, 28, 24] with
+dedicated loss functions. The idea is that aligned or
+disentangled features display much less variation in re-
+sponse to the domain shift. Our approach is much sim-
+pler: Instead of aligning or disentangling features, our
+method makes the model robust to domain shifts by di-
+versifying the appearance of training images. The ex-
+periments in Section 5.1 show that SRCSM outperforms
+this line of approaches in a broad range of experiments.
+Several techniques focus on adversarial domain aug-
+mentation [12, 13, 14, 15] to generate diverse synthetic
+training data. However, it has been shown that the
+same effect can be achieved with augmentation based
+on random convolutions [8, 10], which is computation-
+ally much more efficient.
+RandConv [8] relies on a single randomly initial-
+ized convolution layer to augment the appearance of
+the source data. Targeting object recognition in com-
+puter vision, the RandConv strategy was later extended
+to a shallow multi-layered network comprising a se-
+quence of randomly initialized convolution layers [9].
+Concurrently, the same extension was also integrated
+in a similar way into domain generalization for med-
+ical image segmentation by [10], within their CSDG
+method. Recently, the same approach was adopted
+in combination with a contrastive learning strategy by
+DCON [26]. In contrast to approaches that augment
+the whole image with the same random convolution(s),
+SRCSM makes random convolutions semantic-aware
+by conditioning them on the semantic label of the aug-
+mented region. ARFU [29], developed concurrently
+to our method, employs distinct random convolutions
+to each label similarly to us. However, our evaluation
+in Section 5.1 confirms that our contributions result in
+considerable segmentation performance improvements
+compared to RandConv [8], CSDG [10] , DCON [26]
+and ARFU [29].
+A completely separate line of single-source DG ap-
+proaches aims to fine-tune prompt-driven vision foun-
+dation models to turn them into automated task-specific
+models [30, 31, 32]. Our evaluation shows that the pro-
+posed SRCSM method outperforms these approaches
+by a large margin.
+2.2. Domain Adaptation and Test-time Adaptation
+In the Domain Adaptation (DA) scenario, data from
+the target domain is available during training. DA ap-
+proaches use this data to adapt the model for perfor-
+mance in the target domain [33, 34]. This is in stark
+3
+contrast to our DG use case, where no target domain
+data is available at training-time and generalization is by
+design not limited to a previously known target domain.
+One methodological similarity between our method and
+certain DA approaches [35, 36] is the use of histogram
+matching. However, while the DA methods modify the
+intensity of the source-domain training data to make
+the training images more similar to the target domain,
+SRCSM performs the matching in the opposite direc-
+tion: The histogram of each target domain image is
+aligned to that of the source domain before generating
+predictions.
+In Test-Time Adaptation (TTA), the model is fine-
+tuned on target domain data at test-time [37, 38]. The
+disadvantage of this approach is that it is computa-
+tionally expensive. Moreover, updating the model on
+test data requires a heuristic stopping criterion to pre-
+vent overfitting to an unsupervised optimization target.
+However, identifying generic stopping criteria that per-
+form well on individual images even of the same tar-
+get domain remains an open problem [38]. By contrast,
+SRCSM does not adapt the model at test-time and in-
+duces virtually no computational overhead.
+Even though DA and TTA approaches leverage target
+domain data to adapt the model while SRCSM does not,
+SRCSM outperforms several recent DA and TTA meth-
+ods. Notably, our key contributions, i.e., the semantic-
+aware random convolution and the source matching,
+could also be used to potentially boost performance of a
+DA or TTA approach. However, in this paper, we adhere
+to the pure DG scenario and leave combining SRCSM
+with DA or TTA techniques to future work.
+3. Method
+SRCSM comprises two complementary components:
+a data augmentation strategy aimed at extending the
+coverage of the network to unknown target domains,
+and an intensity mapping routine to bring test images
+closer to the known source distribution. We describe
+them in the following sections.
+3.1. Semantic-aware Random Convolution (SRC)
+The point of departure for our method is the convo-
+lutional data augmentation [8, 9, 10], where input im-
+ages are augmented with a shallow, convolutional net-
+work g. Importantly, the network is never trained: For
+every augmented image, its parameter vector θ is sam-
+pled from the standard normal distribution. This ap-
+proach ensures a rich appearance variation, and convo-
+lutional data augmentation proved to be very e ffective.
+Figure 2: Contrast between anatomical structures strongly depends
+on the imaging modality. Left: a cardiac MR and its ground truth
+annotation; Right: the same anatomy visible in a cardiac CT. Note
+the differences between MR and CT in relative intensity of the left
+ventricle (red), the right ventricle (green), and the myocardium (cyan).
+However, it suffers from an important limitation: It can-
+not reproduce the variation of relative contrast between
+different anatomical structures across different imaging
+modalities. For example, when comparing the contrast
+between anatomic regions in the cardiac MR image in
+Fig. 2 (left), the left ventricle (red) appears similar to
+the right ventricle (green), while both are clearly distin-
+guishable from the myocardium (cyan). By contrast, in
+the CT image (right), the right ventricle (green) is sim-
+ilar to the myocardium (cyan) and shows strong con-
+trast to the left ventricle (red). This type of domain shift
+cannot be simulated with common augmentation tech-
+niques, where two regions with the same input intensity
+are bound to receive the same intensity in the augmented
+image, even if they correspond to di fferent anatomical
+structures.
+To address this limitation, we propose Semantic-
+aware Random Convolution (SRC). It consists in ap-
+plying distinct nonlinear augmentations to image re-
+gions corresponding to distinct semantic labels. For
+each semantic label c ∈ C, where C is the set of
+anatomic labels, we generate a class-specific augmenta-
+tion operator in the form of a convolutional neural net-
+work g(·,θc), where the parameter vector θc is randomly
+drawn from the normal distribution. Implementation de-
+tails of g(·,θc) are provided in Section 4.2. In the naive
+version of SRC, g(·,θc) is used to augment the image
+region corresponding to the label c and represented by
+its binary ground truth mask ¯mc:
+SRCbinary(x, ¯m) =
+X
+c∈C
+¯mc⊙g(x,θc), θ c ∼N(0,1), (1)
+where ⊙ represents pixel-wise multiplication, and
+N(0,1) is a standard normal distribution. However,
+we observed that images augmented with Eq. (1) often
+display amplified contrast around label borders. This
+contrast hints at the location of the borders and leads
+to overfitting, as shown by the ablation study that we
+present in Section 5.5.
+We address this by blending the individual random
+convolution outputs close to the label borders. To this
+end, we apply a 3D Gaussian kernel G to each binary
+4
+SRCOriginal
+S CNN
+Image xorig Image xSRC
+CDA
+Image xCDA
+Label yorig Label yCDA
+Mask mc Image xSRCc
+g(x,θ )C
+g(x,θ )1
+Image xRCc
+g(x,θ )c
+Figure 3: Our domain generalization approach: Images from source domain Sare first augmented using conventional data augmentation (CDA).
+Then, our Semantic-aware Random Convolution (SRC) strategy applies a distinct nonlinear intensity augmentation for each available semantic
+label c ∈C. After that, each augmented image is masked using its corresponding smoothed map mc, before being recombined yielding the final
+SRC-augmented image.
+mask ¯mc, yielding a smooth blending map
+mc = ¯mc ∗G, (2)
+where ∗denotes the convolution operator. In prac-
+tice, every voxel p in ¯mc receives one label, such thatP
+c∈C ¯mc[p] = 1. Therefore, the smoothed map mc also
+sums to one over the label dimension. Thus, mc can
+be used for blending the individual random convolution
+outputs, yielding the proposed SRC strategy:
+SRC(x,m) =
+X
+c∈C
+mc ⊙g(x,θc). (3)
+This strategy ensures smooth transitions between dif-
+ferent image regions, crucial for generalizing to unseen
+target domains.
+To ensure a full range of augmentation capacities,
+we complement SRC with geometric augmentation: We
+employ translation, rotation, scaling and elastic defor-
+mation. The complete augmentation approach is shown
+in Figure 3 and exemplary images before and after ap-
+plying SRC are shown in Figure 4.
+3.2. Source Matching (SM)
+Even though our augmentation approach is already
+effective in reducing the performance gap between
+source and target domain data, some gap in performance
+remains, as shown in our ablation study in Section 5.5.
+To further reduce the remaining domain gap, we com-
+plement the proposed source data augmentation tech-
+niques by shifting images from the target domain to-
+wards the source domain at test-time.
+To that end, we propose to use intensity quantile map-
+ping which we call Source Matching (SM). SM trans-
+forms the individual histogram of each target domain
+image such that it aligns with the average histogram of
+the source domain dataset. Formally, each voxel with
+intensity v of a given test image is assigned a new value:
+SM(v) = C−1
+¯S ◦CT(v), (4)
+where CT denotes the cumulative probability density
+function of voxel intensities in the given test image, and
+C−1
+¯S is the average quantile function of voxel intensi-
+ties in the source domain. In other words, CT maps the
+intensity v to the probability that a randomly selected
+voxel of the test image has intensity lower or equal to v.
+Then, C−1
+¯S maps that probability for v to the correspond-
+ing voxel intensity of the training domain.
+In practice, we implement both mappings using cu-
+mulative, normalized histograms. We approximate
+CT(v) with the cumulative histogram of voxel intensi-
+ties in the given test image. Then, given a probability
+p = CT(v), we compute C−1
+¯S (p) using the average cu-
+mulative histogram of all images in the source dataset.
+Specifically, we denote the center of the i-th bin of the
+histogram by c ¯S[i] and the value of that bin by h ¯S[i],
+and define
+C−1
+¯S (p) = c ¯S[i∗] where i∗= arg min
+i
+(h ¯S[i]−p)2. (5)
+The average histogram of the source domain h ¯Sis only
+computed once during training and stored alongside the
+model for later use. Exemplary images before and af-
+ter applying SM are shown in Figure 5. Our ablation
+study in Section 5.5 shows that SM achieves perfor-
+mance improvements that are complementary to SRC.
+Importantly, SM is very light-weight and e fficient, im-
+posing almost no computational overhead.
+5
+CT-1 augmentedCT-1 CT-1 augmented CT-1 MR-1 augmentedMR-1 MR-1 augmented MR-1
+AbdominalCardiac
+CT CT augmented MRCT CT augmented MR augmented MR MR augmented
+Figure 4: Exemplary abdominal (row 1) and cardiac (row 2) images are shown before (cols: 1, 3, 5, 7) and after (cols: 2, 4, 6, 8) applying the
+proposed Semantic-aware Random Convolution (SRC). Image contrast was adjusted for better visualization.
+MR-1 → CT-1CT-1 CT-1 → MR-1
+AbdominalCardiac
+MR-1
+MR → CTCT CT → MR MR MR → CTMRCT CT → MR
+MR-1 → CT-1CT-1 CT-1 → MR-1 MR-1
+Figure 5: Exemplary abdominal (row 1) and cardiac (row 2) images are shown before (cols: 1, 3, 5, 7) and after (cols: 2, 4, 6, 8) applying the
+proposed Source Matching (SM). Image contrast was adjusted for better visualization.
+4. Experimental Setup
+4.1. Datasets
+Cross-modality Abdominal Organ Segmentation
+We employ four domains for abdominal organ seg-
+mentation:
+• BCV (CT-1)[39] consists of 30 labeled CT im-
+ages. We use the same train-val-test split, i.e., 70-
+10-20, as CSDG [10] in Tables 1, 2 and 10. For
+Table 3, we use the same 90-10 train-val split as
+DeSAM [31]. Both setups employ all images when
+used as out-of-domain test set. For in-domain com-
+parison, we use the 20% test split from CSDG.
+• CHAOS (MR-1)[40] includes 20 labeled MR im-
+ages. The remaining information is identical to CT-
+1.
+• AMOS (CT-2)[16] contains 300 labeled CT scans
+which are separated into a training and validation
+set. After excluding cases with any of the four con-
+sidered labels missing, 197 scans of the training set
+and 98 scans of the validation set remain. When
+used as out-of-domain test set, we employ all 295
+remaining scans. For in-domain comparison, we
+use the 98 scans from the validation set.
+• AMOS (MR-2)[16] also includes 60 labeled MR
+scans which constitute a training set of 39 scans
+and a validation set of 20 scans after excluding
+cases with any of the considered labels missing.
+As out-of-domain test set, all 59 cases are used. In-
+domain comparisons are performed using the vali-
+dation set of 20 scans.
+We follow previous work and evaluate segmentation of
+four organs: liver, left kidney, right kidney and spleen.
+Cross-modality Whole-Heart Segmentation
+We use the following domains in heart segmentation
+experiments:
+• MMWHS (CT)[41] includes 20 labeled CT scans.
+For our evaluation in Table 4, we use the same
+train-test split, i.e., 80-20, as related work which
+was popularized in [42]. Importantly, this setup
+only considers four labels: left ventricle (LV), left
+atrium (LA), myocardium (MYO) and ascending
+6
+aorta (AA), and only employs four images as out-
+of-domain test set. In-domain comparisons in the
+4-label setup have been evaluated on the same four
+images that constitute the out-of-domain test set
+and therefore trained on the 16 remaining scans
+of the same domain. For a more detailed evalua-
+tion of the MMWHS dataset in Table 5, we use all
+seven labels and employ all 20 images for training
+and all 20 images from the other domain as out-of-
+domain test set. In-domain comparisons in the 7-
+label setup are performed on the 40 test scans with
+encrypted labels, which requires using the evalua-
+tion script provided by the challenge organizers.
+• MMWHS (MR) [41] consists of 20 labeled MR
+scans. The remaining information is identical to
+MMWHS CT.
+Overall, seven labels are available: LV, right ventricle
+(RV), LA, right atrium (RA), MYO, AA and pulmonary
+artery (PA).
+Cardiac Cine MR as Target Domain
+We also consider bridging the domain gap from
+whole-heart to cardiac cine MR data by employing
+M&Ms-2 [43]. This dataset includes short-axis scans of
+360 subjects with ground truth segmentations of the di-
+astolic and systolic phase of the cardiac cycle for which
+three labels are available: LV, RV and MYO. We only
+considered the 160 subjects that comprise the o fficial
+test set, however, excluded three cases for which the
+orientation information was erroneous. The dataset in-
+cludes scans obtained with di fferent scanner hardware:
+General Electric ( GE), Philips ( Phil.) and Siemens
+(Siem.). With three scanner manufacturers and two
+phases of the cardiac cycle (Systolic and Diastolic), this
+dataset contributes six additional domains.
+Cross-center Prostate Segmentation
+For prostate segmentation, we employ six popu-
+lar domains from three datasets: NCI-ISBI13 [44],
+I2CVB [45] and PROMISE12 [46] in the version pro-
+vided by [23, 31]. To compare to related work, we
+use all available data from the respective source domain
+when comparing to HSD [21] in Table 6, and the same
+90-10 train-val split as DeSAM [31] in Table 7. Out-of-
+domain test sets include all available data of the respec-
+tive domain for both setups. In-line with related work,
+we refer to these domains as A, B, C, D, E and F in the
+same order, which is: RUNMC/ISBI (A), BMC/ISBI1.5
+(B), I2CVB (C), UCL (D), BIDMC (E) and HK (F).
+The domains include 30, 30, 19, 13, 12 and 12 MR
+scans, respectively. Further imaging related details on
+the individual domains can be found in [46, 47]. For in-
+domain comparisons, we respectively use the 10% vali-
+dation splits from DeSAM.
+4.2. Implementation Details
+Data Processing
+All our experiments are performed in 3D, images are
+resampled to have an isotropic spacing and we use a
+predefined landmark such that the approximated cen-
+ter of the region of interest for segmentation is in the
+center of the image. Following the same strategy as
+in [48], we selected the resampling parameters as such
+that they tightly fit to the region of interest of all images
+in order to maximize the physical resolution. Therefore,
+we resample abdominal data to 160 ×128 ×160 voxel
+with 2.4 mm spacing, cardiac data uses 128×128 ×128
+voxel with 1.5 mm spacing, and prostate segmentation
+employs 128 ×128 ×128 voxel with 0.75 mm spacing.
+Network Architecture and Training
+The employed network architecture is similar to U-
+Net [49] with a contracting and expanding path consist-
+ing of five levels. At each level we use two convolutions
+with 64 filters and an intermediate dropout layer [50]
+with a dropout rate of 0 .1. After convolution layers we
+employ leaky ReLU as activation function with alpha
+0.1. We use average pooling as well as linear upsam-
+pling layers, and padding is set to ’same’ to preserve
+the spatial size of the convolution input. Each model
+is trained for 50 ,000 iterations with a batch size of 1
+and we use generalized Dice as a loss function. As op-
+timizer we use Adam [51] with a learning rate of 5 e−5.
+Convolution kernels are initialized using the He initial-
+izer [52] with an L2 kernel regularizer. We employ tem-
+poral ensembling by computing the exponential moving
+average [53] for each weight with a decay of 0.999.
+Conventional Data Augmentation (CDA)
+Same as in [54], we augment training data in 3D
+using translation ( ±20 voxel), rotation ( ±0.35 radi-
+ans), scaling ([0 .8,1.2]) and elastic deformation (eight
+grid nodes per dimension, deformation values are sam-
+pled from ±15 voxels). CT images are expected in
+Hounsfield Units (HU), normalized by dividing inten-
+sity values by 2048, and are clipped to the range [−1,1].
+For robust MR normalization, the 10 th and 90 th per-
+centile are linearly normalized to the range [ −1,1], re-
+spectively. After normalization, a random intensity shift
+(±0.2) as well as an intensity scaling with a factor
+between [0.8,1.2] (CT) or [0 .6,1.4] (MR) are applied
+globally.
+7
+Semantic-aware Random Convolution (SRC)
+The convolutional neural network g(·,θc) used for
+data augmentation consists of a series of four convo-
+lutional layers which are randomly re-initialized when-
+ever a new image is augmented. The feature maps of
+intermediate layers consist of two channels, while the
+output of the last layer consists of one channel such that
+the augmented image is consistent to the input. Each
+convolution layer is followed by a leaky ReLU activa-
+tion with the alpha parameter set to 0.1. The kernel size
+of each random convolution layer is sampled to be ei-
+ther one or three whenever it is re-initialized. The 3D
+Gaussian kernel G uses σ= 1 in voxel and a kernel size
+of 5 ×5 ×5 voxels. Image blending is performed using
+a uniformly drawn αg ∼U(0,1). We follow previous
+work [55, 8, 10] and linearly interpolate the output of
+the random convolution with the original image, to par-
+tially reduce the effect of the augmentation. To avoid ex-
+ploding gradients, we also re-normalize the augmented
+image to retain the same Frobenius norm as the original
+image.
+Source Matching (SM)
+Before applying SM, we clip CT data, which is ex-
+pected to be defined in Hounsfield units, to the range [-
+1023, 1024]. Since intensity ranges for MR data are not
+well-defined, we robustly normalize them as such that
+their minimum value remains 0, while the 0.9 percentile
+is scaled to 2047 before clipping them to [0, 2047]. This
+clipping does not remove important information: V oxels
+clipped to the minimum are predominantly located out-
+side the body, while voxels clipped to the maximum are
+typically outliers, e.g., device artifacts in CT or surface
+coil artifacts in MR.
+4.3. Baselines
+Our comprehensive evaluation on the various datasets
+involves a large variety of baseline approaches from re-
+lated literature on DG, DA and TTA. DG approaches
+include RSC [20], MixStyle [22], MaxStyle [23], Ad-
+vBias [15], Cutout [19], RandConv [8], ISW [27], AT-
+SRL [14], BigAug [7], PCSDG [24], M-ADA [12],
+ADS [13], AugSeg [17], IRLSG [28], HSD [21] in their
+CNN and transformer variant, ARFU [29], DCON [26],
+CSDG [10] and SLAug [11]. DG approaches based on
+prompt-driven vision-foundation models include Med-
+SAM [56], SAMed [30], SAMUS [32] as employed in
+[26], and DeSAM [31] in their whole box (DeSAM-B)
+and grid points (DeSAM-P) mode. As DA approaches,
+we employ CycleGAN [57], SIFA [42], SynthMix [58],
+CUDA [59], MPSCL [60] and C3R [61]. Finally, for
+TTA, we use Prior AdaEnt [62], AdaMI [63], Tent [64],
+TTASRC [65], TTT [66], TTST [67], Tent [64] and
+TASD [68].
+Related work scores for SLAug and CSDG indicated
+by †were produced using the original authors code. We
+employed the same data preprocessing for CT and MR
+data as used in their code, respectively. For whole-heart
+experiments, we increased their upper thresholding pa-
+rameter used for CT data from 275 to 675 Hounsfield
+units to ensure that no foreground region of whole-heart
+CT scans is removed. Due to the large size and therefore
+excessive training time of CT-2, we reduced the num-
+ber of epochs from 2,000 to 1,000 when training on this
+dataset. The In-Domain baselines were trained on im-
+ages of the target domain and only employ conventional
+data augmentation.
+4.4. Evaluation and Statistical Comparison
+All quantitatively evaluated experiments using our
+method as well as the reproduced experiments using
+SLAug [11], CSDG [10] and In-Domain baselines were
+repeated three times to address the stochastic nature of
+model predictions. Standard deviations were computed
+over all images of the respective test set and their rep-
+etitions, unless otherwise stated in the table caption;
+for reported mean scores, we computed standard devi-
+ations after computing the mean over labels. The test
+set size employed in each experiment is stated in the re-
+spective table caption to allow the computation of con-
+fidence intervals (CIs). All CIs are computed with a
+confidence level of 95% and under the normality as-
+sumption. Further, we performed a statistical analysis of
+multiple dataset generalization by considering three al-
+gorithms, i.e., the proposed SRCSM, as well as SLAug
+and CSDG. To test the null hypothesis of these algo-
+rithms performing equally, we employed a total of 14
+different domain generalization experiments, compris-
+ing all combinations of abdominal and cardiac 7-label
+datasets reported in Tables 2 and 5. For this test, we
+used the Autorank package [69] as a Python wrapper
+for statistical comparisons over multiple datasets [70].
+Given a family-wise significance level with p = 0.05,
+Autorank analyzes normality of the populations (algo-
+rithms) and chooses appropriate tests for the existence
+of differences in the central tendency. If any di fference
+exists, it also chooses a post-hoc test for pairwise com-
+parisons, resulting in a critical di fference (CD) that de-
+fines if di fferences between algorithms are statistically
+significant.
+8
+Abdominal CT-1 →MR-1 MR-1 →CT-1
+Method DSC (%) ↑ DSC (%) ↑
+Liver R-Kid. L-Kid. Spleen Mean Liver R-Kid. L-Kid. Spleen Mean
+RSC [20]a 76.40 75.79 76.60 67.56 74.09 88.10 46.60 75.94 53.61 66.07
+MixStyle [22]a 77.63 78.41 78.03 77.12 77.80 86.66 48.26 65.20 55.68 63.95
+AdvBias [15]a 78.54 81.70 80.69 79.73 80.17 87.63 52.48 68.28 50.95 64.84
+SAMed [30]d – – – – – 84.86 56.04 67.71 66.47 68.77
+SAMUS [32]d – – – – – 84.73 61.56 71.39 64.25 70.48
+Cutout [19]a 79.80 82.32 82.14 76.24 80.12 86.99 63.66 73.74 57.60 70.50
+RandConv [8]a 73.63 79.69 85.89 83.43 80.66 84.14 76.81 77.99 67.32 76.56
+ISW [27]b 84.83 82.60 83.44 81.06 82.98 83.23 68.88 76.47 70.06 74.66
+ATSRL [14]b 85.00 84.77 81.30 79.84 82.73 80.48 72.56 78.50 69.84 75.35
+BigAug [7]b 85.51 84.76 82.09 81.16 83.38 85.17 73.35 77.40 73.92 77.46
+PCSDG [24]e 87.02 83.08 84.42 82.70 84.31 84.06 73.86 76.10 72.89 76.48
+ADS [13]b 85.24 89.87 86.92 81.69 85.93 83.06 76.85 79.44 73.05 78.10
+AugSeg [17]d – – – – – 89.19 80.38 80.38 69.97 79.98
+IRLSG [28]b 87.80 88.97 87.22 85.45 87.36 87.11 79.66 81.58 75.56 80.98
+ARFU [29]e 87.56 88.54 88.01 89.49 88.40 87.61 81.56 81.92 80.14 82.81
+DCON [26]d – – – – – 89.98 82.28 82.95 82.60 84.45
+CSDG [10]a 86.62 87.48 86.88 84.27 86.31 85.62 80.02 80.42 75.56 80.40
+SLAug [11]c 90.08 89.23 87.54 87.67 88.63 89.26 80.98 82.05 79.93 83.05
+SRCSM 89.88 88.46 88.31 91.32 89.49 92.37 84.83 84.71 88.53 87.61
+±5.58 ±3.30 ±3.60 ±5.17 ±2.96 ±4.24 ±14.99 ±12.20 ±14.46 ±8.22
+Table 1: Comparison to related work on abdominal data using the CSDG setup. Scores represent the DSC in % per label as well as their mean.
+Differently to related work, we also provide standard deviations for our method. Scores for related work are obtained from: [10] (indicated by a),
+[28] (b), [11] (c), [26] (d) and [29] (e). Number of images in the test sets: MR-1: 20, CT-1: 30.
+5. Results and Discussion
+5.1. Quantitative Comparison to Related Work
+We provide a large-scale comparison to related work
+with a focus on recent single-source DG strategies in
+Tables 1-7. Beyond this, we also provide comparisons
+to DA and TTA approaches in Tables 4 and 6.
+Cross-modality Abdominal Organ Segmentation
+We present the performance in abdominal organ
+segmentation in Tables 1-3. As shown in Table 1,
+SRCSM outperforms a large variety of single-source
+DG baselines in both cross-modality settings. On av-
+erage, SRCSM achieved an improvement of +0.86%
+Dice Similarity Coe fficient (DSC) when generalizing
+from CT-1 to MR-1 compared to the second best base-
+line. In the opposite direction, from MR-1 to CT-1,
+SRCSM outperforms all baselines by at least 3 .16%
+DSC. SRCSM’s CI for the mean DSC in the CT-1 →
+MR-1 setting is [88 .11,90.87]; only two related works
+achieve scores that lie within this range. In the opposite
+direction, i.e., when generalizing from MR-1 to CT-1,
+the CI of our method for the mean DSC is [84.55,90.67]
+with no related work score falling within this range.
+Most notably, SRCSM achieved the largest perfor-
+mance improvements when segmenting the spleen, with
++1.83% DSC when generalizing from MR-1 to CT-1
+and +5.93% DSC in the opposite direction.
+We present a more detailed analysis of abdominal or-
+gan segmentation by adding an additional CT and MR
+dataset in Table 2, which we respectively call CT-2 and
+MR-2 as described in Section 4.1. With this, we in-
+crease the number of possible abdominal source-target
+combinations from 2 to 12, for which we selected two
+baselines: SLAug [11] as a method that also augments
+data based on class labels and CSDG [10] as a popular
+baseline that also relies on random convolutions. Over-
+all, SRCSM respectively achieves the best DSC and the
+best Average Symmetric Surface Distance (ASSD) re-
+sult in 11 out of 12 source-target combinations, while
+performing on par with related work in the remaining
+ones. On average, SRCSM outperforms the respec-
+tive second best baseline by +2.7% DSC and −0.4 mm
+ASSD.
+While Table 1 already includes a comparison to some
+SAM-based methods [30, 32], we performed additional
+experiments in abdominal organ segmentation in the
+same setup as DeSAM [31] (see Section 4.1) to allow
+additional comparisons to [30, 31, 56]. The results are
+presented in Table 3. SRCSM outperforms all baselines
+in both source-target domain pairs by a large margin.
+The CIs of SRCSM computed for the DSC respectively
+are [89.35,91.73] for CT-1 →MR-1 and [87.07,91.95]
+for MR-1 →CT-1. Closer inspection shows that no re-
+lated work score falls within the respective CI. Notably,
+in the CT-1 →MR-1 setting, a large gap remains be-
+9
+Abdominal: Confusion Matrix of Individual Source-Target Combinations
+Method
+Target
+→CT-1 →CT-2 →MR-1 →MR-2
+DSC ASSD DSC ASSD DSC ASSD DSC ASSD
+Source (%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓
+CT-1
+CSDG [10]† – – 90.8 ±6.1 1.9 ±2.1 85.7 ±4.7 3.9 ±1.4 88.7 ±4.9 2.0 ±1.1
+SLAug [11]† – – 91.1 ±5.7 1.9 ±2.2 87.7 ±3.6 2.8 ±1.2 90.1 ±4.5 1.8 ±1.0
+SRCSM – – 93.0 ±5.1 1.4 ±2.5 89.5 ±3.0 1.8 ±0.8 92.9 ±2.7 1.2 ±0.6
+CT-2
+CSDG [10]† 92.3 ±6.3 1.9 ±2.5 – – 86.9 ±6.3 3.9 ±2.0 92.7 ±3.7 1.1 ±0.9
+SLAug [11]† 92.9 ±6.0 1.6 ±2.1 – – 87.0 ±6.4 3.7 ±2.5 92.7 ±3.6 1.3 ±0.8
+SRCSM 91.2 ±7.1 1.6 ±2.2 – – 89.5 ±5.3 1.9 ±1.7 93.9 ±1.9 1.0 ±0.4
+MR-1
+CSDG [10]† 80.1 ±9.6 6.9 ±3.9 75.3 ±13.3 5.5 ±3.2 – – 84.9 ±8.1 2.8 ±1.6
+SLAug [11]† 82.5 ±8.6 4.4 ±2.9 78.3 ±12.3 4.5 ±3.2 – – 86.8 ±5.9 2.5 ±1.3
+SRCSM 87.6 ±8.2 3.7 ±3.1 85.6 ±10.0 5.1 ±5.1 – – 92.1 ±2.6 2.0 ±0.9
+MR-2
+CSDG [10]† 88.8 ±9.0 3.0 ±3.2 89.9 ±7.3 1.9 ±2.5 90.0 ±2.8 1.9 ±0.8 – –
+SLAug [11]† 80.9 ±10.0 4.8 ±4.1 77.5 ±13.2 4.5 ±3.5 85.5 ±4.9 3.7 ±1.6 – –
+SRCSM 91.1 ±6.7 1.9 ±2.0 92.4 ±5.9 1.6 ±2.7 91.9 ±2.6 1.5 ±0.8 – –
+Table 2: Detailed quantitative results for all source-target combinations on abdominal data of our SRCSM method compared to SLAug and CSDG
+in the CSDG setup. Presented are the mean and standard deviation of the DSC in % as well as the ASSD in mm. †indicates scores obtained using
+the original authors code. Number of images in the test sets: CT-1: 30, CT-2: 295, MR-1: 20, MR-2: 59.
+Abdominal CT-1 →MR-1 MR-1 →CT-1
+Method DSC (%) ↑ ASSD (mm) ↓ DSC (%) ↑ ASSD (mm) ↓
+MaxStyle [23]f 76.93 – 82.92 –
+CSDG [10]f 77.54 – 83.57 –
+MedSAM [56]f 72.10 – 80.64 –
+SAMed [30]f 70.35 – 77.21 –
+DeSAM-B [31]f 79.57 – 84.87 –
+DeSAM-P [31]f 80.05 – 86.68 –
+SRCSM 90.54 ±2.55 1.62 ±0.70 89.51 ±6.54 2.76 ±1.67
+Table 3: Comparison to related work on abdominal data using the DeSAM setup. Scores represent the mean DSC in % as well as the ASSD in mm.
+Differently to related work, we also report standard deviations. Scores for related work are obtained from: [31] ( f ). Number of images in the test
+sets: MR-1: 20, CT-1: 30.
+tween the best performing related work score and the
+lower bound of SRCSM’s CI.
+Cross-modality Whole-Heart Segmentation
+When segmenting the heart in the four-label setting,
+in Table 4, our method achieves the best results with
+a gap of +5.1% DSC and −0.5 mm ASSD over other
+single-source DG methods. Most notably, SRCSM even
+outperforms recent DA approaches by at least 4 .7%
+DSC, despite not demanding simultaneous access to
+source and target domain data during training. In the
+more detailed setting with seven labels, in Table 5, our
+method also achieves great improvements over SLAug
+and CSDG: +6.4% DSC when generalizing from MR to
+CT and +7.2% DSC in the other direction.
+Cross-center Prostate Segmentation
+The results of prostate segmentation, presented in Ta-
+ble 6, show that SRCSM outperforms related work in
+4 out of 5 target domains by up to +4.7% DSC, while
+achieving a similar performance to the most competi-
+tive baseline in the fifth one. When the scores are av-
+eraged over all target domains, SRCSM achieves im-
+provements of +1.8% DSC over related DG approaches
+and +8.5% DSC over TTA methods. In terms of
+average Hausdor ff Distance 95th Percentile (HD95),
+SRCSM performs in-line with HSD in the transformer
+variant, while outperforming all other methods by a
+large margin. These are notable improvements es-
+pecially when considering that TTA employs target
+domain data to adapt model parameters. We also
+computed the CIs from the DSC scores achieved on
+each domain by SRCSM which are: B: [90 .02,91.58],
+C: [88 .02,91.38], D: [88 .46,92.54], E: [83 .56,88.84]
+and F: [89 .35,92.25]. HSD in the transformer vari-
+ant is the only related work method that achieved a
+score that falls within the CI of SRCSM for two out
+of five domains, namely, when generalizing to prostate
+E and prostate F. The results in Table 7, i.e., when
+training on respectively one prostate domain and eval-
+uating on the union of the other domains, show that
+SRCSM substantially outperformed all other methods,
+10
+Cardiac: 4 Labels MR →CT
+Method DSC (%) ↑ ASSD
+(vox) ↓
+AA LA LV MYO Mean Mean
+In-Domain 94.2 ±6.3 92.2 ±2.6 92.3 ±4.5 90.3 ±1.9 92.3 ±2.5 1.2 ±0.4
+DA
+CycleGAN [57]g 73.8 75.7 52.3 28.7 57.6 10.8
+SIFA [42]g 81.3 79.5 73.8 61.6 74.1 7.0
+SynthMix [58]h 87.2 88.5 82.4 71.8 82.5 –
+CUDA [59]i 87.2 88.5 83.0 72.8 82.9 5.5
+MPSCL [60]j 90.3 87.1 86.5 72.5 84.1 3.5
+C3R [61]h 90.2 90.2 86.6 77.5 86.1 3.3
+TTA
+Prior AdaEnt [62]g 75.5 71.2 59.4 56.4 65.6 8.2
+AdaMI [63]g 83.1 78.2 74.5 66.8 75.7 5.6
+Tent [64]k 55.4 33.4 63.0 41.1 48.2 11.2
+TTASRC [65]k 85.1 82.6 79.3 73.2 80.0 5.3
+DG
+CSDG [10]† 95.4 ±0.8 90.9 ±1.3 82.0 ±10.8 71.2 ±5.1 84.9 ±3.3 2.0 ±0.5
+SLAug [11]† 95.8 ±0.4 91.2 ±1.3 82.0 ±10.7 73.7 ±4.5 85.7 ±3.2 2.4 ±0.5
+SRCSM 94.0 ±1.3 91.7 ±2.3 90.4 ±5.2 87.0 ±1.3 90.8 ±0.7 1.5 ±0.3
+Table 4: Comparison to related work on the whole-heart dataset using four labels. Shown are the DSC in % per label as well as the mean and
+standard deviation ofnd ASSD in voxel. Labelsare: ascending aorta (AA), left atrium (LA), left ventricle (LV) and myocardium (MYO). Scores for
+related work are obtained from: [63] ( g), [61] (h), [59] (i), [60] ( j), [65] (k). Number of images in the test set: 4. †indicates scores obtained using
+the original authors code.
+Cardiac:7 Labels MR→CT CT→MR
+Method DSC ASSD DSC ASSD
+(%)↑ (mm)↓ (%)↑ (mm)↓
+CSDG [10]† 82.3±3.4 2.9 ±1.0 77.3 ±9.5 2.6 ±1.4
+SLAug [11]† 82.2±2.8 3.6 ±1.3 78.5 ±8.1 3.1 ±1.6
+SRCSM 88.7 ±2.1 1.4±0.4 85.7±2.8 1.8±0.6
+Table 5: Comparison to related work on the whole-heart dataset using
+seven labels. Presented are the mean and standard deviation of the
+DSC in % as well as the ASSD in mm. Number of images in the test
+sets: CT: 20, MR: 20. † indicates scores obtained using the original
+authors code.
+achieving an improvement of at least +9.13% DSC
+over other methods on average. Notably, in the setting
+which is most challenging for related work, i.e., prostate
+C →Rest, SRCSM achieved a substantial improvement
+of +17.66% over the second best method. Closer in-
+spection of SRCSM’s CIs in terms of DSC for each
+source domain shows that no score achieved by related
+work falls into the respective CI of SRCSM and, more-
+over, that large gaps remain between the lower bound
+of the CI and the respective best score achieved by re-
+lated work. The CIs of SRCSM are: A: [89 .03,90.49],
+B: [88.16,90.46], C: [81 .23,87.39], E: [89 .68,90.88],
+D: [87.59,89.23], F: [84.97,88.73].
+Statistical Analysis of Multiple Dataset Generalization
+Based on results in Tables 2 and 5, we can compare
+statistical significance of the performance di fferences
+of our proposed SRCSM with CSDG and SLAug on
+14 different datasets, as described in Section 4.4. Au-
+torank [69] assessed that the population’s (algorithm’s)
+performances deviated from a normal distribution and
+therefore performed a non-parametric ranking-based
+Friedman test to test if there were any di fferences be-
+tween populations. Since at least one di fference was
+found, Autorank selected a post-hoc Nemenyi test to
+assess differences between pairs of algorithms. The re-
+sults in Figure 6 show that for both metrics, DSC and
+ASSD, SRCSM outperforms SLAug and CSDG at a
+significance level of p = 0.05, whereas SLAug and
+CSDG remain within CD to one another.
+5.2. Comparison to In-Domain Performance
+We compare the performance of SRCSM to that of a
+model trained on the target domain, in Tables 4 and 8,
+respectively. Importantly, all scores in Table 8 have
+been computed on held-out validation respectively test
+sets to allow for a fair comparison of SRCSM to the in-
+domain baseline. This is necessary since most single-
+source DG setups use all available target domain data in
+their evaluation and therefore leave no training data for
+an in-domain baseline, thus preventing a direct compar-
+ison.
+The results in Table 4 show that SRCSM closes in on
+the in-domain baseline, effectively reducing the remain-
+ing domain gap to 1 .5% DSC and 0 .3 mm ASSD. For
+the best performing related work method, a consider-
+ably larger domain gap of 6.2% DSC and 0.8 mm ASSD
+remains.
+Moreover, we present a thorough comparison to an
+in-domain baseline in Table 8, which includes abdomi-
+nal, seven label whole-heart and prostate domains. For
+11
+Prostate A →
+Method
+DSC (%)↑ HD95 (mm)↓ ASSD (mm)↓
+B C D E F Mean over Mean over Mean over
+Domains Domains Domains
+TTA
+TTT [66]l 83.5±5.9 73.1 ±17.5 75.3 ±7.8 67.5 ±11.1 81.5 ±5.9 76.2 ±6.5 19.8 ±7.8 –
+TTST [67]l 86.0±3.7 74.8 ±10.5 81.0 ±3.9 74.0 ±8.4 80.9 ±9.2 79.3 ±5.0 18.3 ±5.7 –
+Tent [64]l 84.5±4.7 74.2 ±13.9 76.4 ±8.1 67.1 ±10.1 80.1 ±9.6 76.5 ±6.5 19.0 ±5.2 –
+TASD [68]l 87.1±2.5 76.4 ±6.1 82.5 ±5.2 76.0 ±6.6 83.2 ±6.7 81.1 ±4.8 15.1 ±5.3 –
+DG
+M-ADA [12]l 86.2±4.4 74.7 ±9.1 80.9 ±4.9 69.7 ±12.2 79.5 ±9.3 78.2 ±6.3 19.2 ±7.1 –
+BigAug [7]l 84.2±5.0 73.9 ±14.1 73.3 ±7.7 74.7 ±9.7 79.0 ±6.8 77.0 ±4.6 19.9 ±4.7 –
+HSD (CNN) [21]l 85.7±3.2 78.9 ±5.6 84.5 ±3.0 78.6 ±5.1 82.3 ±4.1 82.0 ±3.2 8.2 ±2.4 –
+HSD (Transformer) [21]l 88.7±2.2 85.0 ±2.5 87.7 ±1.9 87.2±1.7 90.3 ±2.1 87.8 ±2.0 3.3±2.5 –
+SRCSM 90.8 ±2.1 89.7±3.5 90.5±3.4 86.2 ±4.2 90.8±2.3 89.6±2.0 3.4 ±1.1 1.0±0.2
+Table 6: Comparison to related work on prostate data in the HSD setup. Scores represent the mean and standard deviation of the DSC in % when
+trained on prostate A and tested on the remaining target domains B, C, D, E and F individually as indicated in the respective column. We also
+provide the mean and standard deviation of the ASSD and HD95 in mm. ’Mean over Domains’ refers to scores computed from the mean results of
+the individual domains. Scores for related work are obtained from: [21] ( l). Related work scores for HD95 were converted from pixel to mm by
+multiplication with the in-plane physical resolution of 0 .4688 mm of the resampled data. Number of images in the test sets: B: 30, C: 19, D: 13,
+E: 12, F: 12.
+Prostate →Rest
+Method
+DSC (%)↑ ASSD (mm)↓
+A B C D E F Mean over Mean over
+Domains Domains
+MaxStyle [23]f 81.25 70.27 62.09 58.18 70.04 67.77 68.27 ±7.95 –
+CSDG [10]f 80.72 68.00 59.78 72.40 68.67 70.78 70.06 ±6.80 –
+MedSAM [56]f 72.32 73.31 61.53 64.46 68.89 61.39 66.98 ±5.28 –
+SAMed [30]f 73.61 75.89 58.61 73.91 66.52 72.85 70.23 ±6.52 –
+DeSAM-B [31]f 82.30 78.06 66.65 82.87 77.58 79.05 77.75 ±5.86 –
+DeSAM-P [31]f 82.80 80.61 64.77 83.41 80.36 82.17 79.02±7.08 –
+SRCSM 89.76 ±3.42 89.31±5.37 84.31±15.30 90.28±3.07 88.41±4.22 86.85±9.69 88.15±2.24 1.33±0.40
+Table 7: Comparison to related work on prostate data in the DeSAM setup. Scores represent the mean and standard deviation of the DSC in % when
+training on the source domain indicated in the respective column and tested on the union of all other target domains. For example, C→Rest refers
+to training on prostate C and averaging scores when testing on A, B, D, E and F. We also provide the mean and standard deviation of the ASSD
+in mm. ’Mean over Domains’ refers to scores computed from the mean results of the individual domains. Di fferently to related work, we also
+provide standard deviations for our method. Scores for related work are obtained from: [31] ( f ). Number of images in the test sets: A →Rest: 86,
+B →Rest: 86, C →Rest: 97, D →Rest: 103, E →Rest: 104, F →Rest: 104.
+several source-target combinations, SRCSM performs
+in-line with or even slightly exceeds the in-domain base-
+line, while closing in on its results in most remaining
+settings. Notably, when averaging over the 16 domains
+in Table 8, SRCSM reduces the remaining domain gap
+to a respectable 2.8% DSC. Larger performance gaps to
+the in-domain baseline only occurred in two out of 16
+source-target combinations, which we analyze below.
+Generalization in the Each →C setting results in
+a relatively large disparity between the performance
+of SRCSM and the in-domain baseline, amounting to
+12.0% DSC. We suspect that this comparatively large
+performance gap of Each→C, as compared to the other
+prostate settings, stems from a larger domain gap of
+prostate C to the other domains. Besides di fferences
+in coil usage and the hardware used for image acqui-
+sition, another difference between domains arises from
+the health status of the individual subjects [46, 47].
+Specifically, prostate C has a very high incidence rate
+of prostate cancer [47], which additionally contributes
+to the domain gap of prostate C. Further evidence on a
+larger domain gap of prostate C can be found in Table 7,
+where the prostate C →Rest setting also underperforms
+compared to other settings for related work methods.
+Another large performance gap in Table 8 is ob-
+served for the abdominal MR-1 →CT-2 setting, where
+SRCSM attains a performance that is 9 .5% lower as
+compared to the in-domain baseline. Interestingly, gen-
+eralizing from the other abdominal MR domain, i.e.,
+MR-2 →CT-2, results in a much lower performance
+difference to the in-domain score with only 2 .7% as
+compared to the 9 .5% DSC of MR-1 →CT-2. Upon
+closer inspection of the individual abdominal datasets,
+we discovered that the ground truth segmentations of
+MR-1 are inconsistent with the segmentations of the
+other abdominal datasets. Specifically, MR-1 is the
+only domain that also includes the renal pelvis in the
+ground truth segmentation of the left and right kid-
+12
+123
+CSDG
+SLAug
+SRCSM
+CD
+(a) DSC
+123
+CSDG
+SLAug
+SRCSM
+CD (b) ASSD
+Figure 6: The outcome of statistical analysis of multiple dataset generalization derived from 14 experimental setups reported in Tables 2 and 5.
+Based on the Autorank package [69], we compare three algorithms: SRCSM, SLAug and CSDG against each other with the non-parametric Fried-
+man test and the post-hoc Nemenyi test. Ranking based on (a) DSC and (b) ASSD performance metrics indicates superior dataset generalization
+capability of SRCSM. Groups of algorithms that are not significantly di fferent (at p = 0.05), i.e., within the critical di fference (CD) [70] of the
+ranking, are connected.
+ney, which makes settings that involve MR-1 inherently
+more challenging. Further, closer inspection of the re-
+lated work comparison in Table 2 confirms that other
+methods also underperform on the MR-1 →CT-2 set-
+ting when compared to their respective performance on
+the other source-target combinations. This indicates
+that MR-1 →CT-2 is a particularly di fficult abdomi-
+nal cross-modality setting which is partially caused by
+the difference in the ground truth segmentation of the
+source and target domain.
+5.3. Qualitative Comparison to Related Work
+The qualitative results, shown in Fig. 7, demon-
+strate that SRCSM produced very accurate segmenta-
+tion masks. The observed errors did not a ffect larger
+parts of anatomical structures: A slight undersegmenta-
+tion of the spleen (yellow) can be observed when adapt-
+ing from CT-1 to MR-1 (row 2, col 3), which how-
+ever, did not occur when adapting from CT-2 to MR-1
+(row 2, col 6). When adapting on the cardiac whole-
+heart dataset from CT to MR, SRCSM slightly overseg-
+mented the right ventricle (green) (row 3, col 7). In ei-
+ther case, the segmentation masks produced by SRCSM
+are more plausible than those yielded by the baselines.
+Interestingly, when adapting from abdominal MR-1 to
+CT-1 (row 1, col 3), it can be observed that both, the
+left (green) and right kidney (blue) were labeled as such
+that the renal pelvis is respectively included in the pre-
+dicted segmentation. This is caused by a mismatch in
+the ground truth segmentation of MR-1 when compared
+to the other domains.
+5.4. Whole-Heart to Cine Experiments
+So far, the evaluation in this work focused on do-
+main gaps introduced by di fferences in intensity, con-
+trast and noise. To extend the evaluation to geomet-
+ric domain shifts, we additionally assessed generaliza-
+tion from whole-heart CT and MR to cardiac cine MR
+data. In this challenging setting, additional sources of
+domain shift arise, including (1) large slice gaps in the
+out-of-plane dimension, (2) potential misalignment of
+neighboring slices due to motion, and (3) morphological
+changes from diastolic whole-heart to the systolic phase
+of cine MR data. To our knowledge, this is the first work
+that evaluates generalization from whole-heart to cine
+MR data.
+The results in Table 9 show that on average, SRCSM
+leads to respectable improvements over a baseline that
+only employs conventional data augmentation (CDA)
+when generalizing from whole-heart MR to cine MR.
+Most notably, SRCSM greatly outperforms the baseline
+in the whole-heart CT to cine MR setting, where the
+baseline fails completely, while SRCSM fares as well
+as when adapting from whole-heart MR data. Di ffer-
+ently to the baseline, SRCSM achieves a similar perfor-
+mance for diastolic and the more challenging systolic
+scans, which emphasizes the potential of strong inten-
+sity augmentation techniques even when large morpho-
+logical differences are expected.
+5.5. Ablation Study
+The ablation study in Table 10 demonstrates the con-
+tribution of the individual components of SRCSM to the
+overall performance. By design, the two complemen-
+tary components address di fferent potential sources of
+domain gap, which is confirmed by the fact that their
+combination systematically improves performance. In-
+terestingly, in the abdominal MR-1 to CT-1 setting,
+SRCSM using the binary SRC implementation achieved
+slightly better scores then SRCSM as proposed, how-
+ever, only by relatively small amounts of 0 .4% DSC
+and 0.1 mm ASSD. Closer inspection of the data shows
+that the physical resolution of MR-1 averages to roughly
+1.55 mm in-plane and 8 .75 mm out-of-plane, which is
+much lower than the average physical resolution of CT-
+1 with roughly 0 .78 mm in-plane and 3 .78 mm out-of-
+plane. This results in the MR-1 images being inherently
+less clear and appearing more blurry in comparison to
+13
+Abdominal Whole-Heart Prostate
+Source: MR-1 MR-2 CT-1 CT-2 MR-1 MR-2 CT-1 CT-2 MR CT Each Each Each Each Each Each Mean over
+Target: CT-1 CT-1 MR-1 MR-1 CT-2 CT-2 MR-2 MR-2 CT MR A B C D E F Domains
+In-Domain 92.1 92.1 91.2 91.2 96.1 96.1 96.5 96.5 91.5 85.6 90.8 93.0 93.7 90.2 89.7 90.8 92.3
+±2.5 ±2.5 ±2.2 ±2.2 ±1.2 ±1.2 ±1.0 ±1.0 ±6.3 ±7.9 ±3.1 ±1.8 ±1.5 ±0.5 ±1.1 ±0.7 ±2.9
+SRCSM 89.8 91.6 88.7 90.0 86.6 93.4 93.7 94.5 87.4 85.7 91.2 89.6 81.7 90.2 89.7 89.0 89.6
+±4.0 ±4.8 ±3.1 ±3.4 ±8.0 ±3.8 ±1.8 ±1.1 ±7.2 ±8.3 ±2.9 ±3.1 ±11.3 ±3.2 ±0.9 ±3.0 ±3.2
+Domain Gap 2.3 0.5 2.5 1.2 9.5 2.7 2.8 2.0 4.0 -0.1 -0.4 3.4 12.0 0.0 0.0 1.8 2.8
+Table 8: Comparison to in-domain baselines on abdominal, whole-heart and prostate domains. Scores represent the mean and standard deviation of
+the DSC in %. For the In-Domain baseline, scores were obtained by training on the target domain and evaluating on a held-out test set of that target
+domain. Scores for SRCSM were obtained by training on the indicated source domain and evaluating on the same held-out test set. Prostate scores
+for SRCSM represent the average over scores obtained when training on one domain and evaluating on the indicated target domain. For example,
+Each →C refers to the average score of five settings, namely: A→C, B →C, D →C, E →C and F →C. Domain Gap refers to the remaining gap
+in performance between the in-domain baseline and SRCSM, which is computed as their di fference. For prostate domains, the standard deviation
+was computed from the mean scores achieved on the respective source domains. The standard deviation shown in the column indicated with ’Mean
+over Domains’ was computed over all dataset mean scores of the respective row. Number of images in the test sets: Abdominal: CT-1: 6, MR-1: 4,
+CT-2: 98, MR-2: 20. Whole-Heart: CT: 40, MR: 40. Prostate: A: 3, B: 3, C: 2, D: 2, E: 2, F: 2.
+Image GT Label SRCSM
+MR-1 → CT-1
+SLAug SRCSM
+MR-2 → CT-1
+SLAug
+CT-1
+CSDG CSDG
+MR-1 CT-1 → MR-1 CT-2 → MR-1
+Image GT Label
+CT
+SRCSM SLAug Image GT Label SRCSM SLAug
+MRMR → CT CT → MR
+AbdominalAbdominalCardiac
+Figure 7: Qualitative results of our SRCSM method compared to the ground truth (GT) label, SLAug and CSDG. Abdominal images are shown for
+CT-1 (row 1) when training on MR-1 (cols 3-5) and MR-2 (cols 6-8). Results for MR-1 (row 2) are shown when training on CT-1 (cols 3-5) and
+CT-2 (cols 6-8). Further, we provide cardiac whole-heart results (row 3) when adapting from MR to CT (cols 1-4) and from CT to MR (cols 5-8).
+Column headers are provided above row 1 and row 3, respectively.
+CT-1 images. Moreover, as described in Section 5.2,
+we identified a disparity in the kidney ground truth seg-
+mentation of MR-1 as compared to the other abdom-
+inal domains. These factors may have contributed to
+the small performance gap in favor of the binary SRC
+implementation as observed in the abdominal MR-1 to
+CT-1 setting. Nevertheless, in all settings shown in Ta-
+ble 10, using our proposed SRC and SM results in the
+highest performance.
+5.6. Limitations
+Like previous methods, SRCSM assumes that im-
+ages of the source and target domains show the same
+anatomy and o ffer roughly the same field of view. In
+particular, SM might be sensitive to drastic changes in
+the field of view for which further evaluation is neces-
+sary. However, previous localization of the region of in-
+terest, e.g., with the method in [72], provides a straight-
+forward solution to alleviate this issue. SM might also
+be sensitive to imaging artifacts that alter the inten-
+sity distribution of an image, similarly to many com-
+mon normalization techniques. While further analysis
+is left for future work, the whole-heart to cine experi-
+ments provide additional insight on the generality of our
+method by assessing the performance in the presence
+of domain gaps our method was not explicitly designed
+to bridge. These domain gaps include morphological
+differences, potential slice misalignment of neighboring
+cine slices, di fferences in label definition and changes
+in field of view. While our method achieved good re-
+14
+Cardiac Whole-Heart→Cardiac Cine MR
+Method
+MR →Cine MR (GE) MR →Cine MR (Phil.) MR →Cine MR (Siem.) MR →Cine MR (All)
+DSC ASSD DSC ASSD DSC ASSD DSC ASSD
+(%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓
+In-Domain‡
+Diastolic
+– – – – – – 93.4 –
+In-Domain (ours) 88.8 ±6.2 1.0 ±0.7 88.8 ±3.8 0.7 ±0.5 90.8 ±3.0 0.7 ±0.5 91.0 ±3.1 0.7 ±0.5
+CDA 79.0 ±10.4 2.8 ±4.3 80.0 ±10.0 2.6 ±4.0 74.0 ±9.2 3.4 ±4.7 75.0 ±9.7 3.3 ±4.6
+SRCSM 81.2 ±3.0 1.8 ±0.6 81.3 ±3.2 1.6 ±0.5 79.2 ±4.1 1.9 ±0.7 79.6 ±4.0 1.8 ±0.7
+In-Domain‡
+Systolic
+– – – – – – 91.0 –
+In-Domain (ours) 89.1 ±3.3 0.9 ±0.4 88.9 ±3.5 0.6 ±0.4 89.5 ±3.8 0.8 ±0.6 89.9 ±3.8 0.7 ±0.5
+CDA 73.7 ±11.6 4.7 ±6.8 76.5 ±10.0 3.5 ±4.7 64.1 ±16.5 7.1 ±9.5 66.1 ±16.2 6.6 ±9.0
+SRCSM 79.0 ±5.7 2.2 ±1.0 79.9 ±6.1 2.2 ±1.3 75.3 ±6.6 2.5 ±1.0 76.0 ±6.6 2.5 ±1.0
+Method
+CT →Cine MR (GE) CT →Cine MR (Phil.) CT →Cine MR (Siem.) CT →Cine MR (All)
+DSC ASSD DSC ASSD DSC ASSD DSC ASSD
+(%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓
+In-Domain‡
+Diastolic
+– – – – – – 93.4 –
+In-Domain (ours) 88.8 ±6.2 1.0 ±0.7 88.8 ±3.8 0.7 ±0.5 90.8 ±3.0 0.7 ±0.5 91.0 ±3.1 0.7 ±0.5
+CDA 17.3 ±11.4 31.0 ±19.4 17.2 ±8.3 28.4 ±14.3 15.5 ±9.3 38.2 ±22.3 15.8 ±9.5 36.7 ±21.7
+SRCSM 77.7 ±10.2 2.7 ±3.7 79.7 ±5.5 2.4 ±4.0 76.7 ±5.1 2.1 ±0.8 77.0 ±6.0 2.2 ±1.8
+In-Domain‡
+Systolic
+– – – – – – 91.0 –
+In-Domain (ours) 89.1 ±3.3 0.9 ±0.4 88.9 ±3.5 0.6 ±0.4 89.5 ±3.8 0.8 ±0.6 89.9 ±3.8 0.7 ±0.5
+CDA 24.1 ±16.9 26.3 ±21.8 26.1 ±16.2 25.8 ±20.9 13.5 ±10.7 41.1 ±26.1 15.6 ±12.8 38.3 ±25.9
+SRCSM 76.4 ±3.8 2.7 ±1.1 74.3 ±8.5 4.4 ±6.0 73.7 ±6.5 3.0 ±1.9 74.0 ±6.4 3.1 ±2.3
+Table 9: Quantitative results when training on whole-heart and testing on cardiac cine MR data. We evaluate the performance of our SRCSM
+method to a method that only relies on conventional data augmentation (CDA), as well as to two In-Domain baselines. As source domain we
+used whole-heart MR (top half of rows) and CT (bottom half of rows), respectively. For evaluation, we separated the cine dataset into diastolic
+and systolic scans, as well as by scanner manufacturer into General Electric (GE), Philips (Phil.) and Siemens (Siem.). To allow a comparison to
+In-Domain related work in literature, we also show results without separating by scanner manufacturer (All). Presented are the mean and standard
+deviation of the DSC in % as well as the ASSD in mm. The In-Domain scores indicated by ‡are based on [71] as obtained from [43]. Number of
+images in the test sets: GE: 19, Phil.: 10, Siem.: 128, All: 157.
+Abdominal Cardiac:7 Labels
+Method
+CT-1→MR-1 MR-1 →CT-1 MR →CT CT →MR
+DSC ASSD DSC ASSD DSC ASSD DSC ASSD
+(%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓ (%) ↑ (mm) ↓
+CDA 8.3 ±7.5 40.4 ±9.7 5.6 ±3.7 111.1 ±11.5 36.6 ±13.5 19.4 ±7.0 34.5 ±10.5 13.6 ±3.7
+CDA+RC 85.4 ±7.8 3.1 ±3.0 85.0 ±9.0 4.5 ±3.3 84.4 ±3.2 2.0 ±0.6 82.9 ±3.6 2.2 ±0.8
+CDA+SRCbinary 65.3 ±16.8 8.8 ±7.0 69.5 ±18.8 8.6 ±7.8 78.6 ±7.0 3.2 ±1.4 81.5 ±5.3 2.3 ±0.9
+CDA+SRC 88.1 ±5.1 2.3 ±1.2 83.3 ±9.6 4.9 ±5.0 86.9 ±2.3 1.7 ±0.4 84.2 ±3.5 2.1 ±0.9
+CDA+SM 58.0 ±18.8 9.1 ±7.6 51.1 ±14.7 27.1 ±18.5 68.1 ±11.9 7.2 ±3.4 68.1 ±11.9 7.2 ±3.4
+CDA+RC+SM 85.1 ±9.6 2.7 ±2.7 87.7 ±8.8 3.7 ±3.2 87.1 ±2.0 1.7 ±0.4 84.8 ±3.0 1.9 ±0.6
+CDA+SRCbinary+SM 87.9 ±5.6 2.3 ±1.7 88.0 ±9.3 3.6 ±3.4 87.7 ±2.4 1.6 ±0.5 84.3 ±3.5 2.0 ±0.8
+CDA+SRC+SM (SRCSM) 89.5 ±3.0 1.8 ±0.8 87.6 ±8.2 3.7 ±3.1 88.7 ±2.1 1.4 ±0.4 85.7 ±2.8 1.8 ±0.6
+Table 10: Ablation study of our SRCSM method. Presented are the mean and standard deviation of the DSC in % as well as the ASSD in
+mm. Scores for the whole-heart dataset refer to the setting using seven labels. Abbreviations: Conventional Data Augmentation (CDA), Random
+Convolution (RC), Semantic-aware Random Convolution (SRC) and Source Matching (SM). CDA is described in Section 4.2. RC is a semantic-
+unaware SRC variant which employs a single random convolution network to augment the whole image similar to CSDG [10]. SRCbinary refers to
+the implementation of Eq. (1). SRC and SM are our contributions as respectively described in Section 3.1 and 3.2. Number of images in the test
+sets: Abdominal: MR-1: 20, CT-1: 30. Cardiac: CT: 20, MR: 20.
+15
+sults in these experiments, we acknowledge that a per-
+formance gap remains when compared to the in-domain
+results. Further investigation is necessary to assess how
+much additional improvement can be achieved when
+these additional sources of domain gap are addressed,
+e.g., by registering cine slices and carefully assessing
+and potentially aligning the label definition.
+Even though we perform a comprehensive evalua-
+tion for cross-modality DG, some limitations related to
+the evaluation remain. While we employ strong spatial
+augmentation to account for possible morphological dif-
+ferences between source and target domain, further as-
+sessment of the performance in the presence of signifi-
+cant morphological di fferences is left for future work.
+Our evaluation on the systolic cine data already pro-
+vides some evidence on the generality of our method un-
+der morphological changes, however, additional exper-
+iments using, e.g., abdominal scans that contain organs
+with tumors of different sizes and at different locations,
+would be interesting. Further, in this work, we focus on
+the challenging single-source cross-modality setting be-
+tween MR- and CT-based imaging modalities and there-
+fore we specifically designed SM with grayscale images
+in mind. While an extension to multi-channel data like
+RGB images in histopathology is technically possible,
+for example, by applying SM to each channel indepen-
+dently, this goes beyond the scope of this work and is
+left for future extension.
+6. Conclusion
+In this work we propose SRCSM, a single-source
+DG method for semantic segmentation consisting of
+two contributions. First, SRC diversifies the source do-
+main through semantic-aware random convolution dur-
+ing training. Second, SM e fficiently aligns individual
+target domain images with the distribution of the source
+domain at test-time by employing the average histogram
+of the source dataset, which is computed and stored
+alongside the model after training finishes. Therefore,
+SRCSM tackles the challenging scenario of having no
+target domain data available during training, while also
+requiring no access to source domain images at test-time
+and without demanding any target specific optimization
+procedure at test-time. Our comprehensive evaluation
+involves cross-modality and cross-center generalization
+and includes a wide range of comparison methods for
+abdominal organ, whole-heart and prostate segmenta-
+tion in various settings. In addition, we also assess our
+SRCSM method when training on whole-heart CT or
+whole-heart MR data and testing on the diastolic and
+systolic phase of cine MR data obtained from several
+scanner manufacturers. SRCSM outperforms related
+work in most observed settings, often by a respectable
+margin, and even achieves results that match the in-
+domain performance in several settings. With these re-
+sults, our large-scale evaluation confirms the generality
+and wide applicability of the proposed method to vari-
+ous MR and CT domains, establishing SRCSM as the
+new state-of-the-art in domain generalization for medi-
+cal image segmentation.
+Declaration of Competing Interest
+The authors declare that they have no known com-
+peting financial interests or personal relationships that
+could have appeared to influence the work reported in
+this paper.
+Funding Sources
+This research was funded in whole or in part by the
+Austrian Science Fund (FWF) 10.55776 /PAT1748423.
+This work was further supported by grant I6540
+from the Austrian Science fund (FWF) and by grant
+FO999891133 from the Austrian Research Promotion
+Agency (FFG).
+Ethics Statement
+This study does not require ethical approval or in-
+formed consent because it exclusively involves analy-
+ses of de-identified publicly available datasets. No hu-
+man or animal subjects were directly involved in this re-
+search, and all data were processed in accordance with
+established institutional and regulatory guidelines.
+References
+[1] S. Ben-David, J. Blitzer, K. Crammer, F. C. Pereira, Analysis
+of representations for domain adaptation, Advances in Neural
+Information Processing Systems (NeurIPS) 19 (2006) 137–144.
+doi:10.7551/mitpress/7503.003.0022.
+[2] A. Torralba, A. A. Efros, Unbiased look at dataset bias, in:
+IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR), 2011, pp. 1521–1528. doi:10.1109/CVPR.2011.
+5995347.
+[3] E. A. AlBadawy, A. Saha, M. A. Mazurowski, Deep learning
+for segmentation of brain tumors: Impact of cross-institutional
+training and testing, Medical Physics 45 (3) (2018) 1150–1158.
+doi:10.1002/mp.12752.
+[4] E. H. P. Pooch, P. Ballester, R. C. Barros, Can We Trust Deep
+Learning Based Diagnosis? The Impact of Domain Shift in
+Chest Radiograph Classification, in: International Workshop on
+Thoracic Image Analysis, MICCAI, 2020, pp. 74–83. doi:
+10.1007/978-3-030-62469-9\_7 .
+16
+[5] K. Zhou, Z. Liu, Y . Qiao, T. Xiang, C. C. Loy, Domain gen-
+eralization: A survey, IEEE Transactions on Pattern Analy-
+sis and Machine Intelligence 45 (4) (2023) 4396–4415. doi:
+10.1109/TPAMI.2022.3195549.
+[6] J. Wang, C. Lan, C. Liu, Y . Ouyang, T. Qin, W. Lu, Y . Chen,
+W. Zeng, P. S. Yu, Generalizing to unseen domains: A survey on
+domain generalization, IEEE Transactions on Knowledge and
+Data Engineering 35 (8) (2023) 8052–8072. doi:10.1109/
+TKDE.2022.3178128.
+[7] L. Zhang, X. Wang, D. Yang, T. Sanford, S. Harmon, B. Turk-
+bey, B. J. Wood, H. Roth, A. Myronenko, D. Xu, Z. Xu, Gen-
+eralizing deep learning for medical image segmentation to un-
+seen domains via deep stacked transformation, IEEE Transac-
+tions on Medical Imaging 39 (7) (2020) 2531–2540. doi:
+10.1109/TMI.2020.2973595.
+[8] Z. Xu, D. Liu, J. Yang, C. Ra ffel, M. Niethammer, Robust and
+generalizable visual representation learning via random convo-
+lutions, International Conference on Learning Representations
+(ICLR) (2021).
+[9] S. Choi, D. Das, S. Choi, S. Yang, H. Park, S. Yun, Progres-
+sive random convolutions for single domain generalization, in:
+Proceedings of the IEEE /CVF Conference on Computer Vi-
+sion and Pattern Recognition (CVPR), 2023, pp. 10312–10322.
+doi:10.1109/CVPR52729.2023.00994.
+[10] C. Ouyang, C. Chen, S. Li, Z. Li, C. Qin, W. Bai, D. Rueck-
+ert, Causality-Inspired Single-Source domain generalization for
+medical image segmentation, IEEE Transactions on Medical
+Imaging 42 (4) (2023) 1095–1106. doi:10.1109/TMI.2022.
+3224067.
+[11] Z. Su, K. Yao, X. Yang, K. Huang, Q. Wang, J. Sun, Rethink-
+ing data augmentation for Single-Source domain generalization
+in medical image segmentation, AAAI Conference on Artificial
+Intelligence 37 (2) (2023) 2366–2374. doi:10.1609/aaai.
+v37i2.25332.
+[12] F. Qiao, L. Zhao, X. Peng, Learning to learn single domain gen-
+eralization, in: Proceedings of the IEEE /CVF Conference on
+Computer Vision and Pattern Recognition, 2020, pp. 12556–
+12565. doi:10.1109/CVPR42600.2020.01257.
+[13] Y . Xu, S. Xie, M. Reynolds, M. Ragoza, M. Gong, K. Bat-
+manghelich, Adversarial consistency for single domain gener-
+alization in medical image segmentation, in: International Con-
+ference on Medical Image Computing and Computer-Assisted
+Intervention (MICCAI), Springer, 2022, pp. 671–681. doi:
+10.1007/978-3-031-16449-1\_64 .
+[14] F.-E. Yang, Y .-C. Cheng, Z.-Y . Shiau, Y .-C. F. Wang, Adversar-
+ial teacher-student representation learning for domain general-
+ization, Advances in Neural Information Processing Systems 34
+(2021) 19448–19460.
+[15] C. Chen, C. Qin, H. Qiu, C. Ouyang, S. Wang, L. Chen, G. Tar-
+roni, W. Bai, D. Rueckert, Realistic adversarial data augmenta-
+tion for MR image segmentation, in: Medical Image Computing
+and Computer Assisted Intervention (MICCAI), 2020, pp. 667–
+677. doi:10.1007/978-3-030-59710-8\_65 .
+[16] Y . Ji, H. Bai, J. Yang, C. Ge, Y . Zhu, R. Zhang, Z. Li, L. Zhang,
+W. Ma, X. Wan, P. Luo, AMOS: A Large-Scale abdominal
+Multi-Organ benchmark for versatile medical image segmen-
+tation, in: Neural Information Processing Systems (NeurIPS)
+Track on Datasets and Benchmarks, 2022. doi:10.48550/
+arXiv.2206.08023.
+[17] Z. Zhao, L. Yang, S. Long, J. Pi, L. Zhou, J. Wang, Aug-
+mentation matters: A simple-yet-e ffective approach to semi-
+supervised semantic segmentation, in: Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recog-
+nition (CVPR), 2023, pp. 11350–11359. doi:10.1109/
+CVPR52729.2023.01092.
+[18] R. Huang, H. Cai, W. Zhuo, S. Cai, H. Lin, W. Fan, W. Su, Ada:
+An adaptive augmentation framework for single-source domain
+generalization in medical image segmentation, in: Interna-
+tional Conference on Medical Image Computing and Computer-
+Assisted Intervention (MICCAI), Springer, 2025, pp. 45–54.
+doi:10.1007/978-3-032-05127-1\_5 .
+[19] T. DeVries, G. W. Taylor, Improved regularization of
+convolutional neural networks with cutout, arXiv preprint
+arXiv:1708.04552 (2017).
+[20] Z. Huang, H. Wang, E. P. Xing, D. Huang, Self-challenging
+Improves Cross-Domain Generalization, in: European Confer-
+ence on Computer Vision (ECCV), 2020, pp. 124–140. doi:
+10.1007/978-3-030-58536-5\_8 .
+[21] J. Yi, Q. Bi, H. Zheng, H. Zhan, W. Ji, Y . Huang, S. Li, Y . Li,
+Y . Zheng, F. Huang, Hallucinated style distillation for single do-
+main generalization in medical image segmentation, in: Interna-
+tional Conference on Medical Image Computing and Computer-
+Assisted Intervention (MICCAI), Springer, 2024, pp. 438–448.
+doi:10.1007/978-3-031-72117-5\_41 .
+[22] K. Zhou, Y . Yang, Y . Qiao, T. Xiang, Domain generalization
+with MixStyle, International Conference on Learning Represen-
+tations (ICLR) (2021).
+[23] C. Chen, Z. Li, C. Ouyang, M. Sinclair, W. Bai, D. Rueck-
+ert, MaxStyle: Adversarial style composition for robust medi-
+cal image segmentation, in: International Conference on Med-
+ical Image Computing and Computer-Assisted Intervention
+(MICCAI), Springer, 2022, pp. 151–161. doi:10.1007/
+978-3-031-16443-9\_15 .
+[24] J.-X. Jiang, Y . Li, Z. Wang, Structure-aware single-source gen-
+eralization with pixel-level disentanglement for joint optic disc
+and cup segmentation, Biomedical Signal Processing and Con-
+trol 99 (2025) 106801. doi:10.1016/j.bspc.2024.106801.
+[25] D. Peng, Y . Lei, M. Hayat, Y . Guo, W. Li, Semantic-
+aware domain generalized segmentation, in: Proceedings of
+the IEEE /CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), 2022, pp. 2594–2605. doi:10.1109/
+CVPR52688.2022.00262.
+[26] R. Wang, J. Guo, J. Zhang, L. Qi, Q. Yu, Y . Shi, A hybrid dual-
+augmentation constraint framework for single-source domain
+generalization in medical image segmentation, Pattern Recog-
+nition 170 (2025) 112082. doi:10.1016/j.patcog.2025.
+112082.
+[27] S. Choi, S. Jung, H. Yun, J. T. Kim, S. Kim, J. Choo, Ro-
+bustNet: Improving domain generalization in urban-scene seg-
+mentation via instance selective whitening, in: Proceedings of
+the IEEE /CVF Conference on Computer Vision and Pattern
+Recognition (CVPR), 2021, pp. 11580–11590. doi:10.1109/
+CVPR46437.2021.01141.
+[28] Z. Niu, H. Sun, S. Ouyang, S. Xie, Y .-w. Chen, R. Tong, L. Lin,
+IRLSG: Invariant Representation Learning for Single-Domain
+Generalization in Medical Image Segmentation, in: ICASSP
+2024-2024 IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP), IEEE, 2024, pp. 5585–5589.
+doi:10.1109/ICASSP48485.2024.10446700.
+[29] B. Ren, Y . Li, J. Sun, H. Chen, L. Chen, Anatomically-
+robust and feature-unbiased domain generalization for medi-
+cal segmentation, Expert Systems with Applications 298 (2025)
+129752. doi:10.1016/j.eswa.2025.129752.
+[30] K. Zhang, D. Liu, Customized segment anything model for
+medical image segmentation, arXiv preprint arXiv:2304.13785
+(2023).
+[31] Y . Gao, W. Xia, D. Hu, W. Wang, X. Gao, DeSAM: De-
+coupled segment anything model for generalizable medical
+image segmentation, in: International Conference on Med-
+ical Image Computing and Computer-Assisted Intervention
+17
+(MICCAI), Springer, 2024, pp. 509–519. doi:10.1007/
+978-3-031-72390-2\_48 .
+[32] X. Lin, Y . Xiang, L. Yu, Z. Yan, Beyond Adapting
+SAM: Towards End-to-End Ultrasound Image Segmentation
+via Auto Prompting, in: International Conference on Med-
+ical Image Computing and Computer-Assisted Intervention
+(MICCAI), Springer, 2024, pp. 24–34. doi:10.1007/
+978-3-031-72111-3\_3 .
+[33] H. Guan, M. Liu, Domain adaptation for medical image anal-
+ysis: A survey, IEEE Transactions on Biomedical Engineer-
+ing 69 (3) (2022) 1173–1185. doi:10.1109/TBME.2021.
+3117407.
+[34] S. Kumari, P. Singh, Deep learning for unsupervised do-
+main adaptation in medical imaging: Recent advancements
+and future perspectives, Computers in Biology and Medicine
+170 (3) (2024) 107912. doi:10.1016/j.compbiomed.2023.
+107912.
+[35] J. Ma, Histogram matching augmentation for domain adaptation
+with application to multi-centre, multi-vendor and multi-disease
+cardiac image segmentation, in: Statistical Atlases and Compu-
+tational Models of the Heart. M&Ms and EMIDEC Challenges.,
+2021, pp. 177–186. doi:10.1007/978-3-030-68107-4\
+_18.
+[36] C. Yaras, K. Kassaw, B. Huang, K. Bradbury, J. M. Malof, Ran-
+domized histogram matching: A simple augmentation for unsu-
+pervised domain adaptation in overhead imagery, IEEE Journal
+of Selected Topics in Applied Earth Observations and Remote
+Sensing 17 (2024) 1988–1998. doi:10.1109/JSTARS.2023.
+3340412.
+[37] J. Liang, R. He, T. Tan, A comprehensive survey on test-
+time adaptation under distribution shifts, International Journal
+of Computer Vision 133 (1) (2025) 31–64. doi:10.1007/
+s11263-024-02181-w .
+[38] J. Zhu, B. Bolsterlee, Y . Song, E. Meijering, Improving cross-
+domain generalizability of medical image segmentation using
+uncertainty and shape-aware continual test-time domain adap-
+tation, Medical Image Analysis 101 (2025) 103422. doi:
+10.1016/j.media.2024.103422.
+[39] B. Landman, Z. Xu, J. E. Iglesias, M. Styner, T. Langerak,
+A. Klein, MICCAI multi-atlas labeling beyond the cranial vault-
+workshop and challenge, Proc. MICCAI Multi-Atlas Labeling
+Beyond Cranial Vault—Workshop Challenge (2015).doi:DOI:
+https://doi.org/10.7303/syn3193805.
+[40] A. E. Kavur, N. S. Gezer, M. Barıs ¸, S. Aslan, P.-H. Conze,
+V . Groza, D. D. Pham, S. Chatterjee, P. Ernst, S.¨Ozkan, B. Bay-
+dar, D. Lachinov, S. Han, J. Pauli, F. Isensee, M. Perkonigg,
+R. Sathish, R. Rajan, D. Sheet, G. Dovletov, O. Speck,
+A. N ¨urnberger, K. H. Maier-Hein, G. Bozda ˘gı Akar, G. ¨Unal,
+O. Dicle, M. A. Selver, CHAOS challenge - combined (CT-MR)
+healthy abdominal organ segmentation, Medical Image Analysis
+69 (2021) 101950. doi:10.1016/j.media.2020.101950.
+[41] X. Zhuang, L. Li, C. Payer, D. ˇStern, M. Urschler, M. P. Hein-
+rich, J. Oster, C. Wang, ¨O. Smedby, C. Bian, X. Yang, P.-A.
+Heng, A. Mortazi, U. Bagci, G. Yang, C. Sun, G. Galisot, J.-Y .
+Ramel, T. Brouard, Q. Tong, W. Si, X. Liao, G. Zeng, Z. Shi,
+G. Zheng, C. Wang, T. MacGillivray, D. Newby, K. Rhode,
+S. Ourselin, R. Mohiaddin, J. Keegan, D. Firmin, G. Yang,
+Evaluation of algorithms for Multi-Modality Whole Heart Seg-
+mentation: An open-access grand challenge, Medical Image
+Analysis 58 (2019) 101537. doi:10.1016/j.media.2019.
+101537.
+[42] C. Chen, Q. Dou, H. Chen, J. Qin, P. A. Heng, Unsupervised
+bidirectional Cross-Modality adaptation via deeply synergistic
+image and feature alignment for medical image segmentation,
+IEEE Transactions on Medical Imaging 39 (7) (2020) 2494–
+2505. doi:10.1109/TMI.2020.2972701.
+[43] C. Martin-Isla, V . M. Campello, C. Izquierdo, K. Kushibar,
+C. Sendra-Balcells, P. Gkontra, A. Sojoudi, M. J. Fulton,
+T. W. Arega, K. Punithakumar, L. Li, X. Sun, Y . Al Khalil,
+D. Liu, S. Jabbar, S. Queiros, F. Galati, M. Mazher, Z. Gao,
+M. Beetz, L. Tautz, C. Galazis, M. Varela, M. Hullebrand,
+V . Grau, X. Zhuang, D. Puig, M. A. Zuluaga, H. Mohy-Ud-
+Din, D. Metaxas, M. Breeuwer, R. J. van der Geest, M. Noga,
+S. Bricq, M. E. Rentschler, A. Guala, S. E. Petersen, S. Escalera,
+J. F. R. Palomares, K. Lekadir, Deep learning segmentation of
+the right ventricle in cardiac MRI: The M&Ms challenge, IEEE
+Journal of Biomedical and Health Informatics 27 (7) (2023)
+3302–3313. doi:10.1109/JBHI.2023.3267857.
+[44] N. Bloch, A. Madabhushi, H. Huisman, J. Freymann, J. Kirby,
+M. Grauer, A. Enquobahrie, C. Ja ffe, L. Clarke, K. Farahani,
+Nci-isbi 2013 challenge: automated segmentation of prostate
+structures, The Cancer Imaging Archive 370 (6) (2015) 5.
+[45] G. Lema ˆıtre, R. Mart ´ı, J. Freixenet, J. C. Vilanova, P. M.
+Walker, F. Meriaudeau, Computer-aided detection and diagnosis
+for prostate cancer based on mono and multi-parametric MRI: a
+review, Computers in Biology and Medicine 60 (2015) 8–31.
+doi:10.1016/j.compbiomed.2015.02.009.
+[46] G. Litjens, R. Toth, W. van de Ven, C. Hoeks, S. Kerkstra,
+B. van Ginneken, G. Vincent, G. Guillard, N. Birbeck, J. Zhang,
+R. Strand, F. Malmberg, Y . Ou, C. Davatzikos, M. Kirschner,
+F. Jung, J. Yuan, W. Qiu, Q. Gao, P. E. Edwards, B. Maan,
+F. van der Heijden, S. Ghose, J. Mitra, J. Dowling, D. Barratt,
+H. Huisman, A. Madabhushi, Evaluation of prostate segmen-
+tation algorithms for MRI: the PROMISE12 challenge, Medi-
+cal Image Analysis 18 (2) (2014) 359–373. doi:10.1016/j.
+media.2013.12.002.
+[47] Q. Liu, Q. Dou, L. Yu, P. A. Heng, MS-net: Multi-site net-
+work for improving prostate segmentation with heterogeneous
+MRI data, IEEE Transactions on Medical Imaging 39 (9) (2020)
+2713–2724. doi:10.1109/TMI.2020.2974574.
+[48] F. Thaler, D. Stern, G. Plank, M. Urschler, LA-CaRe-CNN:
+Cascading refinement CNN for left atrial scar segmentation, in:
+MICCAI Challenge on Comprehensive Analysis and Comput-
+ing of Real-World Medical Images. CARE 2024. Lecture Notes
+in Computer Science, V ol. 15548, Springer, Cham, 2025, pp.
+180–191. doi:10.1007/978-3-031-87009-5_18 .
+[49] O. Ronneberger, P. Fischer, T. Brox, U-Net: Convolutional net-
+works for biomedical image segmentation, in: Medical Im-
+age Computing and Computer-Assisted Intervention (MICCAI),
+2015, pp. 234–241. doi:10.1007/978-3-319-24574-4\
+_28.
+[50] N. Srivastava, G. Hinton, A. Krizhevsky, I. Sutskever,
+R. Salakhutdinov, Dropout: A simple way to prevent neural net-
+works from overfitting, Journal of Machine Learning Research
+15 (1) (2014) 1929–1958.
+[51] D. P. Kingma, J. Ba, Adam: A method for stochastic optimiza-
+tion, in: International Conference on Learning Representations
+(ICLR), 2015.
+[52] K. He, X. Zhang, S. Ren, J. Sun, Delving deep into rectifiers:
+Surpassing human-level performance on ImageNet classifica-
+tion, in: IEEE International Conference on Computer Vision
+(ICCV), 2015, pp. 1026–1034. doi:10.1109/ICCV.2015.
+123.
+[53] S. Laine, T. Aila, Temporal ensembling for Semi-Supervised
+learning, in: International Conference on Learning Represen-
+tations (ICLR), 2017.
+[54] F. Thaler, D. Stern, G. Plank, M. Urschler, Augmentation-
+based domain generalization and joint training from multiple
+source domains for whole heart segmentation, in: MICCAI
+Challenge on Comprehensive Analysis and Computing of Real-
+18
+World Medical Images. CARE 2024. Lecture Notes in Com-
+puter Science, V ol. 15548, Springer, Cham, 2025, pp. 168–179.
+doi:10.1007/978-3-031-87009-5_17 .
+[55] D. Hendrycks, N. Mu, E. D. Cubuk, B. Zoph, J. Gilmer, B. Lak-
+shminarayanan, AugMix: A Simple Data Processing Method to
+Improve Robustness and Uncertainty, in: International Confer-
+ence on Learning Representations (ICLR), 2020.
+[56] J. Ma, Y . He, F. Li, L. Han, C. You, B. Wang, Segment anything
+in medical images, Nature Communications 15 (1) (2024) 654.
+doi:10.1038/s41467-024-44824-z .
+[57] J.-Y . Zhu, T. Park, P. Isola, A. A. Efros, Unpaired image-to-
+image translation using cycle-consistent adversarial networks,
+in: International Conference on Computer Vision (ICCV), 2017,
+pp. 2242–2251. doi:10.1109/iccv.2017.244.
+[58] X. Zhang, C. Zhang, D. Liu, Q. Yu, W. Cai, SynthMix: Mixing
+up aligned synthesis for medical cross-modality domain adapta-
+tion, in: 2023 IEEE 20th International Symposium on Biomed-
+ical Imaging (ISBI), IEEE, 2023, pp. 1–5. doi:10.1109/
+ISBI53787.2023.10230360.
+[59] X. Du, Y . Liu, Constraint-Based Unsupervised Domain Adap-
+tation Network for Multi-Modality Cardiac Image Segmenta-
+tion, IEEE Journal of Biomedical and Health Informatics 26 (1)
+(2022) 67–78. doi:10.1109/JBHI.2021.3126874.
+[60] Z. Liu, Z. Zhu, S. Zheng, Y . Liu, J. Zhou, Y . Zhao, Mar-
+gin Preserving Self-Paced Contrastive Learning Towards Do-
+main Adaptation for Medical Image Segmentation, IEEE Jour-
+nal of Biomedical and Health Informatics 26 (2) (2022) 638–
+647. doi:10.1109/JBHI.2022.3140853.
+[61] S. Ding, Z. Liu, P. Liu, W. Zhu, H. Xu, Z. Li, H. Niu, J. Cheng,
+T. Liu, C3R: Category contrastive adaptation and consistency
+regularization for cross-modality medical image segmentation,
+Expert Systems with Applications 269 (2025) 126304. doi:
+10.1016/j.eswa.2024.126304.
+[62] M. Bateson, H. Kervadec, J. Dolz, H. Lombaert, I. Ben Ayed,
+Source-Relaxed Domain Adaptation for Image Segmentation,
+in: Medical Image Computing and Computer Assisted In-
+tervention (MICCAI), 2020, pp. 490–499. doi:10.1007/
+978-3-030-59710-8\_48 .
+[63] M. Bateson, H. Kervadec, J. Dolz, H. Lombaert, I. Ben Ayed,
+Source-free domain adaptation for image segmentation, Medical
+Image Analysis 82 (2022) 102617. doi:10.1016/j.media.
+2022.102617.
+[64] D. Wang, E. Shelhamer, S. Liu, B. Olshausen, T. Darrell, Tent:
+Fully test-time adaptation by entropy minimization, in: Interna-
+tional Conference on Learning Representations (ICLR), 2021.
+[65] M. Bateson, H. Lombaert, I. Ben Ayed, Test-Time adaptation
+with shape moments for image segmentation, in: Medical Im-
+age Computing and Computer Assisted Intervention (MICCAI),
+2022, pp. 736–745. doi:10.1007/978-3-031-16440-8\
+_70.
+[66] Y . Sun, X. Wang, Z. Liu, J. Miller, A. Efros, M. Hardt, Test-time
+training with self-supervision for generalization under distribu-
+tion shifts, in: International Conference on Machine Learning,
+PMLR, 2020, pp. 9229–9248.
+[67] N. Karani, E. Erdil, K. Chaitanya, E. Konukoglu, Test-time
+adaptable neural networks for robust medical image segmen-
+tation, Medical Image Analysis 68 (2021) 101907. doi:10.
+1016/j.media.2020.101907.
+[68] Q. Liu, C. Chen, Q. Dou, P.-A. Heng, Single-domain general-
+ization in medical image segmentation via test-time adaptation
+from shape dictionary, in: Proceedings of the AAAI Confer-
+ence on Artificial Intelligence, V ol. 36, 2022, pp. 1756–1764.
+doi:10.1609/AAAI.V36I2.20068.
+[69] S. Herbold, Autorank: A python package for automated rank-
+ing of classifiers, The Journal of Open Source Software 5 (48)
+(2020) 2173. doi:10.21105/joss.02173.
+[70] J. Dem ˇsar, Statistical comparisons of classifiers over multiple
+data sets, Journal of Machine Learning Research 7 (1) (2006)
+1–30.
+[71] M. J. Fulton, C. R. Heckman, M. E. Rentschler, Deformable
+bayesian convolutional networks for disease-robust cardiac mri
+segmentation, in: International Workshop on Statistical Atlases
+and Computational Models of the Heart, MICCAI, Springer,
+2021, pp. 296–305. doi:10.1007/978-3-030-93722-5\
+_32.
+[72] C. Payer, D. ˇStern, H. Bischof, M. Urschler, Integrating spatial
+configuration into heatmap regression based CNNs for landmark
+localization, Medical Image Analysis 54 (5) (2019) 207–219.
+doi:10.1016/j.media.2019.03.007.
+19

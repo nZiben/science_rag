@@ -1,0 +1,715 @@
+Bayesian Optimization for Non-Cooperative
+Game-Based Radio Resource Management
+Yunchuan Zhang∗, Jiechen Chen†, Junshuo Liu‡ and Robert C. Qiu‡
+∗School of Information Engineering, Wuhan University of Technology, Wuhan, China
+†Department of Engineering, King’s College London, London, UK
+‡School of Electronic Information and Communications, Huazhong University of Science and Technology, Wuhan, China
+Email: {yunchuan.zhang, jiechen.chen}@kcl.ac.uk, {junshuo_liu, caiming}@hust.edu.cn
+Abstract—Radio resource management in modern cellular
+networks often calls for the optimization of complex utility
+functions that are potentially conflicting between different base
+stations (BSs). Coordinating the resource allocation strategies
+efficiently across BSs to ensure stable network service poses
+significant challenges, especially when each utility is accessible
+only via costly, black-box evaluations. This paper considers
+formulating the resource allocation among spectrum sharing
+BSs as a non-cooperative game, with the goal of aligning their
+allocation incentives toward a stable outcome. To address this
+challenge, we propose PPR-UCB, a novel Bayesian optimization
+(BO) strategy that learns from sequential decision-evaluation
+pairs to approximate pure Nash equilibrium (PNE) solutions.
+PPR-UCB applies martingale techniques to Gaussian process
+(GP) surrogates and constructs high probability confidence
+bounds for utilities uncertainty quantification. Experiments on
+downlink transmission power allocation in a multi-cell multi-
+antenna system demonstrate the efficiency of PPR-UCB in
+identifying effective equilibrium solutions within a few data
+samples.
+Index Terms—Bayesian optimization, radio resource manage-
+ment, Nash equilibrium, uncertainty quantification
+I. Introduction
+Radio resource management of modern cellular communi-
+cation system requires the optimization of complex utilities
+which may involve potentialconflictsbetween different seg-
+ments of the network. To ensure stable network operations
+during optimizations, one promising way is via game-theoretic
+methods [1]. For instance, heterogeneous spectrum providers
+configure the exclusion zones in dynamic spectrum access
+(DSA) networks via analyzingNash equilibrium(NE) in
+a non-cooperative game [2], but conventional mathematical
+programming methods for NE often require analytical expres-
+sions of the utilities which may not be available in practice.
+When the utilities are in the form ofblack-boxfunctions, the
+evaluation of a NE must rely on querying the utilities of each
+involved entity.
+For concreteness, this paper investigates the downlink trans-
+mission power control game withunknownutilities in a multi-
+cell multi-antenna communication system [3]. As illustrated in
+Fig. 1, a central optimizer assigns a set of transmission power
+actionstodifferentplayers,representingspectrumsharingBSs
+managed by mobile network operators (MNOs). The goal is
+to design an optimization policy that ensures no players have
+incentives to deviate from the allocated power actions. Thus,
+the suggested action set aligns closely with the individual
+rationality of the players. This equilibrium solution ensures a
+stable operation of the network as the players strictly adhere
+to the allocated actions of the central optimizer.
+To tackle the non-cooperative games with black-box util-
+ities, prior works applied reinforcement learning (RL) for
+identifying NE solutions [4], [5], and provided practical use
+cases in communications systems [6], [7]. In particular, ref-
+erence [8] introduced a fully distributed deep RL architecture
+for DSA that can be flexibly adapted to general complex
+real-world settings. However, RL algorithms typically rely
+on large amounts of utilities observations which may incur
+undesirable evaluation costs on computational overhead or
+communications latency.
+Bayesian optimization(BO) is a common sample-efficient
+framework forcostly-to-evaluateblack-box optimization prob-
+lems [9], and its variants have been widely applied to applica-
+tions in wireless systems [10], [11]. The first attempt to seek
+for NE via BO can be found in [12]; while reference [13]
+provided a formal NE regret guarantee for using BO with
+confidence sets. However, these studies require making strong
+assumptions on the function space knowledge regarding the
+utilities and evaluating the NP-hard maximal information gain
+metrics which are impractical in real-world scenarios.
+In this paper, we introduce a novel BO policy, namelyprior-
+posterior ratio upper confidence bounds(PPR-UCB) that aims
+at approximating apure Nash equilibrium(PNE) solution in a
+non-cooperative transmission power control game. The main
+contributions are as follows.
+•We introduce PPR-UCB, a novel BO policy tailored for
+evaluation of approximate PNEs in general-sum games
+with black-box utility functions. PPR-UCB adopts mar-
+tingale techniques to efficiently construct confidence sets
+for the probabilistic utilities and deviation incentives of
+each involved players.
+•We provide a coverage analysis of theany-time valid
+confidence sets constructed by the prior-posterior ratio
+martingales. The theoretical results demonstrates the re-
+liability of the proposed PPR-UCB policy.
+•We validate the performance of the proposed PPR-UCB
+in a multi-cell cellular network. Empirical results for
+the non-cooperative power control game provide insights
+arXiv:2512.01245v1  [eess.SP]  1 Dec 2025
+BS BS
+central
+optimizer
+dataset
+surrogate 
+model
+UEs UEs
+…
+confidence sets
+power action 
+profile
+Fig. 1. This paper studies a setting in which a central optimizer uses BO to
+approximate the pure Nash equilibrium (PNE) for a non-cooperative downlink
+transmission power control game with costly-to-evaluate black-box utility
+functions of𝑁BSs. At any time𝑡+1, the central optimizer assigns an
+action profilex𝑡+1 to all BSs. As a result, the optimizer receives noisy utility
+feedback𝑦 𝑛,𝑡 about the corresponding utility value𝑢𝑛(x𝑡+1 )for all BSs
+𝑛∈ N. The goal is to approach a solution in the𝜖-PNE set (5), where
+𝜖≥0represents the dissatisfaction tolerance.
+into the potential benefits of using BO for conflicts
+management in communications systems.
+II. Problem Formulation
+To exemplify the application of the proposed sequen-
+tial black-box optimization policy, we consider the non-
+cooperative game-based downlink transmission power control
+problem studied in [3]. The targeting cellular communication
+network consists of𝑁cells with one BS, each belonging to a
+private MNO that provides service for𝑀user equipments
+(UEs). The MNOs in the network operates on a shared
+frequency band.
+As shown in Fig. 1, the central coordinator is tasked with
+selection of an action profilex=[x 1,...,x 𝑁]∈Xfor𝑁BSs,
+wherex 𝑛 =[𝑥 𝑛,1 ,...,𝑥 𝑛,𝑀] ⊂R 𝑀 represents the selected
+power action for BS𝑛∈N=[1,...,𝑁]with each entry𝑥 𝑛,𝑚
+describing the downlink transmission power to its serving UE
+𝑚∈M=[1,...,𝑀]. The propagation channel matrix between
+BS𝑛and any UE𝑚associated with BS𝑛 ′ is modeled as
+H𝑛,𝑛′(𝑚) =10
+−PL(𝑑𝑛,𝑛′(𝑚))
+20 𝛽𝑛,𝑛′(𝑚)G𝑛,𝑛′(𝑚),(1)
+where the pathlossPL(𝑑 𝑛,𝑛′(𝑚))in dB is a function of the
+distance from BS𝑛to UE𝑚served by BS𝑛 ′; the slow
+fading factor𝛽𝑛,𝑛′(𝑚) depends on whether the corresponding
+transmission is in line-of-sight (LOS) or non-line-of-sight
+(NLOS) as specified in 3GPP TR 38.901 [14]; and the fast
+fadingG 𝑛,𝑛′(𝑚) in the form of𝑁 𝑅 ×𝑁 𝑇 matrix has i.i.d.
+complex Gaussian entries with𝑁 𝑇 being the number of
+transmit antennas at each BS and𝑁𝑅 being the number of
+receiving antennas at each UE.
+Each MNO isself-interested, and attempts to maximize the
+utility of its own BS. Specifically, the utility function for BS
+𝑛∈Nat the assigned action profilexis described by the
+discounted sum spectral efficiency across the associated UEs,
+which is defined as
+𝑢𝑛(x)=−𝜆
+ 𝑀∑︁
+𝑚=1
+𝑥𝑛,𝑚
+
++
+" 𝑀∑︁
+𝑚=1
+log
+I
++𝑥𝑛,𝑚𝚪−1
+𝑛,𝑛(𝑚) (x)H𝑛,𝑛(𝑚)HH
+𝑛,𝑛(𝑚)
+
+#
+,(2)
+where𝜆≥0is a non-negative discount factor;Iis the𝑁 𝑅 ×
+𝑁𝑅 identity matrix; and𝚪 −1
+𝑛,𝑛(𝑚) (x)represents the𝑁 𝑅 ×𝑁 𝑅
+interference-plus-noise covariance matrix for the transmission
+from BS𝑛to its serving UE𝑚, i.e,
+𝚪−1
+𝑛,𝑛(𝑚) (x)=10
+𝜎2
+ℎ
+10 I+
+𝑀∑︁
+𝑚′=1,𝑚′≠𝑚
+𝑥𝑛,𝑚′H𝑛,𝑛(𝑚)HH
+𝑛,𝑛(𝑚)
++
+𝑁∑︁
+𝑛′=1,𝑛′≠𝑛
+𝑀∑︁
+𝑚=1
+𝑥𝑛′,𝑚H𝑛′,𝑛′(𝑚)HH
+𝑛′,𝑛′(𝑚) (3)
+with𝜎 2
+ℎ being the channel noise power in dB scale.
+Upon receiving the action profilexfrom the central coor-
+dinator, each BS𝑛∈Nquantifies itsdissatisfactionon the
+assigned actionxvia the non-negative regret
+𝑓𝑛(x)=max
+x′𝑛
+𝑢𝑛(x′
+𝑛,x −𝑛)−𝑢 𝑛(x)≥0,(4)
+wherex −𝑛 represents the actions taken by all BSs except for
+BS𝑛. The dissatisfaction (4) indicates that any BS𝑛may
+unilaterally deviate from the assigned actionx𝑛 if doing so
+can improve its utility. These deviation incentives across all
+BSs degrade thestabilityof the network operations. To this
+end, the goal of the central optimizer is to seek for a set of
+𝜖-PNE solutionsx (𝜖) defined as
+X(𝜖) :={x (𝜖) ∈X|𝑓 𝑛(x(𝜖))≤𝜖for𝑛∈N},(5)
+for some tolerance parameter𝜖≥0.
+Evaluating the utility functions (2) and the regret (4) for all
+feasible action profiles to find the𝜖-PNE set (5) is intractable
+as the scale of the network increases. Therefore, we adopt an
+online learning-based optimizer that sequentially selects an
+action profilex𝑡 at time𝑡, and receives the noisy observations
+from each BS𝑛∈N, i.e.,
+𝑦𝑛,𝑡 =𝑢𝑛(x𝑡)+𝑧 𝑛,𝑡,(6)
+where the observation noise variables𝑧 𝑛,𝑡 ∼ N(0,𝜎2)are
+independent across all BSs. The decision-making process
+relies on the collections of previous observations
+D𝑛,𝑡−1 ={(x 1,𝑦𝑛,1 ),...,(x 𝑡−1 ,𝑦𝑛,𝑡−1 )}(7)
+from all BSs.
+III. BO for Non-cooperative Games
+In this section, we introduceprior-posterior ratio upper
+confidence bounds(PPR-UCB) by first presenting the con-
+fidence sets construction for utilities and regret, and then
+detailing the action profiles acquisition process. We start with
+a brief review of the surrogate model adopted in BO policy.
+A. Gaussian Process
+As anticipated, BO does not require a precise expression
+of the utility function for calculating the𝜖-PNE set (5), but
+works on black-box evaluations of the utility that is modeled
+by aprobabilistic surrogate model. Gaussian process (GP) is
+the typical model of choice as it provides analytical posterior
+inference with small datasets.
+Specifically, for each BS𝑛, a separate GP is deployed at
+the central optimizer to model the individual utility function
+𝑢𝑛(x)by assuming that, for any collectionX𝑡 =[x 1,...,x 𝑡]T
+ofactionprofiles,thecorrespondingutilityobservationsy 𝑛,𝑡 =
+[𝑦𝑛,1 ,...,𝑦 𝑛,𝑡]T follow a multivariate Gaussian distribution
+N(0,K(X 𝑡)), with𝑡×1zero mean vector0, and𝑡×𝑡
+covariance matrixK(X 𝑡)given by
+K(X𝑡)=
+
+𝑘(x 1,x 1)... 𝑘(x 1,x 𝑡)
+... ... ...
+𝑘(x 𝑡−1 ,x 1)... 𝑘(x 𝑡,x 𝑡)
+
+,(8)
+where each entry is obtained via a positive semidefinite kernel
+function𝑘(x,x ′). Intuitively, the role of the kernel function
+is to measure the similarity between inputsxandx′ in terms
+of the respective utility values. The kernel function may be
+chosen, for instance, as the radial basis function (RBF) kernel
+𝑘(x,x ′)=exp
+
+−||x−x ′||2
+2𝑙2
+
+,(9)
+where the lengthscale parameter𝑙 >0controls the smoothness
+of the kernel function.
+Given the collected datasetD 𝑛,𝑡 in (7), the posterior
+distribution of utility value𝑢𝑛(x)at any action profilexis
+a Gaussian distribution
+𝑝(𝑢𝑛(x)|D𝑛,𝑡)=N(𝜇 𝑛,𝑡(x),𝜎2
+𝑡 (x)),(10)
+where
+𝜇𝑛,𝑡(x)=k 𝑡(x)T(K(X𝑡)+𝜎 2I)−1y𝑛,𝑡,(11a)
+𝜎2
+𝑡 (x)=𝑘(x,x)−k 𝑡(x)T(K(X𝑡)+𝜎 2I)−1k𝑡(x),(11b)
+with the𝑡×1cross-variance vectork 𝑡(x)=
+[𝑘(x,x 1),...,𝑘(x,x 𝑡)]T. Note that, the GP posterior variance
+𝜎2
+𝑡 (x)in (11b) is the same across all players since it only
+depends on the previously selected action profilesX𝑡 and the
+current action profilexto be measured.
+B. Prior-Posterior Ratio Confidence Sets
+To quantify the residual uncertainty on the inference of the
+utility function𝑢𝑛(x)at any candidate action profilex, PPR-
+UCB constructs the confidence sets for the model parameters
+with probabilistic coverage guarantee. To proceed, we make
+the following regularity assumption on the utility functions of
+each BS𝑛∈N.
+Assumption 1(Probabilistic Utility Function).The utility
+function𝑢 𝑛(x)at each BS𝑛can be decomposed as
+𝑢𝑛(x)=𝜓 𝑛(x)T𝜽∗
+𝑛,(12)
+where𝜓 𝑛(x)is a𝐷×1feature vector; and the unknown
+parameters vector𝜽 ∗
+𝑛 ∈R 𝐷×1 is drawn from an isotropic
+Gaussian prior distribution𝑝(𝜽), i.e.,𝜽 ∗
+𝑛 ∼N(0,I 𝐷). The
+vectors{𝜽 ∗
+𝑛}𝑛∈N are mutually independent.
+Assumption 1 can serve as an arbitrarily accurate approx-
+imation of the typical assumption that the utility functions
+are drawn in an i.i.d. manner from the GP model in (10) with
+RBF kernel [15]. In fact, the RBF kernel can be approximated
+arbitrarily well by the inner product
+𝑘(x,x ′)≈𝜓 𝑛(x)T𝜓𝑛(x′)(13)
+with a sufficiently high-dimensional feature vector𝜓𝑛(x) ∈
+R𝐷×1 . In practice, consider the random Fourier features
+(RFFs)
+𝜓𝑛(x)=[
+√︁
+2/𝐷cos(s T
+𝑛,𝑖x+𝑏 𝑛,𝑖)]𝐷
+𝑖=1,(14)
+with𝑑×1vectorss 𝑛,𝑖 drawn i.i.d. fromN(0,2𝑙I 𝑑)and scalars
+𝑏𝑛,𝑖 sampled i.i.d. from the uniform distribution over the
+interval[0,2𝜋]. With an increasing dimension𝐷→∞of
+the RFFs, the approximation error in (13) vanishes with high
+probability [15].
+At each time𝑡, PPR-UCB evaluates the posterior distribu-
+tion of parameters vector𝜽𝑛 for BS𝑛∈Nunder Assumption
+1 as follows
+𝑝(𝜽 𝑛|D𝑛,𝑡)∝𝑝(𝜽 𝑛)𝑝(D𝑛,𝑡|𝜽 𝑛)=N(𝝁 𝑛,𝑡,𝜎2𝚺−1
+𝑛,𝑡),(15)
+where
+𝝁𝑛,𝑡 =𝚺 −1
+𝑛,𝑡𝚿T
+𝑛,𝑡y𝑛,𝑡,(16a)
+𝚺𝑛,𝑡 =𝚿 T
+𝑛,𝑡𝚿𝑛,𝑡 +𝜎2I𝐷 (16b)
+with𝚿 𝑛,𝑡 =[𝜓 𝑛(x1),...,𝜓 𝑛(x𝑡)]T being the𝑡×𝐷matrix of
+the feature vectors. Therefore, the mean and variance of the
+GP posterior distribution (10) for the utility value𝑢𝑛(x)can
+be obtained as
+𝜇𝑛,𝑡(x)=𝜓 𝑛(x)T𝚺−1
+𝑛,𝑡𝚿T
+𝑛,𝑡y𝑛,𝑡,(17a)
+𝜎2
+𝑡 (x)=𝜓 𝑛(x)T𝜓𝑛(x)
+−𝜓𝑛(x)T𝚿T
+𝑛,𝑡(𝚿T
+𝑛,𝑡𝚿𝑛,𝑡 +𝜎2I𝐷)−1 𝚿𝑛,𝑡𝜓𝑛(x).
+(17b)
+Using the posterior (15) of the parameters vector𝜽𝑛 for BS
+𝑛at each time𝑡, PPR-UCB evaluates the prior-posterior ratio
+ℓ𝑛,𝑡(𝜽 𝑛)= 𝑝(𝜽 𝑛)
+𝑝(𝜽 𝑛|D𝑛,𝑡)
+= 𝜎𝐷
+√︁
+det(𝚺𝑛,𝑡)
+exp
+
+−1
+2 ||𝜽 𝑛||2
++ 1
+2𝜎2 (𝜽 𝑛 −𝝁 𝑛,𝑡)T𝚺𝑛,𝑡(𝜽 𝑛 −𝝁 𝑛,𝑡)
+
+,(18)
+where det(𝚺𝑛,𝑡)is the determinant of covariance matrix𝚺𝑛,𝑡.
+Smaller values of the prior-posterior ratio indicates that the
+parameters vector𝜽 𝑛 has a large posterior probability density,
+suggesting that𝜽 𝑛 aligns better with the evidence provided by
+the collected data under Assumption 1.
+At any time𝑡≥1, using the prior-posterior ratio in (18),
+PPR-UCB builds confidence sets for parameters vector𝜽𝑛 as
+C𝑛,𝑡 ={𝜽 𝑛|ℓ𝑛,𝑡(𝜽 𝑛)≤1/𝛿}
+=
+
+𝜽𝑛
+(𝜽 𝑛 −𝝁 𝑛,𝑡)T𝚺𝑛,𝑡(𝜽 𝑛 −𝝁 𝑛,𝑡)−||𝜽 𝑛||2
+≤2[ln(det(𝚺 𝑛,𝑡))−ln(𝜎 𝐷𝛿)]
+	
+(19)
+for all players𝑛, where𝛿∈(0,1]is a hyperparameter. The
+confidence set (19) indicates that with high probability, i.e.,
+𝛿is sufficiently small, the mean estimate𝝁𝑛,𝑡 is included.
+Lemma 1(Utility Parameters Coverage Guarantee of
+PPR-UCB).Under Assumption 1, the confidence set(19)is
+anytime valid at level1−𝛿in the sense that it includes the
+ground truth parameters𝜽∗
+𝑛 with probability no smaller than
+1−𝛿for all time𝑡≥1:
+Pr(𝜽 ∗
+𝑛 ∈C𝑛,𝑡,for all𝑡≥1)≥1−𝛿.(20)
+In(20), the probability is evaluated with respect to the ground
+truth distribution
+𝑝(D𝑛,𝑡|𝜽 ∗
+𝑛)=
+𝑡Ö
+𝑡′=1
+𝑝(𝑦𝑛,𝑡′|x𝑡′,𝜽 ∗
+𝑛).(21)
+Proof.By taking the expectation of the prior-posterior ratio
+ℓ𝑛,𝑡(𝜽 ∗
+𝑛)conditioned on the collected datasetD 𝑛,𝑡−1 and
+applying Fubini’s theorem, we have
+E𝑝(𝑦|x 𝑡,𝜽∗
+𝑛)[ℓ𝑛,𝑡(𝜽 ∗
+𝑛)|D𝑛,𝑡−1 ]
+=E 𝑝(𝑦|x 𝑡,𝜽∗
+𝑛)
+ 𝑡Ö
+𝑡′=1
+E𝑝(𝜽 𝑛|D𝑛,𝑡)𝑝(𝑦𝑛,𝑡′|x𝑡′,𝜽 𝑛)
+𝑝(𝑦𝑛,𝑡′|x𝑡′,𝜽 ∗
+𝑛)
+D𝑛,𝑡−1
+
+(22)
+=E 𝑝(𝜽 𝑛|D𝑛,𝑡)
+"
+ℓ𝑛,𝑡−1 (𝜽 ∗
+𝑛)E𝑝(𝑦|x 𝑡,𝜽∗
+𝑛)
+ 𝑝(𝑦𝑛,𝑡|x𝑡,𝜽 𝑛)
+𝑝(𝑦𝑛,𝑡|x𝑡,𝜽 ∗
+𝑛)
+D𝑛,𝑡−1
+#
+(23)
+≤ℓ𝑛,𝑡−1 (𝜽 ∗
+𝑛).(24)
+The inequality (24) shows that the prior-posterior ratio se-
+quence{ℓ 𝑛,𝑡(𝜽 ∗
+𝑛)}𝑡≥1 is a testsupermartingalefor the ground
+truth distribution𝑝(D𝑛,𝑡|𝜽 ∗
+𝑛). By applying the Ville’s inequal-
+ity [16], we have
+Pr(𝜽 ∗
+𝑛 ∈C𝑛,𝑡,for all𝑡≥1)=1−Pr(∃𝜽 ∗
+𝑛,ℓ𝑛,𝑡(𝜽 ∗
+𝑛)>1/𝛿)
+(25)
+≥1−𝛿E[ℓ 𝑛,𝑡(𝜽 ∗
+𝑛)](26)
+=1−𝛿,(27)
+which completes the proof.□
+Using the confidence setC 𝑛,𝑡 in (19), PPR-UCB then
+evaluates the confidence sets for the utility functions𝑢𝑛(x)
+and regret𝑓 𝑛(x)for all BSs.
+Algorithm 1:PPR-UCB
+Input
+:
+Total number of iterations𝑇, lengthscale𝑙, parameter
+𝛿
+Output
+:
+Optimized solutionx ∗
+1Initialize observation datasetD 𝑛,0 =∅for all BSs, iteration
+𝑡=0
+2while𝑡≤𝑇do
+3Evaluate the prior-posterior ratioℓ 𝑛,𝑡(𝜽 𝑛)as in (18) for all
+BSs
+4Build the confidence setC 𝑛,𝑡 as in (19)
+5Obtain the utility confidence intervals{U 𝑛,𝑡(x)}𝑛∈N as in
+(28)
+6Obtain the regret confidence intervals{F 𝑛,𝑡(x)}𝑛∈N as in
+(29)
+7Report the action profile ˜x𝑡+1 via (30)
+8Select the exploring action profilex (𝑛𝑡+1 ) via (32)
+9Produce the final decisionx 𝑡+1 via (33)
+10Evaluatex 𝑡+1 and update datasets as
+D𝑛,𝑡+1 =D𝑛,𝑡 ∪(x 𝑡+1 ,𝑦𝑛,𝑡+1 )for all BSs𝑛∈N
+11Update the GP posterior usingD 𝑛,𝑡+1 as in (17a) and
+(17b) for all BSs𝑛∈N
+12Set iteration index𝑡=𝑡+1
+13end
+14Returnx ∗=x 𝑇
+C. Acquisition Process
+For the action profile acquisition process, PPR-UCB starts
+by evaluating a confidence interval for the utility function
+𝑢𝑛(x)of each BS𝑛at time𝑡, which is obtained as
+U𝑛,𝑡(x)=[ˇ𝑢 𝑛,𝑡(x),ˆ𝑢𝑛,𝑡(x)]
+=[min
+𝜽𝑛∈C𝑛,𝑡
+𝜓𝑛(x)T𝜽𝑛,max
+𝜽𝑛∈C𝑛,𝑡
+𝜓𝑛(x)T𝜽𝑛].(28)
+Notably, unlike conventional confidence intervals-guided BO
+schemes [17], [18], PPR-UCB does not require perfect knowl-
+edge on the utility function space, e.g., reproducing kernel
+Hilbert space (RKHS) norm. Using the confidence interval
+U𝑛,𝑡(x)in (28) for the utility function, PPR-UCB also evalu-
+ates the confidence set for the regret𝑓𝑛(x)in (4) of each BS
+𝑛as
+F𝑛,𝑡(x)=[ ˇ𝑓𝑛,𝑡(x), ˆ𝑓𝑛,𝑡(x)]
+=
+
+max
+x′𝑛
+ˇ𝑢𝑛,𝑡(x′
+𝑛,x −𝑛)−ˆ𝑢𝑛,𝑡(x),
+max
+x′𝑛
+ˆ𝑢𝑛,𝑡(x′
+𝑛,x −𝑛)−ˇ𝑢𝑛,𝑡(x)
+
+.(29)
+Accordingly, the optimizer reports an action profile˜x𝑡+1 for
+possible execution at next time𝑡+1via
+˜x𝑡+1 =arg min
+x
+max
+𝑛∈N
+ˇ𝑓𝑛,𝑡(x).(30)
+The intuition behind the reported action profile (30) is to
+minimize the optimistic estimate ˇ𝑓𝑛,𝑡(x)of the regret (4)
+obtained by any BS𝑛∈Nthat has the strongest incentive
+to deviate. To allow for exploration, the central optimizer
+0 40 80 120 160 200 240
+Iteration
+100
+120
+140
+160
+180
+200
+220
+240
+260Sum Spectral Efficiency [bps/Hz]
+PE
+UCB-PNE
+PPR-UCB
+Fig. 2. Sum spectral efficiency against the number of optimization iterations
+𝑇for PE (blue dash-dotted line), UCB-PNE (orange dashed line), and PPR-
+UCB with parameter𝛿=0.05(green solid line).
+also searches for the BS𝑛𝑡+1 with the maximum regret upper
+bound under the reported action profile˜x𝑡+1 in (30), i.e.,
+𝑛𝑡+1 =arg max
+𝑛∈N
+ˆ𝑓𝑛,𝑡(˜x𝑡+1 ),(31)
+and obtains an exploring action profile as
+x(𝑛𝑡+1 ) =
+h
+˜x−𝑛𝑡+1 ,𝑡+1 ,arg max
+x′𝑛𝑡+1
+ˆ𝑢𝑛𝑡+1 ,𝑡(x′
+𝑛𝑡+1 ,˜x−𝑛𝑡+1 ,𝑡+1 )
+i
+(32)
+The exploring action profilex (𝑛𝑡+1 ) attempts to improve the
+utility gain for the BS𝑛𝑡+1 that the central optimizer believes
+to have the strongest incentive to deviate from˜x𝑡+1 .
+Then, the final decision for the next action profile at time
+𝑡+1is selected between the reported action profile ˜x𝑡+1 in
+(30) and the exploring action profilex(𝑛𝑡+1 ) in (32) that brings
+higher uncertainty, i.e.,
+x𝑡+1 =arg max
+x∈{˜x𝑡+1 ,x(𝑛𝑡+1 )}
+𝜎2
+𝑡 (x).(33)
+The rationale of the choice (33) refers to a double application
+of the so-calledoptimism in the face of uncertainty(OFU)
+principle in [19], that is, to encourage maximally reducing
+uncertainty of potentially promising actions provided by (30)
+and (32).
+The overall procedure of PPR-UCB is summarized in
+Algorithm 1.
+IV. Numerical Results
+In this section, we empirically evaluate the performance
+of the proposed PPR-UCB on the non-cooperative game-
+based downlink power control problem introduced in Sec. II.
+Throughout this section, the cellular communication network
+has𝑀=10UEs with𝑁 𝑅 =4receiving antennas in each BS
+with𝑁 𝑇 =16transmit antennas. The propagation pathloss
+PL(𝑑𝑛,𝑛′(𝑚))and channel fading models in (1) are simulated
+following the urban microcellular (UMi) street canyon sce-
+nario as specified in 3GPP TR 38.901 [14].
+0 40 80 120 160 200 240
+Iteration
+10−1
+100
+Regret gap
+PE
+UCB-PNE
+PPR-UCB
+Fig. 3. Regret gap against the number of optimization iterations𝑇for PE
+(blue dash-dotted line), UCB-PNE (orange dashed line), and PPR-UCB with
+parameter𝛿=0.05(green solid line).
+For the cellular network topology configurations, we con-
+sider the service coverage of each BS to be a planar grid with
+radius being200meters, and UEs positions are uniformly
+generated in the interval[20,200]meters. The maximum
+transmit power of each BS is constrained byÍ𝑀
+𝑚=1 𝑥𝑛,𝑚 ≤
+𝑝max =6.5Watt (38.13dBm); the channel noise power is set
+to𝜎 2
+ℎ =−86.46dBm; and the discount factor in (2) is set to
+𝜆=0.1.
+We consider the following BO schemes as the benchmarks
+in all experiments are: 1)Probability of equilibrium(PE) [12],
+which selects action profilesx𝑡 with the goal of maximizing
+the probability of obtaining a PNE; and UCB-PNE in [13],
+which relies on Gaussian bandits optimization techniques [18]
+to explore the𝜖-PNE solutions. The GPs used in all schemes
+are configured with lengthscale𝑙=0.85and observation noise
+variance𝜎 2 =0.67. The dissatisfaction tolerance level𝜖in
+(5) is selected as the best achievable level𝜖∗obtained by grid
+search, which is expressed as
+𝜖∗=inf{𝜖∈R|X (𝜖) ≠∅}.(34)
+All results are averaged over 100 random realizations of
+observation noise signals and channel matrices in (1), with
+error bars to encompass 90% confidence level.
+In Fig. 2, we set the parameter𝛿=0.05for PPR-UCB and
+plot the sum of discounted spectral efficiency across𝑁=7
+BSs as a function of the number of optimization iterations
+𝑇. It is observed that PE obtains the worst performance,
+since the probability of equilibrium is zero for every action
+profile when the best achievable tolerance level𝜖 ∗ >0.
+Furthermore, our proposed PPR-UCB outperforms UCB-PNE
+after40optimization rounds, and its improvement over all
+benchmarks is evident as the number of iterations increases,
+demonstrating the superior data efficiency of PPR-UCB in
+approximating the𝜖∗-PNE solutions.
+In Fig. 3, we evaluate theregret gapbetween𝜖 ∗ with
+the best achievable𝜖obtained by each scheme, i.e.,𝜖−𝜖 ∗,
+3 5 7 9 11
+Number of BSs
+10−1
+100
+Regret gap
+PE
+UCB-PNE
+PPR-UCB
+Fig. 4. Regret gap against the number of BSs𝑁for PE (blue dash-dotted
+line), UCB-PNE (orange dashed line), and PPR-UCB with parameter𝛿=
+0.05(green solid line).
+and plot the regret gap as a function of the number of
+optimization iterations𝑇. Confirming the discussions in Fig.
+2, the proposed PPR-UCB converges to its best achievable
+dissatisfaction level𝜖closer to the global optimum𝜖 ∗ than
+all other benchmarks when the number of iterations𝑇 >40.
+These results demonstrate that the provident confidence sets
+evaluation approach adopted in PPR-UCB accurately captures
+the residual uncertainty of the utilities and regret for each
+BS, thus significantly improves the stability of the downlink
+transmission power allocation process.
+Finally, we study the impact of the number of BSs𝑁on
+the regret gap in Fig. 4. We set the total number of iterations
+to𝑇=200for all schemes. The regret gap of PPR-UCB is
+continuously better than other benchmarks on the increasing
+size of the cellular network, showing that the proposed PPR-
+UCB is scalable to strategic games with high dimensional
+action profiles.One way tofurther improve theperformance of
+PPR-UCB on higher dimensional action spaces is to increase
+the size𝐷of the RFFs vector in (14), as this metric adjusts
+the accuracy of the kernel approximation in (13).
+V. Conclusion
+In this paper, we introduced a centralized BO framework for
+identifying approximate PNE solutions in a non-cooperative
+downlink power control game with costly-to-evaluate utility
+functions. By leveraging martingale techniques to construct
+confidence sets for the black-box utilities at each BS, the
+proposed PPR-UCB efficiently converges toward network
+configurations that approximate PNE solutions. Future work
+may address theoretical performance guarantees in the forms
+of game-theoretic regret bounds. Furthermore, it would be
+interesting to investigate the applications of BO to beam
+scheduling games [20] or multi-fidelity optimizations in game
+settings [21].
+References
+[1] Y. Chen, B. Ai, Y. Niu, K. Guan, and Z. Han, “Resource allocation for
+device-to-device communications underlaying heterogeneous cellular
+networks using coalitional games,”IEEE Trans. Wireless Commun.,
+vol. 17, no. 6, pp. 4163–4176, 2018.
+[2] A. M. Salama, M. Li, L. Lazos, Y. Xiao, and M. Krunz, “Privacy-utility
+tradeoff in dynamic spectrum sharing with non-cooperative incumbent
+users,” inProc. IEEE Int. Conf. Commun. (ICC), pp. 1–7, online, 2020.
+[3] X. Zhang, S. Sarkar, A. Bhuyan, S. K. Kasera, and M. Ji, “A non-
+cooperative game-based distributed beam scheduling framework for 5G
+millimeter-wave cellular networks,”IEEE Trans. Wireless Commun.,
+vol. 21, no. 1, pp. 489–504, 2021.
+[4] Y. Bai, C. Jin, and T. Yu, “Near-optimal reinforcement learning with
+self-play,” inProc. Adv. Neural Inf. Process. Syst., vol. 33, pp. 2159–
+2170, online, 2020.
+[5] Z. Li and Y. Luo, “Deep reinforcement learning for Nash equilibrium
+of differential games,”IEEE Trans. Neural Netw. Learn. Syst., vol. 36,
+no. 2, pp. 2747–2761, 2025.
+[6] D. Shi, L. Li, T. Ohtsuki, M. Pan, Z. Han, and H. V. Poor, “Make smart
+decisions faster: Deciding D2D resource allocation via Stackelberg
+game guided multi-agent deep reinforcement learning,”IEEE Trans.
+Mobile Comput., vol. 21, no. 12, pp. 4426–4438, 2021.
+[7] A. M. Nagib, H. Abou-Zeid, and H. S. Hassanein, “Safe and accelerated
+deep reinforcement learning-based O-RAN slicing: A hybrid transfer
+learning approach,”IEEE J. Sel. Areas Commun., vol. 42, no. 2,
+pp. 310–325, 2023.
+[8] O. Naparstek and K. Cohen, “Deep multi-user reinforcement learning
+for distributed dynamic spectrum access,”IEEE Trans. Wireless Com-
+mun., vol. 18, no. 1, pp. 310–323, 2018.
+[9] P. I. Frazier, “A tutorial on Bayesian optimization,”arXiv preprint
+arXiv:1807.02811, 2018.
+[10] Y. Zhang, O. Simeone, S. T. Jose, L. Maggi, and A. Valcarce, “Bayesian
+and multi-armed contextual meta-optimization for efficient wireless
+radio resource management,”IEEE Trans. Cogn. Commun. Netw., vol. 9,
+no. 5, pp. 1282–1295, 2023.
+[11] L. Maggi, A. Valcarce, and J. Hoydis, “Bayesian optimization for radio
+resource management: Open loop power control,”IEEE J. Sel. Areas
+Commun., vol. 39, no. 7, pp. 1858–1871, 2021.
+[12] V. Picheny, M. Binois, and A. Habbal, “A Bayesian optimization
+approach to find Nash equilibria,”J. Glob. Optim., vol. 73, pp. 171–192,
+2019.
+[13] S. S. Tay, Q. P. Nguyen, C. S. Foo, and B. K. H. Low, “No-regret
+sample-efficient Bayesian optimization for finding Nash equilibria with
+unknown utilities,” inProc. Int. Conf. Artif. Intell. Stat., pp. 3591–3619,
+Valencia, Spain, 2023.
+[14] 3GPP, “Study on channel model for frequencies from 0.5 to 100 GHz,”
+Tech. Rep. (TR) 38.901, 3rd Generation Partnership Project (3GPP),
+2024. Version 17.1.0.
+[15] Z. Dai, B. K. H. Low, and P. Jaillet, “Federated Bayesian optimization
+via Thompson sampling,” inProc. Adv. Neural Inf. Process. Syst.,
+vol. 33, pp. 9687–9699, Online, 2020.
+[16] J. Ville,Etude critique de la notion de collectif. Gauthier-Villars Paris,
+1939.
+[17] N. Srinivas, A. Krause, S. M. Kakade, and M. W. Seeger, “Information-
+theoretic regret bounds for Gaussian process optimization in the bandit
+setting,”IEEE Trans. Inf. Theory, vol. 58, no. 5, pp. 3250–3265, 2012.
+[18] S. R. Chowdhury and A. Gopalan, “On kernelized multi-armed bandits,”
+inProc. Int. Conf. Mach. Learn., pp. 844–853, Sydney, Australia, 2017.
+[19] T. L. Lai and H. Robbins, “Asymptotically efficient adaptive allocation
+rules,”Adv. Appl. Math., vol. 6, no. 1, pp. 4–22, 1985.
+[20] R. Xiong, K. Yin, T. Mi, J. Lu, K. Wan, and R. C. Qiu, “Fair beam
+allocations through reconfigurable intelligent surfaces,”IEEE J. Sel.
+Areas Commun., vol. 42, no. 11, pp. 3095–3109, 2024.
+[21] Y. Zhang, O. Simeone, and H. V. Poor, “Multi-fidelity Bayesian op-
+timization for Nash equilibria with black-box utilities,”arXiv preprint
+arXiv:2505.11265, 2025.

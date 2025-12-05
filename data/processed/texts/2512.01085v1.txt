@@ -1,0 +1,1050 @@
+IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020 1
+Generalised Medical Phrase Grounding
+Wenjun Zhang, Shekhar S. Chandra, and Aaron Nicolson
+Abstract— Medical phrase grounding (MPG) maps tex-
+tual descriptions of radiological findings to correspond-
+ing image regions. These grounded reports are easier to
+interpret, especially for non-experts. Existing MPG sys-
+tems mostly follow the referring expression comprehen-
+sion (REC) paradigm and return exactly one bounding box
+per phrase. Real reports often violate this assumption.
+They contain multi-region findings, non-diagnostic text,
+and non-groundable phrases, such as negations or de-
+scriptions of normal anatomy. Motivated by this, we refor-
+mulate the task as generalised medical phrase grounding
+(GMPG), where each sentence is mapped to zero, one,
+or multiple scored regions. To realise this formulation,
+we introduce the first GMPG model: MedGrounder. We
+adopted a two-stage training regime: pre-training on re-
+port sentence–anatomy box alignment datasets and fine-
+tuning on report sentence–human annotated box datasets.
+Experiments on PadChest-GR and MS-CXR show that Med-
+Grounder achieves strong zero-shot transfer and outper-
+forms REC-style and grounded report generation baselines
+on multi-region and non-groundable phrases, while using
+far fewer human box annotations. Finally, we show that
+MedGrounder can be composed with existing report gen-
+erators to produce grounded reports without retraining the
+generator.
+I. INTRODUCTION
+Medical phrase grounding (MPG) maps textual descriptions
+of radiological findings to spatial regions in medical images.
+Presenting findings with their associated bounding boxes al-
+lows the text to be easier to interpret, especially by non-
+experts [1]–[3]. Despite their promise, contemporary MPG
+systems exhibit several notable limitations. Most methods fol-
+low the referring expression comprehension (REC) framework,
+originally designed for general-domain phrase grounding. As
+shown in Figure 1 (top left), the model takes an image and
+phrase as input and predicts a bounding box by regressing
+its coordinates, creating a one-to-one mapping between each
+phrase and region [1], [2]. However, this assumption is fun-
+damentally misaligned with the visual presentation of clinical
+findings. Radiology reports contain findings corresponding to
+multiple regions (e.g., “bilateral lower lobe opacities”), phrases
+that should not be grounded, including negated findings (e.g.,
+“No pneumothorax”), descriptions of normal anatomy, and
+non-diagnostic text like “PA views provided”. Existing REC-
+based approaches, such as MedRPG [2] and AGPT [1], cannot
+handle these cases.
+W. Zhang (e-mail: wenjun.zhang@uq.net.au) and S. S. Chandra are
+with The University of Queensland, Brisbane, Australia; W. Zhang and
+A. Nicolson are with the Australian e-Health Research Centre, CSIRO
+Health and Biosecurity, Australia.
+Fig. 1.Top: MPG predicts a single bounding box per sentence, while
+GMPG additionally supports (i) multiple boxes per sentence, (ii) sup-
+pression of boxes for non-groundable phrases (e.g., negations), and (iii)
+confidence scoring for all predictions.Bottom: Applications of GMPG:
+(A) grounding a radiologist-written report for patient comprehension, and
+(B) grounding an AI-generated report for radiologist verification.
+Recent formulations of phrase grounding are more
+flexible—generalised referring expression comprehension
+(GREC) treats grounding as a set prediction problem rather
+than single-box regression [4], [5]. Inspired by GREC, we
+address the weaknesses of MPG by introducing generalised
+MPG (GMPG), a re-definition of MPG that explicitly supports
+zero-or-more region grounding with confidence scores. To
+realise this formulation, we propose MedGrounder, a detection
+Transformer model adapting MDETR [6] to the medical do-
+main. We adopt a two-stage training strategy. First, we pretrain
+MedGrounder on a processed version of the Chest ImaGenome
+dataset [7], which has report sentences linked to anatomical
+bounding boxes. A large language model was used to process
+the dataset in order to link the sentences to the anatomical
+regions and to remove redundant regions. Second, we fine-tune
+and evaluate the model on expert-annotated datasets, including
+MS-CXR [8] and PadChest-GR [9].
+MedGrounder also enables grounded report generation
+(GRG) when paired with existing report generators, as shown
+arXiv:2512.01085v1  [cs.CV]  30 Nov 2025
+2 IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020
+TABLE I
+COMPARISON OFPRIORWORKBASED ONGMPG REQUIREMENTS.THE TABLE POSITIONS EXISTING MEDICAL PHRASE GROUNDING AND
+RELATED MODELS AGAINST THE THREE CORE REQUIREMENTS OFGMPG:MULTI-REGION(SUPPORT FOR ZERO,ONE,OR MULTIPLE REGIONS PER
+PHRASE),GROUNDABILITY(ABILITY TO ABSTAIN FROM GROUNDING),ANDCONFIDENCE(PROVISION OF CONFIDENCE SCORES FOR
+PREDICTIONS).
+Method Year-venue Box supervision Learning paradigm Multi-region Groundability Confidence
+GLoRIA 2021-ICCV No Contrastive✓× ×
+BioViL 2022-ECCV No Contrastive✓× ×
+LDM 2024-JBHI No Diffusion✓× ×
+Generate to Ground 2025 MIDL No Diffusion✓× ×
+MedRPG 2023-MICCAI Yes MPG / REC× × ×
+VG-CT 2023-MICCAI Yes Multi-task× × ×
+ChEX 2024-ECCV Yes Multi-task✓×✓
+MedRG 2024-CORR Yes Multi-task× ×✓
+MAIRA-2 2024 Yes GRG✓ ✓×
+AGPT 2025-ISBI Yes MPG / REC× × ×
+MedGrounder (ours)2025 Yes GMPG / GREC✓ ✓ ✓
+in Figure 1 (bottom). Although automatic report generation has
+been widely studied, clinical deployment remains limited. One
+reason is that radiologists must still verify model outputs due
+to insufficient accuracy and safety concerns [10]. GRG helps
+by highlighting visual evidence for each reported finding in the
+image, which makes verification easier for radiologists [11].
+Furthermore, training grounded radiology report generators
+typically requires large scale image-report-box data that is ex-
+pensive to obtain. Alternatively, MedGrounder can be applied
+to a generated report to produce a grounded version. This
+decoupled approach bypasses the data-annotation bottleneck
+while remaining compatible with state-of-the-art generators.
+Contributions:
+•We formulateGeneralised Medical Phrase Grounding
+(GMPG), a set prediction task that extends MPG to
+allow zero, one, or multiple bounding boxes per phrase,
+addressing the core limitations of prior approaches.
+•We release a weakly annotated dataset for GMPG pre-
+training calledGMPG-ImaGenome, created through an
+LLM-assisted weak-annotation cleanup pipeline for Chest
+ImaGenome that removes redundant anatomical regions,
+filters negative sentences with spurious boxes, and adds
+explicit non-grounding examples.
+•We proposeMedGrounder, the first GMPG model,
+which uses a data-efficient two-stage (weak-to-expert)
+training strategy to achieve state-of-the-art performance
+on the PadChest-GR and MS-CXR benchmarks, espe-
+cially on multi-region and non-groundable phrases.
+•We demonstrate amodular, data-efficient approach
+to grounded report generation, showing that Med-
+Grounder can be composed with existing text genera-
+tors to achieve results competitive with end-to-end GRG
+model while using far fewer human-annotated boxes.
+•All code, models, and data-processing scripts will be
+made publicly available athttps://github.com/
+Claire1217/MedGrounder.
+II. RELATEDWORK
+We review literature across three domains: MPG, REC (and
+GREC), and GRG, with methods summarised in Table I
+A. Medical phrase grounding (MPG)
+1) Without box supervision:Initial approaches to MPG did
+not rely on box supervision, learning local alignments from
+image-text pairs without explicit bounding box annotations.
+Contrastive learning models like GLoRIA [12], BioViL [8]
+and BioViL-T [13] exemplify this; they naturally produce
+heatmaps from their alignment scores. The MS-CXR bench-
+mark [8] was, in fact, introduced to evaluate this emergent
+localisation capability against ground-truth boxes, rather than
+as a primary training set for grounding models. More recently,
+latent diffusion models [14], [15] have been used to extract
+cross-attention maps for zero-shot localisation. While these
+methods offer a way to learn alignments without expensive
+box annotations, their reliance on coarse heatmaps often limits
+localisation precision.
+2) With box supervision:Methods trained with box su-
+pervision typically achieve higher precision than the previ-
+ously mentioned non-box-supervised approaches. MedRPG
+pioneered this approach by formally defining the MPG task
+[2]. It was also the first to use the MS-CXR benchmark
+for training explicit box predictors, rather than solely for
+evaluation. MedRPG adapted the REC-style TransVG model
+for medical images, introducing the TaCo module to strengthen
+region-phrase alignment. AGPT extended this approach by
+adding an anatomical pretraining stage on anatomy name-
+box pairs before fine-tuning on expert-annotated sentence-level
+data [1]. However, these methods all share a fundamental
+limitation: they adopt the traditional REC framework, which
+constrains them to predict exactly one bounding box per
+phrase. Consequently, they are trained on single-box subsets
+of datasets and cannot handle multi-region findings or non-
+groundable phrases.
+Subsequent work has attempted to address parts of this
+limitation. MedRG [16] reframed the task as medical report
+grounding to handle non-groundable text. This multi-stage
+approach first uses a fine-tuned language model to extract a
+single, supposedly groundable phrase from a full report, which
+a separate decoder then grounds. While this adds a mech-
+anism to filter some non-groundable phrases, it introduces
+architectural complexity and, critically, retains the single-box
+AUTHORet al.: PREPARATION OF PAPERS FOR IEEE TRANSACTIONS ON MEDICAL IMAGING 3
+constraint, failing to support multi-region findings.
+Beyond REC, other methods couple grounding with differ-
+ent objectives. ChEX [17] introduced a model based on DETR
+[18] for interactive localisation and region description, which
+is capable of predicting multiple boxes with confidence scores.
+VG-CT [19] proposed a model that outputs segmentation
+masks from text, given an image and anatomical segmentation
+priors. However, none of the existing MPG methods satisfies
+all three core requirements for GMPG: multi-region support,
+groundability, and confidence scoring.
+B. Referring expression comprehension (REC) and its
+generalisation
+The single-box constraint observed in MPG stems from the
+adoption of the traditional REC framework in general domain.
+Traditional REC tasks assumes every textual expression refers
+to exactly one object in the image. This assumption is embed-
+ded in benchmark datasets like ReferIt and RefCOCO(g) [20]–
+[22], which contain only groundable phrases with single cor-
+responding bounding box. Architecturally, REC-styled models
+regress directly on four bounding box coordinates without
+producing confidence scores, making single-box prediction
+intrinsic to their design.
+This limitation led to GREC, which reframes grounding
+as set prediction: predict a variable-sized set of bounding
+boxes—including zero when appropriate [4], [23]. Detection
+Transformers like MDETR enable this by treating grounding
+as set prediction with cross-modal fusion and learnable object
+queries, naturally handling zero-or-more outputs with confi-
+dence scores [6]. Our work systematically adapts this more
+flexible formulation to medical imaging.
+C. Grounded report generation (GRG)
+Radiology report generation aims to automatically produce
+a free-text radiology report from an input image (or image
+series) [24]–[29]. GRG extends this setting by producing a
+report while simultaneously localising the described findings
+[11], [30], [31]. After each sentence is generated, the model
+typically outputs the corresponding bounding boxes that in-
+dicate the image regions supporting that sentence. GRG is
+closely related to GMPG, as it inherently involves phrase
+grounding as a subtask. Consequently, a GMPG model can be
+combined with an existing report generator to achieve GRG
+functionality, without the need for additional GRG-specific
+training.
+MAIRA-2 [11] is the current state-of-the-art grounded re-
+port generation model we compare against. It accomplishes
+this by converting spatial coordinates into discrete spatial
+tokens. MAIRA-2 is trained in three modes aligned with
+three tasks: findings generation (FG), grounded report (GR),
+and phrase grounding (PG). The authors build task-specific
+instruction prompts and train each mode on different datasets.
+Notably, MAIRA-2 relies on training on large-scale, non-
+public datasets of image-sentence-box annotations.
+III. METHODOLOGY
+A. Generalised medical phrase grounding
+We define GMPG as mapping a medical image and a phrase
+to aset of regions. Let the dataset be:
+D=
+
+(Im,Pm,{S mi}Nm
+i=1)
+	M
+m=1,(1)
+consisting ofMimage–report pairs, whereI m denotes the
+image andP m ={p mi}Nm
+i=1 denotes its report.{S mi}Nm
+i=1
+represents the ground-truth bounding-box sets, defined as
+Smi ={b mij}Kmi
+j=1 , whereb mij ∈[0,1] 4 is a normalised box
+andK mi ≥0is the region count. GMPG maps a pair(I, p)
+to a predicted set ˆSmi =f(I m, pmi)approximatingS mi. The
+variable cardinalityK mi supports multi-box grounding and
+non-groundable phrases, expanding upon MPG which assumes
+|Smi|= 1.
+B. MedGrounder framework
+MedGrounder builds upon the MDETR framework [6]
+(Fig. 2). The imageIis encoded by ResNet-101 [32] and
+the phrasepby BioClinical ModernBERT [33]. A cross-
+modal encoder fuses features for a Transformer decoder, which
+outputsN Q queries. Each query passes through a box FFN
+(coordinates) and a confidence FFN (linear projection).
+For each pair(I m, pmi), the model predicts ˆY=
+{(ˆbj,ˆcj)}NQ
+j=1 (indices dropped for clarity). We compute a one-
+to-one assignmentˆπby minimising the matching cost:
+ˆπ= arg min
+π
+KX
+k=1
+h
+−ˆcπ(k) +λ L1∥ˆbπ(k) −b k∥1 +λ giouLgiou
+i
+,
+(2)
+whereL giou = 1−GIoU(ˆbπ(k), bk). We define binary targets
+tj = 1if matched, else0. The groundability (L cls) and
+localisation (Lbox) objectives are:
+Lcls = (1/NQ)
+XNQ
+j=1
+αtj BCE(ˆcj, tj),(3)
+Lbox = 1
+max(1, K)
+XK
+k=1
+ 
+λL1∥ˆbˆπ(k)−b k∥1
++λ giou [1−GIoU( ˆbˆπ(k), bk)]
+
+.(4)
+Total loss isL=L cls +L box, where we setα tj=0 = 0.1,
+λL1 = 5, andλ giou = 2.
+C. Datasets
+Our experiments utilize three chest X-ray datasets contain-
+ing image-sentence-box pairs: Chest ImaGenome, PadChest-
+GR, and MS-CXR. Table II summarizes their key statistics.
+Chest ImaGenome [7],built on MIMIC-CXR [34], is used
+in our pipeline by taking each report sentence together with the
+anatomical bounding boxes assigned to that sentence (covering
+29 predefined regions). This dataset offers large-scale coverage
+across diverse disease types and sentence structures, providing
+rich variability. Because the boxes are automatically generated
+rather than expert-verified, we treat them as weak supervision.
+We use a large language model to perform dataset cleaning
+to reduce noisy, overlapping, or redundant annotations. The
+4 IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020
+ResNet101
+BioClinicalModernBert
+CrossEncoderTransformerDecoder…
+…
+Biapical pleural thickening.
+0.990.96
+BoxFFN&Conf.FFNConfidenceThreshold
+Object Queries
+Concat
+Fig. 2.MedGrounder architecture overview.ResNet-101 and BioClinical MobernBERT encode image and phrase features, respectively, which
+are concatenated and fed into a cross-encoder. From the features of the cross-encoder, a Transformer decoder then predicts a set of scored
+bounding boxes corresponding to the phrase, with an example shown on the right.
+TABLE II
+STATISTICS OFDATASETS FORPRETRAINING ANDFINE-TUNING OFMEDGROUNDER.THE TABLE DETAILS THE PROPOSE,SPLITS,SIZES,AND
+ANNOTATION CHARACTERISTICS OFCHESTIMAGENOME, PADCHEST-GR,ANDMS-CXR.
+Dataset Purpose
+Annotation
+source
+Region
+type Split #Image
+#Image-
+phrase #Boxes
+#Boxes per
+phrase (%)
+Sent. length
+Mean±SD
+Chest ImaGenome Pretraining Model generated Anatomy train137 065 764 540 426 74964 / 19 / 17 9.2±5.8
+PadChest-GR Fine-tuning Human labeled Pathology
+train3 185 7 310 5 40441 / 46 / 13 5.1±3.2
+val 4551 052808 39 / 46 / 14 5.2±3.6
+test 9152 112 1 52141 / 47 / 12 5.3±3.5
+MS-CXR Fine-tuning Human labeled Pathology
+train 737 8151 0200 / 77 / 23 5.7±3.5
+val 155 169 212 0 / 76 / 24 5.9±3.4
+test 155 176 216 0 / 78 / 22 5.5±3.3
+cleaned split is used in the first stage of training, detailed in
+Subsection III-D.1.
+PadChest-GR [9]andMS-CXR [8]are smaller, expert-
+annotated datasets used primarily for fine-tuning and eval-
+uation. In contrast to Chest ImaGenome, they consist of
+shorter, more focused text spans. PadChest-GR contains En-
+glish translations of Spanish report sentences, while MS-
+CXR includes concise phrases extracted from approximately
+one thousand MIMIC-CXR reports. All three datasets permit
+multi-box annotations, with multi-box rates of 17% in Chest
+ImaGenome, 12–14% in PadChest-GR, and 22–24% in MS-
+CXR. Zero-box cases are common in Chest ImaGenome and
+present in PadChest-GR but absent in MS-CXR.
+D. Training Strategy
+1) Weak annotations cleanup:Chest ImaGenome provides
+sentence-level grounding by aligning radiology report sen-
+tences from MIMIC-CXR with anatomical bounding boxes.
+However, the original annotations contain notable noise. Sen-
+tences are often linked to both specific and overly broad
+anatomical regions (for example, “right lower lung zone”
+together with “right lung”), reducing spatial precision. Fur-
+thermore, sentences describing normal findings (for example,
+“No focal consolidation, pleural effusion, or pneumothorax”)
+are still assigned bounding boxes, introducing false positive
+sentence–region pairs.
+We applied a three-stage cleaning procedure to improve su-
+pervision quality. First, we used LLaMA-3-70B [35] to retain
+only the most specific regions associated with each sentence
+LLM Prompt for Region Filtering
+System:Given a radiology report sentence and its candidate anatomical
+regions, return only the most specific regions that correspond to the
+described abnormality. Remove broader or redundant regions. Output
+valid JSON with the key “selected region” only.
+User:Sentence: “There is minimal upper zone vascular redistribution
+without overt pulmonary edema.”
+Candidates: [“right lung”, “right upper lung zone”, “right hilar struc-
+tures”, “left lung”, “left upper lung zone”, “left hilar structures”]
+Expected output:{“selected regions”: [“right upper lung zone”, “left
+upper lung zone”]}
+Fig. 3.LLM prompt for filtering redundant anatomical regions.
+The model selects the most specific regions from candidates, discarding
+broader parent regions.
+and discard redundant parent regions. The prompt used for this
+filtering step is shown in Figure 3. Second, we removed all
+anatomical regions associated with sentences containing only
+negative findings, ensuring the model learns to produce no
+box when appropriate. Third, we added report sentences that
+were not mapped to any anatomical regions in the original
+dataset (for example, “PA views of the chest obtained.”),
+providing additional non-grounding cases. To prevent data
+leakage, we further excluded all studies overlapping with MS-
+CXR. Overall, these steps reduced the dataset by 89.6%, from
+more than four million to426 749sentence–box pairs.
+2) Multi-stage training:We adopt a two-stage training
+pipeline. In stage one, the model is pretrained on weak
+annotations from the cleaned Chest ImaGenome to learn broad
+anatomical regions that radiology reports are describing. In
+stage two, we further fine-tune on the expert-annotated MS-
+AUTHORet al.: PREPARATION OF PAPERS FOR IEEE TRANSACTIONS ON MEDICAL IMAGING 5
+CXR and PadChest-GR to ground exact pathological regions.
+E. Evaluation Metrics for GMPG
+REC-style metrics, such as mIoU and mIoU accuracy, are
+not sufficient for GMPG, since phrases may map to zero,
+one, or multiple boxes. We therefore report Precision@(F1=1,
+IoU≥0.5) and Negative Accuracy (N-Acc) following [4], as
+well as Center-Hit F1 (CH-F1), and Mask IoU accuracy.
+Precision@(F1=1) strictly rewards exact set matches and pe-
+nalises extra boxes; N-Acc measures correct abstention on
+non-groundable phrases; CH-F1 relaxes boundary sensitivity
+by requiring predicted box centres to fall inside the ground-
+truth region; Mask IoU measures the intersection over union
+of pixel masks for all matched predicted and ground-truth
+boxes across images; Mask IoU accuracy is the proportion
+of predictions whose mask IoU is at least 0.5.
+F . Evaluation Metrics for Grounded Report Generation
+For grounded report generation, we adopt the RadFact
+evaluation framework introduced in MAIRA-2 [11]. RadFact
+leverages large language models to assess report quality at the
+sentence level through three hierarchical metrics: (i)logical F1
+measures whether generated sentences are factually entailed by
+the ground-truth report; (ii)grounding F1evaluates whether
+logically correct sentences are also spatially entailed; and
+(iii)spatial F1measures the fraction of all grounded sentences
+that are both logically and spatially correct.
+IV. EXPERIMENTSETUP
+1) Data preparation:Following MedRPG, each image was
+resized so that its longer side was 640 pixels while preserv-
+ing aspect ratio, then zero-padded to a640×640square.
+Training time image augmentations included Gaussian noise
+and random cropping. Images were normalised with ImageNet
+mean and standard deviation, following DETR. Boxes were
+transformed with the images, and any with less than 90%
+visibility after augmentation were discarded.
+2) Training and inference setup:MedGrounder was first
+pretrained on the cleaned Chest ImaGenome for 15 epochs
+(batch size 32) using AdamW [36] with a 1e-5 learning rate;
+the checkpoint with the best validation Mask IoU was kept for
+fine-tuning. In stage two, we fine-tuned on PadChest-GR and
+MS-CXR for 15 epochs with the same settings, selecting the
+final model by the much stricter metricP@F 1=1). All runs
+used a single NVIDIA H100 96GB GPU. At inference time,
+predictions were filtered by an optimised confidence threshold
+and merged with weighted box fusion (WBF).
+3) Baselines:We compared MedGrounder against state-of-
+the-art models in two distinct tasks.
+a) GMPG:We benchmarked against two families of box-
+supervised baselines. The first was REC-style models, which
+includeed TransVG, MedRPG, and AGPT. The second was
+GRG models, for which we compared against MAIRA-2. To
+ensure a fair comparison, all models were evaluated on the
+official MS-CXR split; MedRPG and AGPT were retrained
+accordingly. Furthermore, MAIRA-2 was evaluated in both
+phrase-grounding (PG) and grounded-report (GR) modes, as
+its original training was split by mode (PadChest-GR for GR
+and MS-CXR for PG).
+b) GRG:To evaluate MedGrounder for GRG, we com-
+pared an end-to-end grounded report generation model
+(MAIRA-2 GR) with two pipeline approaches: MAIRA-2 FG
++ MedGrounder and CXRMate-RRG24 [37] + MedGrounder.
+Because the training data for CXRMate-RRG24 (the original
+PadChest) overlaps with the PadChest-GR test set, we created
+a 38-case non-overlapping subset to ensure a fair evaluation
+of all three models.
+V. RESULTS& DISCUSSION
+A. GMPG evaluation
+1) Main results on Padchest-GR and MS-CXR:We evaluated
+MedGrounder’s GMPG performance in two settings, presented
+in Tables III (PadChest-GR) and IV (MS-CXR): zero-shot
+generalisation (Panel A) and in-domain fine-tuning (Panel B).
+The results reveal two key findings.
+Finding 1: MedGrounder exhibits superior zero-shot
+generalisation.Panel A of both tables highlights the effective-
+ness of our pretraining strategy. Without exposure to any sam-
+ples from PadChest-GR or MS-CXR, MedGrounder achieved
+the highest scores across all metrics. These results indicate
+that pretraining on sentence–anatomical region alignments
+provides a significantly stronger inductive bias than aligning
+anatomical regions with anatomy names alone, which was used
+as pretraining strategy in AGPT [1]. In contrast, models such
+as MedRPG trained on MS-CXR transfer poorly to PadChest-
+GR, underscoring their limited cross-dataset generalisation
+capability.
+Finding 2: MedGrounder achieves state-of-the-art per-
+formance, particularly on multi-box phrases.In the fine-
+tuned setting (Panel B), MedGrounder consistently outper-
+forms all baselines. While REC-style models remain com-
+petitive on single-box phrases, MedGrounder’s advantage is
+most pronounced on the more challenging multi-box cases. In
+Table III, it achieves 28.6%P@F 1=1on multi-box phrases
+in PadChest-GR, nearly double the score of the strongest
+competitor MAIRA-2, even though MAIRA-2 GR was trained
+on roughly ten times more human-annotated data. Likewise, on
+MS-CXR (Table IV), MedGrounder pretrained on Chest Im-
+aGenome and fine-tuned exclusively on MS-CXR establishes
+a new state-of-the-art across all multi-box metrics and overall
+performance.
+2) Qualitative analysis on Padchest-GR:Figure 4 presents
+qualitative comparisons on the PadChest-GR test set. The
+first example has three sentences, two requiring multi-box
+localisation and one requiring a single box. The MPG models
+output only a single box per phrase, failing at multi-region
+grounding. By contrast, MAIRA-2 GR and MedGrounder
+correctly localise multiple regions. In the second and third
+examples, phrases such as “No significant findings” are not
+groundable. The MPG models still output a box, whereas
+MAIRA-2 GR and MedGrounder correctly skip these phrases,
+yielding N-ACC = 1. Across all cases, MedGrounder handles
+non-groundable and multi-box phrases, provides per-phrase
+confidence scores, and attains the highest Mask IoU.
+6 IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020
+Mammaryprosthesis.[2]Fibroticbandsatthepulmonaryapex,strikingforthepatient’sage.[2]Postsurgicalchangesinthelefthumerus.[1]
+N-ACC: 1Prec@F1: 0.333Mask IoU: 0.349 N-ACC: 1Prec@F1: 0Mask IoU: 0.082 N-ACC: 1Prec@F1: 0Mask IoU: 0.426 N-ACC: 1Prec@F1: 0.333Mask IoU: 0.517
+GT TransVG(MPG) MedRPG(MPG) MAIRA2-GR(GRG)MedGrounder(GMPG)
+Dorsolumbarscoliosis.[1]Nootherrelevantfindings.[0]
+Nosignificantfindings.[0]
+N-ACC: 0Prec@F1: 0Mask IoU: 0.058 N-ACC: 1Prec@F1: 1Mask IoU: 0.616 N-ACC: 1Prec@F1: 1Mask IoU: 0.726
+N-ACC: 0Prec@F1: 0Mask IoU: 0 N-ACC: 0Prec@F1: 0Mask IoU: 0 N-ACC: 1Prec@F1: 1Mask IoU: 0 N-ACC: 1Prec@F1: 1Mask IoU: 0
+N-ACC: 0Prec@F1: 0.5Mask IoU: 0.607
+Fig. 4.Qualitative comparison of grounding results from TransVG, MedRPG, MAIRA-2 GR, and the proposed MedGrounder on three
+PadChest-GR examples.Ground-truth (GT) is shown in the first column, model predictions in the remaining columns. Numbers in brackets after
+each sentence indicate the number of bounding boxes in the GT.
+TABLE III
+PHRASE GROUNDING PERFORMANCE ON THE TEST SET OFPADCHEST-GR.MODELS ARE GROUPED INTO(A)MODELS NOT TRAINED ON
+PADCHEST-GRAND(B)MODELS TRAINED OR FINE-TUNED ONPADCHEST-GR. BEST RESULTS AREBOLD,SECOND BEST ARE UNDERLINED .
+Model Supervision No (n= 874) Single (n= 983) Multi (n= 255) Overall (n= 2 112)
+Framework Datasets Annots. N-Acc P@F1=1 CH-F1 Acc P@F1=1 CH-F1 Acc P@F1=1 CH-F1 Acc
+(A) Models not trained on PadChest-GR
+MedRPG MPG M* 624 0 13.2 35.4 12.7 0 34.9 0.8 6.2 25.9 10.3
+AGPT (pretrained) MPG – 0 0 13.0 39.9 12.9 0 37.4 0 6.1 29.6 10.3
+MedGrounder (pretrained) GMPG – 086.5 18.1 60.2 21.2 8.2 65.3 16.1 45.2 58.2 20.1
+(B) Models trained on PadChest-GR
+TransVG MPG M*,P*3 993054.4 82.6 54.20 56.8 5.1 25.3 56.0 44.1
+MAIRA-2 PG GRG U,M,P73 04372.1 39.6 74.4 40.8 14.9 73.1 26.7 50.0 66.1 37.9
+MAIRA-2 GR GRG U,M,P73 04391.045.8 79.5 47.0 14.9 74.1 31.8 60.775.143.9
+MedGrounderGMPG P 7 315 88.1 47.5 77.1 48.8 21.6 76.7 34.5 61.2 73.3 45.9
+MedGrounderGMPG M,P 8 130 90.1 47.7 77.2 49.8 28.6 78.3 37.3 62.974.5 47.3
+Notes:Datasets: M = MS-CXR, P = PadChest-GR, U = US-Mix. Annots. is the number of human-annotated phrases used during training; Annots. = 0
+means the model used only non human-annotated weak labels. Dataset names with an asterisk (M*, P*) indicate that only the single-box portions were used.
+TABLE IV
+GROUNDING PERFORMANCE ON THE TEST SET OFMS-CXR.MODELS ARE GROUPED INTO(A)MODELS NOT TRAINED ONMS-CXRAND(B)
+MODELS TRAINED OR FINE-TUNED ONMS-CXR.
+Model Supervision Single (n= 138) Multi (n= 38) Overall (n= 176)
+Framework Datasets Annots. P@F1=1 CH-F1 Acc P@F1=1 CH-F1 Acc P@F1=1 CH-F1 Acc
+(A) Models not trained on MS-CXR
+AGPT(pretrained) MPG – 0 29.7 60.9 29.0 0.0 14.8 0.0 23.3 47.6 22.7
+MedGrounder(pretrained) GMPG – 043.5 78.7 45.7 13.2 81.5 18.4 36.9 79.9 39.8
+(B) Models trained on MS-CXR
+TransVG MPG M*,P* 3 993 71.7 94.671.0 0.0 59.0 7.9 56.2 83.8 57.4
+MedRPG MPG M* 624 71.7 93.4 73.90.0 54.0 2.6 56.2 81.6 58.5
+AGPT MPG M* 62473.290.873.90.0 50.7 5.3 57.4 78.7 59.1
+MAIRA-2 PG GRG U,M,P 73 043 55.8 91.2 55.126.381.5 36.8 49.4 88.0 51.1
+MAIRA-2 GR GRG U,M,P 73 043 50.7 86.6 52.2 0.0 18.9 15.8 39.8 77.0 44.3
+MedGrounderGMPG M 815 67.4 90.9 68.826.3 85.2 42.1 58.5 88.9 63.1
+MedGrounderGMPG M,P 8 130 60.1 86.7 61.6 21.1 82.5 28.9 51.7 85.2 54.5
+AUTHORet al.: PREPARATION OF PAPERS FOR IEEE TRANSACTIONS ON MEDICAL IMAGING 7
+TABLE V
+DISEASE-SPECIFIC PERFORMANCE AND TRAINING DATA
+CHARACTERISTICS ONMS-CXR.PERFORMANCE REPORTED AS
+PERCENTAGES(ONE DECIMAL PLACE);COUNTSNUNCHANGED. ROWS
+ORDERED BY DESCENDINGP@F1.
+Performance Metrics (%) Training Data Characteristics
+Disease Name P@F1=1 CH-F1 mIoU N Avg. Area (%) SDS (%)
+Cardiomegaly 100.0 100.0 78.3 232 17.2 9.4
+Atelectasis 62.5 96.0 51.0 72 5.8 25.7
+Pleural Effusion 50.0 95.0 51.4 97 5.5 29.9
+Pneumonia 46.7 86.0 46.8 163 7.5 25.4
+Consolidation 40.0 90.9 47.6 138 7.3 27.5
+Pneumothorax 38.9 74.7 45.3 182 5.0 27.5
+Edema 25.0 82.8 41.6 61 11.5 25.3
+Lung Opacity 16.7 73.0 34.4 75 6.4 27.7
+P@F1 CH-F1 mIoU
+Performance Metrics
+NAvg. AreaSDS
+Training Features
+0.834 0.223 0.685
+0.761 0.453 0.732
+-0.915 -0.464 -0.890
+**
+* *
+** ** 1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+Correlation (r)
+Fig. 5.Correlation heatmap on MS-CXR.Performance vs. data
+properties; cell text shows Pearsonrandp-values. Asterisks indicate
+statistical significance levels, **p <0.01, and *p <0.05.
+3) Disease specific analysis on MS-CXR:Table V shows
+that MedGrounder’s performance depends strongly on disease
+characteristics. Anatomically constrained findings such as car-
+diomegaly are localised with near-perfect accuracy, whereas
+performance drops for diffuse, small, or highly variable find-
+ings such as lung opacity and edema. CH-F1 remains high
+across most pathologies, indicating that the model usually
+identifies the correct general location. In contrast, the larger
+variation in mIoU suggests that precisely capturing lesion
+extent is harder, especially for diffuse or irregular cases.
+The correlation analysis in Figure 5 quantifies these effects.
+Performance improves with more samples and larger average
+box area, but the strongest predictor is the Spatial Dispersion
+Score (SDS), which is strongly negatively correlated with
+both P@F1 and mIoU. Thus, findings with high anatomi-
+cal variability i.e., those that may appear in many different
+locations, exhibit the largest drop in localisation accuracy.
+A plausible explanation is that Chest ImaGenome does not
+provide meaningful supervision for spatially variable or dif-
+fuse findings. Its rule-based annotations map sentences only
+to fixed anatomical regions, which is adequate for findings
+with consistent anatomical location but offers no region-level
+guidance for abnormalities that can arise across diverse lung
+regions. As a result, the model enters fine-tuning with weaker
+spatial priors for these findings, contributing to the drop in
+localisation performance when such findings do appear in the
+expert-annotated downstream datasets.
+4) Disease specific case studies on MS-CXR and PadChest-
+GR:Figure 6 visualises MedGrounder’s performance on the
+MS-CXR test set, highlighting correct (Mask IoU≥0.5) and
+error cases. The model performs well when phrases contain
+explicit spatial cues (e.g., “bibasilar” and “left lower lung”),
+while phrases lacking clear anatomical indicators like “pul-
+monary edema” or “side-unspecified apical pneumothorax”
+sometimes leads to errors. For diffuse findings such as “pleural
+effusion”, predictions sometimes target the correct region even
+when Mask IoU is below 0.5.
+On the PadChest-GR test set (Figure 7), we observe sim-
+ilar trends. High-performing findings are tightly linked to
+specific anatomies (e.g., “cardiomegaly”, “aortic elongation”,
+“costophrenic angle blunting”), where anatomical priors suf-
+fice for accurate localisation. The worst-performing findings
+either have inconsistent ground-truth boxes (e.g., “chronic
+changes”, “air trapping”) or high spatial variance (e.g., “cal-
+cified granuloma”, “nodule”, “rib fracture”), where the model
+often resorts to multiple speculative boxes.
+B. MedGrounder for grounded report generation
+TABLE VI
+RADFACTEVALUATION ONPADCHEST-GR.WE REPORT METRICS ON
+THE FULL SET(n= 915)AND A NON-OVERLAPPING SUBSET
+(n= 38). CXRMATE-RRG24IS EVALUATED ONLY ON THE SUBSET TO
+AVOID TRAINING DATA OVERLAP.
+Model Set Logical Grounding Spatial
+MAIRA-2 GR Full53.89 77.6327.92
+MAIRA-2 FG +MedGrounderFull 53.69 75.4128.17
+MAIRA-2 GR Subset70.9189.89 52.03
+MAIRA-2 FG +MedGrounderSubset 69.21 95.4553.52
+CXRMate-RRG24 +MedGrounderSubset 65.7597.1441.58
+To evaluate MedGrounder’s ability to ground model-
+generated reports, we compared an end-to-end baseline
+(MAIRA-2 GR) with two pipeline approaches that first gen-
+erate text and then apply MedGrounder for localisation:
+MAIRA-2 in finding-generation mode (MAIRA-2 FG) and
+CXRMate-RRG24. For MAIRA-2 GR and MAIRA-2 FG +
+MedGrounder, we report results on the full PadChest-GR
+test set. Since CXRMate-RRG24 was trained on PadChest,
+which overlaps with the PadChest-GR test set, we removed
+the overlaps and formed a 38-case subset for fair evaluation.
+We report results on this subset for all three models.
+Table VI demonstrates that grounding the generated reports
+of MAIRA-2 FG or CXRMate-RRG24 with MedGrounder
+performs on par with MAIRA-2 GR. In particular, MAIRA-2
+FG + MedGrounder achieved the highest Spatial F1 on both
+sets, while CXRMate-RRG24 + MedGrounder achieved the
+highest Grounding F1 on the subest. This is notable given
+the training regimes: MAIRA-2 models are trained on US-
+MIX, a private dataset with human bounding-box annotations;
+MedGrounder is trained on one tenth of the number of human
+annotations. Together, the results indicate that MedGrounder
+enables modular GRG that can match—or exceed—a spe-
+cialised end-to-end system, while avoiding having to train
+grounded report generator.
+8 IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020
+Mild diffuse ground-
+glass opacity most 
+likely representspulmonary edema.
+Bibasilar atelectasis
+noted.
+There is moderate
+cardiomegaly.
+Left perihilar
+consolidation versus
+mass.
+Patchy left basilar
+opacity.
+Small bilateral pleural
+effision is presumed.
+Patchy airspace 
+disease at the right
+base.
+Small right apical
+pneumothorax.
+Cardiomegaly
+ Consolidation
+ Edema
+ Opacity
+Pleural effusion
+Pneumonia
+ PneumothoraxAtelectasis
+Correct cases
+Right pleural effusion
+with probable
+superimposedatelectasis.
+Cardiac silhouette is
+enlarged.
+Bilateral patchy
+consolidation and
+ground-glass opacities.
+Unchanged mild
+pulmonary edema.
+Unchanged left
+retrocardiac opacity.
+Small to moderate left-
+sided pleural effusion.
+Widespread opacities 
+in the right lung and 
+left lower lung.
+Small left
+pneumothorax.
+The right lung is
+atelectatic.
+Multifocal consolidation,
+likely a combination of
+contusion andaspiration.
+Pulmonary edema.Subsegmental-sized
+opacities are present in
+the bilateral infrahilarlungs.
+Small bilateral pleural
+effusions.
+Small density on the 
+left.
+Small-to-moderate
+apical pneumothorax.
+Lungs are unchanged 
+in appearance 
+including bibasalatelectasis.
+Patchy consolidation in
+the mid and lower right
+lung.
+Peribronchial cuffing
+consistent with mild
+pulmonary edema.
+Subtle patchy right mid
+lung zone opacity.
+There is probably small
+left effusion.
+Patchy airspace
+disease.
+Tiny left apical
+pneumothorax.
+Error cases
+No error cases for
+cardiomegaly
+Fig. 6.Visualisation result of our model on MS-CXR across eight findings.Ground truth boxes are green, model predictions are red (dashed)
+with IoU shown. Top: correct cases. Bottom: error cases for the same disease; no cardiomegaly error example appears.
+C. Ablation Studies
+We conducted a series of ablation studies to validate the im-
+pact of our key design choices: the two-stage training strategy,
+post-processing pipelines including confidence thresholding
+and weighted box fusion, and the in-domain language encoder.
+TABLE VII
+MEDGROUNDER PRETRAINING AND FINE-TUNING STRATEGY ABLATION.
+MS-CXR PadChest-GR
+Training regime P@F1=1 CH-F1 mIoU P@F1=1 CH-F1 mIoU N-Acc
+Padchest-GR (from scratch) 0 0 8.1 41.3 1.5 8.9 99.8
+MS-CXR (from scratch) 0 4.7 22.0 41.3 2.9 24.999.9
+Pretrain→Zero Shot 36.9 79.9 42.7 45.2 58.2 32.3 86.5
+Pretrain→FT PadGR 42.0 80.7 47.9 57.7 70.8 44.4 82.6
+Pretrain→FT MS-CXR58.5 88.4 55.844.0 56.5 32.2 84.7
+Pretrain→FT PadGR+MS-CXR 54.0 86.7 54.161.3 73.2 46.885.7
+1) Impact of pretraining and fine-tuning stage:Our ablation
+study on training strategy, presented in Table VII, shows three
+key findings. First, pretraining is essential for GMPG, as
+training from scratch on either MS-CXR or PadChest-GR fails
+to produce meaningful results, with center-hit scores near zero.
+Second, by pre-training on our cleaned Chest Imagenome, our
+MedGrounder achieves respectable zero-shot performance on
+both datasets. Finally, fine-tuning a pretrained model further
+boosts performance, with the optimal strategy depending on
+the target dataset. Fine-tuning solely on MS-CXR yielded the
+best results on MS-CXR, while fine-tuning on a combination
+of both datasets was best for PadChest-GR.
+TABLE VIII
+MEDGROUNDER POST-PROCESSING ABLATION:WEIGHTED BOXES
+FUSION(WBF)ENABLED VS DISABLED
+MS-CXR PadChest-GR
+Post-processing P@F1=1 CH-F1 mIoU P@F1=1 CH-F1 mIoU N-Acc
+without WBF (baseline) 44.386.8 55.157.975.6 48.5 90.1
+with WBF51.785.2 54.562.974.5 47.390.1
+2) Impact of post-processing:We select the confidence
+threshold by analysing center-hit precision–recall on the vali-
+dation sets of MS-CXR and Padchest-GR; F1 peaks at 0.8 for
+both, so we adopt 0.8 throughout. Applying Weighted Box
+AUTHORet al.: PREPARATION OF PAPERS FOR IEEE TRANSACTIONS ON MEDICAL IMAGING 9
+CardiomegalyAortic elongationScoliosis
+Apical pleural
+thickening
+ Pleural Effusion
+Chronic changes
+Air trapping
+Calcified granulomaCallus rib fracture Surgical clipsNodule Nipple shadow NSG tube
+Bilateral pleural
+effusion, probably more
+on the left.
+Bilateral apical pleural
+thickening.
+Increase in cardiac
+sihouette.
+Aortic elongation.Scoliosis.
+Right pleural efusion.Right apical pleural
+thickening.
+Increased cardiac
+sihouette size.
+Enlongated aorta.Dorsal scoliosis.
+Chronic changes in 
+lung parenchyma.
+Air trapping. Small high-density
+nodules suggestive of
+calcified granulomas.
+Callus of fracture in the
+right rib cage.
+Nodule in the right
+middle lung field.
+Surgical clips in the 
+right paravertebral 
+area.
+Images corresponding
+to nipple shadows.
+Infradiaphragmatic
+nasogastric tube.
+Chronic
+pleuroparenchymal
+changes predominantlyperipheral.
+Marked signs of air
+trapping.
+Calcified granuloma in
+the right lower lobe.
+Fracture calluses in the
+6th and 7th right
+anterior rib arches.
+Stable nodule projected
+over the right 6th
+posterior intercostalspace.
+Clips in the homolateral
+axillary area.
+Should correspond to
+the nipples.
+Infradiaphragmatic
+nasogastric tube.
+Correct casesError cases
+Aortic calcification.
+Calcified aortic
+atheromatosis.
+Aortic
+atheromatosis
+Blunting of the left
+costophrenic angle.
+Blunting of the
+costophrenic angles
+Costophrenic angle
+blunting
+Prominent hila of
+probable vascular
+origin.
+Right hilum enlarged in
+size, probably related to
+vascular origin.
+Vascular hilar
+enlargement
+Fig. 7.Visualisation result of our model on PadChest-GR across sixteen findings.The top two rows show eight disease categories with
+strong phrase grounding results. The bottom two rows show eight categories with weaker performance. Ground-truth regions are green; predicted
+boxes are red (dashed) with IoU indicated.
+Fusion (WBF) with a 0.1 IoU threshold to merge redundant
+detections further improves performance, raising P@F1=1 by
++7.4 on MS-CXR and +5.0 on PadChest-GR (Table VIII).
+TABLE IX
+MEDGROUNDER LANGUAGE ENCODER ABLATION
+MS-CXR PadChest-GR
+Model P@F1=1 CH-F1 mIoU P@F1=1 CH-F1 mIoU N-Acc
+RoBERTa (baseline) 29.5 78.4 38.1 44.7 57.4 19.9 85.0
+ClinicalBERT 35.8 78.9 38.6 45.1 56.5 18.986.6
+BioClinical ModernBERT36.9 79.9 42.7 45.2 58.2 32.386.5
+3) Impact of In-Domain Language Encoder:Table IX shows
+that swapping RoBERTa encoder for a medical-domain model
+significantly improved performance. The top-performing en-
+coder, BioClinical ModernBERT, boosted the P@F1=1 score
+by +7.4 on MS-CXR and mIoU by +12.4 on PadChest-GR,
+confirming that in-domain clinical knowledge is crucial for
+maximising GMPG performance.
+VI. CONCLUSION
+We introduced generalised medical phrase grounding
+(GMPG), a new task formulation that addresses fundamen-
+tal limitations of prior methods by supporting the map-
+ping of findings to zero, one, or multiple image regions.
+MedGrounder—the first GMPG model—achieves state-of-the-
+art performance through pretraining on weakly supervised
+anatomical data (Chest ImaGenome) and fine-tuning on small
+expert-annotated datasets (PadChest-GR, MS-CXR). We also
+demonstrated MedGrounder’s practical utility as a modular
+component. By composing our model with existing report
+generators, we can produce grounded reports with performance
+competitive with end-to-end systems, offering a scalable path
+toward verifiable generated reports without retraining genera-
+tors on image–report–box triplets.
+Important limitations remain. MedGrounder excels on
+anatomically constrained findings (e.g., “cardiomegaly”) yet
+struggles more on spatially variable (e.g., “rib fractures”)
+or diffuse (e.g., “pulmonary edema”) findings; single-box
+10 IEEE TRANSACTIONS ON MEDICAL IMAGING, VOL. XX, NO. XX, XXXX 2020
+performance is only comparable to existing MPG methods,
+and absolute multi-box performance still leaves room for
+improvement. Secondly, evaluation is constrained by dataset
+scarcity, PadChest-GR and MS-CXR contain brief annotations
+(5-6 words per sentence) that differ substantially from real-
+world reports (9.2 words per sentence in MIMIC-CXR). To
+improve performance on spatially diffuse findings, additional
+expert supervision will be important. One practical direction is
+to make use of existing object-detection datasets that provide
+accurate human annotations for diffuse findings. Though there
+are not sentences, these disease names can serve as grounding
+phrases, or be converted into short sentence descriptions to
+better align with the GMPG setting.
+Despite these limitations, MedGrounder’s generalisation ca-
+pability opens promising directions: applying the model to
+generate weakly-supervised annotations for large-scale unan-
+notated datasets, accelerating human annotation workflows,
+and providing pre-training data for grounded report generation
+models facing similar data scarcity constraints.
+REFERENCES
+[1] W. Zhang, S. S. Chandra, and A. Nicolson, “Anatomical grounding pre-
+training for medical phrase grounding,” inISBI, 2025, pp. 1–5.
+[2] Z. Chen, Y . Zhou, A. Tran, J. Zhao, L. Wan, G. S. K. Ooi, L. T.-E.
+Cheng, C. H. Thng, X. Xu, Y . Liu, and H. Fu, “Medical phrase grounding
+with region-phrase context contrastive alignment,” inMICCAI, 2023, pp.
+371–381.
+[3] T. Tanida, P. M ¨uller, G. Kaissis, and D. Rueckert, “Interactive and
+explainable region-guided radiology report generation,” inCVPR, 2023,
+pp. 7433–7442.
+[4] S. He, H. Ding, C. Liu, and X. Jiang, “GREC: Generalized referring
+expression comprehension,”arXiv:2308.16182 [cs.LG], 2023.
+[5] L. Xiao, X. Yang, X. Lan, Y . Wang, and C. Xu, “Towards visual
+grounding: A survey,”IEEE Transactions on Pattern Analysis and
+Machine Intelligence, pp. 1–20, 2025.
+[6] A. Kamath, M. Singh, Y . LeCun, G. Synnaeve, I. Misra, and N. Carion,
+“MDETR – modulated detection for end-to-end multi-modal understand-
+ing,” inICCV, 2021, pp. 1760–1770.
+[7] J. T. Wu, N. N. Agu, I. Lourentzou, A. Sharma, J. A. Paguio, J. S.
+Yao, E. C. Dee, W. Mitchell, S. Kashyap, A. Giovannini, L. A. Celi,
+and M. Moradi, “Chest ImaGenome dataset for clinical reasoning,” in
+NeurIPS, 2021, pp. 1–14.
+[8] B. Boecking, N. Usuyama, S. Bannur, D. C. Castro, A. Schwaighofer,
+S. Hyland, M. Wetscherek, T. Naumann, A. Nori, J. Alvarez-Valle,
+H. Poon, and O. Oktay, “Making the most of text semantics to improve
+biomedical vision–language processing,” inECCV, 2022, pp. 1–21.
+[9] D. C. de Castro, A. Bustos, S. Bannur, S. L. Hyland, K. Bouzid,
+M. T. Wetscherek, M. D. S ´anchez-Valverde, L. Jaques-P´erez, L. P ´erez-
+Rodr´ıguez, K. Takeda, J. M. Salinas-Serrano, J. Alvarez-Valle, J. Galant-
+Herrero, and A. Pertusa, “PadChest-GR: A bilingual chest X-ray dataset
+for grounded radiology report generation,”NEJM AI, vol. 2, no. 7, 6
+2025.
+[10] N. Yildirim, H. Richardson, and e. a. Wetscherek, “Multimodal health-
+care AI: Identifying and designing clinically relevant vision-language
+applications for radiology,”Conference on Human Factors in Computing
+Systems - Proceedings, vol. 22, 2 2024.
+[11] S. Bannur, K. Bouzid, D. Coelho de Castro, A. Schwaighofer, S. Bond-
+Taylor, M. Ilse, F. P ´erez-Garc´ıa, V . Salvatelli, H. Sharma, F. Meissen,
+M. Ranjit, S. Srivastav, J. Gong, F. Falck, O. Oktay, A. Thieme, M. P.
+Lungren, M. T. Wetscherek, J. Alvarez-Valle, and S. Hyland, “MAIRA-
+2: Grounded radiology report generation,” Microsoft, Tech. Rep., 2024.
+[12] S.-C. Huang, L. Shen, M. P. Lungren, and S. Yeung, “GLoRIA: A
+multimodal global-local representation learning framework for label-
+efficient medical image recognition,” inICCV, 2021, pp. 3942–3951.
+[13] S. Bannur, S. Hyland, Q. Liu, F. Perez-Garcia, M. Ilse, D. C. Castro,
+B. Boecking, H. Sharma, K. Bouzid, A. Thieme, A. Schwaighofer,
+M. Wetscherek, M. P. Lungren, A. Nori, J. Alvarez-Valle, and O. Oktay,
+“Learning to exploit temporal structure for biomedical vision-language
+processing,” inCVPR, 2023, pp. 15 016–15 027.
+[14] K. Vilouras, P. Sanchez, A. Q. O’neil, and S. A. Tsaftaris, “Zero-shot
+medical phrase grounding with off-the-shelf diffusion models,”IEEE
+Journal of Biomedical and Health Informatics, 2024.
+[15] F. N ¨utzel, M. Dombrowski, and B. Kainz, “Generate to ground: Mul-
+timodal text conditioning boosts phrase grounding in medical vision-
+language models,” inMedical Imaging with Deep Learning, 2025.
+[16] K. Zou, Y . Bai, Z. Chen, Y . Zhou, Y . Chen, K. Ren, M. Wang, X. Yuan,
+X. Shen, and H. Fu, “MedRG: Medical report grounding with multi-
+modal large language model,”arXiv:2404.06798 [cs.CV], 2024.
+[17] P. M ¨uller, G. Kaissis, and D. Rueckert, “ChEX: Interactive localization
+and region description in chest X-rays,” inECCV, 2024, pp. 92–111.
+[18] N. Carion, F. Massa, G. Synnaeve, N. Usunier, A. Kirillov, and
+S. Zagoruyko, “End-to-end object detection with transformers,” in
+ECCV, 2020, pp. 213–229.
+[19] A. Ichinose, T. Hatsutani, K. Nakamura, Y . Kitamura, S. Iizuka, E. Simo-
+Serra, S. Kido, and N. Tomiyama, “Visual grounding of whole radiology
+reports for 3D CT images,” inMICCAI, 2023, pp. 611–621.
+[20] S. Kazemzadeh, V . Ordonez, M. Matten, and T. Berg, “ReferItGame:
+Referring to objects in photographs of natural scenes,” inEMNLP, 2014,
+pp. 787–798.
+[21] R. Krishna, Y . Zhu, O. Groth, J. Johnson, K. Hata, J. Kravitz, S. Chen,
+Y . Kalantidis, L.-J. Li, D. A. Shamma, M. S. Bernstein, and L. Fei-Fei,
+“Visual Genome: Connecting language and vision using crowdsourced
+dense image annotations,”International Journal of Computer Vision,
+vol. 123, no. 1, pp. 32–73, 2017.
+[22] L. Yu, P. Poirson, S. Yang, A. C. Berg, and T. L. Berg, “Modeling
+context in referring expressions,” inECCV, 2016, pp. 69–85.
+[23] B. Hemanthage, H. Bilen, P. Bartie, C. Dondrup, and O. Lemon,
+“RECANTFormer: Referring expression comprehension with varying
+numbers of targets,” inEMNLP, 2024, pp. 21 784–21 798.
+[24] A. Nicolson, J. Dowling, and B. Koopman, “Improving chest X-ray
+report generation by leveraging warm starting,”Artificial Intelligence in
+Medicine, vol. 144, p. 102633, 2023.
+[25] A. Nicolson, S. Zhuang, J. Dowling, and B. Koopman, “The impact of
+auxiliary patient data on automated chest X-ray report generation and
+how to incorporate it,” inACL, 2025, pp. 177–203.
+[26] F. Liu, X. Wu, S. Ge, W. Fan, and Y . Zou, “Exploring and distilling
+posterior and prior knowledge for radiology report generation,” inCVPR,
+2021, pp. 13 753–13 762.
+[27] C. Wu, X. Zhang, Y . Zhang, W. Xie, and Y . Wang, “Towards gener-
+alist foundation model for radiology by leveraging web-scale 2D&3D
+medical data,”Nature Communications, vol. 16, no. 1, p. 7866, 2025.
+[28] H.-Y . Zhou, J. N. Acosta, S. Adithan, S. Datta, E. J. Topol, and
+P. Rajpurkar, “MedVersa: A generalist foundation model for medical
+image interpretation,”arXiv:2405.07988 [cs.CV], 2024.
+[29] A. Nicolson, J. Dowling, D. Anderson, and B. Koopman, “Longitudinal
+data and a semantic similarity reward for chest X-ray report generation,”
+Informatics in Medicine Unlocked, vol. 50, p. 101585, 2024.
+[30] X. Zhang, C. Wu, Z. Zhao, J. Lei, W. Tian, Y . Zhang, W. Xie, and
+Y . Wang, “Development of a large-scale grounded vision language
+dataset for chest CT analysis,”Scientific Data, vol. 12, no. 1, p. 1636,
+2025.
+[31] L. Luo, B. Tang, X. Chen, R. Han, and T. Chen, “VividMed: Vision lan-
+guage model with versatile visual grounding for medicine,” inNAACL,
+2025, pp. 1800–1821.
+[32] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image
+recognition,” inCVPR, 2016, pp. 770–778.
+[33] T. Sounack, J. Davis, B. Durieux, A. Chaffin, T. J. Pollard, E. Lehman,
+A. E. W. Johnson, M. McDermott, T. Naumann, and C. Lindvall,
+“BioClinical ModernBERT: A state-of-the-art long-context encoder for
+biomedical and clinical NLP,”arXiv:2506.10896 [cs.CL], 2025.
+[34] A. E. Johnson, T. J. Pollard, S. J. Berkowitz, N. R. Greenbaum, M. P.
+Lungren, C.-y. Deng, R. G. Mark, and S. Horng, “MIMIC-CXR, a de-
+identified publicly available database of chest radiographs with free-text
+reports,”Scientific Data, vol. 6, no. 1, p. 317, 2019.
+[35] Meta AI, “Introducing Meta Llama 3,” https://ai.meta.com/blog/
+meta-llama-3/, 2024.
+[36] I. Loshchilov and F. Hutter, “Decoupled weight decay regularization,”
+inICLR, 2017.
+[37] A. Nicolson, J. Liu, J. Dowling, A. Nguyen, and B. Koopman, “e-Health
+CSIRO at RRG24: Entropy-augmented self-critical sequence training for
+radiology report generation,” inProceedings of the 23rd Workshop on
+Biomedical Natural Language Processing, 2024, pp. 99–104.

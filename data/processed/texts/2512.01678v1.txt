@@ -1,0 +1,1449 @@
+1
+Morphling: Fast, Fused, and Flexible GNN Training
+at Scale
+Anubhab Rupesh Nasre
+anubhavkhajuria5@gmail.com rupesh@cse.iitm.ac.in
+IIT Madras, IndiaIIT Madras, India
+Abstract—Graph Neural Networks (GNNs) present a fun-
+damental hardware challenge by fusing irregular, memory-
+bound graph traversals with regular, compute-intensive dense
+matrix operations. While frameworks such as PyTorch Geo-
+metric (PyG) and Deep Graph Library (DGL) prioritize high-
+level usability, they fail to address these divergent execution
+characteristics. As a result, they rely on generic kernels that
+suffer from poor cache locality, excessive memory movement,
+and substantial intermediate allocations. To address these
+limitations, we present Morphling, a domain-specific code
+synthesizer designed to bridge this gap. Morphling com-
+piles high-level GNN specifications into portable, backend-
+specialized implementations targeting OpenMP, CUDA, and
+MPI. It achieves this by instantiating a library of optimized,
+architecture-aware primitives tailored to each execution en-
+vironment. Morphling also incorporates a runtime sparsity-
+aware execution engine that dynamically selects dense or
+sparse execution paths using input feature statistics, reducing
+unnecessary computation on zero-valued entries. We eval-
+uate Morphling on eleven real-world datasets spanning di-
+verse graph structures, feature dimensionalities, and sparsity
+regimes. The results show that Morphling improves per-
+epoch training throughput by an average of 20×on CPUs
+and 19×on GPUs over PyG and DGL, with peak speedups
+reaching 66×. Morphling’s memory-efficient layouts further
+reduce peak memory consumption by up to 15×, enabling
+large-scale GNN training on commodity hardware. These
+findings demonstrate that specialized, architecture-aware
+code synthesis provides an effective and scalable path toward
+high-performance GNN execution across diverse parallel and
+distributed platforms.
+Index Terms—Graph Neural Networks, CUDA, IntelMKL,
+OpenMP, MPI, Domain-Specific Language
+I. Introduction
+GNNs have become the standard for learning on graph-
+structured data, powering applications ranging from recom-
+mendation systems to scientific computing. Unlike traditional
+neural networks that treat data points in isolation, GNNs
+generate topology-aware representations by leveraging the
+underlying structure of the data. They achieve this through
+iterative message passing, where nodes update their embed-
+dings by aggregating high-dimensional features from their
+local neighborhoods. Their effectiveness stems from integrat-
+ing irregular, memory-bound graph traversals directly with
+regular, compute-intensive dense matrix operations. This
+sparse–dense computational hybrid poses unique systems
+challenges that are poorly addressed by existing general-
+purpose frameworks.
+To manage this complexity, practitioners typically turn
+to frameworks like PyTorch Geometric (PyG) [1] and Deep
+Graph Library (DGL) [2], which prioritize high-level pro-
+grammability and seamless integration with PyTorch’s auto-
+grad engine. However, because these frameworks represent
+node features as dense tensors, they are forced to materialize
+substantial intermediate data during message passing and to
+execute redundant operations on naturally sparse inputs [4].
+These choices introduce excessive memory movement, poor
+cache locality, and costly intermediate allocations. These
+challenges intensify significantly on graphs with large feature
+dimensions or millions of edges. Moreover, PyG and DGL lack
+unified abstractions for efficient execution across heteroge-
+neous hardware. While CPUs thrive on cache-aware tiling
+and SIMD vectorization, GPUs require warp-synchronous
+kernels with coalesced memory access, and distributed clus-
+ters necessitate rigorous communication–computation over-
+lap. Since existing frameworks abstract away these platform-
+specific decisions, they face fundamental challenges in en-
+suring performance portability across architectures.
+This optimization gap places practitioners in a difficult
+bind: they must choose between the development speed of
+high-level APIs and the raw performance of hand-tuned
+execution. Opting for performance requires manually imple-
+menting specialized kernels for CPUs, GPUs, and distributed
+clusters; however, maintaining these distinct codebases is
+error-prone and becomes increasingly unsustainable as hard-
+ware architectures diversify. While specialized systems like
+GNNAdvisor [3] and DGCL [4] attempt to bridge this gap,
+they function as single-platform systems that lack cross-
+platform portability and leave the overheads of dense feature
+processing unresolved. Alternatively, graph DSLs such as
+StarPlat [12], GraphIt [8], and Ligra [9] generate high-
+performance code but are limited to classical graph analytics,
+lacking essential support for backpropagation, optimizer up-
+dates, or feature sparsity. Similarly, tensor compilers such
+as Halide [18] and TVM [19] provide powerful scheduling
+abstractions but treat GNNs as generic tensor programs.
+Because they lack domain-specific primitives, they cannot
+perform graph-aware optimizations across the full training
+loop. These gaps highlight the need for a domain-specific ap-
+proach that captures GNN computation at a high level while
+enabling backend-specialized code generation. The solution
+requires a sparsity-aware, memory-efficient architecture that
+scales transparently across diverse backends.
+To bridge this gap, we present Morphling, a synthesis-
+oriented framework that generates backend-specialized C++
+training code from compact high-level GNN specifications.
+arXiv:2512.01678v1  [cs.LG]  1 Dec 2025
+2
+Through synthesis, Morphling integrates architecture-aware
+kernels for CPUs, GPUs, and distributed systems, chooses
+between dense and sparse execution paths based on input
+feature statistics, and embeds distributed communication and
+partitioning logic directly into the generated code. This
+design enables execution plans that align closely with each
+backend’s memory hierarchy and parallelism model while
+preserving the simplicity of high-level GNN programming.
+The contributions of this paper are as follows:
+•A GNN-native domain-specific languagebuilt on the
+StarPlat DSL and extended with GNN-specific operators,
+supporting forward propagation, neighborhood aggre-
+gation, backpropagation, and optimizer updates while
+abstracting away backend-specific complexity.
+•A multi-backend code synthesis frameworkthat
+generates optimized OpenMP, CUDA, and MPI imple-
+mentations from a single high-level program, including
+cache-tiled CPU kernels, warp-synchronous GPU ag-
+gregation kernels, and communication-overlapped dis-
+tributed execution.
+•A runtime sparsity-aware execution enginethat
+automatically selects efficient dense or sparse feature-
+processing paths based on feature statistics, exploiting
+feature-level sparsity without changing model seman-
+tics.
+•A comprehensive experimental evaluationacross
+eleven real-world datasets demonstrating significant
+throughput improvements over PyG and DGL on CPUs,
+GPUs, and distributed clusters, along with up to15×
+lower peak memory consumption.
+II. Related Work
+GNN Frameworks.PyG [1] and DGL [2] dominate GNN
+development by offering extensive model libraries and seam-
+less integration with PyTorch’s autograd engine. However,
+their reliance on the gather-scatter paradigm [4] limits op-
+portunities for kernel fusion and data reuse. First, they treat
+node features as dense tensors, forcing the materialization of
+large intermediate structures and precluding optimizations
+for intrinsically sparse features (e.g., one-hot encodings).
+Second, they lack a unified intermediate representation pre-
+venting optimizations from generalizing across backends.
+Consequently, targeting CPUs, GPUs, and clusters neces-
+sitates managing disjoint optimization strategies, impeding
+true performance portability. Some of these limitations have
+motivated several systems that focus exclusively on GPU
+execution.
+Beyond general-purpose frameworks, some systems fo-
+cus exclusively on GPU execution. These systems improve
+GNN throughput by employing custom GPU kernels with
+hardware-aware optimizations such as 2D partitioning and
+neighbor grouping, as demonstrated by GNNAdvisor [3] and
+DGCL [4]. However, like PyG and DGL, they assume dense
+feature tensors, which limits the applicability of their opti-
+mizations to workloads with intrinsic feature sparsity. While
+they achieve high single-device throughput, they are tightly
+coupled to GPU architectures and thus lack the flexibility to
+generate code for CPUs or MPI-based clusters.
+In the distributed setting, industrial systems like Ali-
+Graph [5], Euler [6], and DistDGL [7] target billion-scale
+graph training. However, their primary optimizations fo-
+cus on distributed storage, I/O minimization, and sampling
+strategies rather than the computational efficiency of the
+core GNN computation. These systems emphasize scale and
+data movement rather than computation efficiency, whereas
+Morphling targets the optimization of the core GNN kernels
+across CPU, GPU, and distributed backends.
+Graph Processing DSLs.By separating algorithm specifi-
+cation from execution scheduling, GraphIt [8] enables opti-
+mizations for a wide range of graph analytics workloads. It
+primarily generates optimized CPU code for classical graph
+algorithms (PageRank, BFS) but does not support GNN train-
+ing primitives like automatic differentiation or backpropaga-
+tion. Other traversal-oriented frameworks, such as Ligra [9],
+Galois [10], and Gemini [11], provide abstractions for parallel
+graph traversals, but they lack support for neural network
+computation and differentiation. Morphling was designed to
+bridge this functional gap. It extends StarPlat’s multi-backend
+code generation with domain-specific, primitives required for
+GNN training.
+Code Generation.General-purpose compilers such as
+Halide [18] and TVM [19] promote performance portabil-
+ity by separating algorithm specification from execution
+scheduling. Halide [18] introduced this model for image
+processing, and TVM [19] extends it to deep learning with
+auto-scheduling. However, TVM still treats GNNs as conven-
+tional neural networks and therefore cannot exploit graph-
+specific optimizations. Similarly, TACO [20] generates effi-
+cient sparse tensor kernels but operates only at the single-
+operation level and does not support full training pipelines.
+Meanwhile, polyhedral compilers such as Tiramisu [21] and
+Tensor Comprehensions [22] require affine loop structures
+and substantial manual tuning, making them not well aligned
+with the Irregular sparsity patterns are inherent to GNN
+computation.
+Performance Portability Frameworks.Performance
+portability aims to write code once and achieve efficient
+execution across diverse hardware without manual porting.
+Traditional approaches include:
+a) Low-Level Abstractions.:Kokkos [23] and RAJA [24]
+provide policy-based programming models in which devel-
+opers write kernels once and specify execution policies (e.g.,
+OpenMP or CUDA) separately. Similarly, SYCL [25] and
+oneAPI [26] provide unified C++ models for heterogeneous
+programming. Nonetheless, achieving high performance de-
+pends on backend-specific tuning of work-group configura-
+tions, memory layout, and kernel parameters. OpenCL [27]
+exposes similar portability–performance tradeoffs, offering
+broad hardware reach but requiring substantial manual op-
+timization to match backend capabilities. Although these
+frameworks support multiple backends, they operate at low
+abstraction levels, requiring developers to manage memory
+layouts, parallel execution policies, and loop transformations
+explicitly. As a result, porting complex algorithms such
+as GNN training still requires substantial manual effort,
+particularly when expressing the sparse–dense computation
+3
+patterns and multi-stage data dependencies inherent to GNN
+workloads.
+b) Compiler-Based Approaches.:TVM [19] and
+Halide [18] use high-level tensor programs with auto-
+scheduling to generate optimized code. TVM supports
+multiple backends but treats GNNs as generic neural
+networks, missing graph-specific optimizations. TACO [20]
+generates efficient sparse tensor kernels but operates on
+individual operations, not full training pipelines.
+c) Domain-Specific Languages.:DSLs like GraphIt [8]
+separate algorithm specification from optimization schedules,
+enabling automatic exploration of parallelization and locality
+strategies. GraphIt targets traditional graph analytics (PageR-
+ank, BFS) on CPUs but lacks neural network primitives.
+Ligra [9] and Galois [10] provide vertex-centric abstractions
+but do not support multi-backend code generation.
+III. Background
+A. Graph Neural Networks
+Graph Neural Networks (GNNs) extend deep learning to
+graph-structured data by iteratively aggregating information
+from node neighborhoods. A GNN layer combines two com-
+putational phases: neighbor aggregation, which is sparse,
+irregular, and memory-bound, and feature transformation,
+which is dense, regular, and compute-intensive. Formally, the
+feature update for nodevat layerℓis
+h(ℓ)
+v =σ
+
+W(ℓ) ·AGGREGATE (ℓ)
+
+{h(ℓ−1)
+u :u∈ N(v)}
+
+,
+whereN(v)denotes the neighbors ofv,W (ℓ) is a learnable
+weight matrix, andσis a nonlinear activation.
+Different GNN architectures vary in their aggrega-
+tion strategies. GCN [28] uses normalized mean aggrega-
+tion, GraphSAGE [29] introduces sampling-based variants,
+GIN [30] employs sum aggregation, and GAT [31] in-
+corporates attention weights to modulate neighbor impor-
+tance. Despite these differences, all models share the same
+sparse–dense computational structure, and backpropagation
+through this pattern amplifies the irregularity and memory
+bandwidth demands, creating a challenging workload for
+modern hardware.
+B. Challenges in GNN System Design
+a) Sparse-Dense Computational Hybrid.:GNN layers
+combine sparse graph operations with dense matrix compu-
+tations. The aggregation step involves sparse matrix-matrix
+multiplication (SpMM) between the adjacency matrixA
+and feature matrixH, exhibiting irregular memory access
+patterns. The transformation step multiplies the aggregated
+features by weight matrixW, typically implemented as
+dense matrix multiplication (GEMM). Existing frameworks
+like PyG [1] and DGL [2] optimize graph sparsity but
+assume features are dense, wasting computation when input
+features are intrinsically sparse (e.g., bag-of-words, one-hot
+encodings).
+b) Heterogeneous Hardware Deployment:GNN work-
+loads span a wide range of graph sizes and therefore benefit
+from diverse hardware platforms: multicore CPUs for mod-
+erate sized datasets, GPUs for massively parallel aggregation,
+and distributed clusters for datasets that exceed single-node
+memory. Each platform requires a distinct optimization strat-
+egy. CPUs rely on cache-aware tiling and SIMD vectorization
+to mitigate irregular sparsity, while GPUs depend on warp-
+level parallelism and coalesced memory access to sustain
+throughput. Distributed systems introduce an additional layer
+of complexity through graph partitioning, communication
+scheduling, and computation–communication overlap. As a
+result, supporting efficient GNN execution across CPUs,
+GPUs, and distributed systems requires reconciling funda-
+mentally different optimization strategies within a single
+programming and execution model.
+c) Feature Sparsity:Many real-world graphs contain
+highly sparse node features. Text-based graphs rely on bag-
+of-words or TF–IDF (Term Frequency–Inverse Document
+Frequency) encodings with sparsity levels exceeding 90%,
+and categorical attributes often use one-hot or multi-hot
+representations. Despite this, standard GNN implementations
+store features in dense form, leading to substantial redundant
+computation, unnecessary memory traffic, and poor cache
+utilization when multiplying by zeros. Sparse tensor libraries
+in PyTorch [14] and TensorFlow [13] offer sparse represen-
+tations, but they require manual conversion and are not
+integrated with GNN operations such as neighborhood aggre-
+gation or backpropagation. As a result, efficiently supporting
+feature sparsity requires system-level mechanisms that can
+adapt execution to the sparsity structure of the input features.
+C. StarPlat: A versatile DSL for graph analytics
+StarPlat [12] is a graph analytics DSL that generates
+optimized code for OpenMP (shared-memory CPUs), CUDA
+(GPUs), and MPI (distributed clusters) from a single high-
+level specification. The system consists of:
+a) Front-End DSL.:Users express graph algorithms us-
+ing vertex-centric or edge-centric abstractions with parallel
+loops, reductions, and conditional updates. The DSL provides
+constructs for iterative algorithms, property propagation, and
+graph traversals.
+b) Compiler Infrastructure.:StarPlat’s compiler performs
+lexical and syntactic analysis, builds an abstract syntax tree
+(AST), and conducts semantic analysis to ensure type safety
+and correctness. The intermediate representation captures
+algorithm semantics independent of target hardware.
+c) Multi-Backend Code Generation.:The StarPlat code
+generator translates the intermediate representation into par-
+allel implementations targeting graph analytics workloads:
+•OpenMP: Generates#pragma omp parallel
+forloops to parallelize vertex-centric computations
+across available CPU cores [12].
+•CUDA: Maps graph topology to the GPU thread hier-
+archy, assigning vertices or edges to threads to execute
+purely structural graph traversals [12].
+4
+•MPI: Synthesizes message-passing logic to synchronize
+scalar vertex data across distributed partitions, utilizing
+standard graph partitioning libraries [12].
+Critically, StarPlat is designed for scalar graph algorithms
+(e.g., BFS, SSSP) and lacks the specialized memory layouts,
+SIMD vectorization, and gradient synchronization primitives
+required for GNN training.
+StarPlat achieves competitive performance with hand-
+optimized implementations on standard graph benchmarks
+while maintaining code portability. However, it focuses on
+graph analytics and lacks support for neural network train-
+ing.
+D. Motivation for Morphling
+While StarPlat provides a strong foundation for multi-
+backend graph processing, GNN workloads introduce new
+requirements:
+a) Training-Specific Operations.:GNNs require forward
+propagation with multiple aggregation schemes (mean, max,
+sum), automatic differentiation through graph structures, and
+integration with optimizers (SGD, Adam, AdamW). These
+operations involve stateful computations, gradient accumu-
+lation, and parameter updates absent in traditional graph
+analytics.
+b) Adaptive Sparsity Handling.:Graph analytics operate
+primarily on sparse adjacency matrices with static sparsity
+patterns. GNN features exhibit dynamic sparsity that varies
+across datasets, layers, and epochs. Systems must adaptively
+select dense or sparse execution paths based on runtime
+profiling to avoid performance degradation.
+c) Limitations of Standard Partitioning:A critical bottle-
+neck in distributed GNN training is the choice of partitioning
+strategy. Default implementations in PyG and DGL utilize
+METIS to minimize edge-cuts. However, as noted in , min-
+imizing edge-cuts is a proxy objective that fails to capture
+the true cost of GNN execution. In power-law graphs, min-
+imizing edge-cuts can paradoxically maximize the number
+of unique ghost nodes (remote dependencies) if high-degree
+hubs are placed on partition boundaries. Furthermore, METIS
+partitions based on vertex counts, ignoring the fact that
+computational cost in GNNs is proportional to the number of
+edges (computational load). This leads to significant workload
+imbalance, where some ranks idle while others process dense
+hubs.
+Morphlingextends StarPlat to address these challenges.
+Specifically, it augments the DSL with GNN training prim-
+itives and a hierarchical graph partitioner, while imple-
+menting a sparsity-aware execution engine that dynamically
+switches between dense and sparse kernels. Consequently,
+the system generates optimized training code targeting
+OpenMP, CUDA, and MPI backends. By leveraging StarPlat’s
+IR as a static foundation while introducing a distributed,
+hardware-adaptive training runtime, Morphling achieves per-
+formance portability for graph learning workloads.
+IV. Morphling DSL
+Morphling bridges the implementation gap across het-
+erogeneous hardware backends by decoupling high-level al-
+gorithm specification from low-level execution details. The
+system operates as a domain-specific code synthesizer that
+lowers a single declarative program into bespoke imple-
+mentations for multicore CPUs, many-core GPUs, and dis-
+tributed clusters. During compilation, Morphling maps ab-
+stract GNN constructs to architecture-intrinsic execution
+models—generating OpenMP dynamic schedules for shared-
+memory parallelism, CUDA kernels for GPU acceleration,
+and MPI collectives for distributed synchronization. This
+abstraction is critical for GNN workloads, where irregular
+sparsity patterns defy the rigid optimizations of conventional
+tensor compilers. By automatically instantiating backend-
+specialized kernels—such as cache-tiled SIMD loops for CPUs
+and warp-synchronous SpMM for GPUs—Morphling harmo-
+nizes fundamentally different parallel paradigms under a
+unified framework. This ensures consistent scalability and
+performance portability across diverse memory hierarchies
+without requiring manual backend tuning.
+1functionSAGE(Graphg, GNNgnn,container<int>&
+neuronsPerLayer, String Dataset) {
+2gnn.load(g, Dataset);
+3gnn.initializeLayers(neuronsPerLayer,"xaviers");
+4for(intepoch = 0; epoch <totalEpoch; epoch++){
+5for(intl = 0; l <gnn.getLayers(); l++)
+6gnn.forwardPass(l,"SAGE", "Max");
+7
+8for(intl = neuronsPerLayer-1; l >= 0; l--)
+9gnn.backPropagation(l);
+10
+11gnn.optimizer("adam", 0.01, 0.9, 0.999);
+12}
+13}
+Listing 1: GraphSAGE Training Function in Morphling
+A. Compiler Overview
+Morphling builds upon the StarPlat [12] compiler fron-
+tend, reusing its parser and initial IR construction for
+graph topology operations. Since StarPlat was designed for
+static analytics, Morphling extends this infrastructure with
+learning-specific state—gradients, trainable parameters, and
+optimizer metadata—allowing the compiler to represent full
+forward–backward GNN pipelines.
+Listing 1 illustrates the resulting high-level specification.
+During compilation, these constructs are lowered into a
+backend-neutral IR, where Morphling schedules the training
+loop, manages intermediate buffers, and associates each layer
+with the appropriate compute and communication operators.
+Rather than emitting low-level code directly, the compiler
+synthesizes calls into Morphling’s architecture-aware kernel
+library, enabling backend specialization without exposing
+complexity to the user.
+•gnn.forwardPass(l, "SAGE", "Max"):
+Binds layerlto the aggregation and transformation
+operators instantiated for the target backend’s execution
+model.
+•gnn.backPropagation(l): Marks the backward
+boundary for layerl, allowing the compiler to manage
+5
+gradient buffers more efficiently and keep memory usage
+under control.
+•gnn.optimizer(): Integrates the chosen update
+rule (e.g., Adam) into the synthesized training loop, con-
+necting gradient computation with parameter updates
+without interpreter overhead.
+This architecture lets the compiler manage control flow
+and memory lifecycles while delegating computation to
+highly optimized backend primitives, combining programma-
+bility with portable performance across CPU, GPU, and
+distributed environments.
+GNN Algorithm
+Specification
+Semantic Analyzer
+Code Generator
+Symbol Table
+Abstract Syntax
+tree
+StarPlat Compiler
+Dataset
+Number of
+Layers
+Algorithm(SAGE, GCN, GIN)
+Aggregation(Sum, Mean)
+Optimizer(ADAM, SGD)
+OpenMP MPICUDA
+Lexical and syntacticalanalyser
+Fig. 1: Code Generation framework of Morphling
+B. Sparsity-Aware Execution Engine
+Most GNN systems exploit graph sparsity but treat node
+features as dense tensors. This assumption is suboptimal for
+real-world workloads where features are intrinsically sparse
+(e.g., text embeddings). Morphling implements adual-path
+execution enginethat inspects feature statistics at load time
+and selects the optimal execution strategy—dispatching either
+to high-throughput dense kernels or memory-efficient sparse
+primitives.
+a) Sparsity Decision Model.:LetX∈R N×F denote
+the input feature matrix. The runtime computes the feature
+sparsitys= 1− nnz(X)
+N·F during data loading. The decision
+to switch from dense to sparse execution is guided by the
+hardware’sEfficiency Ratio(γ).
+Letη dense andη sparse represent the measured sustained
+throughput (FLOPs/s) of the dense GEMM and sparse SpMM
+kernels, respectively. The sparse path provides a speedup
+when the reduction in algorithmic work outweighs the lower
+sustained throughput of sparse kernels (due to irregular
+memory access). Formally, the sparse path is optimal when:
+s >1−γ,whereγ= ηsparse
+ηdense
+(1)
+On modern CPU architectures and GPUs, dense GEMM
+is highly optimized, whereas SpMM is bound by indirect
+memory access latency. Empirical profiling on our testbed
+reveals that optimized SpMM sustains approximately20%of
+the dense baseline throughput (γ≈0.20). This value is ob-
+tained from offline microbenchmarks and serves as a default
+heuristic rather than a per-run calibration. Consequently,
+Morphling utilizes a tunable thresholdτ≈0.80. Ifs≥τ, the
+system activates the sparse backend; otherwise, it defaults to
+the dense path. To our knowledge, existing GNN frameworks
+do not perform dense–sparse switching for feature matrices.
+b) Static Path Selection:To minimize runtime overhead,
+the sparsity check is performed once outside the training
+loop.
+•Dense Path (s < τ):The system retains the row-major
+layout ofXand binds theforwardPassdirective to
+vendor-optimized BLAS calls (e.g.,cblas_sgemmor
+cublasSgemm).
+•Sparse Path (s≥τ):The runtime materializes a Com-
+pressed Sparse Row (CSR) format for the forward pass
+and a Compressed Sparse Column (CSC) format for the
+backward pass. The overhead of this format conversion
+(O(nnz)) is incurred only once during initialization and
+is amortized over many epochs typical in GNN training.
+c) Backend-Specialized Primitives.:When the sparse path
+is active, Morphling dispatches to custom kernels designed
+to maximize bandwidth utilization for irregular accesses:
+•Forward (X csr ×W):On CPUs, we employ acache-
+tiled SpMMkernel. The weight matrixWis loaded into
+L1 cache in blocks of sizeT tile, and the sparse feature
+rows are streamed through these blocks using vectorized
+fused multiply-add (FMA) instructions. This maximizes
+temporal locality forWwhile handling the irregularity
+ofX.
+•Backward (Y×W T ):To support gradient computation,
+we utilize the pre-computed CSC view ofX. This allows
+the backward kernel to iterate over feature columns
+efficiently, accumulating partial gradients into thread-
+local buffers before a final reduction, thereby avoiding
+atomic contention on the shared weight gradient matrix.
+d) Crossover Condition 1 (Efficiency Ratio Threshold).:We
+define the decision boundary based on the minimization of
+Time-to-Solution. Let the algorithmic work (FLOPs) for dense
+and sparse kernels beW dense = 2NF HandW sparse ≈2(1−
+s)NF H, respectively. We model the execution time asT=
+W/η, whereηrepresents the measured effective throughput
+(FLOPs/s).
+Derivation.The sparse path is beneficial whenT sparse <
+6
+Algorithm 1Sparsity-Aware Execution Engine
+Input:FeaturesX∈R N×F , WeightsW, Thresholdτ≈0.80
+Output:OutputT, GradientsdW
+Phase 1: Runtime Analysis & Lowering▷(Once at load)
+1:procedureInitialize(X, τ)
+2:s←1−nnz(X)/(N·F)
+3:ifs≥τthen▷Efficiency check (γ)
+4:Mode←Sparse
+5:X csr ←DenseToCSR(X)
+6:X csc ←DenseToCSC(X)▷For backward pass
+7:else
+8:Mode←Dense
+9:end if
+10:end procedure
+Phase 2: Execution▷(Per-Epoch)
+11:procedureForward(W)
+12:ifMode==Sparsethen
+13:returnSpMM_Tiled(X csr, W)
+14:else
+15:returnGEMM(X, W)▷Vendor BLAS
+16:end if
+17:end procedure
+18:procedureBackward(G)
+19:ifMode==Sparsethen
+20:returnSpMM_Col(X csc, G)▷Conflict-free
+21:else
+22:returnGEMM T (X, G)
+23:end if
+24:end procedure
+Tdense:
+Wsparse
+ηsparse
+< Wdense
+ηdense
+(2)
+2(1−s)NF H
+ηsparse
+< 2NF H
+ηdense
+(3)
+1−s
+ηsparse
+< 1
+ηdense
+(4)
+Letγ=η sparse/ηdense be theEfficiency Ratio, capturing the
+relative hardware utilization of irregular vs. regular kernels.
+Rearranging terms yields:
+s >1−γ(5)
+Interpretation.The thresholdτ= 1−γis fully determined
+by the hardware’s ability to handle irregularity. For example,
+our offline profiling shows that sparse kernels achieve≈20%
+of dense throughput (γ≈0.20), yielding a theoretical
+crossover ats >0.80.Note:While the work termsWmodel
+algorithmic FLOPs, the efficiency ratioγexplicitly absorbs
+non-algorithmic inefficiencies (e.g., irregular memory access,
+load imbalance, and cache stalls), making the model robust
+to micro-architectural variance.
+C. CPU Backend: Latency-Hiding Micro-Kernels
+Morphling lowers GNN training to a high-performance
+CPU backend explicitly targeting the bottlenecks of CSR-
+based SpMM on modern x86 servers. Two architectural
+observations motivate our design. First, sparse adjacency
+induces irregular memory accesses that defeat hardware
+prefetchers, causing frequent cache and TLB misses. Second,
+when node feature dimensionalityFis large, naive neighbor-
+wise accumulation traverses full feature vectors for each
+edge. This leads to poor cache reuse and vector lane under-
+utilization. To address these issues, Morphling uses acache-
+tiled, software-prefetched SpMM kernelcoupled with dynamic
+scheduling. The resulting kernels map naturally onto the 64-
+byte cache lines and 512-bit ZMM registers of the target AVX-
+512 architecture.
+a) Cache-Aware Feature Tiling.:The sparse aggregation
+kernel employs afeature-tiledloop nest that operates over
+the column dimension in contiguous blocks. To eliminate the
+overhead of runtime loop bound checks, Morphling leverages
+compile-time template specialization to fix the tile widthT.
+In our backend, the kernel is instantiated withT= 32(FP32),
+producing a 128-byte tile—equal in size to two 512-bit AVX-
+512 vectors—which promotes high SIMD lane utilization.
+ResolvingTat compile time enables the backend compiler to
+apply constant folding, fully unroll the reduction loop, and
+generate packedvfmaddmicro-ops. The 128-byte tile also
+aligns cleanly with sequential cache-line access, helping the
+hardware prefetcher maintain a steady stream of feature data
+into L1/L2.
+For a given target nodeuand tile offsetk, the generated
+kernel:
+1)Register Init:Zeroes a vector accumulator (ZMM reg-
+ister) for the current tile.
+2)Streamed Load:Iterates over the CSR neighbor list;
+for each neighborv, loads the contiguous feature block
+starting atX[v, k].
+3)Fused Math:Performs a vectorized Fused Multiply-Add
+(FMA) of the neighbor tile, scaled by the edge weight,
+into the accumulator.
+4)Write-Back:Stores the completed embedding tile to the
+outputY[u, k].
+This layout ensures the inner loop to get packedvfmadd
+operations, maximizing floating-point pipeline utilization.
+Tiling increases temporal reuse of neighbor features and
+aligns memory traffic to cache-line boundaries, which is
+critical for saturating memory bandwidth.
+b) Software-Pipelined Prefetching.:To hide DRAM la-
+tency induced by irregular neighbor accesses, the kernel is-
+sues explicit software prefetch instructions. During neighbor
+iterationi, the kernel issues aprefetcht0hint for the
+feature address of neighbori+D. Morphling targets the
+contiguous tile region, enabling the cache hierarchy to bring
+the relevant 64-byte lines into L1/L2 before consumption.
+The lookahead distance is tuned (defaultD= 8) such that
+the arithmetic intensity of the intervening FMA operations
+hides the memory latency. This setup reduces Last-Level
+Cache (LLC) misses and prevents pipeline stalls. To avoid
+cache pollution, prefetching is conditionally guarded for
+low-degree nodes where the setup overhead outweighs the
+latency benefit.
+c) Dynamic Scheduling.:To mitigate load imbalance
+from power-law degree distributions, Morphling uses the
+outer node loop to an OpenMP parallel region with a dynamic
+schedule (e.g.,schedule(dynamic,64)). This strategy
+hands out fine-grained work chunks to threads at runtime,
+7
+Algorithm 2Cache-Tiled SpMM Kernel (CPU)
+Input:GraphG(CSR), FeaturesX, Tile WidthT
+Output:Output EmbeddingY
+Phase 1: Initialization
+1:Y[0. . . N·F]←0▷Parallel Bulk Zero via SIMD
+Phase 2: Tiled Aggregation
+2:foreach nodeu∈0. . . N−1in parallel do▷OpenMP
+Dynamic Schedule
+3:forei= row_ptr[u]torow_ptr[u+ 1]do▷Neighbor
+Loop
+4:v←col_idx[ei];w←val[ei]
+5:ifei+D <row_ptr[u+ 1]then▷Software
+Prefetching
+6:v next ←col_idx[ei+D]
+7:PrefetchL1(X[v next,:])
+8:end if
+9:forf= 0toFstepTdo▷Feature Tile Loop
+10:y reg ←LoadZMM(Y[u, f:f+T])
+11:x reg ←LoadZMM(X[v, f:f+T])
+12:y reg ←VFMADD(y reg,x reg, w)▷Fused
+Multiply-Add
+13:StoreZMM(Y[u, f:f+T],y reg)
+14:end for
+15:end for
+16:end for
+ensuring that heavily connected hubs do not stall the worker
+threads. The dense GEMM path is delegated to vendor-
+optimized BLAS (e.g., Intel MKL), while the sparse path par-
+allelizes across nodes (row-wise) for forward aggregation and
+across feature columns for gradient computation, structuring
+the execution to avoid atomic write conflicts by design.
+D. CUDA Backend
+The CUDA backend employs a throughput-oriented exe-
+cution model that aims to achieve high effective memory
+bandwidth utilization. Morphling dispatches operations to a
+library of custom CUDA kernels that map graph primitives
+directly onto the GPU thread hierarchy, prioritizing memory
+coalescing and minimal intermediate allocation. While the
+Block-per-Row (BPR) mapping is a standard strategy for
+sparse GPU kernels, Morphling integrates it into a unified
+backend design so that the same feature-parallel decompo-
+sition used on CPUs carries over to GPUs, ensuring con-
+sistent execution semantics across architectures. The key
+contribution of Morphling’s CUDA backend is that it unifies
+dense–sparse execution and feature-parallel decomposition
+across CPU and GPU targets, allowing the compiler to select
+kernels automatically based on runtime sparsity without
+changing the high-level DSL.
+a) Block-Parallel Row Mapping.:For the core SpMM
+aggregation, Morphling adopts theBlock-per-Rowexecu-
+tion strategy wherein each output nodeuis mapped to
+a single CUDA thread block (blockIdx.x). Within the
+block, threads parallelize the computation along the feature
+dimensionFusing a block-strided loop. This mapping se-
+cures two key architectural properties:
+1)Reduction of Control Divergence:Since the neighbor
+range (row_ptr[u]to row_ptr[u+ 1]) is identical for the
+entire block, all threads within a warp execute the neigh-
+Algorithm 3Atomic-Free SpMM Aggregations
+Input:GraphG(CSR), InputX, Feature DimF
+Output:OutputY ▷Computed without atomics
+Grid-Level Parallelism
+1:foreach blocku∈0. . . N−1in parallel do▷1 Block per
+Node
+2:start←row_ptr[u];end←row_ptr[u+ 1]
+Thread-Level Parallelism
+3:forf= tidtoFstepblockDimdo▷Grid-Stride Loop
+4:acc←0▷Register Accumulator
+5:forei= starttoenddo▷Lockstep Neighbor Scan
+6:v←col_idx[ei];w←val[ei]
+7:acc←acc +w·X[v, f]▷Coalesced Read
+8:end for
+9:Y[u, f]←acc▷Conflict-Free Write
+10:end for
+11:end for
+bor traversal loop in lockstep. This structural uniformity
+removes the degree-induced divergence penalties that
+affect thread-per-node mappings.
+2)Atomic-Free Accumulation:Each thread computes a
+disjoint set of feature indicesY[u, f+k·stride], accu-
+mulating partial results in thread-local registers before
+a single write-back to global memory. By ensuring no
+two threads update the same output element, the kernel
+avoids the high-latency atomic operations required by
+scatter-gather designs.
+Although this mapping can expose inter-block load imbal-
+ance due to power-law degree distributions, real-world GNN
+workloads offer thousands of independent rows per launch.
+This allows the SM scheduler to effectively distribute blocks,
+overlapping short-running leaf blocks with long-running hub
+blocks to maintain device occupancy.
+b) Implicit-Transpose Gradient (Backward Pass).:Stan-
+dard frameworks typically materialize a Transposed (CSC)
+copy of the sparse feature matrix to compute weight gradi-
+ents (dW=X T G). While effective for compute throughput,
+this doubles the memory footprint of the graph structure.
+Morphling adopts a memory-centric engineering trade-off:
+instead of materializing the CSC, we employ an Implicit-
+Transpose Kernel. The backend iterates over the original
+CSR structure. For each non-zero entry, threads compute
+partial gradients and scatter them to the weight gradient
+matrix usingatomicAdd. While this introduces atomic
+contention, it allows gradients to be computed in-place. This
+technique, combined with the fusion of message passing
+(avoidingO(|E|)intermediate tensors), drives the significant
+peak memory reduction observed in our evaluation, enabling
+the training of massive graphs on commodity GPUs where
+capacity is the primary bottleneck.
+E. MPI Backend
+Real-world graph datasets frequently exceed the memory
+capacity of a single node, necessitating distributed GNN
+training. Morphling addresses this requirement through an
+MPI-based backend that partitions both computation and
+data across machines while preserving the DSL’s high-level
+8
+programming model. The runtime applies a hierarchical par-
+titioner to construct balanced subgraphs, materializes local
+and ghost-node views, and generates the communication
+schedules required for aggregation and gradient synchroniza-
+tion. During training, Morphling overlaps inter-node com-
+munication with computation using non-blocking collectives
+and point-to-point exchanges, enabling scalable execution
+without exposing low-level MPI details to the user.
+1) Data Partitioner:The performance of distributed GNN
+training is governed by two conflicting objectives: minimiz-
+ing theedge-cut ratio(to reduce communication volume)
+and minimizingcomputational imbalance(to prevent strag-
+gler effects). Standard partitioning libraries, such as METIS,
+typically optimize for vertex-count balance. This approach
+often fails to account for the power-law degree distributions
+inherent in real-world graphs, where a partition with equal
+vertex counts can still suffer from severe computational
+imbalance if one rank processes a disproportionate number
+of high-degree hubs.
+To address this, Morphling implements an Adaptive Hier-
+archical Partitioning engine (Algorithm 4) that treats parti-
+tioning as a constraint satisfaction problem with progres-
+sively relaxing constraints. The engine operates in three
+distinct phases:
+1)Phase I: Topology-Aware Minimization.The system
+first attempts to solve thek-way partitioning problem
+using METIS to minimize edge-cuts subject to a strict load
+imbalance constraintϵ= 1.03. We prioritize the SHEM
+(Sorted Heavy Edge Matching) coarsening strategy to
+maximize local neighborhood preservation. If convergence
+fails—often due to disconnected components or small-
+world structures—the system automatically relaxes the
+imbalance tolerance (ϵ→1.20) and switches to recur-
+sive bisection, which exhibits higher stability on smaller,
+irregular graphs.
+2)Phase II: Component-Aware Bin Packing.If topo-
+logical partitioning fails to converge, the system detects
+disconnected subgraphs (connected components) via BFS
+traversal. It then employs aBest-Fit Decreasingbin-
+packing heuristic: components are sorted by size (|V C|)
+and assigned to partitions to minimize the variance in
+partition sizes:
+min
+X
+p
+|Vp − ¯V| 2 (6)
+This phase ensures that naturally dense subgraphs remain
+local to a single rank, reducing cross-partition communi-
+cation for those regions.
+3)Phase III: Load-Aware Greedy Fallback.For patho-
+logical graphs where topological cuts are infeasible (e.g.,
+massive star graphs with high-degree hubs), Morphling
+falls back to a greedy degree-based strategy. Vertices are
+sorted by degree (dv) in descending order and assigned to
+the partition with the minimum current weight. Crucially,
+unlike standard approaches that balance based on vertex
+count (weight p =|V p|), this phase explicitly balances
+TABLE I: Comparison of Partitioning Strategies
+Strategy Primary
+Objective
+Time Dominant
+Cost
+METIS Edge-Cut Min.O(|E|)Multilevel
+Coarsening
+Component ConnectivityO(|V|+|E|)Graph
+Traversal
+Greedy Load BalanceO(|V|log|V|)Degree Sorting
+Note:|V|: Nodes,|E|: Edges. METIS time varies by configuration.
+Algorithm 4Hierarchical Constraint Relaxation Partitioning
+Input:GraphG(V, E), Partitionsk
+Output:Partition MapP:V→ {0, . . . , k−1}
+1:Phase I: Topology-Aware Minimization
+2:opts←InitMetis(SHEM,ϵ= 1.03)
+3:status←MetisKWay(G, k, opts)
+4:ifstatus̸=OKthen
+5:opts.ϵ←1.20▷Relax Imbalance Constraint
+6:status←MetisRecursive(G, k, opts)
+7:end if
+8:ifstatus=OKthen
+9:returnP
+10:end if
+11:Phase II: Component Bin Packing
+12:Comps←FindComponents(G)
+13:if|Comps|>1then
+14:SortCompsby size descending
+15:W eights[0. . . k]←0
+16:forC∈Compsdo
+17:p←arg min(W eights)▷Best-Fit Assignment
+18:P[v]←p,∀v∈C
+19:W eights[p]←Weights[p] +|C|
+20:end for
+21:returnP
+22:end if
+23:Phase III: Load-Aware Greedy Fallback
+24:// Optimizes Pdeg(v)instead of|V|
+25:Nodes←SortVby Degree descending
+26:W eights[0. . . k]←0
+27:forv∈Nodesdo
+28:p←arg min(W eights)
+29:P[v]←p
+30:W eights[p]←Weights[p] +deg(v) + 1
+31:end for
+32:returnP
+computational load:
+weightp =
+X
+v∈P
+dv (7)
+By distributing high-degree hubs first, this strategy pre-
+vents the formation of “straggler partitions” that would
+otherwise bottleneck the synchronous distributed barrier.
+2) Distributed Runtime Implementation:The Morphling
+MPI backend is architected as a Bulk Synchronous Parallel
+(BSP) system with explicit communication-computation over-
+lap. To mitigate the high latency of distributed interconnects,
+the runtime employs a split-phase communication model for
+both feature synchronization and gradient aggregation.
+1)Local-Global Address Translation.To support efficient
+sparse operations without expensive hash lookups during
+9
+the training loop, the runtime materializes a thread-safe
+Global-to-Local (G2L)mapping. Each rank maintains a
+contiguous memory space where local nodes[0, N local)
+are followed immediately by ghost nodes. This layout
+enables the SpMM kernels to operate on dense, contiguous
+index ranges, permitting the usage of AVX-512 vectoriza-
+tion on the local feature tensors.
+2)Asynchronous Halo Exchange.Feature synchroniza-
+tion relies on non-blocking point-to-point primitives. As
+seen in theexchange_ghostroutine, we employ a
+multi-stage protocol:
+•Parallel Packing:OpenMP threads gather non-
+contiguous features from the embedding table into
+pre-allocated send buffers.
+•Non-Blocking Issue:Requests are dispatched via
+MPI_Isend/MPI_Irecv, allowing the network
+interface controller (NIC) to handle data transfer while
+the CPU performs initialization for the forward pass.
+•Wait-Free Unpacking:Received data is unpacked directly
+into the ghost region of the feature matrix, making it
+immediately available for aggregation.
+3)Pipelined Backward Propagation.A critical op-
+timization in Morphling is the masking of global
+synchronization latency. Standard distributed imple-
+mentations often block immediately after comput-
+ing weight gradients. In contrast, Morphling utilizes
+aGradient Communication Pipeline(implemented in
+backward_layer_pipelined):
+a)ComputedW:The kernel calculates local weight gra-
+dientsdW (l)
+local using the transposed input features.
+b)Issue Reduction:The runtime immediately issues a
+non-blockingMPI_Iallreduce.
+c)Overlap (dX):While the reduction traverses the net-
+work fabric, the CPU concurrently computes the gra-
+dients with respect to the input activations (dX (l−1)).
+This operation typically dominates the layer execution
+time, effectively hiding the cost of parameter synchro-
+nization.
+d)Synchronize:The runtime callsMPI_Waitonly after
+the input gradient computation completes, ensuring the
+optimizer receives the fully aggregated global gradients.
+4)Vectorized Optimizer.Parameter updates are
+executed via a custom AVX-optimized kernel
+(adam_update_vectorized). Unlike frameworks
+that rely on Python-level loops or external tensor libraries
+for optimization, Morphling keeps model weights in C++
+memory. It applies fused momentum and variance updates
+via SIMD pragmas immediately after the synchronization
+barrier, minimizing memory traffic and preventing cache
+thrashing.
+3) Communication Complexity Analysis:To rigorize the ne-
+cessity of the multi-objective partitioning strategy described
+in Section IV-E1, we formulate the theoretical execution
+cost of the distributed training loop derived from our MPI
+implementation.
+LetG= (V, E)be partitioned acrossPranks. The wall-
+clock time for a single training epoch,T epoch, is bounded by
+the slowest rank (the straggler):
+Tepoch = max
+p∈{0...P−1}
+
+T(p)
+comp +T (p)
+comm_halo +T (p)
+comm_grad
+
+(8)
+1) Computational Cost (T (p)
+comp):The dominant operation
+is the Sparse Matrix-Matrix multiplication (SpMM) in the
+aggregation phase. As shown in our kernel implementation,
+this scales linearly with the number of local edges:
+T(p)
+comp ∝
+X
+v∈V (p)
+local
+deg(v)×F(9)
+whereFis the feature dimensionality. This explicitly justi-
+fiesPhase III (Greedy Fallback)of our partitioner. Stan-
+dard partitioning balances|V local|, but Morphling optimizesPdeg(v), ensuring thatT (p)
+comp is uniform across ranks.
+2) Halo Exchange Cost (T (p)
+comm_halo):Feature synchroniza-
+tion requires point-to-point transfers of ghost node embed-
+dings. Utilizing the LogP model, the cost is:
+T(p)
+comm_halo ≈
+X
+r̸=p
+
+α+β· |V (p,r)
+halo | ·F
+
+(10)
+where|V (p,r)
+halo |is the number of boundary nodes shared
+between rankpandr. This term is directly proportional to
+theEdge-Cutmetric. This justifiesPhase I (METIS)of our
+partitioner, which explicitly minimizes P|Ecut|to reduce
+bandwidth pressure (βterm).
+3) Gradient Aggregation (T (p)
+comm_grad):Weight gradients
+are synchronized viaMPI_Allreduce. Assuming a Ring-
+AllReduce algorithm:
+T(p)
+comm_grad ≈2(P−1)α+ 2 P−1
+P β|W|(11)
+Since the model size|W|is constant and typically small for
+GNNs, this term is negligible compared to halo exchange
+for large graphs, allowing our system to focus optimization
+efforts on the data-dependent terms (T comp andT halo).
+V. Experimental Evaluation
+A. Datasets
+We evaluate Morphling on ten real-world graph datasets
+detailed in Table II. These benchmarks were selected to
+span a broad spectrum of topological characteristics, ranging
+from small, dense citation networks (e.g.,Corafull,Physics) to
+large-scale, sparse social and e-commerce graphs (e.g.,Reddit,
+AmazonProducts).
+The datasets exhibit diverse properties that stress different
+components of the training pipeline:
+•Scale Variance:Graph sizes range from 19K to 2.4M
+nodes and up to 264M edges, allowing us to evaluate
+throughput scaling from cache-resident workloads to
+memory-bound scenarios.
+•Feature Dimensionality:Feature widths range from 50
+to 61,278 (NELL), testing the system’s ability to handle
+both topology-bound and feature-bound computation.
+•Sparsity Regimes:We include graphs with varying
+degrees of feature sparsity and edge density to validate
+the effectiveness of our sparsity-aware execution engine.
+10
+TABLE II: Dataset Statistics
+Dataset Nodes Edges Features Classes
+Corafull 19,793 126,842 8,710 70
+Physics 34,493 495,924 8,415 5
+PPI 56,944 1,612,348 50 121
+NELL 65,755 251,550 61,278 186
+Flickr 88,250 899,756 500 7
+Reddit 232,965 114,615,892 602 41
+Yelp 716,847 13,954,819 300 100
+AmazonProducts 1,569,960 264,339,468 200 107
+ogbn-arxiv 169,343 1,166,243 128 40
+ogbn-products 2,449,029 61,859,140 100 47
+All experiments were conducted on the full datasets.
+Notably, theAmazonProductsgraph (264M edges) exceeds
+the memory capacity of standard PyG implementations on
+our testbed. Consequently, we report PyG as Out-of-Memory
+(OOM) for this benchmark, highlighting Morphling’s superior
+memory efficiency.
+B. Hardware and Software Configuration
+All experiments were conducted on thePARAM Rudra
+supercomputer at the High Performance Computing and
+Data Centre (HPCE), IIT Madras. The cluster employs a
+Lustre parallel file system for high-throughput data access
+and uses SLURM for resource management. The specific
+configurations are as follows:
+•CPU Testbed:Compute nodes are equipped with dual-
+socket Intel Xeon Gold 6240R (Cascade Lake) processors
+(48 cores per node) and 192 GB of DDR4 system memory.
+•GPU Testbed:Accelerated nodes contain dual NVIDIA
+A100-PCIE GPUs (40 GB HBM2e) and dual Intel Xeon
+Gold 6240R processors with 192 GB of DDR4 RAM. To
+mitigate I/O bottlenecks, each node is equipped with an
+800 GB local NVMe SSD for caching graph partitions.
+•Distributed Interconnect:Nodes are connected via
+a low-latency, high-bandwidth InfiniBand NDR fabric,
+which is utilized by our MPI backend for gradient and
+feature synchronization.
+•Software Environment:Nodes run Linux (Alma 8.9).
+Morphling is compiled with GCC 9.4 and CUDA 11.8.
+We compare againstPyTorch Geometric (v2.6.1)and
+DGL (v2.1.0)using PyTorch 2.0.0 as the backend.
+•Model Architecture:For all benchmarks, we utilize
+a 3-layer Graph Convolutional Network (GCN) with a
+hidden dimension of 32.
+C. Morphling on CPU
+We evaluate Morphling under full-batch CPU training and
+compare its sustained throughput against PyG and DGL.
+Figure 2 reports relative speedups, while Figure 3 presents
+absolute per-epoch latencies.
+1) Metric Definition:We measuresustained per-epoch
+training time, which includes the forward pass, backward
+pass, and optimizer update. Morphling’s one-time code gen-
+eration and PyTorch/DGL JIT warm-up are excluded, as these
+TABLE III: Peak System Memory Consumption (GB). Mor-
+phling maintains a compact footprint, whereas PyG exhibits
+excessive memory expansion due to intermediate tensor
+materialization.
+Dataset Morphling PyG DGL
+Reddit4.4048.12 8.75
+Yelp2.5914.01 5.04
+AmazonProducts9.03140.24 † 25.10
+ogbn-arxiv 0.57 1.140.34
+ogbn-products7.0057.12 11.84
+† Failure Case:PyG failed to process the full AmazonProducts graph due to
+memory exhaustion (OOM>192GB). The reported 140.24 GB is a lower-
+bound measurement taken on a 75% subsampled graph.
+costs are amortized over long training runs and do not affect
+steady-state throughput.
+2) Performance Analysis:Morphling achieves the highest
+throughput on 9 of the 10 datasets. On average, it delivers
+a20.21×speedup over PyG and8.20×over DGL. The
+only exception isReddit, where dense feature vectors favor
+DGL’s MKL-backed dense kernels; here Morphling achieves
+a competitive0.23 s/epochversus DGL’s0.19 s/epoch.
+On sparse or high-dimensional graphs, however, Mor-
+phling holds a decisive advantage. For instance,NELLexhibits
+99.21% feature sparsity, incur redundant dense operations
+on mostly zero-valued entries. Morphling’s sparsity-aware
+dispatch reduces epoch latency by43.52×relative to DGL.
+Similarly, onAmazonProducts, Morphling completes an epoch
+in0.36 s, whereas PyG fails to execute due to memory
+exhaustion (OOM) and DGL requires0.80 s.
+These results validate the design principles behind Mor-
+phling:
+1)Sparse vs. Dense Regimes.Morphling detects feature
+sparsity (experimentally tuned thresholds≈0.85)
+and routes computation to a specialized tiled SpMM
+kernel, avoiding the redundant FLOPs incurred by dense
+GEMMs.
+2)Kernel Specialization.Morphling’s AVX-
+512–optimized kernels maintain contiguous memory
+access and avoid the pointer-chasing overhead of generic
+sparse-tensor routines (e.g., PyG’s scatter/gather). This
+reduces per-epoch latency from seconds (8.69 s on
+Reddit for PyG) to sub-second performance.
+In summary, while dense optimization gives DGL a slight
+edge on the Reddit graph, Morphling consistently provides
+superior throughput across the broader spectrum of real-
+world sparse and irregular graphs.
+D. Morphling on GPU
+We evaluate Morphling on the NVIDIA A100 under full-
+batch training. Figure 4 reports relative speedups, while
+Figure 5 shows per-epoch latencies.
+1) Throughput Analysis:Morphling provides substantial
+GPU throughput gains across all datasets, achieving an
+average15.48×speedup over PyG and4.40×over DGL.
+The largest improvements arise on sparse or irregular graphs.
+OnAmazonComputers, Morphling reduces epoch time from
+11
+Fig. 2: Morphling speedup over PyG and DGL on CPU
+Fig. 3: Per-epoch training time of Morphling, PyG, and DGL
+on CPU
+17.26 s(PyG) and13.56 s(DGL) to0.26 s, corresponding to
+66.28×and52.06×speedups.
+A critical case isAmazonProducts. PyG fails on the full
+dataset due to GPU memory exhaustion, so we report PyG on
+a55% subsampled graph. Even under this favorable condi-
+tion, PyG requires140.93 s/epoch, while DGL processes the
+full graph in41.73 s. Morphling completes the full dataset
+in15.26 s, providing a2.73×speedup over DGL and an
+effective9.23×speedup over PyG despite the subsampling
+advantage.
+On bandwidth-intensive graphs such asReddit, Morphling
+continues to outperform both baselines, achieving a2.23×
+speedup over DGL and14.99×over PyG.
+2) Architectural Attribution:Morphling’s GPU gains stem
+from two factors: (1) aBlock-Per-Rowkernel that ensures
+warp-coalesced feature access and avoids PyG’s irregular
+scatter/gather patterns, and (2) fused aggregation kernels
+that eliminate edge-proportional message tensors created by
+PyG and DGL. Together, these optimizations reduce global
+memory traffic and enable execution on large graphs where
+baselines either stall or OOM.
+E. Morphling on MPI
+We evaluate Morphling in a multi-node dis-
+tributed setting and compare its performance with
+pytorch_geometric.distributed(PyG) and
+DGL. Figure 6 reports relative speedups, and Figure 7
+presents per-epoch latencies.
+1) Throughput Analysis:Morphling is optimized for mas-
+sive, communication-intensive graphs, and its advantages
+Fig. 4: Morphling speedup over PyG and DGL on GPU
+Fig. 5: Per-epoch training time of Morphling, PyG, and DGL
+on GPU
+become most pronounced at scale. OnAmazonProducts, for
+example, PyG and DGL require3880.4 sand1824.4 s
+per epoch, respectively. In contrast, Morphling completes an
+epoch in126.9 s, yielding a30.58×speedup over PyG and
+14.38×over DGL. Similarly, onReddit, Morphling reduces
+epoch time to51.53 s, achieving speedups of16.19×(vs.
+PyG) and7.16×(vs. DGL).
+On medium-sized graphs (e.g., NELL, Yelp), Morphling
+maintains 2–13×gains over both frameworks. However, on
+small datasets (e.g., PPI, Flickr), the fixed overhead of the
+distributed runtime dominates the short computation time,
+resulting in parity or slight performance regression compared
+to DGL’s fused kernels. Averaged across all benchmarks,
+Morphling achieves a6.22×speedup over PyG and5.65×
+over DGL.
+2) Architectural Attribution:Morphling’s distributed scal-
+ability stems from two design choices: (1) ADegree-Aware
+Hierarchical Partitionerthat balances computational load
+(Pdeg(v)) rather than just vertex counts, preventing strag-
+gler ranks on power-law graphs. (2) APipelined Runtime
+that masks synchronization latency. By overlapping halo
+exchange with forward-pass preparation and overlapping
+weight gradient reduction with backward-pass computation,
+Morphling effectively hides the communication costs that
+bottleneck standard synchronous implementations.
+F. Memory Behavior Analysis
+Table III summarizes peak system memory consumption.
+Morphling consistently maintains the smallest footprint, en-
+abling full-graph training even on datasets where standard
+frameworks exceed hardware capacity.
+12
+Fig. 6: Morphling speedup over PyG and DGL on MPI
+Fig. 7: Per-epoch training time of Morphling, PyG, and DGL
+on MPI
+1) Capacity and Scalability:The most critical disparity
+arises onAmazonProducts. Morphling trains on the full graph
+using only9.03 GB. In contrast, PyG exceeds the 192 GB
+system limit and fails to initialize. Even when the dataset
+is downsampled to 75%, PyG still consumes140.24 GB.
+DGL successfully runs the full graph but requires25.10 GB,
+nearly2.8×more than Morphling. Similar trends onReddit
+andogbn-productsdemonstrate that Morphling’s memory
+efficiency remains stable as graph size increases.
+2) Complexity Analysis:The memory gap is structural
+and follows directly from the execution models. PyG’s
+gather–scatterparadigm materializes source and des-
+tination feature tensors of size[|E| ×F], producing a peak
+memory cost of:
+MPyG ≈ O(|E| ×F) +O(|V| ×F).(12)
+On dense graphs, the|E| ×Fterm dominates and leads to
+the observed OOM failures.
+Morphling avoids edge-tensor materialization entirely. Its
+fused C++ kernels accumulate messages directly into node
+embeddings without constructing intermediate[|E| ×F]
+buffers, bounding memory usage by:
+MMorphling ≈ O(|V| ×F).(13)
+This yields a reduction factor that grows proportionally with
+the graph’s average degree—up to15.5×on dense graphs
+such asAmazonProducts—while maintaining near parity on
+smaller or moderate-density datasets likeogbn-arxiv. DGL
+falls between the two extremes due to its use of multiple
+adjacency formats (CSR/CSC) and per-layer message buffers,
+producing a memory footprint larger than Morphling’s but
+lower than PyG’s.
+Fig. 8: Peak memory comparison between Pyg, DGL, and
+Morphling
+Morphling avoids allocating such edge-sized feature
+buffers. Instead, it operates directly on node features without
+materializing per-edge feature tensors, which eliminates the
+dominant memory term present in PyG. This design enables
+Morphling to maintain low peak memory usage even on
+graphs with tens or hundreds of millions of edges, as re-
+flected in the dramatic savings observed across the evaluated
+datasets.
+VI. Conclusion
+Existing GNN frameworks face a persistent mismatch be-
+tween the irregular, sparse structure of graph workloads and
+the dense, uniform execution models of modern accelerators.
+We presentedMorphling, a cross-platform synthesis frame-
+work that addresses this gap through architecture-aware
+specialization. By unifying a sparsity-aware execution engine,
+fused kernel synthesis, and a pipelined distributed runtime,
+Morphling substantially reduces the memory overheads and
+synchronization costs that constrain state-of-the-art systems.
+Our evaluation shows that these design choices translate
+into decisive performance gains. On single-node CPUs and
+GPUs, Morphling improves training throughput by an aver-
+age of20.21×and15.48×, respectively, with peak speedups
+reaching66×on sparse workloads. Its memory-efficient ker-
+nel design reduces peak footprint by up to15.5×, enabling
+full-graph training on large datasets such asAmazonProducts
+within typical cluster node memory budgets—where PyG and
+DGL either fail or fall back to subsampled execution. In
+distributed settings, Morphling’s degree-balanced partitioner
+and split-phase communication pipeline scale effectively
+across nodes, outperforming PyG by up to30×. Together,
+these results position Morphling as a robust foundation for
+next-generation, scale-out graph learning systems.
+VII. Future Work
+The future extensions of Morphling span three directions.
+First, deepening the compiler stack withautomated sched-
+ule tuningandcross-layer operator fusionwill broaden
+13
+support for emerging architectures such as attention-based
+GNNs. Second, enablingmixed-precisionand quantized
+execution (FP16/BF16/INT8) can further increase throughput
+and reduce memory use on modern Tensor Core accelera-
+tors. Finally, expanding backend coverage toheterogeneous
+accelerators(FPGAs, IPUs) and augmenting the distributed
+runtime withtopology-aware communicationand adap-
+tive partitioning will improve performance on large-scale,
+hierarchical cluster environments.
+References
+[1] M. Fey and J. E. Lenssen, “Fast Graph Representation Learning with
+PyTorch Geometric, ” inProc. Workshop on Representation Learning on
+Graphs and Manifolds at ICLR, 2019. https://arxiv.org/abs/1903.02428
+[2] M. Wang, D. Zheng, Z. Ye, Q. Gan, M. Li, X. Song, J. Zhou, C. Ma,
+L. Yu, Y. Gai, T. Xiao, T. He, G. Karypis, J. Li, and Z. Zhang, “Deep
+Graph Library: A Graph-Centric, Highly-Performant Package for Graph
+Neural Networks, ” inarXiv preprint arXiv:1909.01315, Sept. 2019. https:
+//arxiv.org/abs/1909.01315
+[3] Y. Wang, B. Feng, G. Li, S. Li, L. Deng, Y. Xie, and Y. Ding, “GNNAdvisor:
+An Adaptive and Efficient Runtime System for GNN Acceleration on
+GPUs, ” inProc. 15th USENIX Symposium on Operating Systems Design
+and Implementation (OSDI), 2021, pp. 515–531. https://www.usenix.org/
+conference/osdi21/presentation/wang-yuke
+[4] H. Zhang, Z. Yu, G. Dai, G. Huang, Y. Ding, Y. Xie, and Y. Wang, “Un-
+derstanding GNN Computational Graph: A Coordinated Computation,
+IO, and Memory Perspective, ” inProc. 5th Machine Learning and Systems
+Conference (MLSys), 2022, pp. 467–484. https://arxiv.org/abs/2110.09524
+[5] R. Zhu, K. Zhao, H. Yang, W. Lin, C. Zhou, B. Ai, Y. Li, and J. Zhou,
+“AliGraph: A Comprehensive Graph Neural Network Platform, ” inProc.
+The 12th International Conference on Very Large Data Bases (VLDB),
+vol. 12, no. 12, 2019, pp. 2094–2105. doi:10.14778/3352063.3352127. https:
+//doi.org/10.14778/3352063.3352127
+[6] F. Huang, W. Zhang, K. Zhai, J. Zhu, R. Chen, W. Wu, and X. Wan,
+“Euler: A System for Large-Scale Graph Analytics, ” inProc. 24th ACM
+SIGKDD International Conference on Knowledge Discovery & Data Mining
+(KDD), 2018, pp. 316–324. doi:10.1145/3219819.3220063. https://doi.org/
+10.1145/3219819.3220063
+[7] D. Zheng, C. Ma, M. Wang, J. Zhou, Q. Su, X. Song, Q. Gan, Z. Zhang,
+and G. Karypis, “DistDGL: Distributed Graph Neural Network Training
+for Billion-Scale Graphs, ” in10th IEEE/ACM Workshop on Irregular
+Applications: Architectures and Algorithms (IA 3), 2020, pp. 36–44. https:
+//arxiv.org/abs/2010.05337
+[8] Y. Zhang, A. Brahmakshatriya, X. Chen, L. Dhulipala, S. Kamil, S. Ama-
+rasinghe, and J. Shun, “GraphIt: A High-Performance DSL for Graph
+Analytics, ” inProc. 33rd ACM SIGPLAN Conference on Programming
+Language Design and Implementation (PLDI), 2018. doi:10.1145/3276491.
+https://doi.org/10.1145/3276491
+[9] J. Shun and G. E. Blelloch, “Ligra: A Lightweight Graph Processing
+Framework for Shared Memory, ” inProc. 18th ACM SIGPLAN Symposium
+on Principles and Practice of Parallel Programming (PPoPP), Feb. 23-27
+2013, Shenzhen, China, pp. 135–146. doi:10.1145/2517327.2442530.
+[10] M. Kulkarni, K. Pingali, B. Walter, K. Tung, and J. Hollingsworth,
+“The Galois System: Optimistic Parallelization of Irregular Programs, ”
+inProc. 20th IEEE International Parallel & Distributed Processing Sympo-
+sium (IPDPS), 2008, pp. 1-12. https://ecommons.cornell.edu/bitstreams/
+707e6678-bb5b-4dc6-b590-1b58e409d802/download
+[11] X. Zhu, W. Chen, W. Zheng, and X. Ma, “Gemini: A Computation-
+Centric Distributed Graph Processing System, ” inProc. 12th USENIX
+Symposium on Operating Systems Design and Implementation (OSDI),
+Savannah, GA, USA, Nov. 2016, pp. 301–316. https://www.usenix.org/
+conference/osdi16/technical-sessions/presentation/zhu
+[12] N. Behera, A. Kumar, E. Rajadurai T., S. Nitish, R. Pandian M., and
+R. Nasre, “StarPlat: A Versatile DSL for Graph Analytics, ”Journal
+of Parallel and Distributed Computing, vol. 183, 2024, Article 104967.
+doi:10.1016/j.jpdc.2024.104967. https://arxiv.org/abs/2305.03317
+[13] M. Abadi, P. Barham, J. Chen, Z. Chen, A. Davis, J. Dean, M. Devin,
+S. Ghemawat, G. Irving, M. Isard, M. Kudlur, J. Levenberg, R. Monga,
+S. Moore, D. Murray, B. Steiner, P. Tucker, V. Vasudevan, P. Warden,
+M. Wicke, Y. Yu, and X. Zheng, “TensorFlow: A System for Large-
+Scale Machine Learning, ” inProc. 12th USENIX Symposium on Oper-
+ating Systems Design and Implementation (OSDI), Savannah, GA, USA,
+Nov. 2016, pp. 265–283. https://www.usenix.org/system/files/conference/
+osdi16/osdi16-abadi.pdf
+[14] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan,
+T. Killeen, Z. Lin, N. Gimelshein, L. Antiga, A. Desmaison, A. Köpf,
+E. Yang, Z. DeVito, M. Raison, A. Tejani, S. Chilamkurthy, B. Steiner,
+L. Fang, J. Bai, and S. Chintala, “PyTorch: An Imperative Style, High-
+Performance Deep Learning Library, ” inProc. 33rd International Con-
+ference on Neural Information Processing Systems (NeurIPS), Vancouver,
+Canada, 2019, pp. 8024–8035. https://arxiv.org/abs/1912.01703
+[15] H. Guo, W. Guo, Y. Gao, R. Tang, X. He, and W. Liu, “Scale-
+FreeCTR: MixCache-based Distributed Training System for CTR Mod-
+els with Huge Embedding Table, ” inProc. 44th International ACM
+SIGIR Conference on Research and Development in Information Re-
+trieval (SIGIR ’21), July 11-15 2021, Virtual Event, Canada, 10 pages.
+doi:10.1145/3404835.3462976. https://arxiv.org/abs/2104.08542
+[16] Y. Wu, K. Ma, Z. Cai, T. Jin, B. Li, C. Zheng, J. Cheng, and F. Yu,
+“Seastar: Vertex-Centric Programming for Graph Neural Networks, ” in
+Proc. ACM / IEEE European Conference on Computer Systems (EuroSys
+’21), Apr. 26-29 2021, 17 pages. doi:10.1145/3447786.3456247. https://doi.
+org/10.1145/3447786.3456247
+[17] Y. Hu, Z. Ye, M. Wang, J. Yu, D. Zheng, M. Li, Z. Zhang, Z. Zhang,
+and Y. Wang, “FeatGraph: A Flexible and Efficient Backend for Graph
+Neural Network Systems, ” inProc. IEEE/ACM International Conference
+for High Performance Computing, Networking, Storage and Analysis (SC),
+2020. https://arxiv.org/abs/2008.11359
+[18] J. Ragan-Kelley, A. Adams, S. Paris, M. Levoy, and F. Durand, “Halide:
+A Language and Compiler for Optimizing Parallelism, Locality, and
+Recomputation in Image Processing Pipelines, ” inProc. ACM SIGPLAN
+Conference on Programming Language Design and Implementation (PLDI),
+2013, pp. 519–530. https://dl.acm.org/doi/10.1145/2491956.2462176
+[19] T. Chen, T. Moreau, Z. Jiang, L. Ceze, C. Guestrin, and A. Kr-
+ishnamurthy, “TVM: An Automated End-to-End Optimizing Compiler
+for Deep Learning, ” inProc. 13th USENIX Symposium on Operating
+Systems Design and Implementation (OSDI), 2018, pp. 578–594. https:
+//www.usenix.org/conference/osdi18/presentation/chen
+[20] F. Kjolstad, S. Kamil, S. Chou, D. Lugato, and S. Amarasinghe, “The
+Tensor Algebra Compiler, ” inProc. ACM Program. Lang., vol. 1, no.
+OOPSLA, Article 77, Oct. 2017. doi:10.1145/3133901. https://doi.org/10.
+1145/3133901
+[21] R. Baghdadi, Y. Zou, M. Shirinzadeh, P. Zhao, M. Ripeanu, T. M. Smith,
+A. Sanan, R. Mullapudi, J. Ragan-Kelley, and S. Amarasinghe, “Tiramisu:
+A Polyhedral Compiler for Expressing Fast and Portable Code, ” inProc.
+IEEE/ACM International Symposium on Code Generation and Optimization
+(CGO), 2019, pp. 193–205. https://doi.org/10.1109/CGO.2019.8661197
+[22] N. Vasilache, O. Zinenko, T. Theodoridis, P. Goyal, Z. DeVito, W. S.
+Moses, S. Verdoolaege, A. Adams, and A. Cohen, “Tensor Comprehen-
+sions: Framework-Agnostic High-Performance Machine Learning Ab-
+stractions, ” inProc. of the 2nd ACM/IEEE Workshop on Machine Learning
+and Systems (MLSys) — Pre-print / ArXiv, 2018. https://arxiv.org/abs/1802.
+04730
+[23] H. C. Edwards, C. R. Trott, and D. Sunderland, “Kokkos: Enabling
+manycore performance portability through polymorphic memory access
+patterns, ”Journal of Parallel and Distributed Computing, vol. 74, no. 12,
+pp. 3202–3216, Dec. 2014. doi:10.1016/j.jpdc.2014.07.003. https://doi.org/
+10.1016/j.jpdc.2014.07.003
+[24] D. A. Beckingsale, J. Burmark, R. Hornung, H. Jones, W. Killian, A. J.
+Kunen, O. Pearce, P. Robinson, B. S. Ryujin, and T. R. W. Scogland,
+“RAJA: Portable Performance for Large-Scale Scientific Applications, ”
+inProc. IEEE/ACM International Workshop on Performance, Portability
+and Productivity in HPC (P3HPC), 2019, pp. 71-81. https://www.osti.gov/
+servlets/purl/1573949
+[25] R. Reyes and V. Lomüller, “SYCL: Single-source C++ accelerator pro-
+gramming, ” inAdvances in Parallel Computing, Vol. 27: Parallel Comput-
+ing — On the Road to Exascale, R. T. Morris, Ed., IOS Press, 2016, pp.
+673-682. https://doi.org/10.3233/978-1-61499-621-7-673
+[26] Intel Corporation, “Intel®oneAPI Programming Guide, ” Intel Corpora-
+tion, 2025. oneAPI Documentation
+[27] J. E. Stone, D. Gohara, and G. Shi, “OpenCL: A parallel programming
+standard for heterogeneous computing systems, ”Computing in Science
+& Engineering, vol. 12, no. 3, pp. 66–73, 2010. https://doi.org/10.1109/
+MCSE.2010.69
+[28] T. N. Kipf and M. Welling, “Semi-supervised classification with graph
+convolutional networks, ” inProc. Int. Conf. Learn. Represent. (ICLR), 2017.
+https://arxiv.org/abs/1609.02907
+[29] W. L. Hamilton, R. Ying, and J. Leskovec, “Inductive representation
+learning on large graphs, ” inProc. Adv. Neural Inf. Process. Syst. (NeurIPS),
+vol. 30, 2017. https://arxiv.org/abs/1706.02216
+14
+[30] K. Xu, W. Hu, J. Leskovec, and S. Jegelka, “How powerful are graph
+neural networks?, ” inProc. Int. Conf. Learn. Represent. (ICLR), 2019. https:
+//arxiv.org/abs/1810.00826
+[31] P. Veličković, G. Cucurull, A. Casanova, A. Romero, P. Liò, and Y. Ben-
+gio, “Graph attention networks, ” inProc. Int. Conf. Learn. Represent.
+(ICLR), 2018. https://arxiv.org/abs/1710.10903
+[32] G. Karypis and V. Kumar, “A fast and high quality multilevel scheme
+for partitioning irregular graphs, ”SIAM Journal on Scientific Computing,
+vol. 20, no. 1, pp. 359–392, 1998. doi: 10.1137/S1064827595287997.
+[33] PyTorch Geometric, “Sparse tensor support, ”PyTorch Geometric Docu-
+mentation. Pytorch_Geometric Documentation

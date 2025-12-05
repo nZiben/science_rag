@@ -1,0 +1,3190 @@
+Preprint
+ON THETENSIONBETWEENOPTIMALITY ANDAD-
+VERSARIALROBUSTNESS INPOLICYOPTIMIZATION
+Haoran Li, Jiayu Lv & Congying Han ∗
+School of Mathematical Sciences
+University of Chinese Academy of Sciences
+Beijing, China
+{lihaoran21, lvjiayu24}@mails.ucas.ac.cn
+hancy@ucas.ac.cn
+Zicheng Zhang
+JD.com
+Beijing, China
+zhangzicheng6@jd.com
+Anqi Li
+School of Mathematical Sciences
+Nankai University
+Tianjin, China
+anqili@nankai.edu.cn
+Yan Liu
+School of Statistics and Data Science
+Nankai University
+Tianjin, China
+liuyan23@nankai.edu.cn
+Tiande Guo
+School of Mathematical Sciences
+University of Chinese Academy of Sciences
+Beijing, China
+tdguo@ucas.ac.cn
+Nan Jiang
+Siebel School of Computing and Data Science
+University of Illinois Urbana-Champaign
+Urbana, IL 61801, USA
+nanjiang@illinois.edu
+ABSTRACT
+Achieving optimality and adversarial robustness in deep reinforcement learning
+has long been regarded as conflicting goals. Nonetheless, recent theoretical in-
+sights presented in CAR (Li et al., 2024) suggest a potential alignment, raising
+the important question of how to realize this in practice. This paper first iden-
+tifies a key gap between theory and practice by comparing standard policy opti-
+mization (SPO) and adversarially robust policy optimization (ARPO). Although
+they share theoretical consistency,a fundamental tension between robustness and
+optimality arises in practical policy gradient methods. SPO tends toward con-
+vergence to vulnerable first-order stationary policies (FOSPs) with strong natural
+performance, whereas ARPO typically favors more robust FOSPs at the expense
+of reduced returns. Furthermore, we attribute this tradeoff to thereshaping ef-
+fect of the strongest adversariesin ARPO, which significantly complicates the
+global landscape by inducingdeceptive sticky FOSPs. This improves robustness
+but makes navigation more challenging. To alleviate this, we develop theBARPO,
+a bilevel framework unifying SPO and ARPO by modulating adversary strength,
+thereby facilitating navigability while preserving global optima. Extensive em-
+pirical results demonstrate that BARPO consistently outperforms vanilla ARPO,
+providing a practical approach to reconcile theoretical and empirical performance.
+1 INTRODUCTION
+Deep reinforcement learning (DRL) has demonstrated remarkable success across a variety of com-
+plex tasks (Mnih et al., 2015; Lillicrap et al., 2016; Silver et al., 2016) and real-world applications,
+including robotics (Ibarz et al., 2021; Liu et al., 2022; Tang et al., 2025), autonomous driving (Kiran
+et al., 2021; Chen et al., 2022; 2024), and large model training (Xin et al., 2025; Kumar et al., 2025;
+Guo et al., 2025). Despite such substantial progress, DRL agents remain highly vulnerable to im-
+perceptible attacks on their state observations, leading to severe performance degradation and even
+∗Corresponding author
+1
+arXiv:2512.01228v1  [cs.LG]  1 Dec 2025
+Preprint
+(a) SPO
+ (b) ARPO
+ (c) BARPO
+ (d) Overall
+Figure 1: Schematic illustration of the optimization landscapes under SPO, ARPO, and BARPO.
+(a) SPO acsents along fragile directions, leading to vulnerable FOSPs with high natural value. (b)
+ARPO becomes trapped in robust regions but is limited to low-return solutions. (c) BARPO reshapes
+the landscape by lifting robust but low-return regions, enabling convergence to robust FOSPs with
+high returns. (d) Overall comparison of the three paradigms: contour lines represent natural returns,
+while background color indicates robustness, with darker red denoting lower robustness.
+complete system failure (Huang et al., 2017; Behzadan & Munir, 2017a; Lin et al., 2017; Kos &
+Song, 2017; Pattanaik et al., 2018; Weng et al., 2019; Inkawhich et al., 2020; Ilahi et al., 2021). This
+vulnerability threatens the reliable deployment of DRL in safety-critical environments, highlighting
+the urgent need for robust agents capable of withstanding subtle perturbations and malicious attacks.
+Motivated by these challenges, Zhang et al. (2020c) introduced the state-adversarial Markov deci-
+sion process (SA-MDP) framework, providing a theoretical foundation for adversarial robustness in
+reinforcement learning. Building on this framework, they demonstrated that an optimal robust policy
+(ORP) may not always exist, indicating a potential conflict between the objectives of optimality and
+robustness. Recently, Li et al. (2024; 2025) further explored the concept of ORP in practical settings
+and proposed the ISA-MDP formulation, a refinement that formally establishes the existence of an
+ORP that coincides with the Bellman optimality policy. These theoretical results suggest that the
+objectives of adversarial robustness and optimality are, in principle, aligned in most practical tasks.
+This insight drives the pursuit of DRL agents that not only maintain strong performance in clean en-
+vironments but also exhibit resilience to adversarial attacks. This theoretical consistency is critical
+for deploying DRL agents in real-world applications, where strong malicious attacks are compar-
+atively rare. However, in practice, achieving this alignment remains challenging. Despite sharing
+this theoretical consistency, conventional policy optimization methods struggle under adversarial
+settings (Zhang et al., 2021; Sun et al., 2022; 2024). It remains an open problem whether this theo-
+retical alignment can be technically realized, leaving a critical gap between theory and practice.
+In this paper, we delve into the optimization behavior and learning dynamics of two train-
+ing paradigms:standard policy optimization (SPO)andadversarially robust policy optimization
+(ARPO). SPO aims to maximize the standard value function, i.e.,max π V π(s),∀s, while ARPO
+optimizes the worst-case adversarial value function, i.e.,maxπ minν V π◦ν (s),∀s. By conducting a
+systematic comparison, we reveal a novel optimality-robustness tension in policy gradient methods.
+In our analysis, we first prove that both SPO and ARPO converge to first-order stationary policies
+(FOSPs) rather than global optima. Next, by examining the learning behaviors around these FOSPs,
+we uncover a key discrepancy: ARPO consistently produces policies with markedly higher robust-
+ness to state perturbations, whereas SPO-derived FOSPs remain vulnerable. These findings help
+explain the empirical vulnerability of SPO, despite the theoretical existence of an ORP, and empha-
+size the importance of ARPO in building robust DRL agents. Finally, we reveal that this robustness
+gain comes at a significant cost: ARPO-trained policies exhibit substantially lower natural returns
+compared to SPO. Altogether, these results expose a fundamental robustness-performance tradeoff
+in policy-gradient methods, highlighting a practical challenge for closing the theory-practice gap.
+To understand this tradeoff, we analyze the optimization landscape and value geometry induced by
+SPO and ARPO. We attribute the tension to thereshaping effectinduced by the strongest adver-
+saries: although they help guide the agent toward robust FOSPs, they often impede optimization by
+compromising the navigability of the landscape. As illustrated in Figure 1, ARPO creates robust
+peaks but introduces additional valleys, distorting the global landscape to a more rugged terrain.
+These new valleys act as traps for the optimization path, hindering gradient-based methods from
+2
+Preprint
+ascending towards the global or better local peaks. Instead, the optimization process stalls at these
+deceptive sticky FOSPs, which often result in lower natural returns compared to those achieved by
+SPO. This reshaping effect presents a core barrier to learning both optimality and robustness.
+To address this challenge, we propose a bilevel optimization framework that bridges SPO and ARPO,
+which adjusts the adversary strength to promote traversable optimization paths while maintaining
+robustness. This modulation prevents the optimization landscape from becoming overly rugged,
+helping to avoid local traps while still encouraging robustness. Importantly, it preserves the glob-
+ally optimal robust policy shared by both SPO and ARPO. To enhance convergence and efficiency,
+we incorporate SPO dynamics into the bilevel framework, further smoothing the optimization land-
+scape. The resulting approach,Bilevel ARPO (BARPO), consistently achieves superior natural and
+robust returns, offering a promising approach to bridging the gap between theoretical alignment and
+practical performance. To summarize, this paper makes the following cohesive contributions:
+• We explain the nature of vulnerability in standard policy optimization (SPO) within the theoreti-
+cally aligned framework. While an optimal robust policy exists, SPO typically converges to fragile
+first-order stationary policies (FOSPs), which offer strong natural performance but lack robustness.
+• We uncover a new form of optimality-robustness tension arising in policy optimization. Unlike
+prior notions of conflicting objectives, adversarially robust policy optimization (ARPO) shares the
+same global optima with SPO but prefers more robust FOSPs that typically yield lower returns.
+• We elucidate the underlying mechanism behind this trade-off. The strongest adversaries in ARPO
+reshape the optimization landscape by introducing numerous sticky FOSPs, which improve robust-
+ness but hinder effective policy improvement by making the landscape more difficult to navigate.
+• We propose a unified bilevel framework that connects SPO and ARPO, and instantiate it as Bilevel
+ARPO (BARPO), a novel method that reshapes the landscape to reduce the prevalence of poor sticky
+FOSPs while retaining access to robust global optima. Empirical results demonstrate that BARPO
+significantly improves practical performance, narrowing the gap between theory and practice.
+2 PRELIMINARIES ANDNOTATIONS
+MDP and SPO.AMarkov Decision Process (MDP)is formulated as a tuple(S,A, r,P, γ, µ 0),
+whereSis the state space.Ais the action space. The reward functionr:S×A →Rassigns a scalar
+reward to each state-action pair. The transition dynamicsP:S × A →∆ (S)define the probability
+distribution over next states, andµ 0 ∈∆ (S)denotes the initial state distribution. The discount
+factorγ∈[0,1)controls the trade-off between immediate and future rewards. A stationary policy
+π:S →∆ (A)maps each state to a probability space over actions. Under a given policyπ, the state
+value function isV π(s) =E π,P [P∞
+t=0 γtr(st, at)|s0 =s], and the action-value function (orQ-
+function) isQ π(s, a) =Eπ,P [P∞
+t=0 γtr(st, at)|s0 =s, a0 =a]. A fundamental property of MDPs
+is the existence of a stationary and deterministic optimal policyπ∗, termedBellman optimality policy
+(BOP), that maximizes allV π(s)andQ π(s, a)for all states and actions. In practice, particularly for
+large-scale state and action spaces,standard policy optimization (SPO)methods are widely used for
+their efficiency (Silver et al., 2014; Schulman et al., 2016; 2015; Lillicrap et al., 2016; Mnih et al.,
+2016; Schulman et al., 2017; Haarnoja et al., 2018). For the parameterizedπ θ, SPO aims to solve:
+max
+θ:πθ∈Π
+V πθ (s),∀s∈ S,whereΠ :={π θ|πθ(·|s)∈∆ (A),∀s∈ S}.(SPO)
+To simplify notations, we take the expectation over the distributionµ0:V πθ (µ0) =E s∼µ0 [V πθ (s)].
+ISA-MDP and ARPO.AnIntrinsic State-adversarial Markov Decision Process (ISA-MDP)is de-
+fined by the tuple(S,A, r,P, γ, µ0, B∗). This formulation extends the standard MDP by incor-
+porating structured neighborhoods of allowable state perturbations. For each states∈ S, the
+set-value functionB ∗(s)⊆ Sspecifies admissible perturbations which cannot alter the optimal
+action. An adversary is represented by a mappingν:S → Sthat perturbs the observed state
+sto a nearby states ν :=ν(s)∈B ∗(s). Under this adversary, the policy operates on the per-
+turbed state, denoted by(π◦ν)(s) :=π(a|ν(s)). Under this setting, the adversarial value func-
+tion is given byV π◦ν (s) =E π◦ν,P [P∞
+t=0 γtr(st, at)|s0 =s], and the corresponding adversarial
+Q-function isQ π◦ν (s, a) =Eπ◦ν,P [P∞
+t=0 γtr(st, at)|s0 =s, a0 =a]. For any policyπ, there ex-
+ists the strongest adversaryν ∗(π)that minimizes the value function across all states, defined by
+ν∗(π) = arg min ν V π◦ν (s),∀s. Within this framework, anoptimal robust policy (ORP)π ∗ ex-
+3
+Preprint
+ists, which simultaneously maximizes performance against its strongest adversary for all states, i.e.,
+V π∗◦ν∗(π∗)(s) = maxπ V π◦ν∗(π)(s)for alls∈ Sandπ ∗ aligns with Bellman optimality policy.
+We refer to the robust optimization problem in ISA-MDP asAdversarial Robust Policy Optimization
+(ARPO). Despite its centrality to robust decision-making, ARPO has not been thoroughly explored.
+In this work, we adopt the direct parameterized adversary, resulting in the following formulation:
+max
+θ:πθ∈Π
+min
+ϑ:νϑ∈Ψ
+V πθ◦νϑ(s),∀s∈ S,whereΨ :={ν ϑ|νϑ(s) =s+ϑ s ∈B ∗(s),∀s}.(ARPO)
+Similar to SPO, we consider the expected objective:V πθ◦νϑ(µ0) =E s∼µ0 [V πθ◦νϑ(s)]. In particu-
+lar, SPO corresponds to solving the outer maximization while fixing the inner solution toϑ≡0.
+FOSPrefers to a stationary point in the optimization sense, where the policy gradient vanishes.
+Formally, we defineπ θ (orθ) as afirst-order stationary policy (FOSP)for SPO if it satisfies:
+∇θV πθ (µ0) = 0,∇ 2
+θθV πθ (µ0)⪯0.(FOSP in SPO)
+Similarly,π θ (orθ) is a FOSP for ARPO if it satisfies the following conditions:
+∇θV πθ◦ν∗(πθ)(µ0) = 0,∇ 2
+θθV πθ◦ν∗(πθ)(µ0)⪯0.(FOSP in ARPO)
+We further define(πθ, ν∗(πθ))(or(θ, ϑ∗(θ))) as a first-order stationary policy-adversary for ARPO.
+Terminology Clarification.To avoid ambiguity, we define the following terms used throughout
+the paper: 1)Natural returns(orperformance): the estimate of standard value functionV π(µ0). 2)
+Robust returns(againstν): the approximation of adversarial value functionV π◦ν (µ0). 3)Robustness
+(againstν): an estimation of the relative degradation in performance V π◦ν(µ0)−V π(µ0)
+V π(µ0) ≤0.
+3 OPTIMALITY-ROBUSTNESSTENSION INPOLICYOPTIMIZATION
+This section identifies the inherent tradeoff between optimality and robustness in policy gradient
+methods. Although SPO and ARPO share the consistent globally optimal robust policy, their con-
+vergence behaviors diverge significantly. In practice, SPO often tends to vulnerable policies with
+high natural performance, while ARPO prefers more robust policies, typically at the cost of reduced
+returns. Notably, we explore the value geometry and optimization landscape, attributing this diver-
+gence to the adversarial reshaping of ARPO. The strongest adversary distorts the global terrain by
+introducing numerous local minima, which trap the navigation in robust but suboptimal policies.
+3.1 ROBUSTCONVERGENCEBEHAVIOR OFARPO
+We begin with a rigorous convergence analysis of ARPO, showing that it generally converges to a
+first-order stationary policy (FOSP) rather than the global optimum. To better understand this, we
+examine the nature of FOSPs in both ARPO and SPO by analyzing empirical behaviors and local
+learning dynamics. Our findings reveal that ARPO promotes stronger robustness near convergence,
+even without reaching the globally optimal policy. In contrast, SPO achieves high natural returns but
+lacks robustness against perturbations. Furthermore, this analysis uncovers a connection between
+robustness and generalization, suggesting that sufficient robustness may improve generalization.
+3.1.1 CONVERGENCE TOFIRST-ORDERSTATIONARYPOLICIES
+To enable a formal gradient-based analysis of ARPO, we first derive the policy gradient expression
+for the adversary. This formulation facilitates sample-based estimation and numerical computation
+within the inner optimization. The complete derivation and proof are provided in Appendix C.1.
+Theorem 3.1(Policy Gradient for Adversary).Given a policyπ θ, for all states∈ S, consider the
+direct parameterization representation for adversaryν ϑ :S → S, s7→s+ϑs ∈B(s). Then, for
+any states i ∈ S, we have the state-wise policy gradient for the adversary as follows:
+∇ϑsi
+V πθ◦νϑ(s) = 1
+1−γ E(s′,a′)∼dπθ◦νϑ
+
+Qπθ◦νϑ(s′, a′)∇ϑs′ logπ θ(a′|s′ +ϑ s′)·I(s ′ =s i)
+
+,
+whered π◦ν is the state-action visitation distribution underπ◦ν, andI(·)is the indicator function.
+4
+Preprint
+Table 1: Natural and robust performance of SPO and ARPO for continuous control tasks in MuJoCo.
+EnvironmentMethod NaturalReturn Return under Attack Worst-case RobustnessRandom Critic MAD RS SA-RL PA-AD Worst
+Hopper
+(ϵ= 0.075)
+SPO3081±6382923±7672035±10351763±619756±3679±2823±18279±2-0.974ARPO 2101±588↓32%2058±5593156±5282225±6411001±301032±471799±5471001±30-0.524↑46%
+Walker2d
+(ϵ= 0.05)
+SPO4662±224628±214584±154507±6751062±150719±1079336±252336±252-0.928ARPO 2095±983↓56%1815±9302360±10211944±9761360±8351270±5021460±7391270±502-0.394↑58%
+Halfcheetah
+(ϵ= 0.15)
+SPO5048±5264463±6503281±1101918±5411049±50-213±103-69±22-213±103-1.042ARPO 1412±99↓72%1363±2851359±591402±641230±751079±481216±4581079±48-0.236↑77%
+Ant
+(ϵ= 0.15)
+SPO5381±13085329±9764696±10151768±9291097±633-1398±318-3107±1071-3107±1071-1.577ARPO 1709±564↓68%2026±381976±1311839±3501661±5931648±6661675±5731648±666-0.034↑98%
+Based on this analytical expression, we further characterize the convergence behavior of ARPO. The
+detailed analysis and proofs are provided in Appendix C.2. Justifications and potential relaxations
+of assumptions, and the connection with core contributions are further discussed in Appendix H.1.
+Theorem 3.2(Convergence of ARPO).Denote∆ := max θ minϑ V πθ◦νϑ(µ0)−minϑ V πθ0 ◦νϑ(µ0).
+Assume that the sampled policy gradient is Lipschitz continuous and bounded byM ˆv, the sampled
+estimation of the value function is locallyµ-strongly convex, the state-action visitation distribution
+is Lipschitz continuous, and the variance of the stochastic gradient is bounded byσ 2. Set the step
+size asη k =
+p
+∆/(σ 2LK). Then, the ARPO withδ-approximate adversary andK≥ ∆L
+σ2 satisfies:
+1
+K
+K−1X
+k=0
+E
+∇θV πθk ◦ν∗(πθk )(µ0)
+
+2
+2
+
+≤4σ
+r
+∆L
+K + 2L2
+θϑδ
+µ ,
+whereL θϑ andL= LθϑLϑθ
+µ +L θθ +M ˆv
+
+LdϑLϑθ
+µ +L dθ
+
+are the Lipschitz constants.
+Theorem 3.2 shows that, instead of converging to the globally optimal robust policy, ARPO ap-
+proximates an FOSP of the value function under the strongest adversary. The convergence rate is
+O(K−1/2), and the approximation error depends on the strength of the adversary. Similarly, SPO
+achieves convergence to the FOSP of the standard value function at the same rate (Agarwal et al.,
+2019; 2021). These underscore the gap between theoretical optimum and practical convergence.
+3.1.2 LEARNINGBEHAVIORSNEARFIRST-ORDERSTATIONARYPOLICIES
+Based on the above convergence results, we further explore the characteristics of SPO and ARPO
+around their FOSPs, highlighting the critical difference between robustness and natural performance.
+Empirical Behaviors Near FOSPs.We empirically examine the properties of FOSPs obtained by
+ARPO across both simple and complex environments. Specifically, we analyze a toy ISA-MDP with
+two states and two actions using directly parameterized policies, alongside continuous control tasks
+in MuJoCo employing neural network policies. In both settings, we observe thatFOSPs discovered
+by ARPO tend to exhibit robustness but generally achieve substantially reduced returns than those
+achieved by SPO.The detailed analysis and complete proofs are provided in Appendix D.
+Proposition 3.1.There exists an ISA-MDP such that the following statement holds. Letπ S be a
+FOSP under SPO, and letπ A be a FOSP under ARPO. Then,π A is a robust policy withV πA(µ0)−
+V −(µ0)< 1
+2 (V πS (µ0)−V −(µ0)), whereV −(µ0) = minπ V π(µ0)denotes the worst-case value.
+Furthermore, as shown in Table 1, in complex high-dimensional tasks, SPO achieves strong natu-
+ral performance but suffers substantial degradation under adversarial attacks. In contrast, ARPO
+exhibits substantially greater robustness, particularly in more challenging environments such as
+HalfCheetah and Ant. However, its natural performance remains consistently and noticeably lower,
+often reaching less than half the returns achieved by SPO. These empirical results underscore the
+practical disparity between the FOSPs obtained by SPO and ARPO, revealing an inherent tradeoff
+between robustness and optimality in policy gradient methods. We also analyze the learning dynam-
+ics of SPO and ARPO in Appendix C.3, revealing a link between robustness and generalization.
+5
+Preprint
+3.2 RESHAPINGEFFECT OFSTRONGESTADVERSARIESHINDERINGPOLICYIMPROVEMENT
+In this subsection, we investigate how the strongest adversary in ARPO reshapes the optimization
+landscape and value space geometry, shedding light on a key factor behind the optimality-robustness
+tension. We show that although the strongest adversary promotes convergence to robust FOSPs, it
+also severely distorts the global landscape, thereby impeding effective policy improvement.
+Figure 2:Intuitive examples of reshaping.
+Adversarial Reshaping Promotes Robust
+FOSPs.As illustrated in Figure 2, we com-
+pare ARPO with SPO. It follows directly
+from the definition that the robust objective
+V πθ◦ν∗(πθ)(µ0)is always less than or equal to
+the standard objectiveV πθ (µ0). In blue re-
+gions whereπ θ exhibits strong robustness, the
+gapV πθ (µ0)−V πθ◦ν∗(πθ)(µ0)remains small,
+leading to only a slight shift in the location of
+θwithin the landscape relative to that under SPO. In contrast, in red regions whereπ θ is more
+vulnerable, the gap becomes substantial, resulting in a sharp decline in the objective value at the
+corresponding location. This adversarial reshaping significantly increases the ruggedness of the
+optimization landscape, thereby steering the learning process toward robust policies as FOSPs.
+Distorted Landscape Impairs Policy Navigation.However, the robust policy space typically ex-
+hibits vulnerable connectivity. Adversarial reshaping introduces deep valleys that fragment the ter-
+rain, isolate different FOSPs, and obstruct gradient-based traversal. The proof is in Appendix D.
+Proposition 3.2(Vulnerable Connectivity Leading to Separated FOSPs).There exists an ISA-MDP
+where the robust policy spaceΠ Robust contains a cut point; that is, there exists a policyπsuch that
+ΠRobust \ {π}is disconnected. Therefore, ARPO tends to yield more isolated FOSPs than SPO.
+Figure 3: Adversarially robust value geometry.
+As illustrated in Figure 4(b), the valleys intro-
+duced by the adversary create barriers that ob-
+struct ARPO from reaching better FOSPs or the
+globally optimal robust policy. This fragmenta-
+tion increases the difficulty of learning and of-
+ten traps the agent in suboptimal FOSPs. As
+further shown in Figure 3, even in a simple ISA-
+MDP, approximately one-third of initial poli-
+cies converge to a deceptive FOSP with low
+value, highlighting the stickiness of these de-
+ceptive solutions and how the reshaped terrain can mislead the learning dynamics. These results
+reveal a core optimization challenge in adversarially robust DRL: adversarial reshaping not only
+fosters robustness but also introduces deceptive FOSPs that impede consistent policy improvement.
+4 BRIDGINGOPTIMALITY ANDROBUSTNESS VIA ABILEVELFRAMEWORK
+The above analysis highlights the strong influence of worst-case adversaries on the optimization
+landscape. In this section, we seek to mitigate the distorting effects of such adversarial reshap-
+ing while preserving strong robustness. To this end, we propose a bilevel optimization framework
+that interpolates between standard and adversarially robust policy optimization by modulating the
+strength of the adversary. Furthermore, we derive a surrogate for the strongest adversary to construct
+a practical algorithm that smooths the distorted landscape while maintaining robust performance.
+4.1 UNIFYINGSTANDARD ANDADVERSARIALLYROBUSTPOLICYOPTIMIZATION
+To bridge standard and adversarially robust policy training, we introduce the following bilevel op-
+timization framework that relaxes the inner optimization to allow non-strongest adversaries. This
+relaxation enables a better balance between adversarial robustness and landscape smoothness:
+max
+θ
+V πθ◦ν⋄(θ)(µ0),s.t.ν ⋄(θ) = arg max
+ϑ
+G(πθ, νϑ).(General Bilevel ARPO)
+6
+Preprint
+Here, the inner objectiveG(π, ν)defines the adversary behavior, extending robustness beyond
+worst-case scenarios. This formulation generalizes both SPO and ARPO. Specifically, when
+ν⋄(s;θ)≡s, this framework reduces to SPO; and whenG(π, ν) =−V π◦ν (µ0), it recovers ARPO.
+Importantly, within the ISA-MDP setting, this unified framework preserves the same optimal robust
+policy as both SPO and ARPO, preserving the theoretical alignment of optimality and robustness.
+4.2 BILEVELADVERSARIALLYROBUSTPOLICYOPTIMIZATION WITHKL-SURROGATE
+To make the proposed bilevel framework applicable in practice, we need to specify a suitable inner
+objectiveGthat both promotes policy learning and maintains strong robustness. To this end, we
+consider adversaries practically derived via policy gradient methods, and identify the KL divergence
+between the original and perturbed policies as an effective surrogate for the strongest adversary.
+Theorem 4.1(Surrogate Adversary).For any policyπ θ, states∈ S, andK >0, let the adversary
+ϑbe computed viaK-step gradient descent on the adversarial value function, i.e.,ϑ s,k =ϑ s,k−1 −
+ηs,k−1∇ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 ,1≤k≤K. Assume that step sizesη s,k ≤1/(λ s +δ)for some
+δ >0, andG(s;π, ν) :=DKL(π(·|s)∥π◦ν(·|s))≪1. Then, we have the lower bound of robustness:
+V πθ (s)−V πθ◦νϑ(s)≥ 2δ
+λmax(Fs,θ)K G(s;π θ, νϑ) +O
+
+G(s;π θ, νϑ)
+3
+2
+
+,
+whereF s,θ is the Fisher information matrix oflogπ θ ◦ν ϑ(a|s)with respect toϑ s = 0, defined as
+Fs,θ :=F(θ, s) =E a∼πθ(·|s)
+h
+(∇ϑs logπ θ(a|s+ϑ s)|ϑs=0) (∇ϑs logπ θ(a|s+ϑ s)|ϑs=0)T
+i
+,λ s =
+maxs+ϑs∈B(s) λmax(∇2
+ϑϑV πθ◦νϑ(s)|ϑ=ϑs)andλ max(·)is the largest eigenvalue of matrix.
+The detailed proof is provided in Appendix E. Theorem 4.1 indicates that, for gradient-based strong
+adversaries, the KL divergence serves as a valid first-order surrogate for minimizing the adversarial
+value. This surrogate is both appropriate and reliable from an optimization perspective. Motivated
+by this insight, we propose the following instantiation of our framework, termedBilevel ARPO:
+max
+θ
+V πθ◦ν⋄(θ)(µ0),s.t.ν ⋄(s;θ) = arg max
+ϑ
+DKL(πθ(·|s)∥πθ ◦ν ϑ(·|s)),∀s∈ S.(BARPO)
+(a) SPO
+ (b) ARPO
+ (c) BARPO
+Figure 4: Illustrative Optimization Landscapes
+As illustrated in Figures 1 and 4, BARPO ef-
+fectively reshapes the landscape by elevating
+low-value but robust regions, thereby creating
+smoother paths toward better FOSPs and even
+global optima. This restructuring facilitates
+learning navigability while promoting updates
+along robust trajectories, ensuring simultane-
+ous improvements of optimality and robustness.
+In contrast, SPO tends to follow vulnerable di-
+rections, frequently ascending fragile peaks. Meanwhile, ARPO strictly follows the most robust path
+but often gets stuck in valleys from overly strong adversaries, hindering escape from poor FOSPs.
+We further delve into the theoretical understanding of BARPO in Appendices H.3 and H.4.
+5 EXPERIMENTS
+In this section, we conduct comprehensive comparison experiments and ablation studies to empiri-
+cally substantiate our theoretical insights and evaluate the practical effectiveness of BARPO.
+5.1 IMPLEMENTATIONDETAILS
+Environments and Baselines.Following baselines (Zhang et al., 2020c; Oikarinen et al., 2021;
+Liang et al., 2022), we perform experiments on four challenging MuJoCo benchmarks (Todorov
+et al., 2012) with continuous action spaces: Hopper, Walker2d, HalfCheetah, and Ant. We compare
+BARPO against several state-of-the-art robust training methods. SA-PPO (Zhang et al., 2020c) in-
+corporates a KL-based regularization and solves the inner maximization problem using PGD (Madry
+et al., 2018) and CROWN-IBP (Zhang et al., 2020b), respectively. RADIAL-PPO (Oikarinen et al.,
+2021) incorporates adversarial regularization guided by robustness verification bounds derived from
+7
+Preprint
+(a) Hopper
+ (b) Walker2d
+ (c) Halfcheetah
+ (d) Ant
+Figure 5: Natural and robust performance of SPO, ARPO, BARPO without guidance, and BARPO
+for four continuous control tasks in MuJoCo. BARPO (w/o g) consistently outperforms ARPO.
+IBP (Gowal et al., 2019). WocaR-PPO (Liang et al., 2022) estimates worst-case values and also
+employs KL-based regularization. We use the official implementations of these baselines to train 17
+agents per method under identical settings. Regularization coefficients are tuned appropriately for
+each method. To mitigate the effects of high variance in reinforcement learning training, we report
+the median performance across 17 runs to ensure reproducibility. More details are in Appendix F.
+Evaluations.We evaluate the robustness of agents on MuJoCo tasks using six adversarial at-
+tack methods: (1) Random Attack: adds uniform random noise to state observations; (2) Critic
+Attack (Pattanaik et al., 2018): perturbs states based on the action-value function; (3) MAD At-
+tack (Zhang et al., 2020c): maximizes the discrepancy between policies in clean and perturbed
+states; (4) RS Attack (Zhang et al., 2020c): first learns a robust action-value function, then con-
+ducts critic-based attacks guided by it; (5) SA-RL (Zhang et al., 2021): employs a learned adversary
+against the victim to perturb the state; (6) PA-AD (Sun et al., 2022): trains an adversarial agent to
+identify a vulnerable perturbation direction, followed by an FGSM attack along that direction.
+BAR-PPO.We implement both ARPO and BARPO on top of the PPO algorithm (Schulman et al.,
+2017), a widely adopted policy-gradient method that serves as a standard baseline in adversarially
+robust DRL research. To improve convergence and efficiency, we integrate SPO dynamics into the
+bilevel framework using a regularization weightκ, resulting in a practical instantiation of BARPO,
+referred to as BAR-PPO. For solving the inner optimization problem, we employ SGLD (Gelfand
+& Mitter, 1991) to obtain the adversarial perturbation policyν ⋄. In the outer optimization, we treat
+the inner solution as fixed and omit second-order terms to facilitate efficient updates of the primary
+policy. A complete description and further implementation details can be found in Appendix F. In
+the following,BARPOrefers to the combination of SPO-based guidance with the bilevel framework,
+BARPO without guidanceuses only the bilevel framework,ARPOuses only the maximin framework,
+andARPO with guidanceimproves the maximin training through combining the SPO guidance.
+5.2 COMPARISONRESULTS
+BARPO Consistently Improves over ARPO.Figure 5 compares the natural and robust perfor-
+mance of four methods: SPO, ARPO, BARPO without SPO guidance, and BARPO with SPO guid-
+ance. Detailed evaluation results are provided in Appendix G.1. Notably, BARPO without SPO
+guidance consistently outperforms ARPO across all environments, improving both natural and ro-
+bust returns. Even in environments like Walker2d and Halfcheetah, it achieves substantial gains
+in robustness. Specifically, BARPO without SPO guidance improves the natural return by approx-
+imately 75%, 104%, 156%, and 113% on Hopper, Walker2d, Halfcheetah, and Ant, respectively,
+while boosting robust return by about 4%, 173%, 209%, and 61% in the worst-case setting. Remark-
+ably, in the Hopper and Walker2d tasks, BARPO without SPO guidance achieves natural returns on
+par with state-of-the-art methods. As further illustrated in Figure 6, BARPO improves the training
+dynamics by guiding policy learning toward regions in the landscape that yield higher returns.
+BAR-PPO Exhibits Superior Natural and Robust Performance.As shown in Table 2, BAR-PPO
+demonstrates strong overall performance across all four MuJoCo environments, achieving both high
+natural returns and robust resilience to adversarial perturbations. In particular, BAR-PPO outper-
+forms vanilla PPO in terms of natural returns on Hopper and Walker2d, and achieves comparable
+performance on Halfcheetah and Ant. In terms of worst-case robust returns, BAR-PPO significantly
+surpasses all baselines, with improvements of 4%, 154%, 40%, and 20% over the second best, re-
+8
+Preprint
+Table 2: Average returns (±std) over 50 episodes for baselines and BAR-PPO on MuJoCo tasks.
+Results include natural return, returns under six attacks, the worst return and robustness under these
+attacks. Bold and underlined values indicate the top and second performances, respectively.
+EnvironmentMethodNaturalReturn Return under Attack Worst-case RobustnessRandom Critic MAD RS SA-RL PA-AD Worst
+Hopper
+(ϵ= 0.075)
+PPO 3081±6382923±7672035±10351763±619756±3679±2823±18279±2-0.974SA 3518±2722835±8663662±63045±7971407±361476 ±2551286±2821286±282-0.634RADIAL 3254±7143170±7543706±112558±8881307±420993±7171696±574993±717-0.718WocaR 3629±353637 ±293657±303150 ±7371171±10131452±662124±8721171±1013-0.677BAR3684±203692±243678 ±193437±5551340±421728±621908 ±4101340±42-0.636
+Walker2d
+(ϵ= 0.05)
+PPO 4662±224628±214584±154507±6751062±150719±1079336±252336±252-0.928SA4875±2784907±1875029±744833±1322775±13083356±1433997±1152997±1152-0.795RADIAL 2531±10892170±11022063±10682316±11711239±800426±221353±921426±22-0.832WocaR 4226±9384347±8924342±8754373±8503358±12422385±8401064±9991064±999-0.752BAR 4732±864718 ±594727 ±364750 ±654646±534285±12822699±11922699±1192-0.436
+Halfcheetah
+(ϵ= 0.15)
+PPO5048±5264463±6503281±1101918±5411049±50-213±103-69±22-213±103-1.042SA 4780±14564983±11225035±12453759±19632727±17071443±10821551±11391443±1082-0.698RADIAL 4739±804642±754546±3292961±14781327±11121522±10591968±12841327±1112-0.720WocaR 4723±4624798±694846±3494543±5663302±17182270±13182498±12242270±1318-0.519BAR 4837±994741±5014803±544729±1054265±10773894±13223181±15933181±1593-0.342
+Ant
+(ϵ= 0.15)
+PPO5381±13085329±9764696±10151768±9291097±633-1398±318-3107±1071-3107±1071-1.577SA 5367 ±945217±4105012±1135114±2944396±12254227±1772355±16202355±1620-0.539RADIAL 4358±984309±2063628±2674205±1273742±6962364±473261±1342364 ±47-0.462WocaR 4069±5983911±6593978±1903689±8413176±9081868±991830±1021830±102-0.550BAR 5024±1174979±1144777±1224843±1204171±8263367±9022825±7572825±757-0.438
+(a) Hopper
+ (b) Walker2d
+ (c) Halfcheetah
+ (d) Ant
+Figure 6: Natural training curves of ARPO and BARPO with and without SPO-guidance.
+spectively. Notably, BAR-PPO achieves the highest robustness across Walker2d, Halfcheetah, and
+Ant, and is on par with the strongest robustness on Hopper, with a negligible gap of only 0.3%.
+5.3 ABLATIONSTUDIES
+Effect of SPO-Guidance.As shown in Figures 5 and 6, incorporating SPO-based guidance further
+enhances the natural performance of BARPO, particularly in more complex environments such as
+Halfcheetah and Ant. In certain cases, the enhancement in natural returns is accompanied by corre-
+sponding improvements in robust returns, as observed in the Hopper and Ant tasks. However, this
+incorporation often involves a trade-off, where improvements in natural performance may lead to a
+reduction in the worst-case robustness, as presented in the Walker2d and Halfcheetah environments.
+Comparisons between BARPO and ARPO with SPO-Guidance.To further validate the effec-
+tiveness of BARPO, we compare it with ARPO enhanced by SPO-based guidance. As presented
+in Table 3, on the Hopper, Halfcheetah, and Ant tasks, BARPO exhibits a slight reduction in natu-
+ral returns compared to ARPO with guidance, approximately 0.4%, 3.2%, and 6.8%, respectively.
+However, BARPO achieves significantly higher robust returns and markedly stronger robustness,
+with improvements of 19%, 193%, 138% in robust returns, and 8.4%, 56%, and 43% in robustness
+metrics. On the Walker2d task, BARPO attains gains in both natural and robust returns, with a mi-
+nor compromise in robustness. These findings indicate that although integrating SPO guidance into
+ARPO can enhance performance to some extent, this direct combination does not effectively miti-
+gate the reshaping effect induced by the strongest adversary. Consequently, numerous sticky FOSPs
+with low returns persist, posing challenges for optimization. In contrast, BARPO substantially re-
+shapes the landscape, enabling the discovery of improved navigation that yields higher returns.
+We also conduct additional ablations in Appendices G.6 and G.7 to identify the effects of bilevel
+structure, SPO guidance, and KL surrogate. These further validate the effectiveness of BARPO.
+9
+Preprint
+Table 3: Comparisons between BARPO and ARPO with SPO-based guidance.
+EnvironmentMethod NaturalReturn Return under Attack Worst-case RobustnessRandom Critic MAD RS SA-RL PA-AD Worst
+Hopper
+(ϵ= 0.075)
+ARPO (w g)3699±113652±2223693±83132±6921130±301278±3591756±4151130±30-0.694BARPO 3684±20↓0.4%3692±243678±193437±5551340±421728±621908±4101340±42↑19%-0.636↑8.4%
+Walker2d
+(ϵ= 0.05)
+ARPO (w g) 4206±304231±404283±384226±683139±14423565±9882496±18712496±1871-0.406BARPO4732±86↑11%4718±594727±364750±654646±534285±12822699±11922699±1192↑8.1% -0.436↓7.4%
+Halfcheetah
+(ϵ= 0.15)
+ARPO (w g)4997±714934±575040±502570±15883605±481356±11651086±7581086±758-0.783BARPO 4837±99↓3.2% 4741±5014803±544729±1054265±10773894±13223181±15933181±1593↑193%-0.342↑56%
+Ant
+(ϵ= 0.15)
+ARPO (w g)5390±1205227±1864768±924059±9212670±13651185±2531757±8111185±253-0.773BARPO 5024±117↓6.8% 4979±1144777±1224843±1204171±8263367±9022825±7572825±757↑138%-0.438↑43%
+6 CONCLUSION
+In this paper, we explore whether the theoretical alignment between optimality and robustness can be
+realized in practical policy optimization, and propose BARPO, a novel bilevel framework that uni-
+fies standard and adversarially robust policy optimization. Through extensive analysis, we reveal a
+fundamental tradeoff between optimality and robustness in existing policy gradient methods, expos-
+ing a critical gap between theory and practice. Notably, our work demystifies the underlying cause
+of this tension from the perspective of optimization landscapes and value space geometry. Specifi-
+cally, the strongest adversaries in ARPO significantly reshape the learning landscapes by introducing
+numerous sticky and deceptive local optima. While this promotes robustness, it also hinders effec-
+tive policy improvement by making the landscape more rugged and difficult to navigate. BARPO
+refines the landscapes by modulating the adversary strength, thereby creating pathways toward su-
+perior policies and reducing the prevalence of poor sticky local optima. Surprisingly, this bilevel
+framework empirically showcases the potential for approaching the globally optimal robust policy,
+suggesting a promising step toward bridging theoretical guarantees and practical performance.
+ETHICSSTATEMENT
+All authors of this paper have carefully reviewed and adhered to the ICLR Code of Ethics.
+REPRODUCIBILITYSTATEMENT
+All benchmarks, as well as the experimental setup, are based on or derived from open-sourced work.
+We have given relevant references in the paper, and the details of our algorithm and experiments are
+provided in Section 5 and Appendices F and G.
+We have provided detailed analysis and complete proofs for each theorem and proposition in the
+Appendices C, D, E, and H.
+REFERENCES
+Alekh Agarwal, Sahand Negahban, and Martin J Wainwright. Fast global convergence of gradient
+methods for high-dimensional statistical recovery.The Annals of Statistics, 40(5):2452, 2012.
+Alekh Agarwal, Nan Jiang, Sham M Kakade, and Wen Sun. Reinforcement learning: Theory and
+algorithms.CS Dept., UW Seattle, Seattle, WA, USA, Tech. Rep, 32:96, 2019.
+Alekh Agarwal, Sham M Kakade, Jason D Lee, and Gaurav Mahajan. On the theory of policy
+gradient methods: Optimality, approximation, and distribution shift.Journal of Machine Learning
+Research, 22(98):1–76, 2021.
+Zeyuan Allen-Zhu, Yuanzhi Li, and Zhao Song. A convergence theory for deep learning via over-
+parameterization. InInternational Conference on Machine Learning, pp. 242–252. PMLR, 2019.
+Heinz H Bauschke, J ´erˆome Bolte, and Marc Teboulle. A descent lemma beyond lipschitz gradient
+continuity: first-order methods revisited and applications.Mathematics of Operations Research,
+42(2):330–348, 2017.
+10
+Preprint
+Heinz H Bauschke, Minh N Dao, and Scott B Lindstrom. Regularizing with bregman–moreau
+envelopes.SIAM Journal on Optimization, 28(4):3208–3228, 2018.
+Vahid Behzadan and Arslan Munir. Vulnerability of deep reinforcement learning to policy induc-
+tion attacks. InMachine Learning and Data Mining in Pattern Recognition: 13th International
+Conference, MLDM 2017, New York, NY, USA, July 15-20, 2017, Proceedings 13, pp. 262–275.
+Springer, 2017a.
+Vahid Behzadan and Arslan Munir. Whatever does not kill deep reinforcement learning, makes it
+stronger.arXiv preprint arXiv:1712.09344, 2017b.
+Roman Belaire, Arunesh Sinha, and Pradeep Varakantham. On minimizing adversarial counterfac-
+tual error in adversarial reinforcement learning. InThe Thirteenth International Conference on
+Learning Representations, 2025.
+Shubham Bharti, Xuezhou Zhang, Adish Singla, and Jerry Zhu. Provable defense against backdoor
+policies in reinforcement learning.Advances in Neural Information Processing Systems, 35:
+14704–14714, 2022.
+J´erˆome Bolte, Shoham Sabach, and Marc Teboulle. Proximal alternating linearized minimization
+for nonconvex and nonsmooth problems.Mathematical Programming, 146(1):459–494, 2014.
+J´erˆome Bolte, Shoham Sabach, Marc Teboulle, and Yakov Vaisbourd. First order methods beyond
+convexity and lipschitz gradient continuity with applications to quadratic inverse problems.SIAM
+Journal on Optimization, 28(3):2131–2151, 2018.
+Alexander Bukharin, Yan Li, Yue Yu, Qingru Zhang, Zhehui Chen, Simiao Zuo, Chao Zhang,
+Songan Zhang, and Tuo Zhao. Robust multi-agent reinforcement learning via adversarial reg-
+ularization: Theoretical foundation and stable algorithms.Advances in Neural Information Pro-
+cessing Systems, 36, 2024.
+Li Chen, Penghao Wu, Kashyap Chitta, Bernhard Jaeger, Andreas Geiger, and Hongyang Li. End-
+to-end autonomous driving: Challenges and frontiers.IEEE Transactions on Pattern Analysis and
+Machine Intelligence, 2024.
+Long Chen, Yuchen Li, Chao Huang, Bai Li, Yang Xing, Daxin Tian, Li Li, Zhongxu Hu, Xiaox-
+iang Na, Zixuan Li, et al. Milestones in autonomous driving and intelligent vehicles: Survey of
+surveys.IEEE Transactions on Intelligent Vehicles, 8(2):1046–1056, 2022.
+Robert Dadashi, Adrien Ali Taiga, Nicolas Le Roux, Dale Schuurmans, and Marc G Bellemare.
+The value function polytope in reinforcement learning. InInternational Conference on Machine
+Learning, pp. 1486–1495. PMLR, 2019.
+Kuangyu Ding, Jingyang Li, and Kim-Chuan Toh. Nonconvex stochastic bregman proximal gradient
+method with application to deep learning.Journal of Machine Learning Research, 26(39):1–44,
+2025.
+Juncheng Dong, Hao-Lun Hsu, Qitong Gao, Vahid Tarokh, and Miroslav Pajic. Variational adversar-
+ial training towards policies with improved robustness. InProceedings of the 28th International
+Conference on Artificial Intelligence and Statistics (AISTATS), 2025.
+Dmitriy Drusvyatskiy and Adrian S Lewis. Error bounds, quadratic growth, and linear convergence
+of proximal methods.Mathematics of operations research, 43(3):919–948, 2018.
+Simon Du, Jason Lee, Haochuan Li, Liwei Wang, and Xiyu Zhai. Gradient descent finds global
+minima of deep neural networks. InInternational Conference on Machine Learning, pp. 1675–
+1685. PMLR, 2019.
+Yu Feng and Yuhai Tu. The inverse variance–flatness relation in stochastic gradient descent is critical
+for finding flat minima.Proceedings of the National Academy of Sciences, 118(9):e2015617118,
+2021.
+Marc Fischer, Matthew Mirman, Steven Stalder, and Martin Vechev. Online robustness training for
+deep reinforcement learning.arXiv preprint arXiv:1911.00887, 2019.
+11
+Preprint
+Tim Franzmeyer, Stephen Marcus McAleer, Joao F Henriques, Jakob Nicolaus Foerster, Philip Torr,
+Adel Bibi, and Christian Schroeder de Witt. Illusory attacks: Information-theoretic detectability
+matters in adversarial attacks. InThe Twelfth International Conference on Learning Representa-
+tions, 2024.
+Saul B Gelfand and Sanjoy K Mitter. Recursive stochastic algorithms for global optimization in rˆd.
+SIAM Journal on Control and Optimization, 29(5):999–1018, 1991.
+Adam Gleave, Michael Dennis, Cody Wild, Neel Kant, Sergey Levine, and Stuart Russell. Adver-
+sarial policies: Attacking deep reinforcement learning. InInternational Conference on Learning
+Representations, 2020. URLhttps://openreview.net/forum?id=HJgEMpVFwB.
+Ian J Goodfellow, Jonathon Shlens, and Christian Szegedy. Explaining and harnessing adversarial
+examples. InInternational Conference on Learning Representations, 2015.
+Sven Gowal, Krishnamurthy Dj Dvijotham, Robert Stanforth, Rudy Bunel, Chongli Qin, Jonathan
+Uesato, Relja Arandjelovic, Timothy Mann, and Pushmeet Kohli. Scalable verified training for
+provably robust image classification. InProceedings of the IEEE/CVF International Conference
+on Computer Vision, pp. 4842–4851, 2019.
+Zhaoyuan Gu, Zhenzhong Jia, and Howie Choset. Adversary a3c for robust reinforcement learning.
+arXiv preprint arXiv:1912.00330, 2019.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1 incentivizes reasoning in llms through
+reinforcement learning.Nature, 645:633–638, 2025. doi: 10.1038/s41586-025-09422-z.
+Junfeng Guo, Ang Li, Lixu Wang, and Cong Liu. Policycleanse: Backdoor detection and miti-
+gation for competitive reinforcement learning. InProceedings of the IEEE/CVF International
+Conference on Computer Vision, pp. 4699–4708, 2023.
+Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine. Soft actor-critic: Off-policy
+maximum entropy deep reinforcement learning with a stochastic actor. InInternational Confer-
+ence on Machine Learning, pp. 1861–1870. PMLR, 2018.
+Sihong He, Songyang Han, Sanbao Su, Shuo Han, Shaofeng Zou, and Fei Miao. Robust multi-agent
+reinforcement learning with state uncertainty.Transactions on Machine Learning Research, 2023.
+ISSN 2835-8856. URLhttps://openreview.net/forum?id=CqTkapZ6H9.
+Sandy Huang, Nicolas Papernot, Ian Goodfellow, Yan Duan, and Pieter Abbeel. Adversarial attacks
+on neural network policies. In5th International Conference on Learning Representations (ICLR)
+Workshop Proceedings, 2017.
+Julian Ibarz, Jie Tan, Chelsea Finn, Mrinal Kalakrishnan, Peter Pastor, and Sergey Levine. How to
+train your robot with deep reinforcement learning: lessons we have learned.The International
+Journal of Robotics Research, 40(4-5):698–721, 2021.
+Inaam Ilahi, Muhammad Usama, Junaid Qadir, Muhammad Umar Janjua, Ala Al-Fuqaha, Dinh Thai
+Hoang, and Dusit Niyato. Challenges and countermeasures for adversarial attacks on deep rein-
+forcement learning.IEEE Transactions on Artificial Intelligence, 3(2):90–109, 2021.
+Matthew Inkawhich, Yiran Chen, and Hai Li. Snooping attacks on deep reinforcement learning.
+InProceedings of the 19th International Conference on Autonomous Agents and MultiAgent Sys-
+tems, AAMAS ’20, pp. 557–565, Richland, SC, 2020. International Foundation for Autonomous
+Agents and Multiagent Systems. ISBN 9781450375184.
+Garud N Iyengar. Robust dynamic programming.Mathematics of Operations Research, 30(2):
+257–280, 2005.
+Parameswaran Kamalaruban, Yu-Ting Huang, Ya-Ping Hsieh, Paul Rolland, Cheng Shi, and V olkan
+Cevher. Robust reinforcement learning via adversarial training with langevin dynamics.Advances
+in Neural Information Processing Systems, 33:8127–8138, 2020.
+12
+Preprint
+Hamed Karimi, Julie Nutini, and Mark Schmidt. Linear convergence of gradient and proximal-
+gradient methods under the polyak-łojasiewicz condition. InJoint European conference on ma-
+chine learning and knowledge discovery in databases, pp. 795–811. Springer, 2016.
+Panagiota Kiourti, Kacper Wardega, Susmit Jha, and Wenchao Li. Trojdrl: evaluation of backdoor
+attacks on deep reinforcement learning. In2020 57th ACM/IEEE Design Automation Conference
+(DAC), pp. 1–6. IEEE, 2020.
+B Ravi Kiran, Ibrahim Sobh, Victor Talpaert, Patrick Mannion, Ahmad A Al Sallab, Senthil Yoga-
+mani, and Patrick P ´erez. Deep reinforcement learning for autonomous driving: A survey.IEEE
+Transactions on Intelligent Transportation Systems, 23(6):4909–4926, 2021.
+Ezgi Korkmaz. Adversarial robust deep reinforcement learning requires redefining robustness. In
+Proceedings of the AAAI Conference on Artificial Intelligence, volume 37, pp. 8369–8377, 2023.
+Jernej Kos and Dawn Song. Delving into adversarial attacks on deep policies. InInternational
+Conference on Learning Representations Workshop, 2017. URLhttps://openreview.
+net/forum?id=BJcib5mFe.
+Aounon Kumar, Alexander Levine, and Soheil Feizi. Policy smoothing for provably robust re-
+inforcement learning. InInternational Conference on Learning Representations, 2022. URL
+https://openreview.net/forum?id=mwdfai8NBrJ.
+Aviral Kumar, Vincent Zhuang, Rishabh Agarwal, Yi Su, John D Co-Reyes, Avi Singh, Kate Baumli,
+Shariq Iqbal, Colton Bishop, Rebecca Roelofs, Lei M Zhang, Kay McKinney, Disha Shrivastava,
+Cosmin Paduraru, George Tucker, Doina Precup, Feryal Behbahani, and Aleksandra Faust. Train-
+ing language models to self-correct via reinforcement learning. InThe Thirteenth International
+Conference on Learning Representations, 2025. URLhttps://openreview.net/forum?
+id=CjwERcAU7w.
+Jeongyeol Kwon, Dohyun Kwon, Stephen Wright, and Robert D Nowak. A fully first-order method
+for stochastic bilevel optimization. InInternational Conference on Machine Learning, pp. 18083–
+18113. PMLR, 2023.
+Jaeho Lee and Maxim Raginsky. Minimax statistical learning with wasserstein distances.Advances
+in Neural Information Processing Systems, 31, 2018.
+Haochuan Li, Jian Qian, Yi Tian, Alexander Rakhlin, and Ali Jadbabaie. Convex and non-convex
+optimization under generalized smoothness.Advances in Neural Information Processing Systems,
+36:40238–40271, 2023.
+Haoran Li, Zicheng Zhang, Wang Luo, Congying Han, Yudong Hu, Tiande Guo, and Shichen
+Liao. Towards optimal adversarial robust q-learning with Bellman infinity-error. InProceed-
+ings of the 41st International Conference on Machine Learning, volume 235 ofProceedings
+of Machine Learning Research, pp. 29324–29372. PMLR, 21–27 Jul 2024. URLhttps:
+//proceedings.mlr.press/v235/li24cl.html.
+Haoran Li, Zicheng Zhang, Wang Luo, Congying Han, Jiayu Lv, Tiande Guo, and Yudong Hu.
+Towards optimal adversarial robust reinforcement learning with infinity measurement error.arXiv
+preprint arXiv:2502.16734, 2025.
+Yongyuan Liang, Yanchao Sun, Ruijie Zheng, and Furong Huang. Efficient adversarial training
+without attacking: Worst-case-aware robust reinforcement learning.Advances in Neural Infor-
+mation Processing Systems, 35:22547–22561, 2022.
+Yongyuan Liang, Yanchao Sun, Ruijie Zheng, Xiangyu Liu, Benjamin Eysenbach, Tuomas Sand-
+holm, Furong Huang, and Stephen Marcus McAleer. Game-theoretic robust reinforcement learn-
+ing handles temporally-coupled perturbations. InThe Twelfth International Conference on Learn-
+ing Representations, 2024. URLhttps://openreview.net/forum?id=wZWTHU7AsQ.
+Timothy P. Lillicrap, Jonathan J. Hunt, Alexander Pritzel, Nicolas Heess, Tom Erez, Yuval Tassa,
+David Silver, and Daan Wierstra. Continuous control with deep reinforcement learning. InIn-
+ternational Conference on Learning Representations, 2016. URLhttps://openreview.
+net/forum?id=kJP8gA8BxRY.
+13
+Preprint
+Yen-Chen Lin, Zhang-Wei Hong, Yuan-Hong Liao, Meng-Li Shih, Ming-Yu Liu, and Min Sun. Tac-
+tics of adversarial attack on deep reinforcement learning agents. InInternational Joint Confer-
+ence on Artificial Intelligence, pp. 3756–3762, 2017. URLhttps://doi.org/10.24963/
+ijcai.2017/525.
+Xiangyu Liu, Souradip Chakraborty, Yanchao Sun, and Furong Huang. Rethinking adversarial
+policies: A generalized attack formulation and provable defense in RL. InThe Twelfth Interna-
+tional Conference on Learning Representations, 2024a. URLhttps://openreview.net/
+forum?id=pDCublKPmG.
+Xiangyu Liu, Chenghao Deng, Yanchao Sun, Yongyuan Liang, and Furong Huang. Beyond worst-
+case attacks: Robust RL with adaptive defense via non-dominated policies. InThe Twelfth In-
+ternational Conference on Learning Representations, 2024b. URLhttps://openreview.
+net/forum?id=DFTHW0MyiW.
+Zhihao Liu, Quan Liu, Wenjun Xu, Lihui Wang, and Zude Zhou. Robot learning towards smart
+robotic manufacturing: A review.Robotics and Computer-Integrated Manufacturing, 77:102360,
+2022.
+Chris Lu, Timon Willi, Alistair Letcher, and Jakob Nicolaus Foerster. Adversarial cheap talk. In
+International Conference on Machine Learning, pp. 22917–22941. PMLR, 2023.
+Zhaosong Lu and Sanyou Mei. First-order penalty methods for bilevel optimization.SIAM Journal
+on Optimization, 34(2):1937–1969, 2024.
+Aleksander Madry, Aleksandar Makelov, Ludwig Schmidt, Dimitris Tsipras, and Adrian Vladu. To-
+wards deep learning models resistant to adversarial attacks. InInternational Conference on Learn-
+ing Representations, 2018. URLhttps://openreview.net/forum?id=rJzIBfZAb.
+V olodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G Belle-
+mare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al. Human-level
+control through deep reinforcement learning.Nature, 518(7540):529–533, 2015.
+V olodymyr Mnih, Adria Puigdomenech Badia, Mehdi Mirza, Alex Graves, Timothy Lillicrap, Tim
+Harley, David Silver, and Koray Kavukcuoglu. Asynchronous methods for deep reinforcement
+learning. InInternational Conference on Machine Learning, pp. 1928–1937. PMLR, 2016.
+Takashi Mori, Liu Ziyin, Kangqiao Liu, and Masahito Ueda. Power-law escape rate of sgd. In
+International Conference on Machine Learning, pp. 15959–15975. PMLR, 2022.
+Ion Necoara, Yu Nesterov, and Francois Glineur. Linear convergence of first order methods for
+non-strongly convex optimization.Mathematical programming, 175(1):69–107, 2019.
+Buqing Nie, Jingtian Ji, Yangqing Fu, and Yue Gao. Improve robustness of reinforcement learning
+against observation perturbations vial ∞lipschitz policy networks. InProceedings of the AAAI
+Conference on Artificial Intelligence, volume 38, pp. 14457–14465, 2024.
+Arnab Nilim and Laurent Ghaoui. Robustness in markov decision problems with uncertain transition
+matrices.Advances in neural information processing systems, 16, 2003.
+Tuomas Oikarinen, Wang Zhang, Alexandre Megretski, Luca Daniel, and Tsui-Wei Weng. Robust
+deep reinforcement learning through adversarial loss.Advances in Neural Information Processing
+Systems, 34:26156–26167, 2021.
+Anay Pattanaik, Zhenyi Tang, Shuijing Liu, Gautham Bommannan, and Girish Chowdhary. Ro-
+bust deep reinforcement learning with adversarial attacks. InInternational Conference on Au-
+tonomous Agents and Multiagent Systems, pp. 2040–2042, 2018. URLhttp://dl.acm.org/
+citation.cfm?id=3238064.
+Lerrel Pinto, James Davidson, Rahul Sukthankar, and Abhinav Gupta. Robust adversarial reinforce-
+ment learning. InInternational conference on machine learning, pp. 2817–2826. PMLR, 2017.
+Matteo Pirotta, Marcello Restelli, and Luca Bascetta. Policy gradient in lipschitz markov decision
+processes.Machine Learning, 100:255–283, 2015.
+14
+Preprint
+John Schulman, Sergey Levine, Pieter Abbeel, Michael Jordan, and Philipp Moritz. Trust region
+policy optimization. InInternational Conference on Machine Learning, pp. 1889–1897. PMLR,
+2015.
+John Schulman, Philipp Moritz, Sergey Levine, Michael Jordan, and Pieter Abbeel. High-
+dimensional continuous control using generalized advantage estimation. InInternational Con-
+ference on Learning Representations, 2016.
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms.arXiv preprint arXiv:1707.06347, 2017.
+Qianli Shen, Yan Li, Haoming Jiang, Zhaoran Wang, and Tuo Zhao. Deep reinforcement learning
+with robust and smooth policy. InInternational Conference on Machine Learning, pp. 8707–
+8718. PMLR, 2020.
+David Silver, Guy Lever, Nicolas Heess, Thomas Degris, Daan Wierstra, and Martin Riedmiller.
+Deterministic policy gradient algorithms. InInternational Conference on Machine Learning, pp.
+387–395. PMLR, 2014.
+David Silver, Aja Huang, Chris J Maddison, Arthur Guez, Laurent Sifre, George Van Den Driessche,
+Julian Schrittwieser, Ioannis Antonoglou, Veda Panneershelvam, Marc Lanctot, et al. Mastering
+the game of go with deep neural networks and tree search.Nature, 529(7587):484–489, 2016.
+Aman Sinha, Hongseok Namkoong, and John Duchi. Certifiable distributional robustness with
+principled adversarial training. InInternational Conference on Learning Representations, 2018.
+URLhttps://openreview.net/forum?id=Hk6kPgZA-.
+Chung-En Sun, Sicun Gao, and Tsui-Wei Weng. Breaking the barrier: Enhanced utility and robust-
+ness in smoothed DRL agents. InProceedings of the 41st International Conference on Machine
+Learning, volume 235 ofProceedings of Machine Learning Research, pp. 46957–46987. PMLR,
+21–27 Jul 2024. URLhttps://proceedings.mlr.press/v235/sun24b.html.
+Yanchao Sun, Ruijie Zheng, Yongyuan Liang, and Furong Huang. Who is the strongest enemy?
+towards optimal and efficient evasion attacks in deep RL. InInternational Conference on Learning
+Representations, 2022. URLhttps://openreview.net/forum?id=JM2kFbJvvI.
+Richard S Sutton. Learning to predict by the methods of temporal differences.Machine Learning,
+3:9–44, 1988.
+Chen Tang, Ben Abbatematteo, Jiaheng Hu, Rohan Chandra, Roberto Mart ´ın-Mart´ın, and Peter
+Stone. Deep reinforcement learning for robotics: A survey of real-world successes. InProceed-
+ings of the AAAI Conference on Artificial Intelligence, volume 39, pp. 28694–28698, 2025.
+Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control.
+In2012 IEEE/RSJ International Conference on Intelligent Robots and Systems, pp. 5026–5033.
+IEEE, 2012.
+Lun Wang, Zaynah Javed, Xian Wu, Wenbo Guo, Xinyu Xing, and Dawn Song. Backdoorl: Back-
+door attack against competitive reinforcement learning. InInternational Joint Conference on Ar-
+tificial Intelligence, pp. 3699–3705, 2021. URLhttps://doi.org/10.24963/ijcai.
+2021/509.
+Mingze Wang and Lei Wu. A theoretical analysis of noise geometry in stochastic gradient descent.
+arXiv preprint arXiv:2310.00692, 2023.
+Yisen Wang, Xingjun Ma, James Bailey, Jinfeng Yi, Bowen Zhou, and Quanquan Gu. On the
+convergence and robustness of adversarial training. In Kamalika Chaudhuri and Ruslan Salakhut-
+dinov (eds.),Proceedings of the 36th International Conference on Machine Learning, volume 97
+ofProceedings of Machine Learning Research, pp. 6586–6595. PMLR, 09–15 Jun 2019. URL
+https://proceedings.mlr.press/v97/wang19i.html.
+Tsui-Wei Weng, Krishnamurthy Dj Dvijotham, Jonathan Uesato, Kai Xiao, Sven Gowal, Robert
+Stanforth, and Pushmeet Kohli. Toward evaluating robustness of deep reinforcement learning
+with continuous control. InInternational Conference on Learning Representations, 2019.
+15
+Preprint
+Wolfram Wiesemann, Daniel Kuhn, and Berc ¸ Rustem. Robust markov decision processes.Mathe-
+matics of Operations Research, 38(1):153–183, 2013.
+Stephan Wojtowytsch. Stochastic gradient descent with noise of machine learning type part ii:
+Continuous time analysis.Journal of Nonlinear Science, 34(1):16, 2024.
+Fan Wu, Linyi Li, Zijian Huang, Yevgeniy V orobeychik, Ding Zhao, and Bo Li. CROP: Certifying
+robust policies for reinforcement learning through functional smoothing. InInternational Confer-
+ence on Learning Representations, 2022a. URLhttps://openreview.net/forum?id=
+HOjLHrlZhmx.
+Jingfeng Wu, Wenqing Hu, Haoyi Xiong, Jun Huan, Vladimir Braverman, and Zhanxing Zhu. On the
+noisy gradient descent that generalizes as sgd. InInternational Conference on Machine Learning,
+pp. 10367–10376. PMLR, 2020.
+Lei Wu, Mingze Wang, and Weijie Su. The alignment property of sgd noise and how it helps select
+flat minima: A stability analysis.Advances in Neural Information Processing Systems, 35:4680–
+4693, 2022b.
+Huajian Xin, Z.Z. Ren, Junxiao Song, Zhihong Shao, Wanjia Zhao, Haocheng Wang, Bo Liu, Liyue
+Zhang, Xuan Lu, Qiushi Du, Wenjun Gao, Haowei Zhang, Qihao Zhu, Dejian Yang, Zhibin
+Gou, Z.F. Wu, Fuli Luo, and Chong Ruan. Deepseek-prover-v1.5: Harnessing proof assistant
+feedback for reinforcement learning and monte-carlo tree search. InThe Thirteenth International
+Conference on Learning Representations, 2025. URLhttps://openreview.net/forum?
+id=I4YAIwrsXa.
+Bohang Zhang, Jikai Jin, Cong Fang, and Liwei Wang. Improved analysis of clipping algorithms for
+non-convex optimization.Advances in Neural Information Processing Systems, 33:15511–15521,
+2020a.
+Bohang Zhang, Du Jiang, Di He, and Liwei Wang. Rethinking lipschitz neural networks and certified
+robustness: A boolean function perspective.Advances in Neural Information Processing Systems,
+35:19398–19413, 2022.
+Huan Zhang, Hongge Chen, Chaowei Xiao, Sven Gowal, Robert Stanforth, Bo Li, Duane Boning,
+and Cho-Jui Hsieh. Towards stable and efficient training of verifiably robust neural networks. In
+International Conference on Learning Representations, 2020b. URLhttps://openreview.
+net/forum?id=Skxuk1rFwB.
+Huan Zhang, Hongge Chen, Chaowei Xiao, Bo Li, Mingyan Liu, Duane Boning, and Cho-Jui Hsieh.
+Robust deep reinforcement learning against adversarial perturbations on state observations.Ad-
+vances in Neural Information Processing Systems, 33:21024–21037, 2020c.
+Huan Zhang, Hongge Chen, Duane S Boning, and Cho-Jui Hsieh. Robust reinforcement learning
+on state observations with learned optimal adversary. InInternational Conference on Learning
+Representations, 2021. URLhttps://openreview.net/forum?id=sCZbhBvqQaU.
+Jingzhao Zhang, Tianxing He, Suvrit Sra, and Ali Jadbabaie. Why gradient clipping accelerates
+training: A theoretical justification for adaptivity. InInternational Conference on Learning Rep-
+resentations, 2020d. URLhttps://openreview.net/forum?id=BJgnXpVYwS.
+Zhanpeng Zhou, Mingze Wang, Yuchen Mao, Bingrui Li, and Junchi Yan. Sharpness-aware mini-
+mization efficiently selects flatter minima late in training. InThe Thirteenth International Confer-
+ence on Learning Representations, 2025. URLhttps://openreview.net/forum?id=
+aD2uwhLbnA.
+Zhanxing Zhu, Jingfeng Wu, Bing Yu, Lei Wu, and Jinwen Ma. The anisotropic noise in stochastic
+gradient descent: Its behavior of escaping from sharp minima and regularization effects. In Ka-
+malika Chaudhuri and Ruslan Salakhutdinov (eds.),Proceedings of the 36th International Con-
+ference on Machine Learning, volume 97 ofProceedings of Machine Learning Research, pp.
+7654–7663. PMLR, 09–15 Jun 2019. URLhttps://proceedings.mlr.press/v97/
+zhu19e.html.
+Difan Zou, Yuan Cao, Dongruo Zhou, and Quanquan Gu. Gradient descent optimizes over-
+parameterized deep relu networks.Machine learning, 109:467–492, 2020.
+16
+Preprint
+A OUTLINE OFAPPENDIX
+•Appendix B:We review related work on adversarial attacks and defenses for reinforcement learn-
+ing against perturbations on state observation.
+•Appendix C:Detailed theoretical analysis of ARPO, including proofs for the adversary’s policy
+gradient (Theorem 3.1) in Appendix C.1, convergence (Theorem 3.2) in Appendix C.2, and learning
+dynamics in Appendix C.3.
+•Appendix D:An intuitive analysis of a toy ISA-MDP, corresponding to Propositions 3.1 and 3.2.
+•Appendix E:The analysis and proof for the KL-based surrogate adversary (Theorem 4.1).
+•Appendix F:Additional implementation details, including pseudocode for ARPO (Appendix
+F.1) and BARPO (Appendix F.2), hyperparameter settings (Appendix F.3), and compute resources
+(Appendix F.4).
+•Appendix G:Additional experimental results, including detailed comparisons (Appendix G.1),
+statistical significance analysis (Appendix G.2), extended experiments on Humanoid (Appendix
+G.3), and ablation studies on the regularization coefficientκ(Appendix G.4) and our proposed
+components (Appendices G.6 and G.7).
+•Appendix H:Further discussions clarifying our contributions and convergence proof (Appendix
+H.1), the novelty of the bilevel framework (Appendix H.2), and a deeper theoretical examination of
+BARPO (Appendices H.3 and H.4).
+•Appendices I and J:A discussion of limitations, future work, and a clarification on the use of
+large language models.
+B RELATEDWORK
+B.1 ATTACKS ONSTATEOBSERVATIONS OFDRL AGENTS
+Adversarial Attacks on State Observations of DRL Agents.The susceptibility of DRL agents
+to adversarial attacks was initially exposed by Huang et al. (2017), who demonstrated that DRL
+policies could be significantly disrupted using the Fast Gradient Sign Method (FGSM) (Goodfel-
+low et al., 2015) in Atari environments. This seminal discovery laid the foundation for a wave of
+subsequent studies on adversarial strategies and policy robustness in DRL. Building on this, Lin
+et al. (2017) and Kos & Song (2017) proposed limited-step perturbation techniques aimed at mis-
+leading DRL policies, revealing that even small, strategically applied modifications could impair
+agent behavior. In a further advancement, Pattanaik et al. (2018) exploited the critic function along-
+side gradient descent to craft adversarial inputs that degrade policy performance more systemati-
+cally. Behzadan & Munir (2017a) extended the threat model by introducing black-box attacks on
+DQN, confirming that adversarial examples could successfully transfer across different network ar-
+chitectures, thereby emphasizing their real-world applicability. Meanwhile, Inkawhich et al. (2020)
+demonstrated that even adversaries with access restricted to action and reward signals, without in-
+ternal model information, could still inflict considerable harm. In the domain of continuous control,
+Weng et al. (2019) devised a two-step adversarial framework leveraging learned dynamics models
+to generate more effective attacks. Furthermore, Zhang et al. (2021) and Sun et al. (2022) advanced
+the field by training adversarial agents using reinforcement learning, giving rise to adaptive attack
+strategies known as SA-RL and PA-AD. Korkmaz (2023) investigated adversarial directions in the
+Arcade Learning Environment and discovered that even state-of-the-art robust agents (Zhang et al.,
+2020c; Oikarinen et al., 2021) remain susceptible to perturbations aligned with policy-independent
+sensitivity axes. Most recently, Liang et al. (2024) proposed a temporally-coupled attack strategy
+that exploits temporal correlations to further compromise the performance of robust policies.
+Other Attacks on DRL Agents.Research by Kiourti et al. (2020); Wang et al. (2021); Bharti
+et al. (2022); Guo et al. (2023) delved deeper into backdoor attacks within reinforcement learning,
+revealing profound vulnerabilities that pose significant threats to policy integrity. In a novel contri-
+bution, Lu et al. (2023) proposed an adversarial cheap talk framework, where an attacker is trained
+via meta-learning to manipulate agent behavior through indirect communication. Franzmeyer et al.
+(2024) introduced a dual ascent-based approach to train an end-to-end illusory attack capable of
+deceiving DRL agents effectively. In the context of multi-agent environments, Gleave et al. (2020)
+17
+Preprint
+examined how adversarial policies can manipulate or destabilize cooperative or competitive dynam-
+ics among agents.
+Collectively, these studies reveal the broad and persistent vulnerability of DRL agents to adversarial
+manipulation across diverse threat models and environments. From observation perturbations and
+black-box attacks to communication-based deception and multi-agent exploitation, adversaries have
+consistently demonstrated the ability to significantly degrade policy performance, highlighting the
+urgent need for continued advancements in defense mechanisms.
+B.2 DEVELOPINGROBUSTDRL AGENTSAGAINSTPERTURBATIONS ONSTATE
+OBSERVATION
+Early Attempts to Develop Robust Agents.Early efforts by Kos & Song (2017); Behzadan &
+Munir (2017b) explored incorporating adversarial states into the replay buffer during training on
+Atari environments, although these approaches yielded only limited robustness improvements. To
+address this, Fischer et al. (2019) proposed a decoupled architecture for DQN, separating it into a Q-
+network and a policy network, and robustly trained the policy component using generated adversarial
+states under provable robustness guarantees.
+Smoothing Techniques.Shen et al. (2020) demonstrated that applying smoothness regularization
+can simultaneously improve both the natural performance and robustness of TRPO (Schulman et al.,
+2015) and DDPG (Silver et al., 2014) algorithms. Building on this idea, Wu et al. (2022a) and Kumar
+et al. (2022) employed Randomized Smoothing (RS) techniques to achieve certifiable robustness
+guarantees. More recently, Sun et al. (2024) proposed an innovative smoothing approach designed
+to mitigate the common issue of robustness overestimation, thereby enhancing both natural and
+robust returns in tandem. Importantly, these smoothing methods are complementary to our work
+and can be seamlessly integrated into our proposed algorithms.
+Robust Multi-Agent DRL.In the context of multi-agent systems, He et al. (2023) investigated
+state adversaries within Markov Games and developed robust multi-agent Q-learning and actor-
+critic algorithms to achieve robust equilibrium solutions. Building on robustness regularization
+techniques (Shen et al., 2020; Zhang et al., 2020c), Bukharin et al. (2024) extended these methods
+to multi-agent environments by considering sub-optimal Lipschitz continuous policies in smooth
+settings. Liu et al. (2024a) proposed an adversarial training framework employing two timescales
+to ensure effective convergence towards robust policies. Another research direction involves alter-
+nating training between agents and learned adversaries (Zhang et al., 2021; Sun et al., 2022), which
+Liang et al. (2024) further formalized within a game-theoretic framework.
+Beyond the Worst-Case Robustness.Furthermore, Liu et al. (2024b) introduced an adaptive de-
+fense mechanism during testing, leveraging a set of non-dominated policies. The latest work by
+Belaire et al. (2025) considers the partial observability setting and balances the value optimization
+with robustness based on beliefs.
+Adversarially Robust Training for DRL Agents.In this paper, we mainly focus on the adversari-
+ally robust training paradigm. Zhang et al. (2020c) formally modeled state-adversarial reinforcement
+learning as a state-adversarial Markov Decision Process and highlighted the potential absence of an
+Optimal Robust Policy. To tackle this, they introduced a TV-distance-based regularization technique
+to balance robustness with nominal performance. Building on this, Oikarinen et al. (2021) employed
+certified robustness bounds to construct the adversarial loss, which they integrated with standard
+training objectives. Liang et al. (2022) enhanced training efficiency by estimating worst-case value
+functions and combining them with classical Temporal Difference (TD) target (Sutton, 1988) or
+Generalized Advantage Estimation (GAE) (Schulman et al., 2016). Nie et al. (2024) proposed a
+DRL framework for discrete action spaces based on SortNet (Zhang et al., 2022), which ensures
+global Lipschitz continuity and eliminates the need for training additional adversarial agents. More
+recently, Li et al. (2024; 2025) developed the universal ISA-MDP framework, within which they
+formally proved the existence of the ORP and demonstrated its consistency with Bellman optimality
+policies. Moreover, they established that an infinity-measurement error is a necessary condition for
+adversarial robustness. However, their theoretical analysis is limited to worst-case settings for RE-
+18
+Preprint
+INFORCE and PPO. In contrast, our analysis builds upon practical policy gradient methods, making
+it broadly applicable to real-world policy optimization.
+These studies underscore the crucial importance of developing robust DRL policies and highlight
+the ongoing challenges in enhancing adversarial robustness in DRL agents.
+B.3 ROBUSTRL AGENTSAGAINSTPERTURBATIONS ONTRANSITIONDYNAMICS
+Research on robustness against transition uncertainty (Pinto et al., 2017; Gu et al., 2019; Ka-
+malaruban et al., 2020; Dong et al., 2025) is primarily formulated as Robust Markov Decision Pro-
+cesses (RMDPs) (Nilim & Ghaoui, 2003; Iyengar, 2005; Wiesemann et al., 2013). This paradigm
+differs fundamentally from SA-MDP. In SA-MDP, the adversary corrupts the policy input, forcing
+the agent to act on distorted observations. Consequently, robustness depends on the policy’s stabil-
+ity with respect to state variations. In contrast, RMDPs involve perturbations to the environment’s
+dynamics. The agent observes the true state, but the transition leads to a worst-case outcome. Since
+the decision precedes the perturbation, state-space smoothness does not guarantee robustness against
+dynamic shifts.
+C ADVERSARIALLYROBUSTPOLICYOPTIMIZATION
+In this section, we present a detailed theoretical analysis of ARPO. In the subsection C.1, we show
+the analysis of policy gradient for the adversary. In the subsection C.2, we show the convergence
+analysis of ARPO. And in the subsection C.3, we explore the learning dynamics in the neighborhood
+of FOSPs in both ARPO and SPO.
+C.1 POLICYGRADIENT FORADVERSARY
+Theorem C.1(Policy Gradient for Adversary).Given a policyπ θ, for all states∈ S, we have
+∇ϑV πθ◦νϑ(s) =E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑ logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+γtQπθ◦νϑ(st, at)∇ϑ logπ θ(at|νϑ(st))
+#
+= 1
+1−γ E(s′,a′)∼dπθ◦νϑ [Qπθ◦νϑ(s′, a′)∇ϑ logπ θ(a′|νϑ(s′))].
+Specifically, consider the direct parameterization representation for adversaryν ϑ :S → S, s7→
+s+ϑ s ∈B(s). Then, for any states i ∈ S, we have the state-wise policy gradient for the adversary
+∇ϑsi
+V πθ◦νϑ(s)
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑst logπ θ(at|st +ϑ st)·I(s t =s i)
+#
+,
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+γtQπθ◦νϑ(st, at)∇ϑst logπ θ(at|st +ϑ st)·I(s t =s i)
+#
+= 1
+1−γ E(s′,a′)∼dπθ◦νϑ
+
+Qπθ◦νϑ(s′, a′)∇ϑs′ logπ θ(a′|s′ +ϑ s′)·I(s ′ =s i)
+
+,
+(1)
+whered π◦ν is the state-action visitation distribution underπ◦νandI(·)is the indicator function.
+Remark C.1.Equation (1) indicates that for computing the strongest adversary, we can decompose
+it into calculating the strongest adversary in every state after sampling.
+Proof.The definition ofV πθ◦νϑ(s)
+V πθ◦νϑ(s) =E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+γtr(st, at)|s0 =s
+#
+=E τ∼πθ◦νϑ,P [R(τ)|s0 =s].
+19
+Preprint
+The probability of attaining trajectoryτ={s 0, a0, s1, a1, . . .}underπθ andν ϑ with initial state
+distributionµ 0 is
+Pθ,ϑ(τ) =µ 0(s0)πθ(a0|νϑ(s0))
+∞Y
+i=1
+P(si|si−1, ai−1)πθ(ai|νϑ(si))
+=µ 0(s0)πθ ◦ν ϑ(a0|s0)
+∞Y
+i=1
+P(si|si−1, ai−1)πθ ◦ν ϑ(ai|si).
+For any states, compute the gradient of the adversarial value function with respect toν.
+∇ϑV πθ◦νϑ(s)
+=∇ ϑ
+Z
+τ
+R(τ)Pθ,ϑ(τ|s0 =s)
+=
+Z
+τ
+R(τ)∇ϑPθ,ϑ(τ|s0 =s)
+=
+Z
+τ
+R(τ)Pθ,ϑ(τ|s0 =s)∇ ϑ logP θ,ϑ(τ|s0 =s)
+=
+Z
+τ
+R(τ)Pθ,ϑ(τ)
+∞X
+t=0
+∇ϑ logπ θ ◦ν ϑ(at|st)
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑ logπ θ ◦ν ϑ(at|st)
+#
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑ logπ θ(at|νϑ(st))
+#
+.
+Letτ :t ={s 0, a0, s1, a1, . . . , st, at}. Furthermore, we have that
+∇ϑV πθ◦νϑ(s)
+=E τ∼πθ◦νϑ,P
+" ∞X
+i=0
+γir(si, ai)
+∞X
+t=0
+∇ϑ logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+∞X
+i=0
+γir(si, ai)∇ϑ logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+Eτt:
+" ∞X
+i=0
+γir(si, ai)∇ϑ logπ θ(at|νϑ(st))|τ :t−1
+##
+=E τ∼πθ◦νϑ,P
+
+
+∞X
+t=0
+Eτt:
+
+
+
+X
+i<t
+γir(si, ai) +
+X
+i≥t
+γir(si, ai)
+
+∇ϑ logπ θ(at|νϑ(st))|τ :t−1
+
+
+
+
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+Eτt:
+" ∞X
+i=t
+γir(si, ai)∇ϑ logπ θ(at|νϑ(st))|τ :t−1
+##
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+∞X
+i=t
+γir(si, ai)∇ϑ logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+Eτt+1:
+" ∞X
+i=t
+γir(si, ai)∇ϑ logπ θ(at|νϑ(st))|τ :t
+##
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+Eτt+1:
+" ∞X
+i=t
+γir(si, ai)|s t, at
+#
+∇ϑ logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+γtQπθ◦νϑ(st, at)∇ϑ logπ θ(at|νϑ(st))
+#
+.
+20
+Preprint
+Algorithm 1Adversarially Robust Policy Optimization withδ-Approximation Adversary
+Input:training stepsKin outer loop, outer loop step sizeη k, inner loop PGD stepK P , inner loop PGD step
+sizeη P , inner loop approximation accuracyδ, batch sizeB
+Output:adversarially robust policyπ θ
+1: Initializeθandϑ
+2:fork= 1toKdo
+3: Initialize indicator vectorI= 1 |S|, PGD step numberj= 0
+4:while∥I∥ 1 >0&j < KP do
+5: Sample trajectoriesτ∼π θ ◦ν ϑ,Puntil the batch is full.
+6: Compute the unbiased estimation of the action-value functionQ πθ◦νϑ(st, at): \Qπθ◦νϑ(st, at) :=P
+t′≥t γt′−tr(st′, at′), for all(s t, at)in the batch
+7:forsin the batchdo
+8:ν ϑ(s)←−ν ϑ(s)−η P ·sign
+
+\Qπθ◦νϑ(s, a)· ∇ϑ logπ θ(a|νϑ(s))
+
+·I(s)
+9:ν ϑ(s)←−clip(ν ϑ(s), s−ϵ, s+ϵ)
+10:I(s) =I
+
+maxsν∈B(s)
+D
+νϑ(s)−s ν, 1
+1−γ
+\Qπθ◦νϑ(s, a)· ∇ϑ logπ θ (a|νϑ(s))
+E
+> δ
+
+11:j←−j+ 1
+12:end for
+13:end while
+14: Compute the unbiased estimation of the gradient of the value function∇ θV πθ◦νϑ(µ0):
+\∇θV πθ◦νϑ(µ0) := 1
+|B|·1−γ
+P
+(s,a)∈B \Qπθ◦νϑ(s, a)· ∇θ logπ θ (a|νϑ(s))
+15:θ←−θ+η k \∇θV πθ◦νϑ(µ0)
+16:end for
+Furthermore, through the definition of the state-action visitation distribu-
+tion following the policyπ θ ◦ν ϑ starting froms:d πθ◦νϑ
+s (s′, a′) =
+Est∼P(·|st−1,at−1),at∼πθ◦νϑ(·|st) [(1−γ) P∞
+t=0 γtI(st =s ′, at =a ′)|s0 =s], we have that
+∇ϑV πθ◦νϑ(s) = 1
+1−γ E(s′,a′)∼dπθ◦νϑ [Qπθ◦νϑ(s′, a′)∇ϑ logπ θ(a′|νϑ(s′))].
+Specifically, for the representation for adversaryν ϑ :S → S, s7→s+ϑs ∈B(s), we have
+∇ϑsi
+V πθ◦νϑ(s)
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑsi
+logπ θ(at|νϑ(st))
+#
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑsi
+logπ θ(at|st +ϑ st)
+#
+=E τ∼πθ◦νϑ,P
+"
+R(τ)
+∞X
+t=0
+∇ϑst logπ θ(at|st +ϑ st)·I(s t =s i)
+#
+.
+Similarly, we have
+∇ϑsi
+V πθ◦νϑ(s) =E τ∼πθ◦νϑ,P
+" ∞X
+t=0
+γtQπθ◦νϑ(st, at)∇ϑst logπ θ(at|st +ϑ st)·I(s t =s i)
+#
+= 1
+1−γ E(s′,a′)∼dπθ◦νϑ
+
+Qπθ◦νϑ(s′, a′)∇ϑs′ logπ θ(a′|s′ +ϑ s′)·I(s ′ =s i)
+
+.
+This completes the proof.
+C.2 CONVERGENCE OFADVERSARIALLYROBUSTPOLICYOPTIMIZATION
+We analyze the convergence properties of ARPO withδ-Approximation Adversary (Algorithm 1) in
+this subsection.
+21
+Preprint
+C.2.1 NOTATIONS
+For a sampling trajectoryτ= (s 0, a0, r0, . . .)∼πθ ◦ν ϑ,P, denote the unbiased estimation of the
+action-value functionQ πθ◦νϑ as
+\Qπθ◦νϑ(st, at) :=
+X
+t′≥t
+γt′−tr(st′, at′),∀(s t, at)∈τ.
+For simplicity of writing and reading of the latter, denote the sampled estimate as:
+ˆv(s, a;θ, ϑ) :=1
+1−γ sg
+
+\Qπθ◦νϑ(s, a)
+
+·logπ θ (a|νϑ(s)),(2)
+whereassg(·)is the stop-gradient operator, meaning that \Qπθ◦νϑ(s, a)is seen as a function accord-
+ing to(s, a)and is detached from the gradient operation for(θ, ϑ)in the following context. This
+implies that
+∇θˆv(s, a;θ, ϑ) =1
+1−γ
+\Qπθ◦νϑ(s, a)· ∇θ logπ θ (a|νϑ(s))
+∇ϑˆv(s, a;θ, ϑ) =1
+1−γ
+\Qπθ◦νϑ(s, a)· ∇ϑ logπ θ (a|νϑ(s)).
+Furthermore, denote the unbiased estimation of the gradient of the value function∇θV πθ◦νϑ(µ0)as
+\∇θV πθ◦νϑ(µ0) := 1
+|τ|
+X
+(s,a)∈τ
+∇θˆv(s, a;θ, ϑ),
+and denote the unbiased estimation of the gradient of the value function∇ ϑV πθ◦νϑ(µ0)as
+\∇ϑV πθ◦νϑ(µ0) := 1
+|τ|
+X
+(s,a)∈τ
+∇ϑˆv(s, a;θ, ϑ).
+C.2.2 PREPARATIONS
+We quantify the solution of inner optimization, that is, the adversary, by extending the First-Order
+Stationary Condition (FOSC) proposed by Wang et al. (2019).
+Definition C.1(δ-Approximation Adversary).For a given policyπ θ and the sampled estimation
+\Qπθ◦νϑ(s, a), ifνϑ(s)satisfies the following condition:
+max
+sν∈B(s)
+
+νϑ(s)−s ν, 1
+1−γ
+\Qπθ◦νϑ(s, a)· ∇ϑ logπ θ (a|νϑ(s))
+
+≤δ,
+then, we called that theν ϑ(s)isδ-approximation adversary for the strongest adversaryν ∗(s;π θ).
+Before our main convergence analysis, we provide a few assumptions utilized in our analysis.
+Assumption C.1(Lipschitz of Sampled Policy Gradient).The functionˆv(s, a;θ, ϑ)satisfies the
+gradient Lipschitz conditions as follows:
+sup
+s,a,ϑ
+∥∇θˆv(s, a;θ, ϑ)− ∇θˆv(s, a;θ′, ϑ)∥2 ≤L θθ∥θ−θ ′∥2,
+sup
+s,a,ϑ
+∥∇ϑˆv(s, a;θ, ϑ)− ∇ϑˆv(s, a;θ′, ϑ)∥2 ≤L ϑθ∥θ−θ ′∥2,
+sup
+a,θ
+∥∇θˆv(s, a;θ, ϑ)− ∇θˆv(s, a;θ, ϑ′)∥2 ≤L θϑ∥ϑ(s)−ϑ ′(s)∥2,∀s,
+whereL θθ, Lθϑ, Lϑθ are positive constants.
+Assumption C.1 has been made in previous research on adversarial robustness (Sinha et al., 2018;
+Wang et al., 2019). A line of studies on deep neural networks helps to justify this assumption
+(Allen-Zhu et al., 2019; Du et al., 2019; Zou et al., 2020).
+22
+Preprint
+Assumption C.2(Bounded Sampled Policy Gradient).The gradient of the functionˆv(s, a;θ, ϑ)
+with respect toθis uniformly bounded, i.e.,∃M ˆv>0, such that
+sup
+s,a,θ,ϑ
+∥∇θˆv(s, a;θ, ϑ)∥ ≤Mˆv.
+Assumption C.2 can be verified by bounded rewards and the lower-bounded probability of the sam-
+pled action, which are mild conditions in practical algorithms.
+Assumption C.3(Locally Strongly Convex Adversary).For any statesand actiona, the function
+ˆv(s, a;θ, ϑ)is locallyµ-strongly convex inBϵ(s) ={ν ϑ(s) :=s+ϑ s | ∥ϑs∥∞ ≤ϵ}, i.e., for any
+ϑ1, ϑ2, we have that
+ˆv(s, a;θ, ϑ1)≥ˆv(s, a;θ, ϑ2) +⟨∇ϑˆv(s, a;θ, ϑ2), ϑ1(s)−ϑ 2(s)⟩+ µ
+2 ∥ϑ1(s)−ϑ 2(s)∥2
+2.
+Assumption C.3 has been studied in Sinha et al. (2018); Lee & Raginsky (2018), which can be
+verified by the relation between robust optimization and distributional robust optimization.
+Assumption C.4(Lipschitz Conditions of State-Action Visitation Distribution).The state-
+action visitation distribution under policyπ θ ◦ν ϑ dθ,ϑ(s, a) :=d πθ◦νϑ
+µ0 (s, a) =
+Es0∼µ0(·),st∼P(·|st−1,at−1),at∼πθ◦νϑ(·|st) [(1−γ) P∞
+t=0 γtI(st =s, at =a)]satisfies the Lipschitz
+conditions under the total variation distance as follows:
+sup
+ϑ
+∥dθ,ϑ −d θ′,ϑ∥TV ≤L dθ∥θ−θ ′∥2,
+sup
+θ
+∥dθ,ϑ −d θ,ϑ′∥TV ≤L dϑ∥ϑ−ϑ ′∥2.
+Assumption C.4 has been derived by Pirotta et al. (2015) based on Lipschitz environments and pol-
+icy. Certain natural environments show smooth reward functions and transition dynamics, especially
+in continuous control tasks where the transition dynamics come from some physical laws (Bukharin
+et al., 2024; Li et al., 2025), such as MuJoCo environments, where we conduct numerical experi-
+ments. These environments are thus Lipschitz. The policy parameterized by neural networks can
+be seen as Lipschitz based on neural network analysis (Allen-Zhu et al., 2019; Du et al., 2019; Zou
+et al., 2020).
+Assumption C.5(Bounded Variance).The variance of the stochastic gradient is bounded as fol-
+lows:
+E
+h \∇θV πθ◦ν∗(πθ)(µ0)− ∇θV πθ◦ν∗(πθ)(µ0)
+
+i
+≤σ 2.
+Assumption C.5 is a common assumption in the analysis of stochastic optimization.
+The proof framework of Theorem C.2 is drawn on Wang et al. (2019); Pirotta et al. (2015). We begin
+by proving the following four technical lemmas.
+Lemma C.1(Lipschitz of Strongest Adversary).Suppose assumptions C.1 and C.3 hold. Then we
+have that the strongest adversaryϑ ∗(s;θ 1)is Lϑθ
+µ -smooth, i.e., given a states, for anyθ 1 andθ 2,
+we have that
+∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2 ≤ Lϑθ
+µ ∥θ1 −θ 2∥2.
+Proof.For any statesand actiona, under assumption C.3, we have that
+ˆv(s, a;θ2, ϑ∗(θ1))
+≥ˆv(s, a;θ2, ϑ∗(θ2)) +⟨∇ϑˆv(s, a;θ2, ϑ∗(θ2)), ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)⟩
++ µ
+2 ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2
+2
+≥ˆv(s, a;θ2, ϑ∗(θ2)) + µ
+2 ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2
+2,
+where the last inequality comes from⟨∇ ϑˆv(s, a;θ2, ϑ∗(θ2)), ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)⟩ ≥0. Similarly,
+we have
+ˆv(s, a;θ2, ϑ∗(θ2))
+≥ˆv(s, a;θ2, ϑ∗(θ1)) +⟨∇ϑˆv(s, a;θ2, ϑ∗(θ1)), ϑ∗(s;θ 2)−ϑ ∗(s;θ 1)⟩
++ µ
+2 ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2
+2.
+23
+Preprint
+Combining the above two inequalities, we have
+µ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2
+2
+≤ ⟨∇ϑˆv(s, a;θ2, ϑ∗(θ1)), ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)⟩
+≤ ⟨∇ϑˆv(s, a;θ2, ϑ∗(θ1))− ∇ϑˆv(s, a;θ1, ϑ∗(θ1)), ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)⟩
+≤ ∥∇ϑˆv(s, a;θ2, ϑ∗(θ1))− ∇ϑˆv(s, a;θ1, ϑ∗(θ1))∥2 · ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2
+≤L ϑθ∥θ2 −θ 1∥2 · ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2.
+The second inequality comes from⟨−∇ ϑˆv(s, a;θ1, ϑ∗(θ1)), ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)⟩ ≥0. The third
+inequality comes from the Cauchy-Schwarz inequality, and the last inequality comes from Assump-
+tion C.1. Therefore, we have that
+∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2 ≤ Lϑθ
+µ ∥θ2 −θ 1∥2.
+This proof is concluded.
+Lemma C.2(Lipschitz of Sampled Policy Gradient against Strongest Adversary).Suppose assump-
+tions C.1 and C.3 hold. Then we have that the sampling estimationˆv(s, a;θ, ϑ∗(θ))isL ˆv-smooth,
+i.e., for anyθ 1 andθ 2, we have that
+∥∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ2, ϑ∗(θ2))∥2 ≤L ˆv∥θ1 −θ 2∥2,
+whereL ˆv= LθϑLϑθ
+µ +L θθ.
+Proof.For anyθ 1 andθ 2, we have that
+∥∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ2, ϑ∗(θ2))∥2
+≤ ∥∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ1, ϑ∗(θ2))∥2
++∥∇ θˆv(s, a;θ1, ϑ∗(θ2))− ∇θˆv(s, a;θ2, ϑ∗(θ2))∥2
+≤L θϑ∥ϑ∗(s;θ 1)−ϑ ∗(s;θ 2)∥2 +L θθ∥θ1 −θ 2∥2
+≤
+LθϑLϑθ
+µ +L θθ
+
+∥θ1 −θ 2∥2.
+The first inequality comes from the triangle inequality, the second inequality comes from Assump-
+tion C.1, and the last inequality comes from Lemma C.1. Therefore, the proof is concluded.
+Lemma C.3(Smoothness of Adversarial Value Function against Strongest Adversary).Suppose
+assumptions C.1, C.2, C.3, and C.4 hold. Then we have thatV πθ◦ν∗(πθ)(µ0)isL-smooth, i.e., for
+anyθ 1 andθ 2, we have that
+V πθ1 ◦ν∗(πθ1 )(µ0)−V πθ2 ◦ν∗(πθ2 )(µ0)− ⟨∇θV πθ2 ◦ν∗(πθ2 )(µ0), θ1 −θ 2⟩
+ ≤ L
+2 ∥θ1 −θ 2∥2
+2,
+∥∇θV πθ1 ◦ν∗(πθ1 )(µ0)− ∇θV πθ2 ◦ν∗(πθ2 )(µ0)∥2 ≤L∥θ 1 −θ 2∥2,
+whereL= LθϑLϑθ
+µ +L θθ +M ˆv
+
+LdϑLϑθ
+µ +L dθ
+
+.
+Proof.For anyθ 1 andθ 2, we have
+∥∇θV πθ1 ◦ν∗(πθ1 )(µ0)− ∇θV πθ2 ◦ν∗(πθ2 )(µ0)∥2
+=
+E(s,a)∼dθ1,ϑ∗(θ1) [∇θˆv(s, a;θ1, ϑ∗(θ1))]−E (s,a)∼dθ2,ϑ∗(θ2) [∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
+≤
+E(s,a)∼dθ1,ϑ∗(θ1) [∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
++
+E(s,a)∼(dθ1,ϑ∗(θ1)−dθ2,ϑ∗(θ2)) [∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
+.
+24
+Preprint
+This inequality comes from the triangle inequality. For the first item, we haveE(s,a)∼dθ1,ϑ∗(θ1) [∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
+≤E (s,a)∼dθ1,ϑ∗(θ1) [∥∇θˆv(s, a;θ1, ϑ∗(θ1))− ∇θˆv(s, a;θ2, ϑ∗(θ2))∥2]
+≤
+LθϑLϑθ
+µ +L θθ
+
+∥θ1 −θ 2∥2,
+where the last inequality comes from Lemma C.2. For the second item, we have thatE(s,a)∼(dθ1,ϑ∗(θ1)−dθ2,ϑ∗(θ2)) [∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
+≤
+E(s,a)∼(dθ1,ϑ∗(θ1)−dθ1,ϑ∗(θ2)) [∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
++
+E(s,a)∼(dθ1,ϑ∗(θ2)−dθ2,ϑ∗(θ2)) [∇θˆv(s, a;θ2, ϑ∗(θ2))]
+
+2
+≤ ∥dθ1,ϑ∗(θ1) −d θ1,ϑ∗(θ2)∥TV ·sup
+s,a
+∥∇θˆv(s, a;θ2, ϑ∗(θ2))∥
++∥d θ1,ϑ∗(θ2) −d θ2,ϑ∗(θ2)∥TV ·sup
+s,a
+∥∇θˆv(s, a;θ2, ϑ∗(θ2))∥
+≤L dϑMˆv∥ϑ∗(θ1)−ϑ ∗(θ2)∥2 +L dθMˆv∥θ1 −θ 2∥2
+≤L dϑMˆv
+Lϑθ
+µ ∥θ1 −θ 2∥2 +L dθMˆv∥θ1 −θ 2∥2
+=M ˆv
+LdϑLϑθ
+µ +L dθ
+
+∥θ1 −θ 2∥2.
+The penultimate equation comes from assumptions C.2 and C.4. The last inequality comes from
+Lemma C.1. Thus, we have that
+∥∇θV πθ1 ◦ν∗(πθ1 )(µ0)− ∇θV πθ2 ◦ν∗(πθ2 )(µ0)∥2
+≤
+LθϑLϑθ
+µ +L θθ +M ˆv
+LdϑLϑθ
+µ +L dθ
+
+∥θ1 −θ 2∥2.
+Therefore, the proof of this lemma is concluded.
+Lemma C.4(Bounded Error of Approximate Stochastic Gradient).Suppose assumptions C.1 and
+C.3 hold. Then we can control the error of the approximate stochastic gradient in the ARPO with
+δ-approximation adversary in definition C.1 (Algorithm 1). Specifically, we have that
+ \∇θV πθ◦νϑ(µ0)− \∇θV πθ◦ν∗(πθ)(µ0)
+
+2
+≤L θϑ
+s
+δ
+µ.
+Proof.We have that  \∇θV πθ◦νϑ(µ0)− \∇θV πθ◦ν∗(πθ)(µ0)
+
+2
+=
+
+1
+|τ|
+X
+(s,a)∈τ
+(∇θˆv(s, a;θ, ϑ)− ∇θˆv(s, a;θ, ϑ∗(θ)))
+
+2
+≤ 1
+|τ|
+X
+(s,a)∈τ
+∥∇θˆv(s, a;θ, ϑ)− ∇θˆv(s, a;θ, ϑ∗(θ))∥2
+≤ 1
+|τ|
+X
+(s,a)∈τ
+Lθϑ ∥ϑ(s)−ϑ ∗(s;θ)∥ 2 .
+The first inequality comes from the triangle inequality, and the last inequality comes from Assump-
+tion C.1. Under Assumption C.3, we have that
+ˆv(s, a;θ, ϑ)≥ˆv(s, a;θ, ϑ∗(θ)) +⟨∇ ϑˆv(s, a;θ, ϑ∗(θ)), ϑ(s)−ϑ∗(s;θ)⟩+ µ
+2 ∥ϑ(s)−ϑ ∗(s;θ)∥ 2
+2,
+ˆv(s, a;θ, ϑ∗(θ))≥ˆv(s, a;θ, ϑ) +⟨∇ϑˆv(s, a;θ, ϑ), ϑ∗(s;θ)−ϑ(s)⟩+ µ
+2 ∥ϑ(s)−ϑ ∗(s;θ)∥ 2
+2.
+25
+Preprint
+Combining the above two inequalities, we have that
+µ∥ϑ(s)−ϑ ∗(s;θ)∥ 2
+2
+≤ ⟨∇ϑˆv(s, a;θ, ϑ)− ∇ϑˆv(s, a;θ, ϑ∗(θ)), ϑ(s)−ϑ∗(s;θ)⟩
+≤δ− ⟨∇ϑˆv(s, a;θ, ϑ∗(θ)), ϑ(s)−ϑ∗(s;θ)⟩
+≤δ.
+The second inequality comes from thatν ϑ is aδ-approximate maximizer ofˆv(s, a;θ, ϑ), i.e.,
+⟨∇ϑˆv(s, a;θ, ϑ), ϑ(s)−ϑ∗(s;θ)⟩ ≤δ.
+The last inequality comes from the optimality ofϑ ∗, i.e.,
+⟨∇ϑˆv(s, a;θ, ϑ∗(θ)), ϑ(s)−ϑ∗(s;θ)⟩ ≥0.
+Therefore, we have that
+ \∇θV πθ◦νϑ(µ0)− \∇θV πθ◦ν∗(πθ)(µ0)
+
+2
+≤L θϑ
+s
+δ
+µ.
+This completes the proof of this lemma.
+C.2.3 MAINCONVERGENCERESULTS
+Based on these assumptions, we derive the main convergence property of ARPO.
+Theorem C.2(Convergence of ARPO).Denote∆ := max θ minϑ V πθ◦νϑ(µ0)−
+minϑ V πθ0 ◦νϑ(µ0). Under assumptions C.1, C.2, C.3, C.4, and C.5, set the step sizeη k =
+q
+∆
+σ2LK .
+Then, for the ARPO withδ-approximation adversary in Definition C.1 (Algorithm 1) andK≥ ∆L
+σ2 ,
+we have
+1
+K
+K−1X
+k=0
+E
+∇θV πθk ◦ν∗(πθk )(µ0)
+
+2
+2
+
+≤4σ
+r
+∆L
+K + 2L2
+θϑδ
+µ ,
+whereL= LθϑLϑθ
+µ +L θθ +M ˆv
+
+LdϑLϑθ
+µ +L dθ
+
+.
+Proof of Theorem C.2.For convenience, we denote the objective functionV(θ) :=V πθ◦ν∗(πθ)(µ0),
+the accuracy stochastic gradientG(θ) := \∇θV πθ◦ν∗(πθ)(µ0), and the approximation stochastic
+gradient ˆG(θ) := \∇θV πθ◦νϑ(µ0). According to the gradient Lipschitz ofV πθ◦ν∗(πθ) shown in
+Lemma C.3, we have that
+V(θ k+1)
+≥V(θ k) +⟨∇θV(θ k), θk+1 −θ k⟩ −L
+2 ∥θk+1 −θ k∥2
+2
+=V(θ k) +η k⟨∇θV(θ k), ˆG(θk)⟩ −Lη2
+k
+2 ∥ ˆG(θk)∥2
+2
+=V(θ k) +η k∥∇θV(θ k)∥2
+2 − Lη2
+k
+2 ∥ ˆG(θk)∥2
+2 +η k⟨∇θV(θ k), ˆG(θk)− ∇θV(θ k)⟩
+=V(θ k) +η k
+
+1− Lηk
+2
+
+∥∇θV(θ k)∥2
+2
++η k (1−Lη k)⟨∇θV(θ k), ˆG(θk)− ∇θV(θ k)⟩ −Lη2
+k
+2 ∥ ˆG(θk)− ∇θV(θ k)∥2
+2
+=V(θ k) +η k
+
+1− Lηk
+2
+
+∥∇θV(θ k)∥2
+2 +η k (1−Lη k)⟨∇θV(θ k), ˆG(θk)−G(θ k)⟩
++η k (1−Lη k)⟨∇θV(θ k), G(θk)− ∇θV(θ k)⟩
+− Lη2
+k
+2 ∥ ˆG(θk)−G(θ k) +G(θ k)− ∇θV(θ k)∥2
+2.
+26
+Preprint
+By Young’s inequality, we have
+⟨∇θV(θ k), ˆG(θk)−G(θ k)⟩
+ ≤ 1
+2
+
+∥∇θV(θ k)∥2
+2 +∥ ˆG(θk)−G(θ k)∥2
+2
+
+,
+∥ ˆG(θk)−G(θ k) +G(θ k)− ∇θV(θ k)∥2
+2 ≤2
+
+∥ ˆG(θk)−G(θ k)∥2
+2 +∥G(θ k)− ∇θV(θ k)∥2
+2
+
+.
+Therefore, we have that
+V(θ k+1)
+≥V(θ k) +η k
+
+1− Lηk
+2
+
+∥∇θV(θ k)∥2
+2
+− ηk
+2 (1−Lη k)
+
+∥∇θV(θ k)∥2
+2 +∥ ˆG(θk)−G(θ k)∥2
+2
+
++η k (1−Lη k)⟨∇θV(θ k), G(θk)− ∇θV(θ k)⟩
+−Lη 2
+k
+
+∥ ˆG(θk)−G(θ k)∥2
+2 +∥G(θ k)− ∇θV(θ k)∥2
+2
+
+.
+=V(θ k) + ηk
+2 ∥∇θV(θ k)∥2
+2 − ηk
+2 (1 +Lη k)∥ ˆG(θk)−G(θ k)∥2
+2
++η k (1−Lη k)⟨∇θV(θ k), G(θk)− ∇θV(θ k)⟩ −Lη2
+k∥G(θk)− ∇θV(θ k)∥2
+2.
+Taking the conditional expectation on both sides of the above inequality, we have that
+E[V(θ k)−V(θ k+1)|θ k]
+≤ −ηk
+2 E
+
+∥∇θV(θ k)∥2
+2 |θ k
+
++ ηk
+2 (1 +Lη k)E
+h
+∥ ˆG(θk)−G(θ k)∥2
+2 |θ k
+i
++η k (1−Lη k)E[⟨∇ θV(θ k),∇θV(θ k)−G(θ k)⟩ |θk]
++Lη 2
+kE
+
+∥G(θk)− ∇θV(θ k)∥2
+2 |θ k
+
+=− ηk
+2 E
+
+∥∇θV(θ k)∥2
+2 |θ k
+
++ ηk
+2 (1 +Lη k)E
+h
+∥ ˆG(θk)−G(θ k)∥2
+2 |θ k
+i
++Lη 2
+kE
+
+∥G(θk)− ∇θV(θ k)∥2
+2 |θ k
+
+≤ −ηk
+2 E
+
+∥∇θV(θ k)∥2
+2 |θ k
+
++ ηk
+2 (1 +Lη k) L2
+θϑδ
+µ
++Lη 2
+kE
+
+∥G(θk)− ∇θV(θ k)∥2
+2 |θ k
+
+≤ −ηk
+2 E
+
+∥∇θV(θ k)∥2
+2 |θ k
+
++ ηk
+2 (1 +Lη k) L2
+θϑδ
+µ +Lη 2
+kσ2.
+The first equation comes from the unbiased estimationG(θ), i.e.,E[G(θ)] =∇ θV(θ). The second
+inequality comes from Lemma C.4, and the last inequality comes from Assumption C.5. Taking the
+telescope sum of the above inequality, we have that
+K−1X
+k=0
+ηk
+2 E
+
+∥∇θV(θ k)∥2
+2
+
+≤E[V(θ K)−V(θ 0)] +
+K−1X
+k=0
+ηk
+2 (1 +Lη k) L2
+θϑδ
+µ +
+K−1X
+k=0
+Lη2
+kσ2.
+Becauseη k =
+q
+∆
+σ2LK andK≥ ∆L
+σ2 , we have thatLη k ≤1. Furthermore, we have that
+1
+K
+K−1X
+k=0
+E
+
+∥∇θV(θ k)∥2
+2
+
+≤4σ
+r
+∆L
+K + 2L2
+θϑδ
+µ .
+Therefore, the proof of this theorem is concluded.
+C.3 LEARNINGDYNAMICSNEARFIRST-ORDERSTATIONARYPOLICIES
+We explore the properties of FOSPs in ARPO and SPO by analyzing the learning dynamics in their
+neighborhoods. Our framework of analysis is drawn on the linear stability analysis of stochastic
+gradient descent (Wu et al., 2022b) and sharpness-aware minimization (Zhou et al., 2025).
+27
+Preprint
+C.3.1 LEARNINGDYNAMICSNEARFOSPS INARPO
+We first consider the learning dynamics near FOSPs in ARPO. Let(θ∗, ϑ∗)be a first-order stationary
+policy-adversary ofV πθ◦νϑ(µ0). To simplify analysis, we consider(θ ∗, ϑ∗)satisfies the following
+second-order optimality conditions:
+∇θV πθ∗◦νϑ∗
+(µ0) = 0,∇ ϑV πθ∗◦νϑ∗
+(µ0) = 0,∇ 2
+θθV πθ∗◦νϑ∗
+(µ0)≺0,∇ 2
+ϑϑV πθ∗◦νϑ∗
+(µ0)≻0.
+(3)
+Note that it makes no sense on the gradient when the objective adds a constant. Therefore, to
+explore the local properties around(θ ∗, ϑ∗), denoteL(θ, ϑ) :=V πθ∗◦νϑ∗ (µ0)−V πθ◦νϑ(µ0). In the
+neighborhoods of(θ ∗, ϑ∗), we considering the local quadratic approximation ofL(θ, ϑ)as:
+L(θ, ϑ) =1
+2(θ−θ ∗)⊤Hθ(θ∗, ϑ∗)(θ−θ ∗)
+| {z }
+Lθ(θ,ϑ)
++ 1
+2(ϑ−ϑ ∗)⊤Hϑ(θ∗, ϑ∗)(ϑ−ϑ ∗)
+| {z }
+Lϑ(θ,ϑ)
+,(4)
+whereH θ(θ∗, ϑ∗) :=∇ 2
+θθL(θ∗, ϑ∗)andH ϑ(θ∗, ϑ∗) :=∇ 2
+ϑϑL(θ∗, ϑ∗)are the Hessians with respect
+toθandϑ, respectively. Then, we have the following optimality conditions from (3).
+∇θL(θ∗, ϑ∗) = 0,∇ ϑL(θ∗, ϑ∗) = 0,∇ 2
+θθL(θ∗, ϑ∗)≻0,∇ 2
+ϑϑL(θ∗, ϑ∗)≺0.(5)
+Letξdenote the stochastic variable of sampling and let the sampled estimationf(s;θ, ϑ) :=
+−ˆv(s, a;θ, ϑ)as defined in (2). Denote the sampled policy gradient estimation as
+∇θ ˆLξ(θ, ϑ) =1
+B
+X
+i∈ξ
+∇θf(si;θ, ϑ),∇ϑ ˆLξ(θ, ϑ) =1
+B
+X
+i∈ξ
+∇ϑf(si;θ, ϑ).
+Consider the following single-loop adversarially robust policy optimization iteration:
+ϑk+1 =ϑ k +ϵ∇ ϑ ˆLξ(θk, ϑk),
+θk+1 =θ k −η∇ θ ˆLξ(θk, ϑk+1).
+(Single-Loop ARPO Iterator)
+Policy Gradient Noise.Denote the 1-batch gradient noise asξ θ,i(θ, ϑ) =∇ θf(si;θ, ϑ)−
+∇θL(θ, ϑ)andξϑ,i(θ, ϑ) =∇ϑf(si;θ, ϑ)− ∇ϑL(θ, ϑ). LetΣθ(θ, ϑ) :=E
+
+ξθ,i(θ, ϑ)ξθ,i(θ, ϑ)⊤
+andΣ ϑ(θ, ϑ) :=E
+
+ξϑ,i(θ, ϑ)ξϑ,i(θ, ϑ)⊤
+as the 1-batch gradient noise covariance. Then, we have
+that
+Σθ(θ, ϑ) =E
+
+∇θf(si;θ, ϑ)∇θf(si;θ, ϑ)⊤
+− ∇θL(θ, ϑ)∇θL(θ, ϑ)⊤,(6)
+Σϑ(θ, ϑ) =E
+
+∇ϑf(si;θ, ϑ)∇θf(si;θ, ϑ)⊤
+− ∇ϑL(θ, ϑ)∇ϑL(θ, ϑ)⊤.(7)
+Furthermore, denote the sampled full-batch gradient noise asξ B
+θ (θ, ϑ) :=∇ θ ˆLξ(θ, ϑ)−
+∇θL(θ, ϑ) = 1
+B
+P
+i∈ξ ξθ,i(θ, ϑ)andξ B
+ϑ (θ, ϑ) :=∇ϑ ˆLξ(θ, ϑ)− ∇ϑL(θ, ϑ) = 1
+B
+P
+i∈ξ ξϑ,i(θ, ϑ).
+Then, for the full-batch gradient noise, we have that
+E
+
+ξB
+θ (θ, ϑ)ξB
+θ (θ, ϑ)⊤
+= 1
+B E
+
+ξθ,i(θ, ϑ)ξθ,i(θ, ϑ)⊤
+= 1
+B Σθ(θ, ϑ),(8)
+E
+
+ξB
+ϑ (θ, ϑ)ξB
+ϑ (θ, ϑ)⊤
+= 1
+B E
+
+ξϑ,i(θ, ϑ)ξϑ,i(θ, ϑ)⊤
+= 1
+B Σϑ(θ, ϑ).(9)
+Based on these notations, we make a coercive assumption about gradient noise based on Hes-
+sians. Similar insights have been theoretically and empirically validated in a variety of studies about
+stochastic gradient descent in supervised learning settings (Zhu et al., 2019; Feng & Tu, 2021; Wu
+et al., 2020; 2022b; Mori et al., 2022; Wang & Wu, 2023; Wojtowytsch, 2024; Zhou et al., 2025).
+Assumption C.6(Coercive Policy Gradient Noise).There existsκ >0, such that for allθandϑ,
+the following coercive conditions hold:
+Tr
+Σθ(θ, ϑ)
+|L(θ, ϑ)|Hθ(θ, ϑ)
+
+≥2κ θ∥Hθ(θ, ϑ)∥2
+F ,Tr
+Σϑ(θ, ϑ)
+|L(θ, ϑ)|Hϑ(θ, ϑ)
+
+≥ −2κϑ∥Hϑ(θ, ϑ)∥2
+F .
+28
+Preprint
+Local Stability of ARPO.Similar to the linear stability of stochastic gradient descent (Wu et al.,
+2022b) and sharpness-aware minimization (Zhou et al., 2025), we define the local stability of ARPO.
+Note that in the practical optimization process, only local stable optima can be selected.
+Definition C.2(Local Stability).The first-order stationary policy-adversary(θ ∗, ϑ∗)is said to be
+locally stable if there exists a constantC >0such that for the Single-Loop ARPO Iterator, the local
+quadratic model (4)L(θ, ϑ)satisfiesE[L(θ k, ϑk)]≤CE[L(θ 0, ϑ0)],∀k≥0.
+Based on these, we characterize the Hessian properties of FOSPs in ARPO.
+Theorem C.3(Flatness Bound of FOSPs in ARPO).Let(θ ∗, ϑ∗)be a first-order stationary policy-
+adversary in ARPO and satisfy the second-order optimality condition (5). Denoteλ min(·)and
+λmax(·)as the minimum and maximum eigenvalues, and letdbe the state space dimension. If
+(θ∗, ϑ∗)is locally stable,L(θ 0, ϑ0)>0,η≥2/λ min(Hθ(θ∗, ϑ∗)),ϵ≤2/λ max(−Hϑ(θ∗, ϑ∗)),
+B≥dϵ 2κϑλmax(−Hϑ(θ∗, ϑ∗))2, and Assumption C.6 holds, then for single-loop ARPO, we have
+that
+
+∥Hθ(θ∗, ϑ∗)∥2
+F + B
+κθη2
+
+1− ϵ2κϑ∥Hϑ(θ∗, ϑ∗)∥2
+F
+B
+
+≤ B
+κθη2 ,(10)
+whereBis the batch size,κis the coercive coefficient,ϵis the attack budget, andηis the step size.
+Remark C.2.L(θ 0, ϑ0)>0means thatV πθ∗◦νϑ∗ (µ0)> V πθ0 ◦νϑ0 (µ0), which holds in practical
+training from the scratch.
+Proof.BecauseL(θ 0, ϑ0)>0, by recursion, we can prove thatL(θ k−1, ϑk)>0andL(θ k, ϑk)>
+0,∀k≥1. Then, we have that
+L(θk+1, ϑk+1)
+= 1
+2 (θk+1 −θ ∗)⊤Hθ(θ∗, ϑ∗)(θk+1 −θ ∗)| {z }
+I
++1
+2 (ϑk+1 −ϑ ∗)⊤Hϑ(θ∗, ϑ∗)(ϑk+1 −ϑ ∗)| {z }
+II
+Without loss of generality, we can letθ ∗ =ϑ ∗ = 0. DenoteH 1 :=H θ(θ∗, ϑ∗),H 2 :=H ϑ(θ∗, ϑ∗).
+According to the definition of the sampled full-batch gradient noise, we have thatξ B
+θ (θ, ϑ) =
+∇θ ˆLξ(θ, ϑ)− ∇θL(θ, ϑ), andξB
+ϑ (θ, ϑ) =∇ϑ ˆLξ(θ, ϑ)− ∇ϑL(θ, ϑ).
+Then, on one hand, we have that
+E[I]
+=E
+h
+(θk −η∇ θ ˆLξ(θk, ϑk+1))⊤H1(θk −η∇ θ ˆLξ(θk, ϑk+1))
+i
+=E
+
+(θk −η∇ θL(θk, ϑk+1)−ηξ B
+θ (θk, ϑk+1))⊤H1(θk −η∇ θL(θk, ϑk+1)−ηξ B
+θ (θk, ϑk+1))
+
+=E
+
+(θk −η∇ θL(θk, ϑk+1))⊤H1(θk −η∇ θL(θk, ϑk+1))
+
++η 2E
+
+ξB
+θ (θk, ϑk+1)⊤H1ξB
+θ (θk, ϑk+1)
+
+=E
+
+(θk −η∇ θL(θk, ϑk+1))⊤H1(θk −η∇ θL(θk, ϑk+1))
+
++ η2
+B E[Tr (Σθ(θk, ϑk+1)H1)]
+≥E
+
+(θk −η∇ θL(θk, ϑk+1))⊤H1(θk −η∇ θL(θk, ϑk+1))
+
++ 2η2κθ∥H1∥2
+F
+B E[L(θ k, ϑk+1)]
+=E
+
+θ⊤
+k (I−ηH 1)H1(I−ηH 1)θk
+
++ 2η2κθ∥H1∥2
+F
+B E[L(θ k, ϑk+1)]
+≥E
+
+θ⊤
+k H1θk
+
++ 2η2κθ∥H1∥2
+F
+B E[L(θ k, ϑk+1)]
+= 2E[Lθ(θk, ϑk)] + 2η2κθ∥H1∥2
+F
+B E[L(θ k, ϑk+1)].
+The third equation comes fromE
+
+ξB
+θ (θ, ϑ)
+
+= 0. The fourth equation comes from (8). The first
+inequality comes from Assumption C.6. Because ofη≥ 2
+λmin(H1) , we have thatH 1 ⪰ 2
+η I. This
+29
+Preprint
+comes thatH 1 −2ηH 2
+1 +η 2H3
+1 ⪰H 1, which leads to the last inequality. Now, we need to estimate
+the lower bound ofE[L θ(θk, ϑk+1)].
+E[L(θ k, ϑk+1)]
+= 1
+2E
+
+θ⊤
+k H1θk +ϑ ⊤
+k+1H2ϑk+1
+
+=E[L θ(θk, ϑk)] + 1
+2II.
+On the other hand, we have that
+E[II]
+=E
+h
+(ϑk +ϵ∇ ϑ ˆLξ(θk, ϑk))⊤H2(ϑk +ϵ∇ ϑ ˆLξ(θk, ϑk))
+i
+=E
+
+(ϑk +ϵ∇ ϑL(θk, ϑk) +ϵξ B
+ϑ (θk, ϑk))⊤H2(ϑk +ϵ∇ ϑL(θk, ϑk) +ϵξ B
+ϑ (θk, ϑk))
+
+=E
+
+(ϑk +ϵ∇ ϑL(θk, ϑk))⊤H2(ϑk +ϵ∇ ϑL(θk, ϑk))
+
++ϵ 2E
+
+ξB
+ϑ (θk, ϑk)⊤H2ξB
+ϑ (θk, ϑk)
+
+=E
+
+(ϑk +ϵ∇ ϑL(θk, ϑk))⊤H2(ϑk +ϵ∇ ϑL(θk, ϑk))
+
++ ϵ2
+B E[Tr (Σϑ(θk, ϑk)H2)]
+≥E
+
+(ϑk +ϵ∇ ϑL(θk, ϑk))⊤H2(ϑk +ϵ∇ ϑL(θk, ϑk))
+
+− 2ϵ2κϑ∥H2∥2
+F
+B E[L(θ k, ϑk)]
+=E
+
+ϑ⊤
+k (I+ϵH 2)H2(I+ϵH 2)ϑk
+
+− 2ϵ2κϑ∥H2∥2
+F
+B E[L(θ k, ϑk)]
+≥E
+
+ϑ⊤
+k H2ϑk
+
+− 2ϵ2κϑ∥H2∥2
+F
+B E[L(θ k, ϑk)]
+= 2E[Lϑ(θk, ϑk)]− 2ϵ2κϑ∥H2∥2
+F
+B E[L(θ k, ϑk)].
+The third equation comes fromE
+
+ξB
+ϑ (θ, ϑ)
+
+= 0. The fourth equation comes from (9). The first
+inequality comes from Assumption C.6. Because ofϵ≤ 2
+λmax(−H2) , we have thatH 2 ⪰ −2
+ϵ I. This
+comes that(I+ϵH 2)H2(I+ϵH 2) =H 2 + 2ϵH2
+2 +ϵ 2H3
+2 ⪰H 2, which leads to the last inequality.
+Therefore, we have that
+E[L(θ k, ϑk+1)]≥
+
+1− ϵ2κϑ∥H2∥2
+F
+B
+
+E[L(θ k, ϑk)].(11)
+Because ofB≥dϵ 2κϑλmax(−H2)2, we have that
+∥H2∥2
+F ≤dλ max(−H2)2 ≤ B
+ϵ2κϑ
+,
+which indicates that1− ϵ2κϑ∥H2∥2
+F
+B >0.
+Furthermore, we have that
+E[L(θ k+1, ϑk+1)]≥
+
+1 + η2κθ∥H1∥2
+F
+B
+
+1− ϵ2κϑ∥H2∥2
+F
+B
+
+E[L(θ k, ϑk)].(12)
+Hence,(θ ∗, ϑ∗)is locally stable for stochastic ARPO, so the following inequality must hold:
+
+1 + η2κθ∥H1∥2
+F
+B
+
+1− ϵ2κϑ∥H2∥2
+F
+B
+
+≤1.(13)
+In conclusion, we have that for a local optimizer(θ ∗, ϑ∗)ofV πθ◦νϑ(µ0), it holds that:
+
+∥H1∥2
+F + B
+κθη2
+
+1− ϵ2κϑ∥H2∥2
+F
+B
+
+≤ B
+κθη2 .(14)
+This completes the proof.
+30
+Preprint
+From Theorem C.3, we observe that for FOSP in ARPO, if the adversary-side curvature is bounded
+as∥∇ 2
+ϑϑV πθ∗◦νϑ∗ (µ0)∥2
+F ≤B/(2κ ϑϵ2), then the policy-side curvature in ARPO matches that of
+SPO (as later shown in Theorem C.4), i.e.,∥∇ 2
+θθV πθ∗◦νϑ∗ (µ0)∥2
+F ≤B/(κ θη2). This implies that
+if ARPO achieves sufficiently strong robustness, i.e., flat adversarial curvature, it can preserve gen-
+eralization comparable to SPO. Moreover, greater robustness may further enhance generalization.
+However, if robustness is insufficient, generalization may be significantly degraded.
+C.3.2 LEARNINGDYNAMICSNEARFOSPS INSPO
+Similarly, for an FOSPθ ∗ in SPO, we establish the learning dynamics analysis. Letθ ∗ be a first-
+order stationary policy-adversary ofV πθ (µ0). To simplify analysis, we considerθ ∗ satisfies the
+following second-order optimality conditions:
+∇θV πθ∗
+(µ0) = 0,∇ 2
+θθV πθ∗
+(µ0)≺0.(15)
+Note that it makes no sense on the gradient when the objective adds a constant. Therefore, to explore
+the local properties aroundθ ∗, denoteL(θ) :=V πθ∗ (µ0)−V πθ (µ0). In the neighborhoods ofθ ∗,
+we considering the local quadratic approximation ofL(θ)as:
+L(θ) = 1
+2(θ−θ ∗)⊤Hθ(θ∗)(θ−θ ∗),(16)
+whereH θ(θ∗) :=∇ 2
+θθL(θ∗)is the Hessians with respect toθrespectively. Then, we have the
+following optimality conditions from (15).
+∇θL(θ∗) = 0,∇ 2
+θθL(θ∗)≻0.(17)
+For a sampling trajectoryτ= (s 0, a0, r0, . . .)∼πθ,P, denote the unbiased estimation of the
+action-value functionQ πθ as
+dQπθ (st, at) :=
+X
+t′≥t
+γt′−tr(st′, at′),∀(s t, at)∈τ.
+For simplicity of writing and reading of the latter, denote the sampled estimate as:
+ˆv(s, a;θ) := 1
+1−γ sg
+
+dQπθ (s, a)
+
+·logπ θ (a|s),(18)
+whereassg(·)is the stop-gradient operator, meaning that dQπθ (s, a)is seen as a function according
+to(s, a)and is detached from the gradient operation forθin the following context.
+Letξdenote the stochastic variable of sampling and let the sampled estimationf(s;θ) :=
+−ˆv(s, a;θ)as defined in (18). Denote the sampled policy gradient estimation as
+∇θ ˆLξ(θ) = 1
+B
+X
+i∈ξ
+∇θf(si;θ).
+Consider the following SPO iteration:
+θk+1 =θ k −η∇ θ ˆLξ(θk). (SPO Iterator)
+Policy Gradient Noise in SPO.Denote the 1-batch gradient noise asξ θ,i(θ) =∇ θf(si;θ)−
+∇θL(θ). LetΣ θ(θ) :=E
+
+ξθ,i(θ)ξθ,i(θ)⊤
+as the 1-batch gradient noise covariance. Then, we have
+that
+Σθ(θ) =E
+
+∇θf(si;θ)∇ θf(si;θ) ⊤
+− ∇θL(θ)∇θL(θ)⊤,(19)
+Furthermore, denote the sampled full-batch gradient noise asξ B
+θ (θ) :=∇ θ ˆLξ(θ)− ∇θL(θ) =
+1
+B
+P
+i∈ξ ξθ,i(θ). Then, for the full-batch gradient noise, we have that
+E
+
+ξB
+θ (θ)ξB
+θ (θ)⊤
+= 1
+B E
+
+ξθ,i(θ)ξθ,i(θ)⊤
+= 1
+B Σθ(θ).(20)
+Based on these notations, we make a coercive assumption about gradient noise based on Hes-
+sians. Similar insights have been theoretically and empirically validated in a variety of studies about
+stochastic gradient descent in supervised learning settings (Zhu et al., 2019; Feng & Tu, 2021; Wu
+et al., 2020; 2022b; Mori et al., 2022; Wang & Wu, 2023; Wojtowytsch, 2024; Zhou et al., 2025).
+31
+Preprint
+Assumption C.7(Coercive Policy Gradient Noise in SPO).There existsκ >0, such that for allθ,
+the following coercive conditions hold:
+Tr
+Σθ(θ)
+|L(θ)|Hθ(θ)
+
+≥2κ θ∥Hθ(θ)∥2
+F .
+Local Stability of SPO.Similar to the linear stability of stochastic gradient descent (Wu et al.,
+2022b) and sharpness-aware minimization (Zhou et al., 2025), we define the local stability of SPO.
+Note that in the practical optimization process, only local stable optima can be selected.
+Definition C.3(Local Stability of SPO).The first-order stationary policyθ ∗ is said to be locally
+stable if there exists a constantC >0such that for the SPO Iterator, the local quadratic model (16)
+L(θ)satisfiesE[L(θ k)]≤CE[L(θ 0)],∀k≥0.
+Based on these, we characterize the Hessian properties of FOSPs in SPO.
+Theorem C.4(Flatness Bound of FOSPs in SPO).Letθ ∗ be a first-order stationary policy in SPO
+that satisfies the second-order optimality condition. Ifθ ∗ is locally stable,L(θ 0)>0, and Assump-
+tion C.7 holds, then for SPO, we have that
+∥Hθ(θ∗)∥2
+F ≤ B
+κη2 .(21)
+Proof.BecauseL(θ 0)>0, by recursion, we can prove thatL(θ k)>0,∀k≥1. Then, we have that
+L(θk+1) = 1
+2(θk+1 −θ ∗)⊤Hθ(θ∗)(θk+1 −θ ∗).
+Without loss of generality, we can letθ ∗ = 0. DenoteH 1 :=H θ(θ∗). According to the definition
+of the sampled full-batch gradient noise, we have thatξ B
+θ (θ) =∇ θ ˆLξ(θ)− ∇θL(θ).
+Then, we have that
+E
+
+θ⊤
+k+1Hθ(θ∗)θk+1
+
+=E
+h
+(θk −η∇ θ ˆLξ(θk))⊤H1(θk −η∇ θ ˆLξ(θk))
+i
+=E
+
+(θk −η∇ θL(θk)−ηξ B
+θ (θk))⊤H1(θk −η∇ θL(θk)−ηξ B
+θ (θk))
+
+=E
+
+(θk −η∇ θL(θk))⊤H1(θk −η∇ θL(θk))
+
++η 2E
+
+ξB
+θ (θk)⊤H1ξB
+θ (θk)
+
+=E
+
+(θk −η∇ θL(θk))⊤H1(θk −η∇ θL(θk))
+
++ η2
+B E[Tr (Σθ(θk)H1)]
+≥E
+
+(θk −η∇ θL(θk))⊤H1(θk −η∇ θL(θk))
+
++ 2η2κθ∥H1∥2
+F
+B E[L(θ k)]
+=E
+
+θ⊤
+k (I−ηH 1)H1(I−ηH 1)θk
+
++ 2η2κθ∥H1∥2
+F
+B E[L(θ k)]
+≥ 2η2κθ∥H1∥2
+F
+B E[L(θ k)].
+The third equation comes fromE
+
+ξB
+θ (θ, ϑ)
+
+= 0. The fourth equation comes from (20). The first
+inequality comes from Assumption C.7. Because ofH1 ⪰0, we have thatH 1 −2ηH 2
+1 +η 2H3
+1 ⪰0,
+which leads to the last inequality.
+Furthermore, we have that
+E[L(θ k+1)]≥ η2κθ∥H1∥2
+F
+B E[L(θ k)].(22)
+Hence,θ ∗ is locally stable for stochastic SPO, so the following inequality must hold:
+η2κθ∥H1∥2
+F
+B ≤1.(23)
+In conclusion, we have that for a local optimizerθ ∗ ofV πθ (µ0), it holds that:
+∥H1∥2
+F ≤ B
+κη2 .(24)
+This completes the proof.
+32
+Preprint
+D ANALYSIS ONINTUITIVEISA-MDPS
+In this section, we illustrate and analyze detailed two-state and two-action ISA-MDPs to provide
+intuitive explanations from the numerical properties and their value space geometry. These examples
+are drawn on Dadashi et al. (2019).
+Lemma D.1(Line Theorem (Dadashi et al., 2019)).Letsbe a state andπa policy. Then there exist
+twos-deterministic policies inY π
+S\{s}, denotedπ ℓ,π u, such that for allπ ′ ∈Y π
+S\{s},
+fv(πℓ)⪯f v(π′)⪯f v(πu),
+wheref v(π) =V π, andY π
+S\{s} describe the set of policies that agree withπon all states excepts.
+Furthermore, the image off v restricted toY π
+S\{s} is a line segment, and the following three sets are
+equivalent:
+(i)fv
+
+Y π
+S\{s}
+
+,
+(ii){fv (απℓ + (1−α)π u)|α∈[0,1]},
+(iii){αfv(πℓ) + (1−α)f v(πu)|α∈[0,1]}.
+Based on the above Lemma, we derive the following Proposition.
+Proposition D.1.There exists an ISA-MDP that satisfies the following properties:
+(1) Its robust policy space has a cut point, i.e., there exists a policyπsuch thatΠ Robust/{π}is
+disconnected, whereΠ Robust ={π∈Π|V π(s) =V π◦ν∗(π)(s),∀s}.
+(2) The FOSPs in ARPO are more than those in SPO. Moreover, letπS be a FOSP under SPO, and
+πA be a FOSP under ARPO. Then,π A is a robust policy withV πA(µ0)−V −(µ0)< 1
+2 (V πS (µ0)−
+V −(µ0)), whereV −(µ0) = minπ V π(µ0)is the worst value in ISA-MDP .
+Proof.Consider a two-state, two-action ISA-MDPM= (S,A, r, P, γ, B), withS={s 1, s2},
+A={a 1, a2}, and reward and transition structure specified as
+r(si, aj) = ˆr[(i−1)|A|+j−1], P(s k|si, aj) = ˆP[(i−1)|A|+j−1][k],
+where
+ˆr= [−0.45,−0.1,0.5,0.5], ˆP= [[0.7,0.3],[0.99,0.01],[0.2,0.8],[0.99,0.01]].
+Set the discount factorγ= 0.9, and letB(s 1) =B(s 2) ={s 1, s2}. Parametrize policies as
+Θ ={(α, β) : 0≤α≤1,0≤β≤1}, withπ α,β(a1|s1) =α,π α,β(a1|s2) =β.
+The robust policy parameter space is defined as
+ΘRobust ={(α, β)∈Θ :V πα,β◦ν∗(πα,β) =V πα,β }.
+We derive that:
+V πα,β (s1) = Aα,β
+Pα,β
+,(25)
+V πα,β (s2) = Bα,β
+Pα,β
+,(26)
+∂V πα,β (s1)
+∂α = 0.24885β−0.21635
+Pα,β
+− 0.0261Aα,β
+Pα,β
+2 ,(27)
+∂V πα,β (s1)
+∂β = 0.24885α+ 0.0711
+Pα,β
++ 0.0711Aα,β
+Pα,β
+2 ,(28)
+∂V πα,β (s2)
+∂α = 0.24885β−0.18135
+Pα,β
+− 0.0261Bα,β
+Pα,β
+2 ,(29)
+∂V πα,β (s2)
+∂β = 0.24885α+ 0.0711
+Pα,β
++ 0.0711Bα,β
+Pα,β
+2 ,(30)
+33
+Preprint
+where
+Pα,β =|I−γP πα,β |
+= (0.991−0.711β)(0.261α+ 0.109) + (0.261α+ 0.009)(0.711β−0.891),
+Aα,β = 0.1305α+ (0.35α+ 0.1)(0.711β−0.991) + 0.0045,
+Bα,β = 0.1305α+ (0.35α+ 0.1)(0.711β−0.891) + 0.0545.
+Direct calculation from (25) and (26) shows that the policyπ1,1 achieves the highest value, i.e.,π1,1
+is globally optimal. Moreover, the following ordering holds:
+V π1,1 ≈(0.16,1.89) ⊤ ⪰V π0,1 ≈(−0.81,1.26) ⊤
+⪰V π0,0 ≈(−0.95,−0.35) ⊤ ⪰V π1,0 ≈(−2.47,−1.71) ⊤.(31)
+To further analyze value relations, define
+f(β, s) :=V π1,β (s)−V π0,β (s), s∈ {s 1, s2}.
+Explicit calculation shows there exists a threshold ˜β≈0.777such that
+
+
+
+f(β, s)>0,ifβ > ˜β,
+f(β, s) = 0,ifβ= ˜β,
+f(β, s)<0,ifβ < ˜β,
+(32)
+and this sign structure holds identically for boths 1 ands 2.
+Applying theLine TheoremD.1, for any0≤α 1 < α2 ≤1and for each fixeds,
+
+
+
+V πα1,β (s)< Vπα2,β (s),ifβ > ˜β,
+V πα1,β (s) =V πα2,β (s),ifβ= ˜β,
+V πα1,β (s)> Vπα2,β (s),ifβ < ˜β,
+(33)
+again for boths 1 ands 2.
+Now, for value improvement in theβdirection, define
+g(α, s) :=Vπα,1 (s)−V πα,0 (s).
+Explicit computation confirms thatg(α, s)≥0for any0≤α≤1and boths 1, s2. Thus, for any
+0≤β 1 < β2 ≤1and fixedα,
+V πα,β1 (s)< Vπα,β2 (s).(34)
+Let us now determine the structure of the robust policy region. By definition, for any(α, β)∈Θ,
+πα,β ◦ν ∗(πα,β) = arg minπ∈Πα,β V π, whereΠ α,β ={π α,α, πα,β, πβ,α, πβ,β }.
+Ifα=β, thenΠ α,α ={π α,α}, so(α, β)is always robust. Ifβ≤min{α, ˜β}: Using (33) forβ≤α
+givesV πα,β (s)≤V πα,α(s), andV πβ,α (s)≥V πβ,β (s). Together with (34) andβ≤ ˜β,V πα,β (s)≤
+V πβ,β (s). Therefore,V πα,β (s)is the minimal value inΠ α,β for both states, so robustness holds.
+For other regions(α, β)/∈ {α=β} ∪ {β≤min{α,˜β}}, by similarly using (33) and (34), one can
+verify that the minimal value inΠ α,β is always attained at a different policy (specifically, atπ β,α,
+πα,α, orπ β,β in the respective regions). Thus, the robust region is exactly the union
+ΘRobust ={(α, β) :α=β} ∪ {(α, β) :β≤min{α,˜β}}.
+Notably, the point( ˜β, ˜β)serves as acut point: removing it disconnectsΘ Robust. This completes
+the proof of property (1).
+For property (2), we show that, unlike SPO, the ARPO objective can admit more FOSP. Indeed, we
+focus on
+max
+α,β
+V πα,β (s)subject to:
+
+
+
+α−β≥0,
+β≥0,
+˜β−β≥0,
+1−α≥0.
+34
+Preprint
+We analyze the Karush-Kuhn-Tucker (KKT) conditions at(α, β) = (0,0)to verify FOSP. The
+Lagrangian is defined as:
+L(s, α, β, λ) =Vπα,β (s) +λ 1(α−β) +λ 2β+λ 3(˜β−β) +λ 4(1−α).
+The KKT conditions at(α, β) = (0,0)are:
+Stationarity:
+∂V πα,β (s)
+∂α |(0,0) +λ 1 −λ 4 = 0,
+∂V πα,β (s)
+∂β |(0,0) −λ 1 +λ 2 −λ 3 = 0.
+Primal feasibility:(0,0)satisfies all inequality constraints.
+Dual feasibility:λ j ≥0, j= 1,2,3,4,
+Complementary slackness:
+λ1(α−β) = 0, λ 2β= 0, λ3(˜β−β) =λ 3 ˜β= 0, λ4(1−α) = 0.
+Since at(α, β) = (0,0), the gradients ∂V πα,β (s)
+∂α |(0,0) and ∂V πα,β (s)
+∂β |(0,0) both exist, and by the
+structure of the problem the corresponding dual variables can be chosen to satisfy the equations
+above, all KKT conditions are satisfied. Therefore,(0,0)is a FOSP for ARPO, even though it is not
+a FOSP for SPO.
+Letπ S =π 1,1, πA =π 0,0,µ 0 is the uniform distribution onS. In this example,π − =π 1,0. By (31),
+we know that
+V πS (µ0)≈1.03, V πA(µ0) =−0.65, V −(µ0) =−2.09.
+Then, we have that
+V πS (µ0)−V −(µ0) = 3.12, VπA(µ0)−V −(µ0) = 1.44< 1
+2(V πS (µ0)−V −(µ0)).
+This completes the proof.
+E ANALYSIS ONSURROGATEADVERSARY
+In this section, we provide the analysis and proof about the surrogate adversary.
+Theorem E.1(Surrogate Adversary).For any policyπ θ, states∈ S, andK >0, let the adversary
+ϑbe computed viaK-step gradient descent on the adversarial value function, i.e.,ϑ s,k =ϑ s,k−1 −
+ηs,k−1∇ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 ,1≤k≤K. Assume step sizesη s,k ≤1/(λ s +δ)for someδ >0,
+and ifG(s;π, ν) :=D KL(π(·|s)∥π◦ν(·|s))≪1. Then, we have
+V πθ (s)−V πθ◦νϑ(s)≥ 2δ
+λmax(Fs,θ)K G(s;π θ, νϑ) +O
+
+G(s;π θ, νϑ)
+3
+2
+
+,
+whereF s,θ is the Fisher information matrix oflogπ θ ◦ν ϑ(a|s)with respect toϑ s = 0, defined as
+Fs,θ :=F(θ, s) =E a∼πθ(·|s)
+h
+(∇ϑs logπ θ(a|s+ϑ s)|ϑs=0) (∇ϑs logπ θ(a|s+ϑ s)|ϑs=0)T
+i
+,λ s =
+maxs+ϑs∈B(s) λmax(∇2
+ϑϑV πθ◦νϑ(s)|ϑ=ϑs)andλ max(·)is the largest eigenvalue of matrix.
+Proof.We begin by examining the local behavior of the KL-divergence between the policy at the
+original and perturbed state:
+G(s;π θ, νϑ) :=D KL (πθ(·|s)∥πθ(·|s+ϑ s)).
+Let us expandG(s;π θ, νϑ)for smallϑ s:
+G(s;π θ, νϑ) =
+X
+a
+πθ(a|s) log πθ(a|s)
+πθ(a|s+ϑ s)
+=E a∼πθ(·|s) [logπ θ(a|s)−logπ θ(a|s+ϑ s)].
+35
+Preprint
+Now, expandlogπ θ(a|s+ϑ s)atϑ s = 0using a Taylor expansion:
+logπ θ(a|s+ϑs) = logπ θ(a|s)+∇ϑs logπ θ(a|s)|⊤
+ϑs=0ϑs+1
+2ϑ⊤
+s ∇2
+ϑs logπ θ(a|s)|ϑs=0ϑs+O(∥ϑs∥3
+2).
+Plugging this into the difference,logπ θ(a|s)−logπ θ(a|s+ϑ s), and taking the expectation over
+a∼π θ(·|s):
+Ea∼πθ(·|s)
+
+−∇ϑs logπ θ(a|s)|⊤
+ϑs=0ϑs − 1
+2ϑ⊤
+s ∇2
+ϑs logπ θ(a|s)|ϑs=0ϑs
+
++O(∥ϑ s∥3
+2).
+The first term equals zero because
+Ea∼πθ(·|s)[∇ϑs logπ θ(a|s)|ϑs=0] =∇ ϑs
+X
+a
+πθ(a|s+ϑ s)|ϑs=0 = 0,
+since the sum of probabilities is always 1.
+The second term can also be separated using Fisher information matrix properties:
+Fs,θ :=E a∼πθ(·|s)
+
+∇ϑs logπ θ(a|s)∇ϑs logπ θ(a|s)⊤
+,
+and
+Ea∼πθ(·|s)[∇2
+ϑs logπ θ(a|s)] =−F s,θ.
+Therefore, combining the above,
+G(s;π θ, νϑ) = 1
+2ϑ⊤
+s Fs,θϑs +O(∥ϑ s∥3
+2).
+From the expansion above, sinceFs,θ is positive definite (or at least positive semi-definite), we have:
+1
+2λmin(Fs,θ)∥ϑs∥2
+2 ≤ 1
+2ϑ⊤
+s Fs,θϑs ≤ 1
+2λmax(Fs,θ)∥ϑs∥2
+2.
+Neglecting the lower bound (since we only need an upper bound for∥ϑ s∥2
+2), isolate∥ϑ s∥2
+2:
+∥ϑs∥2
+2 ≤ 2
+λmax(Fs,θ)G(s;π θ, νϑ) +O(G(s;π θ, νϑ)3/2).
+Here, theO(G 3/2)term comes from inverting the Taylor expansion whenϑ s is small. We now
+analyze the decrease in the value function resulting fromKsteps of gradient descent:
+For each step,
+ϑs,k =ϑ s,k−1 −η s,k−1∇ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 .
+LetV k =V πθ◦νϑs,k (s). ExpandingV k aroundϑ s,k−1 using Taylor’s theorem:
+Vk =V k−1 +∇ ϑsV πθ◦νϑ(s)|⊤
+ϑs=ϑs,k−1 (ϑs,k −ϑ s,k−1)
++ 1
+2(ϑs,k −ϑ s,k−1)⊤∇2
+ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 (ϑs,k −ϑ s,k−1) +O(∥ϑ s,k −ϑ s,k−1∥3
+2).
+Summing overk= 1toKand noting telescoping sum ofV k−1 −V k:
+V πθ (s)−V πθ◦νϑs,K (s) =
+KX
+k=1
+(V πθ◦νϑs,k−1 (s)−V πθ◦νϑs,k (s))
++O
+ KX
+k=1
+∥ϑs,k −ϑ s,k−1∥3
+2
+!
+=−
+KX
+k=1
+∇ϑsV πθ◦νϑ(s)|⊤
+ϑs=ϑs,k−1 (ϑs,k −ϑ s,k−1)
+− 1
+2
+KX
+k=1
+(ϑs,k −ϑ s,k−1)⊤∇2
+ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 (ϑs,k −ϑ s,k−1)
++O
+ KX
+k=1
+∥ϑs,k −ϑ s,k−1∥3
+2
+!
+.
+36
+Preprint
+The gradient update yields:
+ϑs,k −ϑ s,k−1 =−η s,k−1∇ϑsV πθ◦νϑ(s)|ϑs=ϑs,k−1 .
+For small enough steps, and since the step sizeη s,k−1 ≤1/(λ s +δ)ensures sufficient decrease
+(similar to the classic descent lemma in optimization), we can bound the value difference as:
+V πθ (s)−V πθ◦νϑs,K (s)≥δ
+KX
+k=1
+∥ϑs,k −ϑ s,k−1∥2
+2 +O
+ KX
+k=1
+∥ϑs,k −ϑ s,k−1∥3
+2
+!
+.
+By Jensen’s inequality,
+KX
+k=1
+∥ϑs,k −ϑ s,k−1∥2
+2 ≥ 1
+K
+
+KX
+k=1
+(ϑs,k −ϑ s,k−1)
+
+2
+2
+= 1
+K ∥ϑs,K∥2
+2.
+Now substitute the earlier quadratic relationship between∥ϑ s,K∥2 andG(s;π θ, νϑs,K ):
+V πθ (s)−V πθ◦νϑs,K (s)≥ δ
+K ∥ϑs,K∥2
+2 +O(∥ϑ s,K∥3
+2)
+≥ 2δ
+λmax(Fs,θ)K G(s;π θ, νϑs,K ) +O(G(s;π θ, νϑs,K )3/2).
+This completes the proof.
+F ADDITIONALALGORITHMDETAILS
+F.1 ADVERSARIALLYROBUSTPROXIMALPOLICYOPTIMIZATION(AR-PPO)
+We apply the ARPO paradigm on top of the PPO algorithm and further incorporate the SPO-based
+guidance, yielding Adversarily Robust Proximal Policy Optimization (AR-PPO). The overall algo-
+rithm is presented in Algorithm 2.
+F.2 BILEVELADVERSARIALLYROBUSTPROXIMALPOLICYOPTIMIZATION(BAR-PPO)
+We apply the BARPO paradigm on top of the PPO algorithm and further incorporate the SPO-based
+guidance, yielding the Bilevel Adversarially Robust Proximal Policy Optimization (BAR-PPO). The
+overall algorithm is presented in Algorithm 3.
+F.3 ADDITIONALIMPLEMENTATIONDETAILS
+We run 2048 simulation steps per iteration and use a simple MLP network for all agents. SA-PPO,
+WocaR-PPO, and BAR-PPO are trained for 2 million steps (976 iterations) on Hopper, Walker2d,
+and Halfcheetah, and 10 million steps (4882 iterations) on Ant for convergence. RADIAL-PPO is
+trained for 4 million steps (2000 iterations) on Hopper, Walker2d, and Halfcheetah following the
+official implementation and 10 million steps (4882 iterations) on Ant. The attack budgetϵis lin-
+early increased from0to the target value during the first 732 iterations on Hopper, Walker2d, and
+Halfcheetah, and 3662 iterations on Ant, before continuing with the target value for the remaining
+iterations. This scheduler is aligned with Zhang et al. (2020c); Liang et al. (2022) without extra tun-
+ing. The regularization weightκis chosen from{0.1,0.3,1.0}for BAR-PPO. We run 10 iterations
+with step sizeϵ/10for both methods and set the temperature parameterβ= 1×10 −5 for SGLD.
+We implement all PPO agents with the same fully connected (MLP) structure as Zhang et al. (2020c);
+Oikarinen et al. (2021). In the Ant environment, we choose the best regularization parameterκin
+{0.01,0.03,0.1,0.3,1.0}for SA-PPO, RADIAL-PPO, and WocaR-PPO to achieve better robust-
+ness. For fair and comparable agent selection, we conduct multiple experiments for each setup,
+repeating each 17 times to account for the inherent performance variability in RL. After training,
+we attack all agents using random, critic, MAD, and RS attacks. Then, we select the median agent
+by considering the natural and robust returns as our final agent. This chosen agent is then attacked
+using the SA-RL and PA-AD attacks to further robustness evaluation, because these attacks involve
+quite high computational costs.
+37
+Preprint
+F.4 EXPERIMENTSCOMPUTERESOURCES
+All MuJoCo experiments were conducted on a machine with an AMD EPYC 7742 CPU and no
+GPU acceleration.
+BARPO’s training takes approximately 2 hours for Hopper, Walker2d, and HalfCheetah, and 9 hours
+for the more complex Ant environment. This represents roughly a 2x increase in wall-clock time
+compared to standard, non-robust PPO training. Crucially, this overhead is on par with other leading
+robust baselines (Zhang et al., 2020c; Oikarinen et al., 2021; Liang et al., 2022), which require simi-
+lar inner-loop computations to find the adversary. The choice of a CPU-only setup follows baselines,
+as the wall-clock time in these MuJoCo tasks is overwhelmingly dominated by the environment sim-
+ulation overhead, ensuring a fair comparison of the algorithmic sample complexity.
+Furthermore, we confirm that BARPO introduces no significant additional memory overhead com-
+pared to standard PPO training.
+Algorithm 2Adversarially Robust Proximal Policy Optimization (AR-PPO).
+Input:Number of iterationsT, a scheduleϵ t for the perturbation radiusϵ, robustness weightingκ.
+1:Initialize policy networkπ θ(a|s)and value networkV θV (s).
+2:fort= 1toTdo
+3:Runπ θt in the environment to collect a set of trajectoriesD={τ k}containing|D|episodes,
+eachτ k is a trajectory containing|τ k|samples,τ k :={(s k,i, ak,i, rk,i, sk,i+1)}, i∈[|τk|].
+4:Compute reward-to-go ˆRk,i for each stepiin every episodekusing the trajectories and dis-
+count factorγ.
+5:Update value networkV θV (s)by regression on the mean-square error:
+θV ←arg min
+θV
+1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+
+V(s k,i)− ˆRk,i
+2
+.
+6:Estimate advantage ˆAk,i for each stepiin every episodekusing generalized advantage esti-
+mation (GAE) and the current value functionV θV (s).
+7:Solve the inner optimization using gradient descent (PGD):
+8:For allk, i, run PGD to solve (the objective can be solved in a batch):
+si,ν = arg min
+sν∈Bϵt(sk,i)
+g
+ πθ(ak,i|sν)
+πθt(ak,i|sk,i), ˆAk,i
+
+,
+whereg(x, y) = min{x·y,clip (x,1−η,1 +η)·y}.
+9:Compute the approximation of the outer optimization:
+Lar(θ) = 1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+
+− 1
+β H(π θ(·|sk,i))−g
+ πθ(ak,i|si,ν)
+πθt(ak,i|sk,i), ˆAk,i
+
+.
+10:Update the policy network by minimizing the vanilla PPO objective and the AR objective (the
+minimization is solved using ADAM):
+θt+1 ←arg min
+θ
+1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+−g
+ πθ(ak,i|sk,i)
+πθt(ak,i|sk,i), ˆAk,i
+
++κ· Lar(θ).
+11:end for
+38
+Preprint
+Algorithm 3Bilevel Adversarially Robust Proximal Policy Optimization (BAR-PPO).
+Input:Number of iterationsT, a scheduleϵ t for the perturbation radiusϵ, robustness weightingκ.
+1:Initialize policy networkπ θ(a|s)and value networkV θV (s).
+2:fort= 1toTdo
+3:Runπ θt in the environment to collect a set of trajectoriesD={τ k}containing|D|episodes,
+eachτ k is a trajectory containing|τ k|samples,τ k :={(s k,i, ak,i, rk,i, sk,i+1)}, i∈[|τk|].
+4:Compute reward-to-go ˆRk,i for each stepiin every episodekusing the trajectories and dis-
+count factorγ.
+5:Update value networkV θV (s)by regression on the mean-square error:
+θV ←arg min
+θV
+1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+
+V(s k,i)− ˆRk,i
+2
+.
+6:Estimate advantage ˆAk,i for each stepiin every episodekusing generalized advantage esti-
+mation (GAE) and the current value functionV θV (s).
+7:Solve the inner optimization using stochastic gradient Langevin dynamics (SGLD):
+8:For allk, i, run SGLD to solve (the objective can be solved in a batch):
+si,ν = arg max
+sν∈Bϵt(sk,i)
+KL (πθ(·|sk,i)∥πθ(·|sν)).
+9:Compute the approximation of the outer optimization:
+Lbar(θ) = 1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+
+− 1
+β H(π θ(·|sk,i))−g
+ πθ(ak,i|si,ν)
+πθt(ak,i|sk,i), ˆAk,i
+
+,
+whereg(x, y) = min{x·y,clip (x,1−η,1 +η)·y}.
+10:Update the policy network by minimizing the vanilla PPO objective and the BAR objective
+(the minimization is solved using ADAM):
+θt+1 ←arg min
+θ
+1P
+k |τk|
+X
+τk∈D
+|τk|X
+i=0
+−g
+ πθ(ak,i|sk,i)
+πθt(ak,i|sk,i), ˆAk,i
+
++κ· Lbar(θ).
+11:end for
+G ADDITIONALEXPERIMENTRESULTS
+G.1 COMPARISON OFSPO, ARPO, BARPO WITHOUTGUIDANCE,ANDBARPO
+In Table 4, we compare the natural and robust performance of SPO, ARPO, BARPO without guid-
+ance, and BARPO for continuous control tasks in MuJoCo. We also plot Figure 7, the version of
+Figure 5 without the standard deviation. We can see that BARPO, without guidance, consistently and
+significantly outperforms ARPO in natural and robust returns with respect to the mean performance.
+Moreover, BARPO further improves the overall performance by utilizing the SPO guidance.
+G.2 STATISTICALSIGNIFICANCE OFCOMPARISONRESULTS
+We discuss the statistical significance of comparison results between BARPO and baselines from
+two key considerations: (1) the comparison of mean performance, and (2) a comprehensive analysis
+incorporating both the mean and the standard deviation.
+Superiority in Mean Performance.From the perspective of mean returns, BARPO demonstrates
+a clear and significant advantage. To quantify this, we have calculated the average improvement
+of BARPO’s mean returns over each baseline across all four environments, both with and with-
+39
+Preprint
+(a) Hopper
+ (b) Walker2d
+ (c) Halfcheetah
+ (d) Ant
+Figure 7: Natural and robust performance of SPO, ARPO, BARPO without guidance, and BARPO
+for four continuous control tasks. BARPO (w/o g) consistently outperforms ARPO.
+Table 4: Natural and robust performance of SPO, ARPO, BARPO without SPO-guidance, and
+BARPO for continuous control tasks in MuJoCo. Bold and underlined values indicate the top and
+second-best performances, respectively.
+EnvironmentParadigmsNaturalReturn Return under Attack Worst-case RobustnessRandom Critic MAD RS SA-RL PA-AD Worst
+Hopper
+(ϵ= 0.075)
+SPO 3081±6382923±7672035±10351763±619756±3679±2823±18279±2-0.974ARPO 2101±5882058±5593155±5282225±6411001±301032±471799±5471001±30-0.524BARPO (w/o g) 3675±153634±1703588±2633575±2951195±791037±241060±1251037±24-0.718BARPO3684±203692±243678±193437±5551340±421728±621908±4101340±42-0.636
+Walker2d
+(ϵ= 0.05)
+SPO 4662 ±224628±214584±154507±6751062±150719±1079336±252336±252-0.928ARPO 2095±9831815±9302360±10211944±9761360±8351270±5021460±7391270±502-0.394BARPO (w/o g) 4287±154289±174231±104223±4064201±443913±6943473±4953473±495-0.190BARPO4732±864718±594727±364750±654646±534285±12822699±11922699±1192-0.436
+Halfcheetah
+(ϵ= 0.15)
+SPO5048±5264463 ±6503281±1101918±5411049±50-213±103-69±22-213±103-1.042ARPO 1412±991363±2851359±591402±641230±751079±481216±4581079±48-0.236BARPO (w/o g) 3619±443612±283654±283616±373636±5233365±403337±453337±45-0.078BARPO 4837±994741±5014803±544729±1054265±10773894±13223181±15933181±1593-0.342
+Ant
+(ϵ= 0.15)
+SPO5381±13085329±9764696±10151768±9291097±633-1398±318-3107±1071-3107±1071-1.577ARPO 1709±5642026±381976±1311839±3501661±5931648±6661675±5731648±666-0.034BARPO (w/o g) 3647±1283590±4313802±843597±3573429±6792769±6082659±5412659±541-0.270BARPO 5024±1174979±1144777±1224843±1204171±8263367±9022825±7572825±757-0.438
+out attacks. The results, summarized in Table 5, show that BARPO consistently and substantially
+outperforms the baselines on average.
+Table 5: The average improvement of BARPO’s mean of returns over baselines.
+Compared Method Natural Return Random Critic MAD RS SA-RL PA-AD Worst
+SA -0.85% +4.17% -2.19% +8.20% +28.29% +48.31% +85.93% +74.96%RADIAL +29.40% +37.89% +34.20% +48.35% +77.60% +294.27% +24.88% +156.68%WocaR +10.59% +8.94% +7.21% +13.28% +28.34% +92.61% +31.30% +65.65%SPO +2.56% +6.94% +82.99% +197.59% +350.34% +1238.33% +1708.38% +1000.94%ARPO +159.37% +158.24% +128.23% +149.80% +168.34% +167.73% +80.29% +103.16%
+Advantage Considering Standard Deviation.Beyond the mean, a robust comparison must ac-
+count for performance variance. Our results show that BARPO’s advantage holds even when con-
+sidering the standard deviation. (1) In the majority of cases, the upper performance bound of the
+baselines (i.e., mean + standard deviation) is still lower than the mean performance of BARPO alone.
+(2) More strikingly, in several scenarios, the upper bound of a baseline’s performance (mean + stan-
+dard deviation) is lower than the lower performance bound of BARPO (mean - standard deviation).
+These points strongly indicate that the performance distributions are well-separated, and BARPO’s
+superiority is not an artifact of sampling variance. This demonstrates a statistically significant edge
+over existing methods.
+G.3 EXTENDEDEXPERIMENTS ONHUMANOIDTASK
+Humanoid task in the MuJoCo environment is a 3D bipedal robot designed to simulate a human and
+is widely considered the most difficult MuJoCo locomotion task, featuring:
+• A 348-dimensional observation space ( 31.6x Hopper, 20.5x Walker2d/HalfCheetah, 3.3x Ant).
+40
+Preprint
+• A 17-dimensional action space ( 5.7x Hopper, 2.8x Walker2d/HalfCheetah, 2.1x Ant).
+For this challenging environment, we implemented a comprehensive comparison of methods: SPO,
+ARPO, BARPO (w/o g), ARPO (w/ g), BARPO, and the robust baseline SA-PPO. Each method’s
+training was repeated 17 times. We evaluated both the natural performance and the robust perfor-
+mance under four different attack types, and we report the results of the median-performing agent.
+For the training of ARPO (w/ g), BARPO, and SA-PPO, the hyperparameterκwas selected via a
+grid search over the set{0.1,0.3,1.0}.
+Our results, shown in Tables 6 and 7, demonstrate that BARPO continues to achieve a strong natural
+and robust performance even in this significantly more complex environment. This further validates
+the effectiveness of our approach.
+Table 6: Performance of SPO, ARPO, and BARPO without guidance in the Humanoid task.
+Paradigm Natural Return Random Critic MAD RS
+SPO 5227±963 5320±730 4232±1545 1059±563 910±595
+ARPO 551±44 544±47 553±51 554±52 522±60
+BARPO (w/o g)6177±216177±186204±136180±185871±1066
+Table 7: Performance of SA-PPO, ARPO with guidance, and BARPO in the Humanoid task.
+Paradigm Natural Return Random Critic MAD RS
+SA-PPO 6315±12 6313±16 6385±10 6321±15 5889±92
+ARPO (w/ g) 6035±38 6041±41 5978±559 5940±93 5637±622
+BARPO6615±396612±326698±336623±406031±827
+G.4 ABLATIONS ONREGULARIZATIONCOEFFICIENT
+The regularization coefficientκplays a key role in robust training. Following baselines (Zhang et al.,
+2020c; Oikarinen et al., 2021; Liang et al., 2022), we performed a limited grid search for BARPO
+in{0.1,0.3,1.0}. We emphasize that adversarial RL typically requires moderate tuning, and our
+method introduces no additional burdens than standard methods in the field. We also add ablations
+to reflect the performance of BARPO across differentκchoices in Table 8.
+Table 8: Natural and worst-case robust performance of BARPO across variousκ.
+EnvκNatural Return Worst Robust Return
+Hopper
+1.0 3636 1083
+0.33684 1340
+0.1 2151 959
+Walker2d
+1.0 44013254
+0.347322669
+0.1 4672 1615
+Halfcheetah
+1.0 38433436
+0.3 4837 3181
+0.15133749
+Ant
+1.0 50242825
+0.3 5557 1413
+0.15596439
+G.5 ABLATIONS ONINNERSTEPS ANDSTEPSIZES
+We further compare the BARPO’s performance with different inner steps (10, 15, 20) and vary-
+ing step sizes (scaling from1×to3×the base ratio ofϵ/steps) in Tables 9 and 10. Across these
+variations, BARPO consistently maintained its performance, indicating it is not sensitive to specific
+parameter tuning.
+41
+Preprint
+Table 9: Natural and worst-case robust performance of BARPO across various inner steps.
+Env Return 10-steps 15-steps 20-steps
+Hopper Natural 367737423652
+Worst12401049 1194
+Walker2d Natural 440147334519
+Worst41403536 3913
+Halfcheetah Natural46234408 4455
+Worst 3453 38453972
+Ant Natural50244917 4852
+Worst 417143334303
+Table 10: Natural and worst-case robust performance of BARPO across various inner step sizes.
+Env Returnϵ/steps2ϵ/steps3ϵ/steps
+Hopper Natural36773573 3673
+Worst 1240 12421250
+Walker2d Natural 440144244219
+Worst 414042843159
+Halfcheetah Natural46234307 4549
+Worst 3453 37543988
+Ant Natural50244772 4853
+Worst 4171 41244226
+G.6 FURTHERABLATIONS ONEFFECTS OF THEBILEVELSTRUCTURE ANDSPO
+As shown in “Effect of SPO Guidance” of Section 5.3 (Figures 5 and 6), we perform ablations
+comparing BARPO with and without SPO guidance, showing that SPO improves natural return but
+reduces robustness. Additionally, as detailed in the second part of this section, Table 3 shows that
+introducing bilevel optimization on top of SPO substantially improves robust return with only minor
+degradation in natural return.
+To further disentangle the effects of the bilevel structure and SPO, we now include additional com-
+parisons (ARPO, ARPO w/ g, BARPO w/o g) and report the relative improvements of ARPO w/ g
+and BARPO w/o g compared to ARPO in Table 11.
+Table 11: Relative improvements of ARPO w/ g and BARPO w/o g compared to ARPO
+Env Paradigm Natural Return Random Critic MAD RS SA-RL PA-AD Worst
+Hopper ARPO (w g)+76.0% +77.5% +17.1%+40.8% +12.9%+23.8% -2.4% +12.9%BARPO (w/o g) +74.9% +76.6% +13.7%+60.7% +19.4%+0.5% -41.1% +3.6%
+Walker2d ARPO (w g) +100.8% +133.1%+81.5% +117.4%+130.8% +180.7% +70.9% +96.5%BARPO (w/o g)+104.6% +136.3%+79.3% +117.2%+208.9% +208.1% +137.9% +173.5%
+HalfcheetahARPO (w g)+253.9% +261.9% +270.9%+83.3% +193.1% +25.7% -10.7% +0.6%BARPO (w/o g) +156.3% +165.0% +168.8%+157.9% +195.6% +211.9% +174.4% +209.3%
+Ant ARPO (w g)+215.3% +158.0% +141.3% +120.7%+60.7% -28.1% +4.9% -28.1%BARPO (w/o g) +113.4% +77.2% +92.3% +95.6%+106.4% +68.0% +58.7% +61.3%
+G.7 COMBINATIONEFFECT OFBILEVELFRAMEWORK ANDKL SURROGATE
+We have found that BARPO improves the optimization landscape. We further analyze whether the
+improvement primarily arises from the bilevel optimization structure itself or from the KL surrogate
+objective. We clarify that the improved optimization landscape in BARPO arises from the combi-
+nation effect of both the bilevel optimization structure and the KL surrogate objective. This means
+that neither component alone is sufficient to achieve the observed improvements.
+First, a bilevel structure by itself does not guarantee a smooth or well-behaved landscape. As noted
+in Section 4.1, both SPO and ARPO can be interpreted as special cases of bilevel optimization.
+However, they suffer from undesirable first-order stationary policies. The empirical improvements
+of BARPO over SPO and ARPO thus highlight the importance of a well-chosen surrogate objective.
+Our Theorem 4.1 provides theoretical support for using the KL divergence as a meaningful and
+tractable surrogate. In contrast, poorly chosen surrogates without such properties may result in
+42
+Preprint
+worse behavior. In particular, the reformulation (35) offers a promising direction for identifying
+optimal surrogates theoretically.
+Second, the KL surrogate alone is insufficient without the bilevel structure. To disentangle the con-
+tributions of each component, we conducted an ablation study comparing BARPO to an augmented
+version of SPO that uses the KL surrogate directly within a minimax formulation. The results (see
+Table 12) show that BARPO consistently achieves a better trade-off between natural and robust re-
+turns. Specifically, in Hopper and HalfCheetah environments, BARPO outperforms the Minimax
+baseline on both metrics. In Walker2d and Ant, BARPO achieves slightly lower natural returns but
+significantly higher robust performance, suggesting a better robustness-optimality balance overall.
+Table 12: Comparison of KL surrogate with minimax and bilevel structure.
+Env Structure Natural Return Worst Robust Return
+Hopper Minimax 3518 1286Bilevel3684 1340
+Walker2dMinimax4875997Bilevel 47322669
+HalfcheetahMinimax 4780 1443Bilevel4837 3181
+Ant Minimax53672355Bilevel 50242825
+H ADDITIONALDISCUSSIONS ANDCLARIFICATIONS
+H.1 DISCUSSION ONASSUMPTIONS INTHEORETICALANALYSIS OFCONVERGENCE
+We offer the following clarifications and discussions on the assumptions in the theoretical analysis
+of convergence for ARPO.
+Clarification for core contributions.Our main contribution is not the convergence proof itself,
+but the identification of a fundamental tension between optimality and robustness in policy gradient
+methods, and further developing a principled solution to mitigate this tradeoff. Our theoretical
+analysis reveals the root cause of this tradeoff, the landscape distortion induced by the strongest
+adversaries, and motivates the design of a bilevel framework to alleviate it. The convergence proof
+merely supports the conclusion that ARPO converges to FOSPs.
+Justification of assumptions.We acknowledge that assumptions like Lipschitz smoothness and
+strong convexity may not strictly hold for deep neural networks. However, they are widely adopted
+in prior works on adversarial robustness (Sinha et al., 2018; Wang et al., 2019). Lipschitz continuity
+of sampled policy gradients has been explored and supported in various works (Allen-Zhu et al.,
+2019; Du et al., 2019; Zou et al., 2020) that study smoothness properties of deep neural networks.
+The assumption of locally strongly convex adversaries is also common in robust optimization liter-
+ature (Sinha et al., 2018; Lee & Raginsky, 2018) and can be justified through its connection with
+distributionally robust optimization.
+Potential relaxations.These conditions can be further relaxed. Specifically, the Lipschitz gradi-
+ent assumption can be relaxed to(L 0, L1)-smoothness (Zhang et al., 2020d;a), generalized smooth-
+ness (Li et al., 2023), or smooth adaptivity (Bauschke et al., 2017; Bolte et al., 2018; Ding et al.,
+2025). Strong convexity can be weakened to weak strong convexity (Necoara et al., 2019), restricted
+secant inequality (Agarwal et al., 2012), PL condition (Karimi et al., 2016), KL condition (Bolte
+et al., 2014), error bounds, and quadratic growth conditions (Drusvyatskiy & Lewis, 2018).
+H.2 CLARIFICATION ONNOVELTY OF THEBILEVELFRAMEWORK
+We clarify that our core contributions extend significantly beyond the proposal of using a bilevel
+framework. We view the bilevel framework not as the end goal, but as a significant tool to address
+fundamental challenges in adversarial robust policy optimization that we, to our knowledge, are the
+first to identify and analyze. Our key contributions are cohesively threefold:
+43
+Preprint
+New Insight into Inherent Vulnerability.We reveal that even under theoretically aligned models,
+standard policy optimization is inherently vulnerable. We pinpoint the underlying cause: its ten-
+dency to converge to fragile first-order stationary policies. This vulnerability is not due to model
+mismatch but a fundamental issue in the optimization process, which is a perspective overlooked in
+the prior literature.
+Revealing and Analyzing a New Optimality-Robustness Tension.We uncover and analyze a fun-
+damental tension between optimality and adversarial robustness in practical policy gradient methods.
+We further attribute this trade-off to an intrinsicreshaping effectinduced by the strongest adversary
+on the optimization landscape, an insight not explicitly identified in prior works. This analysis
+explains why naively optimizing for robustness can degrade performance.
+A Principled Solution to Mitigate the Trade-off.Motivated by the above findings, we propose the
+bilevel optimization framework. More importantly, we propose a practical, theoretically grounded
+instantiation of this framework designed specifically to mitigate this trade-off and find policies that
+are both high-performing and robust.
+While bilevel optimization as a concept is not new,its application to analyze and solve this spe-
+cific, newly identified problem in policy-based RL is, to the best of our knowledge, entirely
+novel. We believe the main novelty lies in the complete narrative: identifying the problem, analyz-
+ing its root cause, and providing a theoretically-principled solution.
+To the best of our knowledge, we are the first to use a bilevel framework to analyze the adversarial
+robustness of policy-based reinforcement learning.
+H.3 QUANTIFY THEGAP BETWEENBARPOANDARPO
+We quantify the connection between our KL-based bilevel formulation (BARPO) and the original
+minimax formulation (ARPO) from two perspectives.
+Theoretical alignment.We emphasize that under ISA-MDP, BARPO and ARPO share the same
+global optima in theory. Theorem 4.1 further shows that BARPO’s inner optimization is approxi-
+mately equivalent to that of ARPO.
+Optimization proximity.Following Kwon et al. (2023); Lu & Mei (2024), for sufficiently large
+α, BARPO can be reformulated:
+max
+θ,ν⋄
+min
+ϑ
+Lα(θ, ν⋄, ϑ) =Es∼µ0
+h
+V πθ◦ν⋄
+(s)
+i
++αE s∼µ0 [KL (πθ(s)∥πθ ◦ν ⋄(s))−KL (π θ(s)∥πθ ◦ν ϑ(s))].
+We quantify the deviation from the original objective using the bound:
+|Lα(s;θ, ν⋄, ϑ)−V πθ◦νϑ(s)| ≤ |Vπθ◦ν⋄
+(s)−V πθ◦νϑ(s)|
++α|KL (π θ(s)∥πθ ◦ν ⋄(s))−KL (π θ(s)∥πθ ◦ν ϑ(s))|.
+The first term is bounded byC
+p
+KL(πθ ◦ν ⋄∥πθ ◦ν ϑ)through Theorem 5 in Zhang et al. (2020c).
+The second term can be bounded byC
+ πθ
+πθ◦ν⋄
+
+∞
+πθ◦ν⋄
+πθ◦νϑ
+
+∞
+p
+KL(πθ ◦ν ⋄∥πθ ◦ν ϑ)by reverse
+Pinsker’s and Pinsker’s inequalities. Specifically, whenπθ ◦ν ⋄ andπ θ ◦ν ϑ are not too far apart, the
+second term is alsoO
+p
+KL(πθ ◦ν ⋄∥πθ ◦ν ϑ)
+
+by Taylor expansion. Thus, the deviation between
+BARPO and ARPO can be controlled by the square root of the maximum KL divergence between
+πθ ◦ν ⋄ andπ θ ◦ν ϑ.
+These connections indicate that BARPO, while structurally different, retains a strong theoretical
+connection to the ARPO.
+H.4 FURTHERTHEORETICALUNDERSTANDING OFBARPO
+We further delve into a deeper theoretical understanding of how BARPO reshapes the optimization
+landscape from three complementary perspectives:
+44
+Preprint
+Adversarial Value Improvement through Landscape Lifting.Letν ⋄ denote the solution to
+BARPO’s inner problem andν ∗ denote the strongest adversary defined in ARPO. By definition,
+V π◦ν⋄(π) ≥V π◦ν∗(π), indicating that BARPO tends to elevate low-value regions in ARPO’s land-
+scape. Furthermore, Theorem 4.1 shows that maximizing the KL surrogate aligns with minimizing
+adversarial value: when the KL surrogate is high, the adversarial value is correspondingly low. This
+provides a theoretical link between BARPO’s surrogate objective and ARPO’s robustness.
+Smoothing via Regularized Maximin Reformulation.Following prior work (Kwon et al., 2023;
+Lu & Mei, 2024), whenαis sufficiently large, BARPO can be reformulated as an equivalent max-
+imin problem:
+max
+θ,ν⋄
+min
+ϑ
+Lα(θ, ν⋄, ϑ) =Es∼µ0 [V πθ◦ν⋄
+(s)+α(KL (πθ(s)∥πθ ◦ν ⋄(s))−KL (πθ(s)∥πθ ◦ν ϑ(s)))].
+(35)
+Compared to ARPO’s objective, this formulation introduces a regularization term that has a smooth-
+ing effect on the outer landscape. Structurally, this resembles the use of Bregman divergences in
+defining the Moreau envelope (Bauschke et al., 2018), which is known to smooth the nonsmooth
+optimization problems.
+Robustness under Date-driven Value Approximation.In practice, ARPO optimizes a lower
+boundL(π, ν)≤V π◦ν due to practical data-driven estimation forV π◦ν , i.e., the practical objective
+becomesmax π minν L(π, ν), which is no longer equivalent to the ideal adversarial objective. In
+contrast, BARPO’s inner optimization minimizes an upper bound on the adversarial value, while
+the outer loop maximizes a lower bound. This formulation is more faithful to the original robust
+motivation and offers better resilience under value function approximation, helping to improve per-
+formance in practice.
+We believe these perspectives offer promising foundations toward a more complete theoretical un-
+derstanding of BARPO and plan to explore them in greater depth in future work.
+I LIMITATIONS ANDFUTUREWORK
+Despite the advancements introduced in this work, several challenges remain open for future re-
+search. First, we solve BARPO using a straightforward approach that ignores the second-order
+term. This solution process can be further improved via an advanced optimization method on a
+bilevel problem, such as transforming the bilevel optimization into a penalty-based minimax formu-
+lation and then solving it via fully first-order gradient methods. Additionally, we derive a surrogate
+for the strongest adversaries under specific conditions, which approximates but does not coincide
+with the strongest adversary. Nonetheless, BARPO, based on this surrogate, achieves strong robust-
+ness, even significantly outperforming ARPO, which relies on the strongest adversary, in tasks like
+Walker2d and HalfCheetah. While these empirical results are somewhat aligned with theoretical
+consistency between optimality and robustness, there remains a larger theoretical space to further
+explore. Finally, our analysis and results can be naturally extended to more general settings where
+strict theoretical consistency may not hold, offering valuable insights for related fields.
+J USE OFLARGELANGUAGEMODELS
+The core method development in this research does not involve large language models (LLMs) as
+any important, original, or non-standard components. We utilized the LLM to assist only in the
+writing process of this manuscript. All content, ideas, and arguments were conceived and written
+by the human authors. The LLM was then used to provide suggestions for improving grammar,
+phrasing, and readability. The authors reviewed these suggestions and retained full editorial control,
+taking sole responsibility for the final version of the text.
+45

@@ -1,0 +1,1141 @@
+EfficientFlow: Efficient Equivariant Flow Policy
+Learning for Embodied AI
+Jianlei Chang∗,Ruofeng Mei∗,Wei Ke,Xiangyu Xu†
+Xi’an Jiaotong University
+∗Equal Contribution,†Corresponding author
+Generative modeling has recently shown remarkable promise for visuomotor policy learning, enabling
+flexible and expressive control across diverse embodied AI tasks. However, existing generative policies
+often struggle withdata inefficiency, requiring large-scale demonstrations, andsampling inefficiency,
+incurring slow action generation during inference. We introduce EfficientFlow, a unified framework
+for efficient embodied AI with flow-based policy learning. To enhance data efficiency, we bring
+equivariance into flow matching. We theoretically prove that when using an isotropic Gaussian prior
+and an equivariant velocity prediction network, the resulting action distribution remains equivariant,
+leading to improved generalization and substantially reduced data demands. To accelerate sampling,
+we propose a novel acceleration regularization strategy. As direct computation of acceleration is
+intractable for marginal flow trajectories, we derive a novel surrogate loss that enables stable and
+scalable training using only conditional trajectories. Across a wide range of robotic manipulation
+benchmarks, the proposed algorithm achieves competitive or superior performance under limited data
+while offering dramatically faster inference. These results highlight EfficientFlow as a powerful and
+efficient paradigm for high-performance embodied AI.
+Code:https://github.com/chang-jl/EfficientFlow
+Website:https://efficientflow.github.io
+1 Introduction
+Learning robotic policies from data using generative models has emerged as a powerful and flexible paradigm
+in embodied AI, particularly with the recent success of diffusion-based approaches (Chi et al., 2023; Ze et al.,
+2024). These models have demonstrated strong performance in visuomotor control by learning complex action
+distributions conditioned on high-dimensional observations. However, two key limitations remain: low data
+efficiency, requiring large amounts of training data, and low sampling efficiency, incurring high computational
+cost at inference due to the iterative sampling process.
+Recent works have sought to address the data efficiency issue by incorporating equivariance into diffusion
+models for policy learning (Wang et al., 2024). By leveraging the inherent symmetries of the environment
+(e.g., 2D rotation), these methods introduce strong inductive biases that enable policies to generalize across
+symmetric configurations. Nevertheless, as they are still built upon diffusion models, which typically require
+hundreds of iterative denoising steps to generate a single action (Sohl-Dickstein et al., 2015; Ho et al.,
+2020), they remain impractical for real-time robotic control. To overcome this limitation, we turn to Flow
+Matching (Lipman et al., 2023), a recent class of generative models that learns a continuous trajectory from a
+simple prior distribution to the data distribution using an ordinary differential equation (ODE) defined by a
+velocity field. Compared to diffusion models, flow-based approaches offer better numerical stability and faster
+inference, making them highly appealing for efficient embodied AI.
+We present EfficientFlow, a new policy learning framework that unifies equivariant learning and flow-based
+generative modeling. We first investigate how to incorporate equivariance into flow-based policy models and
+theoretically show that, under an isotropic Gaussian prior and an equivariant velocity field network, the
+conditional action distribution induced by flow matching remains equivariant with respect to input observation
+transformations (see Figure 1(a)). This property allows policies to generalize across symmetric configurations
+of the environment without additional supervision or data augmentation.
+To further improve the action sampling efficiency, we introduce a regularization technique that penalizes the
+1
+arXiv:2512.02020v1  [cs.RO]  1 Dec 2025
+Observation=
+=Rot 90°Observation= Action=
+Action =
+Acceleration Regularization
+Equivariant Flow Policy
+(a) Key Concepts of EfficientFlow (b) Comparison with SOTA
+Action Space
+(Illustrated in 2D)
+Distribution of
+Distribution of
+Figure 1We propose EfficientFlow (a) to effectively combine equivariance with Flow Policy and introduce an acceleration
+regularization to achieve high-quality, fast action generation. As shown in (b), EfficientFlow compares favorably against
+baseline policy learning approaches in both success rate and inference speed. Results are from MimicGen with 100
+training demonstrations.
+acceleration of the generation flow trajectory, i.e., the second-order temporal derivative, which encourages a
+smoother and more stable action sampling process.
+However, computing acceleration requires consecutive points along the marginal flow trajectories, which
+are unavailable in the standard flow matching framework. To address this challenge, we propose a novel
+surrogate objective called Flow Acceleration Upper Bound (FABO). FABO provides a practical and effective
+approximation of the acceleration penalty using only conditional flow trajectories available during training,
+enabling much faster flow policies with lower computational costs.
+The proposed EfficientFlow combines the best of both worlds: it achieves fast inference speed thanks to the
+flow-based architecture and smoothed sampling trajectory, and maintains high performance by leveraging
+equivariance. As illustrated in Figure 1(b), EfficientFlow compares favorably against existing methods in
+both inference speed and task success rates.
+Our primary contributions are as follows:
+• We formulate a flow-based policy learning framework, EfficientFlow, that achieves equivariance to
+geometric transformations, allowing the model to generalize across symmetric states and significantly
+improve data efficiency. We provide a theoretical analysis showing that equivariance is preserved in the
+flow framework when using an isotropic prior and an equivariant velocity field conditioned on visual
+observations.
+• To promote sampling speed, we propose a second-order regularization objective that penalizes flow
+acceleration. Since direct acceleration computation requires access to neighboring marginal samples
+that are unavailable, we introduce a novel surrogate loss called FABO, enabling effective training.
+• We provide comprehensive evaluations of EfficientFlow on 12 robotic manipulation tasks in the
+MimicGen (Mandlekar et al., 2023) benchmark, showing that EfficientFlow achieves favorable suc-
+cess rates with high inference speeds (19.9 to 56.1 times faster than EquiDiff (Wang et al., 2024)).
+2
+2 Related Work
+2.1 Equivariance in Robot Manipulation
+Applying equivariance to robot manipulation is a highly promising research direction, and multiple studies
+have demonstrated that it can significantly enhance the data efficiency of robot policy learning (Wang et al.,
+2022b; Jia et al., 2023; Wang et al., 2022c; Simeonov et al., 2023; Pan et al., 2023; Huang et al., 2023; Liu
+et al., 2023a; Kim et al., 2023; Nguyen et al., 2023; Yang et al., 2024a). Early work used SE(3) open-loop
+or SE(2) closed-loop for control, validated the effectiveness of equivariant models in on-robot learning (Zhu
+& Wang, 2022; Wang et al., 2022a; Zhu et al., 2023), and achieved pick-and-place tasks based on few-shot
+demonstrations (Huang et al., 2022; Simeonov et al., 2022; Ryu et al., 2023; Huang et al., 2024). Building
+on this foundation, EquiDiff (Wang et al., 2024) extend the research to the SE(3) closed-loop action space,
+substantially improving the efficiency of imitation learning by integrating symmetry with diffusion policies.
+However, the DDPM architecture employed by EquiDiff requires a multi-step denoising process, resulting
+in slow inference speeds. In contrast, the EfficientFlow model marks a significant breakthrough in inference
+efficiency, attaining higher success rates than EquiDiff with only a minimal number of inference steps.
+2.2 Flow Policy
+Flow Matching (Lipman et al., 2023) represents a novel class of generative models grounded in optimal
+transport theory. Its objective is to learn a vector field of a probability path, which is more efficient than
+diffusion paths, offering faster training and sampling, alongside better generalization capabilities. Compared
+to diffusion models, Flow Matching significantly reduces the number of inference steps, a critical factor for
+real-world robotic operations, thereby substantially broadening the applicability of such models. The work
+Flow Policy (Zhang et al., 2025) introduced conditional Consistent Flow Matching (Yang et al., 2024b) to
+robotic manipulation. Conditioned on observed 3D point clouds, Flow Policy utilizes Consistency Flow
+Matching to directly define straight-line flows from different temporal states to the same action space,
+concurrently constraining their velocity values. It approximates trajectories from noise to robot actions by
+normalizing the self-consistency of the velocity field within the action space, thereby enhancing inference
+efficiency. MP1 (Sheng et al., 2025) leverages Mean Flow (Geng et al., 2025) to shrink policy learning to
+a single state-action step, while a lightweight Dispersive Loss repels state embeddings. This combination
+steadies the flow field and delivers millisecond inference that outpaces DP3 and Flow Policy. Currently, many
+VLA (Vision-Language-Action) models (Black et al., 2024; Gao et al., 2025; Bjorck et al., 2025; Reuss et al.,
+2025) are utilizing flow matching policies and have achieved good results.
+3 Method
+3.1 Preliminaries
+3.1.1 Flow Matching
+The core idea of Flow Matching (Lipman et al., 2023) is to learn the vector field of an ODE that smoothly
+transforms samplesx0 from a simple prior distributionp0 (e.g., Gaussian noise) to samplesx1 from a target
+data distributionp 1.
+Specifically, let {pt}t∈[0,1] be a time-evolving family of probability distributions satisfying the boundary
+conditions pt=0 = p0 and pt=1 = p1. This path induces an underlying ground-truth instantaneous velocity
+fieldu gt(t, x). Flow Matching aims to learn a vector fielduθ(t, x)parameterized byθ, such that trajectories
+xt defined by the following ODE: (
+dxt
+dt =u θ(t, xt)
+x0 ∼p 0
+(1)
+can effectively transport the prior distributionp0 to the target distributionp1. Ideally, the learned vector
+field uθ(t, x)should approximate the true vector fieldugt(t, x). Thus, a natural learning objective for Flow
+3
+Matching is:
+LFM =E t,xt
+huθ(t, xt)−u gt(t, xt)
+2
+2
+i
+,(2)
+wherex t ∼p t.
+As ugt(t, xt)is generally intractable in practice, Conditional Flow Matching (CFM) (Lipman et al., 2023)
+proposes to learnuθ(t, xt)by regressing against a conditional vector fieldu(t, xt|x1), using samples from a
+conditional probability pathpt(x|x1). The corresponding objective is:
+LCFM =E t,x1,xt
+h
+∥uθ(t, xt)−u(t, xt|x1)∥2
+2
+i
+,(3)
+wheret∼U(0,1), x 1 ∼p 1(x), andx t ∼p t(x|x1).
+3.1.2 Equivariance
+Equivariance is a desirable property in many learning systems, especially when modeling structured data
+influenced by known symmetries (Cesa et al., 2022). A functionf is said to be equivariant with respect to a
+transformation groupGif it commutes with the actions of the group. Formally, this is expressed as:
+f(ρx(g)x) =ρ y(g)f(x),∀g∈G,(4)
+where ρx and ρy denote group representations that describe how the group acts on the input space and
+output space, respectively. This equation ensures that applying a group transformation to the input and then
+evaluating the function (Eq. 4 left) yields the same result as first applying the function and then transforming
+the output (Eq. 4 right).
+In this work, we focus on learning equivariant policies for robot arm control, where the inputx represents the
+robot arm action in the task space. Since robotic manipulation tasks often exhibit rotational symmetry (Wang
+et al., 2024, 2022b), we study the action of the rotation groupSO(2)and its finite cyclic subgroupCu ⊂SO (2),
+which models discrete rotational symmetries (e.g., rotations by2π
+u radians).
+We consider the following standard representations: 1) the trivial representationρ0, which maps every group
+element g∈G to the identity transformation. This is typically used when the function output should remain
+invariant under the group action. 2) the standard irreducible representationρ1, which describes the canonical
+action ofSO(2)or Cu on the 2D plane, defined asρ1(g) =
+
+cos(g)−sin(g)
+sin(g) cos(g)
+
+, where we slightly abuse the
+notation to usegto denote both a group element and its corresponding rotation angle.
+By designing policy networks that are equivariant under these group actions, we aim to incorporate inductive
+biases that reflect the underlying symmetries of the robot’s action space. This not only improves sample
+efficiency but also enhances generalization across real task configurations.
+3.2 Equivariant Flow Policy
+Generative models for policy learning have received significant attention in recent years. Given an observation
+o, such models can predict a conditional distributionpX1|O=o, and generate robot actions by sampling
+x∼X 1
+
+O=o, whereX1 represents the random variable for the action to be executed by the robot arm under
+the condition thatO=o.
+Both o and x can span multiple time steps:o = [oτ−(m−1) ,···, o τ−1 , oτ ], x = [xτ , xτ+1 ,···, x τ+(n−1) ], where
+m is the number of historical observations, andn is the number of future action steps. The observationoτ
+includes both the image and the robot state at robot timeτ.
+A desirable property for such models is equivariance: when the inputo is transformed by an elementg∈G
+of a symmetry group (e.g., a rotation), the conditional distribution of the output action should transform
+accordingly. In other words, symmetry in the observation space should induce symmetry in the action space:
+X1
+
+O=go
+d
+=g
+ 
+X1
+
+O=o
+
+,(5)
+where
+d
+= denotes that the two random variables have the same distribution. We leave the group representation
+ρ(g)implicit here and directly usegfor brevity.
+4
+Equi Obs Enc
+Observation o
+Noisy Action Sequence x0
+Equi Act Dec
+Robot
+State
+Robot
+State
+1D UNet 
+ 
+Flow
+Equi Act Enc
+Equi Obs Emb
+Equi Act Emb Previous Traj
+Candidate Trajs
+x1
+Figure 2Overview of EfficientFlow. At each decision step, the policy utilizes the most recent two observation stepso
+as input. This information is processed by the equivariant Flow Matching network to generate five candidate action
+trajectories. The trajectory that exhibits the minimum Euclidean distance to the previously predicted trajectory is
+then selected for execution, ensuring a smooth and coherent action sequence.
+3.2.1 How to Make Flow Policy Equivariant?
+The main contribution of this work is to demonstrate that the desired property in Eq. 5 can be achieved
+within the Flow Matching framework by:
+1. using an isotropic distribution forp0 in Eq. 1, e.g., Gaussian noiseX0 ∼ N(0, I);
+2. :
+uθ(t, gx|go) =g(uθ(t, x|o)),∀g∈G.(6)
+Importantly, we donotimpose the strong assumption that the expert policy in the training data be equivariant,
+which is in sharp contrast with (Wang et al., 2024).
+Theorem 1.Let G be a transformation group acting on both the observation space and the action space.
+Suppose the initial distributionp0 is isotropic, i.e.,p0(gx) = p0(x)for all g∈G , and the velocity network
+uθ(t, x|o)is equivariant as in Eq. 6. Then the induced conditional distribution at timet, given by the flow
+ODE Eq. 1, satisfies
+Xt
+
+O=go
+d
+=g
+ 
+Xt
+
+O=o
+
+, t∈[0,1](7)
+i.e., the output distribution is equivariant under the group action.
+The special caset = 1of Eq. 7 gives us the desired property in Eq. 5. An intuitive visualization of this result
+is provided in Figure 1(a). From a discrete-time perspective, consider starting from a randomly sampled
+initial action x0 ∼p 0. After a small time step∆ t, the action evolves under the velocity field to reach
+x∆t =x 0 + ∆t·u θ(0, x0|o). This corresponds to the green curve in Figure 1(a).
+Now, consider a rotated scenario where the initial action is transformed toˆx0 = gx0, and the observation is
+rotated accordingly togo. The updated action becomes
+ˆx∆t = ˆx0 + ∆t·u θ(0,ˆx0|go)(one-step update)
+=gx 0 + ∆t·u θ(0, gx0|go)(sinceˆx 0 =gx 0)
+=gx 0 + ∆t·gu θ(0, x0|o)(Eq. 6)
+=gx ∆t.
+5
+This corresponds to the blue curve in Figure 1(a), showing that the evolution of the rotated actionˆxt under
+the rotated observationgoaligns with the rotated evolution of the original actionxt.
+By repeating this process over the entire flow trajectory, we conclude thatˆx1 = gx1 (see Figure 1(a)). Since
+p0 is isotropic,x0 and ˆx0 have the same probability density. Given that the flow deterministically transports
+x0 to x1 and ˆx0 to ˆx1, it follows thatx1 and ˆx1 share the same density. This implies that the resulting
+distribution ofx1 and ˆx1 respects the desired equivariance with respect tog. We emphasize that this is only
+an intuitive explanation; a rigorous proof is provided in Appendix A.
+Since standard Flow Matching uses a Gaussian distribution asp0 by default, the isotropy condition in
+Theorem 1 is automatically satisfied. As a result, making Flow Policy equivariant reduces to designing an
+equivariant networkuθ.
+3.2.2 Design of the Equivariantuθ
+To implement the equivariant policy networkuθ, we leverage theescnn library (Cesa et al., 2022), which
+supports constructing neural networks that are equivariant to symmetry groups (planar rotations modeled by
+SO(2) in our case). A critical step in usingescnn is specifying how each output component transforms under
+group actions, which requires carefully choosing representations that respect the underlying task symmetries.
+In our setting, the policy outputs an absolute 6-DoF end-effector pose with 3D rotation and 3D translation,
+along with a scalar gripper width to control a robot arm. To represent the 3D rotation, we adopt the 6D
+continuous representation (Zhou et al., 2019) that encodes the first two rows of a3× 3rotation matrix,
+corresponding to thex and y axes. This 6D representation can be seen as three 2D vectors in thex-y plane,
+which transform under SO(2) according to the irreducible representationρ1. Therefore, the 3D rotation
+component corresponds toρ3
+1.
+For 3D translation, thex and y components transform as a 2D vector under SO(2), again corresponding to
+ρ1, while thez component remains invariant and is modeled asρ0. The scalar gripper width is also invariant
+under planar rotation, corresponding to anotherρ0.
+Combining these components, the action vector at robot timeτ, denoted byxτ , is a 10D vector comprising a
+6D rotation representation (first 6 dimensions), a 3D translation vector (next 3 dimensions), and a scalar
+gripper width (final dimension). The corresponding equivariant representation of the action output is:
+gxτ = (ρ3
+1 ⊕(ρ 1 ⊕ρ 0)⊕ρ 0)(g)xτ .
+This representation enablesuθ to produce actions that respect the SO(2) symmetry of the task, ensuring
+consistent behavior under planar rotations of the scene.
+3.2.3 Network Architecture
+As introduced above, the input ofuθ is flow timet, action sequence xt, and observationo. We set the
+equivariant group as a finite cyclic subgroupCu ∈SO (2), andu is the order of the group. We first use an
+equivariant observation encoder to map observationo to embeddingseo ∈R u×do and use an equivariant action
+encoder to map action sequencext to embeddingsex ∈R u×dx , wheredo and dx are the feature dimensions
+associated with each group element.
+The encoded embeddingseo, ex, along with the timestept, are fed into a core equivariant neural network.
+This network, together with the observation and action encoders, parameterizes the conditional vector field
+uθ(t, xt, o). As all components are designed to be equivariant, the entire mapping process from raw inputs to
+the predicted vector field strictly adheres toCu symmetry.
+3.2.4 Temporal Consistency
+When generating action sequences, adjacent segments are predicted independently. As a result, the policy
+may switch between different behavioral modes, leading to inconsistencies in long-term execution.
+To address this, we adopt a temporal overlapping strategy similar to (Chi et al., 2023): only the firstn1
+steps of each predicted sequence are executed, while the remainingn−n 1 steps overlap with the subsequent
+6
+prediction starting from timeτ + n1. Long-term consistency can be achieved by generating neighboring action
+sequences with similar overlap.
+Tothisend, weemployabatchedtrajectoryselectionandperiodicresetstrategy, inspiredbyIMLEPolicy(Rana
+et al., 2025), which balances multi-modal expressivity with temporal coherence. During inference, we sample
+m initial noise vectors{x0,i}m
+i=1 from a Gaussian distribution and evolve each through our model to generate
+m candidate action trajectories{x1,i}m
+i=1. We then select the trajectory whose overlapping segment best
+matches the previous trajectory in the Euclidean sense:
+arg min
+i∈1,...,m
+d
+ 
+[xτ+n1
+pre , . . . , xτ+n
+pre ],[x τ+n1
+1,i , . . . , xτ+n
+1,i ]
+
+,
+where we assume the current robot time isτ + n1, andxpre denotes the previous action sequence predicted at
+timeτ, where the stepsx τ
+pre, . . . , xτ+n1−1
+pre have already been executed.
+To preserve the model’s ability to explore diverse behaviors, we introduce periodic resets: every 10 prediction
+cycles, we randomly select one trajectory from the batch for execution, instead of the one that minimizes the
+overlap distance. This approach improves temporal consistency while maintaining multi-modality, and the
+batched design ensures minimal overhead in inference time due to parallelization.
+3.3 Acceleration Regularization
+In our experiments, we observe that flow-based policies trained solely with the conditional flow matching
+objective (Eq. 3) tend to perform poorly when the number of function evaluations (NFE) is low. This
+suggests that the learned flow fields are overly curved, requiring more integration steps for accurate trajectory
+generation.
+To address this, we propose an acceleration regularization term that encourages smoother, low-curvature flow
+trajectories. The underlying intuition is that smoother motion corresponds to smaller second-order derivatives
+(accelerations) of the trajectoryxt. In the extreme case of zero acceleration, the trajectory becomes a straight
+line.
+We augment the training objective as follows:
+E
+h
+∥uθ(t, xt)−u(t, xt |x 1)∥2
+2
+i
+| {z }
+Data Term
++λE
+"
+d2xt
+dt2
+
+2
+2
+#
+| {z }
+Acceleration Penalty
+,(8)
+where λ controls the trade-off between fidelity to the target velocity field and trajectory smoothness. In
+practice, we use a time-dependent weightingλ(t) = (1 −t )2, which encourages smoother flow at earlier
+timesteps and prioritizes accuracy ast→1.
+According to Eq. 1, the second derivative term can be rewritten as:
+E
+"
+d2xt
+dt2
+
+2
+2
+#
+≈ 1
+(∆t)2 E∥u θ(t, xt)−u θ(t+ ∆t, xt+∆t)∥2
+2 ,
+which, however, cannot be directly evaluated, becausext and xt+∆t lie on the same underlying marginal
+trajectory that is unknown.
+To overcome this, we introduce a practical surrogate regularization, which we call the Flow Acceleration
+Upper Bound (FABO):
+FABO=E∥u θ(t,˜xt)−u θ(t+ ∆t,˜xt+∆t)∥2
+2 ≥E∥u θ(t, xt)−u θ(t+ ∆t, xt+∆t)∥2
+2 ,(9)
+when∆ t is small. Notably,˜xt and ˜xt+∆t are sampled from the same conditional trajectory at timet and
+t+ ∆t, which are easy to draw and require no knowledge of the marginal trajectory.
+In essence, FABO minimizes an upper bound on the true acceleration penalty, serving as a tractable and
+effective proxy. A formal proof for Eq. 9 is provided in Appendix B.
+7
+Method Obs NFE Stack D1 Square D2 Threading D2 Stack Three D1 Coffee D2 3 Pc. Asm. D2
+100 200 1000 100 200 1000 100 200 1000 100 200 1000 100 200 1000 100 200 1000
+Ours RGB
+194 100 1002145673136 49 48 73 92 658179 11 35 60
+388100 1002045 71 31 4353 49 76 94 66 808411 38 69
+587100 10022 4371 3141 58 5079936779 83 1142 71
+EquiDiff RGB 10093100 100 2541 60 22 4059 55779660 79 761539 69
+DP-C RGB 10076 971008 19 46 17 355938 72 94 44 66 79 4 6 30
+DP-T RGB 10051 83 99 5 11 45 11 18 41 17 41 84 47 61 75 1 4 43
+DP3 PCD 1069 87 99 7 6 19 12 23 40 7 23 65 34 45 69 0 1 3
+ACT RGB 135 73 96 6 18 49 10 21 35 6 37 78 19 33 64 0 3 24
+Method Obs NFE Hammer Cln. D1 Mug Cln. D1 Kitchen D1 Pick Place D0 Nut Asmn.D0 Coffee Pre. D1
+100 200 1000 100 200 1000 100 200 1000 100 200 1000 100 200 1000 100 200 1000
+Ours RGB
+175 75775065 67 66 78 81 37 50 67 59 83 94 75 74 70
+3727584506570 7381 81 41 62 86 61 86 96 81 8189
+574758350 68 70 7381 83 41 66 87 6287 98 8382 87
+EquiDiff RGB 10065 63 775064 67 67 77 8142 74 92 7485 94 778385
+DP-C RGB 10052 59 73 43 59 65 678587 35 65 83 55 68 83 65 62 58
+DP-T RGB 10048 60 76 30 43 63 54 75 81 15 37 50 31 32 46 38 51 76
+DP3 PCD 1054 718721 33 53 45 719112 15 34 16 24 58 10 22 63
+ACT RGB 138 54 71 23 31 56 37 61 87 7 17 50 42 64 84 32 46 65
+Table 1Comparison against SOTA. We report the success rates of 12 MimicGen (Mandlekar et al., 2023) tasks using
+100, 200, and 1000 demonstrations, respectively. Results averaged over three seeds. The results of the baseline methods
+are directly cited from EquiDiff (Wang et al., 2024).
+4 Experiments
+4.1 Implementation Details
+We evaluate EfficientFlow on 12 tasks from the MimicGen benchmark (Mandlekar et al., 2023). These tasks
+span a wide range of difficulties, time horizons, and object arrangements, providing a comprehensive testbed
+for assessing policy performance across diverse robotic manipulation scenarios.
+Notably, the agent view camera in MimicGen is not positioned orthogonally to the workspace but rather
+provides an agent-centric perspective. While the resulting image rotations may not perfectly align with the
+true object rotations, potentially impacting the performance of equivariant networks, this setup more closely
+mirrors real-world scenarios where state information is acquired from non-ideal viewpoints and thus offers a
+more rigorous test of policy generalization.
+Our work aims for effective and efficient robot control in embodied AI. Thus, we compare EfficientFlow
+against strong baselines in this field, including EquiDiff (Wang et al., 2024), ACT (Zhao et al., 2023), and
+two variants of Diffusion Policy (Chi et al., 2023): the CNN-based DP-C and the Transformer-based DP-T.
+For fair comparison, all baseline methods use the same input as EfficientFlow: RGB images from both the
+agent-view and wrist-mounted cameras. In addition to the RGB-based methods, we further compare with
+DP3 (Ze et al., 2024), which utilizes 3D point cloud information. All policies employ absolute pose estimation
+for control. We evaluate EfficientFlow with 1, 3, and 5 NFE, while for baseline methods, we adhere to their
+original configurations.
+4.2 Quantitative Comparison
+4.2.1 Sampling Efficiency
+EfficientFlow demonstrates notable advantages in inference speed and sampling efficiency. As shown in Table 2,
+it achieves an average inference time of only 12.22 ms under a 1-NFE setting, offering an approximately 56.1×
+8
+Method NFE Runtime (ms) Average Success Rate (%)
+100 200 1000
+Ours
+1 12.22 52.61 66.18 75.25
+3 22.59 53.4969.33 81.36
+5 34.4554.18 70.26 81.99
+EquiDiff 100 685.92 53.77 68.59 79.69
+DP-C 100 542.96 42.00 57.75 71.42
+DP-T 100 497.53 29.00 43.00 64.92
+DP3 10 53.83 23.92 35.08 56.75
+ACT 1 12.51 21.33 38.17 63.25
+Table 2Average success rates and inference time of EfficientFlow and baselines across 12 MimicGen tasks.
+Method Sk Sq Th S3 Cf 3P Hm Mu Ki PP Nu CP Avg
+Ours 206020 40 30 40 103030 404020 31.7
+EquiDiff 70 80 40 50 40 70 50 403060 50 40 51.7
+NoAcc 3040 20603060 2010 30503040 35.0
+Table 3Minimum training epochs required for EfficientFlow and EquiDiff to reach 50% of their final maximum success
+rate (MimicGen, 100 demonstrations, evaluated every 10 epochs with a fixed seed).
+speedup over EquiDiff. Even with a more computationally demanding 5-NFE inference, EfficientFlow remains
+approximately 19.9× faster than EquiDiff on average. This significant gain in efficiency is critical for real-time
+robotic control, where rapid response is essential, and enables inference frequencies of up to 81.8 Hz with
+single-step EfficientFlow.
+4.2.2 Data Efficiency
+As shown in Table 1, under the data-limited setting of only 100 demonstrations, EfficientFlow not only
+enables significantly faster inference but also achieves a strong policy success rate. Across the 12 test tasks,
+EfficientFlow outperforms EquiDiff in 7 of them. For the remaining 5 tasks, except the Nut Assembly D0
+task, the performance gap between EfficientFlow and EquiDiff is within 5 percentage points. These results
+indicate that EfficientFlow can match or even surpass the performance of the SOTA baseline method while
+drastically reducing inference latency. When trained with 200 demonstrations, EfficientFlow achieves 98.4% of
+the success rate of the DP-C method trained with 1000 demonstrations, while surpassing the average success
+rates of DP-T, DP3, and ACT. This remarkable performance underscores its exceptional data efficiency and
+strong generalization under limited supervision.
+4.2.3 More Analysis of the Performance
+As shown in Table 2, the average success rates across all tasks further highlight the advantage of EfficientFlow.
+First, the average performance of EfficientFlow exhibits an upward trend as the NFE increases; with sufficient
+data, multi-step inference can better capture the conditional action distribution to achieve higher success
+rates. More importantly, across all dataset sizes, EfficientFlow consistently exceeds the average success rate of
+EquiDiff (Wang et al., 2024) while requiring dramatically fewer inference steps. We attribute the advantage of
+EfficientFlow to two key design choices: the strong inductive biases introduced by the equivariant architecture,
+and the acceleration regularization that stabilizes the action sampling trajectories. These factors enable
+the model to more efficiently learn key task structures and robust dynamics representations from limited
+demonstrations.
+4.2.4 Learning Efficiency
+To quantitatively evaluate the learning efficiency of EfficientFlow, we measure the minimum number of training
+epochs required to reach 50% of the final peak success rate. As shown in Table 3, both EfficientFlow and its
+9
+Method Sk Sq Th S3 Cf 3P Hm Mu Ki PP Nu CP Avg
+Ours 94 2131 48 65 11 75 50 66 37 59 75 52.6
+NoAcc 88 16 24 44 56 10 56 28 42 16.5 28 62 39.3
+NonEqui 88 12 12 14 52 0 66 38 54 17.5 43 56 37.7
+EquiCFM 88 8 22 44 60 8 54 366619 40 40 40.4
+EquiMF 96 2226 34 50 8 585062 26 51 72 46.3
+Table 4Ablation study on 12 MimicGen tasks using 100 demonstrations.
+variant without acceleration regularization (NoAcc) require substantially fewer training epochs than EquiDiff
+to reach 50% of their maximum success rate. Notably, in the Hammer Cleanup D1 task, EfficientFlow requires
+only one-fifth of the epochs needed by EquiDiff. These results demonstrate the improved learning efficiency and
+stronger optimization dynamics of our equivariant flow-based framework. The acceleration constraint further
+improves convergence speed, as evidenced by the faster learning of EfficientFlow compared to NoAcc. These
+results indicate that EfficientFlow can extract essential policy information from demonstrations more rapidly,
+which reflects its superior learning dynamics, enabling it to reach target performance levels significantly faster
+than baseline methods.
+4.3 Ablation Study
+To disentangle the contributions of the equivariant architecture and the acceleration regularization, we conduct
+comprehensive ablation studies across 12 MimicGen tasks using 100 demonstrations in Table 4. We evaluate
+four key variants: 1) NoAcc, which removes the acceleration term and is trained solely with the Conditional
+Flow Matching loss (LCFM in Eq. 3); 2) NoEqui, which discards the equivariant architecture in favor of
+a non-equivariant backbone similar to Diffusion Policy (Chi et al., 2023) while retaining the acceleration
+constraint; 3) EquiCFM, which combines the equivariant network with Consistency Flow Matching (Yang
+et al., 2024b); and 4) EquiMF, which integrates the equivariant network with MeanFlow (Geng et al., 2025).
+The results reveal two clear trends. First, both our proposed components, including equivariance and
+acceleration regularization, substantially and independently improve performance. Removing either one leads
+to a consistent drop in success rate, demonstrating their complementary roles: the equivariant structure
+provides strong inductive biases for learning symmetric behaviors, while the acceleration term stabilizes
+sampling trajectory learning.
+Second, to further investigate the benefit of our acceleration regularization, we compare EfficientFlow
+against other efficient one-step flow matching variants. By replacing our formulation with Consistency Flow
+Matching (Yang et al., 2024b) and MeanFlow (Geng et al., 2025) while keeping the equivariant architecture
+fixed, we observe that EfficientFlow achieves higher overall success rates across tasks. This suggests that our
+acceleration-regularized formulation not only stabilizes training but also leads to more accurate and robust
+policy generation.
+5 Conclusion
+We introduce EfficientFlow, a theory-grounded generative policy learning framework that effectively balances
+inference speed and data efficiency. By leveraging equivariant flow matching and acceleration regularization,
+this work provides a principled approach for learning robust visuomotor policies while ensuring strong
+generalization and efficient learning. The ultra-fast inference and strong data efficiency of EfficientFlow
+highlight its potential as a practical and high-performance solution for real-world embodied AI systems.
+6 Acknowledgments
+This research was supported by the National Natural Science Foundation of China (62302385).
+10
+Appendix
+In this appendix, we first present the proof of Theorem 1 of the main paper in Section A, followed by the
+proof of the Flow Acceleration Upper Bound in Section B. In Section C, we analyze the error term generated
+by FABO. We complement the main results in our paper with standard deviation in Section D. Additional
+details about the simulation environment and algorithm implementation are provided in Sections E and F,
+respectively.
+A Proof of Theorem 1
+Theorem 1.Let G be a transformation group acting on both the observation space and the action space.
+Suppose the initial distributionp0 is isotropic, i.e.,p0(gx) = p0(x)for all g∈G , and the velocity network
+uθ(t, x|o)is equivariant, i.e.,uθ(t, gx|go) = guθ(t, x|o)for all g∈G . Then the induced conditional distribution
+at timet,X t|O=o, given by the flow ODEdxt
+dt =u θ(t, xt|o), x0 ∼p 0, satisfies
+Xt
+
+O=go
+d
+=g
+ 
+Xt
+
+O=o
+
+, t∈[0,1](10)
+i.e., the output distribution is equivariant under the group action.
+Proof. LetΦ t(x0|o)be the solution of the ODE at timet with the initial valuex0, conditioned ono, soxt =
+Φt(x0|o). We first showΦt is equivariant. Letˆxt = gΦt(x0|o). Its initial condition isˆx0 = gΦ0(x0|o) = gx0.
+Its dynamics are:
+d
+dt ˆxt =g d
+dtΦt(x0|o) =gu θ(t,Φ t|o) =u θ(t, gΦt|go) =u θ(t,ˆxt|go).(11)
+Since ˆxt andΦ t(gx0|go)share the same initial condition and ODE dynamics, by uniqueness (Perko, 2013), we
+have gΦt(x0|o) = Φt(gx0|go). Using this equivariance, we can establish the main result. By definition and the
+equivariance property, we have the following identity for the random variables:
+g(Xt|O=o) =gΦ t(X0|o) = Φt(gX0|go)(12)
+This first equality holds by definition of the flow, and the second is the random variable identity derived from
+the deterministic equivariance of the flow shown above.
+Now, since the initial distributionp0 is isotropic, i.e.,X0
+d
+=gX 0, applying the same deterministic function
+Φt(·|go)to both sides preserves the distributional equality. Therefore,
+Φt(gX0|go)
+d
+= Φt(X0|go)(13)
+Combining (12) and (13), we have a chain of equalities:
+g(Xt|O=o) = Φt(gX0|go)
+d
+= Φt(X0|go)(14)
+By definition, the random variableΦt(X0|go)is the same asX t|O=go. Thus, we can conclude:
+g(Xt|O=o)
+d
+=X t|O=go (15)
+This completes the proof.
+11
+B Proof of Flow Acceleration Upper Bound (FABO)
+Theorem 2.Assume that u(t, x)is twice continuously differentiable with bounded second derivatives. For
+any xt ∼p t, we are interested in two trajectories passing through it: the optimal marginal trajectory denoted
+asx t and the linear conditional trajectory denoted as˜xt = (1−t)˜x0 +t˜x1. Then, when∆tis small enough,
+E∥u(t, xt)−u(t+ ∆t, xt+∆t)∥2
+2 ≤E∥u(t,˜xt)−u(t+ ∆t,˜x t+∆t)∥2
+2.(16)
+Proof.Since two trajectories intersect at the same state at timet, we havext = ˜xt.
+E∥u(t, xt)−u(t+ ∆t, xt+∆t)∥2
+2
+=E∥u(t,˜xt)−u(t,˜xt)− ∂u
+∂t ∆t− ∂u
+∂x uopt(t,˜xt)∆t+o(∆t)∥ 2
+2 (Taylor Expansion)
+=E∥∂u
+∂t ∆t+ ∂u
+∂x uopt(t,˜xt)∆t+o(∆t)∥ 2
+2
+=E∥∂u
+∂t ∆t+ ∂u
+∂x E[˜x1 −˜x0|˜xt]∆t+o(∆t)∥ 2
+2 (Eq.2 of (Liu et al., 2023b))
+=E
+"
+∥∂u
+∂t ∆t∥2
+2 + 2(∂u
+∂t )T ∂u
+∂x E[˜x1 −˜x0|˜xt]∆t2 +∥ ∂u
+∂x E[˜x1 −˜x0|˜xt]∆t∥2
+2
+#
++o(∆t 2)
+=E
+"
+E
+"
+∥∂u
+∂t ∆t∥2
+2 + 2(∂u
+∂t )T ∂u
+∂x (˜x1 −˜x0)∆t2 +∥ ∂u
+∂x E[˜x1 −˜x0|˜xt]∆t∥2
+2
+˜xt
+##
++o(∆t 2)
+=E
+"
+∥∂u
+∂t ∆t∥2
+2 + 2(∂u
+∂t )T ∂u
+∂x (˜x1 −˜x0)∆t2 +∥ ∂u
+∂x E[˜x1 −˜x0|˜xt]∆t∥2
+2
+#
++o(∆t 2)(Total Expectation)
+=E
+"
+∥∂u
+∂t ∆t∥2
+2 + 2(∂u
+∂t )T ∂u
+∂x (˜x1 −˜x0)∆t2 +∥ ∂u
+∂x (˜x1 −˜x0)∆t∥2
+2
+#
++o(∆t 2)
+−E
+"
+∥∂u
+∂x (˜x1 −˜x0)∆t∥2
+2 − ∥∂u
+∂x E[˜x1 −˜x0|˜xt]∆t∥2
+2
+#
+=E
+"
+∥∂u
+∂t ∆t∥2
+2 + 2(∂u
+∂t )T ∂u
+∂x (˜x1 −˜x0)∆t2 +∥ ∂u
+∂x (˜x1 −˜x0)∆t∥2
+2
+#
++o(∆t 2)
+−E
+"
+tr
+"
+Var
+"
+∂u
+∂x (˜x1 −˜x0)∆t
+˜xt
+###
+=E∥∂u
+∂t ∆t+ ∂u
+∂x (˜x1 −˜x0)∆t+o(∆t)∥ 2
+2 −E
+"
+tr
+"
+Var
+"
+∂u
+∂x (˜x1 −˜x0)∆t
+˜xt
+###
+(17)
+=E∥u(t,˜xt)−u(t+ ∆t,˜x t+∆t)∥2
+2 +o(∆t 2)−E
+"
+tr
+"
+Var
+"
+∂u
+∂x (˜x1 −˜x0)
+˜xt
+###
+(∆t2).(18)
+When∆tis small enough, we have
+E∥u(t, xt)−u(t+ ∆t, xt+∆t)∥2
+2 ≤E∥u(t,˜xt)−u(t+ ∆t,˜x t+∆t)∥2
+2 (19)
+12
+C Analysis of the Error Term Generated by FABO
+Lemma 1.Let A and B be twon×n positive semidefinite (PSD) matrices (A, B⪰0). Let λmin(B)and
+λmax(B)denote the minimum and maximum eigenvalues ofB, respectively. Then, the trace of their product
+is bounded as follows:
+λmin(B)·tr(A)≤tr(AB)≤λ max(B)·tr(A)
+Proof.Let the spectral decomposition ofA⪰0be
+A=λ 1ξ1ξT
+1 +···+λ nξnξT
+n ,∥ξ i∥2
+2 = 1,∀1≤i≤n
+Then
+tr(AB) =
+nX
+i=1
+λitr(ξiξT
+i B) =
+nX
+i=1
+λi
+ξT
+i Bξi
+ξT
+i ξi
+∈[λ min(B)
+nX
+i=1
+λi, λmax(B)
+nX
+i=1
+λi]
+So
+λmin(B)·tr(A)≤tr(AB)≤λ max(B)·tr(A)
+Theorem 3.We assume that ∀a∈R n,∥a∥2
+2 = 1,0 < µ1 ≤Var [aT (˜x1 −˜x0)|˜xt] ≤µ 2. This assumption,
+holding for all˜xt, ensures the variance of any linear projection of the˜x1 −˜x0 is uniformly bounded: it remains
+non-deterministic even given˜xt and finite. Then we have:
+µ1E∥∂u
+∂x ∥2
+F ≤E
+"
+tr
+"
+Var
+"
+∂u
+∂x (˜x1 −˜x0)
+˜xt
+###
+≤µ 2E∥∂u
+∂x ∥2
+F
+Proof.
+E
+"
+tr
+"
+Var
+"
+∂u
+∂x (˜x1 −˜x0)
+˜xt
+###
+(20)
+=E
+"
+tr
+"
+∂u
+∂x Var[˜x1 −˜x0|˜xt][∂u
+∂x ]T
+##
+(21)
+=E
+"
+tr
+"
+[∂u
+∂x ]T ∂u
+∂x Var[˜x1 −˜x0|˜xt]
+##
+(22)
+Under the assumption,Var[˜x1 −˜x0|˜xt]is a positive definite matrix whose eigenvalues lie in the interval[µ1, µ2].
+Meanwhile,[ ∂u
+∂x ]T ∂u
+∂x is also positive semidefinite (PSD). Using Lemma 1,
+E
+"
+λmintr
+"
+[∂u
+∂x ]T ∂u
+∂x
+##
+≤E
+"
+tr
+"
+[∂u
+∂x ]T ∂u
+∂x Var[˜x1 −˜x0|˜xt]
+##
+≤E
+"
+λmaxtr
+"
+[∂u
+∂x ]T ∂u
+∂x
+##
+Since
+E
+"
+tr
+"
+[∂u
+∂x ]T ∂u
+∂x
+##
+=E∥ ∂u
+∂x ∥2
+F
+and
+µ1 ≤λ min ≤λ max ≤µ 2,
+we have
+µ1E∥∂u
+∂x ∥2
+F ≤E
+"
+tr
+"
+[∂u
+∂x ]T ∂u
+∂x Var[˜x1 −˜x0|˜xt]
+##
+≤µ 2E∥∂u
+∂x ∥2
+F
+13
+D Standard Deviation of Evaluation Results
+The main evaluation experiments are repeated with three random seeds. Due to space limitations, only the
+average results are reported in the main paper, while the corresponding standard deviations are provided in
+Table 5.
+Stack D1 Stack Three D1 Threading D2 Square D2
+Method Obs NFE 100 200 1000 100 200 1000 100 200 1000 100 200 1000
+Ours RGB
+1 94.0±1.6 100.0±0.0 100.0±0.0 48.0±0.0 73.3±5.0 92.0±0.0 31.3±1.9 36.0±1.6 48.7±2.5 20.7±1.9 44.7±1.9 67.3±0.9
+3 88.0±1.6 100.0±0.0 100.0±0.0 49.3±3.4 76.0±4.3 94.0±0.0 30.7±5.2 42.7±2.5 53.3±2.5 20.0±1.6 45.3±2.5 70.7±0.9
+5 86.7±2.5 100.0±0.0 100.0±0.0 50.0±2.8 78.7±5.0 93.3±1.9 30.7±1.9 41.3±1.9 58.0±2.8 22.0±1.6 43.3±1.9 71.3±0.9
+EquiDiff RGB 100 93.3±0.7 100.0±0.0 100.0±0.0 54.7±5.2 77.3±1.8 96.0±1.2 22.0±1.2 40.0±1.2 59.3±1.8 25.3±8.7 41.3±9.8 60.0±4.2
+DP-C RGB 100 76.0±4.0 97.3±0.7 100.0±0.0 38.0±0.0 72.0±2.0 94.0±1.2 17.3±1.8 35.3±1.3 58.7±0.7 8.0±1.2 19.3±5.3 46.0±7.2
+DP-T RGB 100 51.3±1.8 82.7±0.7 98.7±0.7 16.7±0.7 41.3±2.9 84.0±1.2 10.7±0.7 18.0±1.2 40.7±0.7 4.7±1.8 11.3±2.4 44.7±4.7
+DP3 PCD 10 69.3±3.7 86.7±4.7 99.3±0.7 7.3±0.7 22.7±3.7 65.3±1.8 12.0±3.1 23.3±3.3 40.0±2.0 6.7±0.7 6.0±0.0 19.3±3.3
+ACT RGB 1 34.7±0.7 72.7±7.7 96.0±1.2 6.0±2.3 36.7±2.7 78.0±1.2 10.0±1.2 20.7±2.9 35.3±2.4 6.0±0.0 18.0±1.2 49.3±4.7
+Coffee D2 Three Pc. Assembly D2 Hammer Cleanup D1 Mug Cleanup D1
+Method Obs NFE 100 200 1000 100 200 1000 100 200 1000 100 200 1000
+Ours RGB
+1 64.7±5.2 80.7±0.9 78.7±0.9 10.7±2.5 35.3±4.1 60.0±1.6 74.7±1.9 75.3±3.4 77.3±7.5 50.0±1.6 64.7±1.9 66.7±0.9
+3 66.0±0.0 80.0±1.6 84.0±1.6 10.7±1.9 38.0±4.3 69.3±3.4 72.0±4.3 75.3±3.4 84.0±2.8 50.0±4.3 64.7±0.9 70.0±1.6
+5 67.3±1.9 79.3±1.9 82.7±0.9 10.7±0.9 42.0±3.3 70.7±2.5 74.0±4.3 74.7±3.8 82.7±5.7 50.0±3.3 68.0±1.6 70.0±2.8
+EquiDiff RGB 100 60.0±2.0 79.3±1.3 76.0±2.0 15.3±1.8 39.3±1.8 69.3±3.5 65.3±0.7 63.3±4.4 76.7±0.7 49.3±0.7 64.0±1.2 66.7±0.7
+DP-C RGB 100 44.0±1.2 66.0±2.3 78.7±0.7 4.0±0.0 6.0±1.2 30.0±1.2 52.0±1.2 58.7±1.3 73.3±2.4 42.7±0.7 58.7±1.3 65.3±2.4
+DP-T RGB 100 47.3±0.7 60.7±1.8 74.7±2.7 0.7±0.7 4.0±0.0 42.7±1.3 48.0±1.2 60.0±1.2 76.0±1.2 30.0±1.2 42.7±2.9 63.3±0.7
+DP3 PCD 10 34.0±4.0 45.3±4.1 68.7±2.4 0.0±0.0 0.7±0.7 3.3±0.7 54.0±3.1 70.7±4.1 86.7±0.7 21.3±2.7 32.7±1.8 52.7±4.4
+ACT RGB 1 19.3±2.4 33.3±2.4 64.0±2.3 0.0±0.0 3.3±0.7 24.0±3.1 38.0±4.2 54.0±1.2 70.7±1.3 23.3±0.7 31.3±1.3 56.0±2.0
+Kitchen D1 Pick Place D0 Nut Assembly D0 Coffee Preparation D1
+Method Obs NFE 100 200 1000 100 200 1000 100 200 1000 100 200 1000
+Ours RGB
+1 65.7±2.1 78.0±2.8 80.7±4.1 37.3±2.8 49.5±3.1 67.3±0.2 59.0±1.4 82.7±2.6 94.3±0.5 75.3±1.9 74.0±3.3 70.0±2.8
+3 72.7±1.9 80.7±0.9 80.7±0.9 40.8±2.7 61.7±3.3 85.7±1.6 61.0±1.6 86.3±0.5 96.0±0.0 80.7±0.9 81.3±2.5 88.7±1.9
+5 72.7±1.9 81.3±1.9 83.3±2.5 41.2±0.5 65.5±2.1 86.8±3.1 62.3±1.7 87.0±0.8 97.7±1.7 82.7±1.9 82.0±1.6 87.3±2.5
+EquiDiff RGB 100 67.3±0.7 76.7±3.3 81.3±0.7 41.7±3.2 74.2±3.2 92.0±1.2 74.0±1.2 85.0±1.5 93.7±0.9 76.7±0.7 82.7±0.7 85.3±0.7
+DP-C RGB 100 66.7±2.4 84.7±0.7 86.7±1.8 35.3±2.2 65.0±2.8 82.7±0.6 54.7±2.3 68.0±2.6 83.0±1.5 65.3±0.7 62.0±4.2 58.0±3.1
+DP-T RGB 100 54.0±2.3 75.3±0.7 81.3±2.4 14.7±1.5 36.5±1.3 50.0±6.0 30.7±5.0 32.3±5.2 45.7±5.9 38.0±2.0 51.3±1.8 76.0±6.0
+DP3 PCD 10 44.7±1.8 71.3±2.4 91.3±2.4 11.7±0.9 15.0±1.7 34.0±0.0 15.7±1.3 23.7±3.4 57.7±1.9 10.0±2.3 22.0±5.3 63.3±4.1
+ACT RGB 1 37.3±3.5 60.7±3.5 87.3±3.5 7.2±0.9 17.2±1.1 50.0±2.9 42.3±2.9 63.7±3.5 84.3±0.9 32.0±2.0 46.0±3.1 64.7±2.4
+Table 5The performance of our EfficientFlow compared with the baselines in MimicGen. We experiment with 100, 200,
+and 1000 demos in each environment and report the maximum task success rate among 50 evaluations throughout
+training. Results averaged over three seeds.±indicates standard deviation.
+E Simulation Environments
+Figure 3 presents agent-view observations from the 12 manipulation tasks within the MimicGen (Mandlekar
+et al., 2023) simulation environment. As illustrated, these tasks vary significantly in complexity and the
+number of objects involved. For clarity in our analysis, these tasks can be broadly categorized as follows:
+1. Basic Tasks (Stack, Stack Three): This category comprises a set of box stacking tasks primarily designed
+to evaluate the fundamental precision of the robot’s motion control.
+2. Contact-Rich Tasks (Square, Threading, Coffee, Three Piece Assembly, Hammer Cleanup, Mug Cleanup):
+This group includes tasks that necessitate behaviors with substantial physical contact, such as insertions
+or drawer articulations. These tasks assess the robot’s capability for fine-grained manipulation and its
+adaptability to uncertainties arising from physical interactions.
+3. Long-Horizon Tasks (Nut Assembly, Kitchen, Pick Place, Coffee Preparation): These tasks require
+the sequential execution of multiple distinct behaviors, thereby testing the stability of the robot’s
+long-duration movements and its comprehensive ability to perform error recovery when necessary.
+In our experiments, both agent-view and eye-in-hand image observations were captured at a resolution of
+84 × 84pixels with 3 color channels (RGB). Point cloud observations consisted of 1024 points, with each point
+represented by 6 features (XYZ coordinates and RGB color).
+14
+Stack D1 Stack Three D1
+Stack D1 Stack Three D1
+Square D2 Threading D2
+Square D2 Threading D2
+Coffee D2 Three Pc. Assembly D2
+Hammer Cleanup D1 Mug Cleanup D1
+Hammer Cleanup D1 Mug Cleanup D1
+Nut Assembly D0
+Nut Assembly D0
+Kitchen D1
+Kitchen D1
+Coffee Preparation D1
+Coffee Preparation D1
+Pick Place D0
+Pick Place D0
+Figure 3Environment diagrams depicting the MimicGen (Mandlekar et al., 2023) simulation experiments. The image
+sequences for each task, presented from left to right, illustrate the progression from the initial state to the final
+completion of the respective tasks.
+15
+Stack D1 Stack Three D1
+Square D2 Threading D2
+Coffee D2 Three Pc. Assembly D2
+Hammer Cleanup D1 Mug Cleanup D1
+Nut Assembly D0 Kitchen D1
+Coffee Preparation D1 Pick Place D0
+Figure 4The reset distributions for each task in MimicGen (Mandlekar et al., 2023) simulation experiments.
+16
+F Implementation Details
+F.1 Network Architecture
+For the network architecture, an equivariant ResNet-18 is employed to encode the agent-view images, yielding
+an output dimensionality of256× 8. Concurrently, images from the hand camera are processed by a standard
+non-equivariant ResNet-18, resulting in a 256-dimensional feature vector. These visual features, in conjunction
+with proprioceptive robot state information, are subsequently fused and compressed via an equivariant layer,
+producing a combined embedding of256×8dimensions.
+Following this, a time stept∈ [0, 1]is randomly initialized, along with an initial noise action sequencex0
+sampled from a prior distribution. The intermediate action statext at time stept is obtained through linear
+interpolation betweenx0 and the target action sequencex1. This xt is then encoded by an equivariant action
+encoder into a64×8dimensional action embedding.
+The aforementioned embeddings serve as conditioning inputs for a 1D-UNet. This network, featuring hidden
+layer dimensions of[512, 1024, 2048], predicts a64 × 8dimensional vector. Finally, this vector is equivariantly
+decoded to generate the velocity predictionuθ. The terminal action trajectory is then computed using the
+Euler method.
+F.2 Training Details
+We train our models with the AdamW (Loshchilov & Hutter, 2019) optimizer with a learning rate of10−4 and
+weight decay of10−6 (the learning rate in Coffee Preparation D1, Pick Place D0, and Hammer Cleanup D1
+tasks is 0.001). We use a cosine learning rate scheduler with 500 warm-up steps. We conducted training on
+two types of graphics cards, 4090 and A100. The batch size we used is 80. For different tasks in MimicGen,
+the training on 4090 requires 23 to 82 hours, respectively. During training, the model receives the two most
+recent historical observations at each step. A single model output consists of an action sequence spanning
+16 time steps, of which the[1, 8]steps are executed. The total number of training steps was kept consistent
+across experiments with varying numbers of demonstrations. For each different number of demos (100, 200,
+1000), we maintain roughly the same number of training steps by training for 50000/n epochs, where n is the
+number of demos. Evaluations are conducted every 1000/n epochs (50 evaluations in total).
+For baselines (Wang et al., 2024; Chi et al., 2023; Ze et al., 2024), we adopted the hyperparameter configurations
+reported in their original publication, except that we use the same action sequence length (16 for training and
+8 for evaluation) in DP3 (Ze et al., 2024) as (Wang et al., 2024; Chi et al., 2023) and our method. For the
+ACT (Zhao et al., 2023), we follow the hyperparameters provided in the prior work, except that we use a
+chunk size of 10, a KL weight of 10, a batch size of 64 with a learning rate of5× 10−5, and no temporal
+aggregation, following the tuning tips provided by the authors.
+F.3 Evaluation Strategy
+During the evaluation phase, the model similarly processes the two most recent observations. To enhance
+temporal consistency, five independent initial noise action sequences are randomly sampled and processed in
+parallel by the network. These sequences undergo an iterative inference process for 1, 3, or 5 steps (NFE=1,
+3, or 5), resulting in five distinct candidate action trajectories.
+To ensure smooth action transitions, the Euclidean distance is computed between each newly generated
+candidate trajectory and the terminal segment of the previously predicted trajectory. Specifically, this involves
+comparing the last 7 steps of the previous trajectory with the initial 1-8 steps of the current candidate
+trajectory. The candidate trajectory exhibiting the smallest Euclidean distance is then selected for execution.
+Furthermore, to encourage exploration, approximately every 10 predictions, a trajectory is chosen randomly
+from the candidates instead of always selecting the one with the smoothest transition.
+17
+G Additional Analysis
+G.1 Hyperparameter Sensitivity Analysis forλ
+The FABO module is critical for the model’s performance. Given that its influence is modulated by the
+hyperparameter λ, we performed a sensitivity analysis on the formulation ofλ for the Mug Cleanup D1 task,
+which is particularly sensitive to this component. The formulation adopted in this work isλ = (1 −t )2. We
+tested several alternative formulations to validate this choice in Table 6.
+The result reveals two key insights. First, the time-varying characteristic is essential, as replacing it with
+a constant schedule degrades the success rate from 50% to 42.0%. Second, the model exhibits significant
+robustness to the scale of this formulation: multiplying the original schedule by factors of 0.5, 1, or 2 yields
+comparable results. This insensitivity suggests that precise calibration of the magnitude is unnecessary,
+effectively easing the hyperparameter tuning overhead.
+Hyperparameter Setting forλMean Success Rate (%)
+Time-Varying Formulations
+0.5(1−t) 2 48.0±1.6
+(1−t) 2 50.0±1.6
+2(1−t) 2 51.3±3.8
+Constant Formulations
+0.5 42.0±2.8
+Table 6Sensitivity analysis of the hyperparameterλ on the Mug Cleanup D1 task. The maximum task success rate
+among 50 evaluations throughout training and the standard deviations are reported.
+G.2 Analysis of Trajectory Quality
+To quantify trajectory smoothness, we measured the rate of change in velocity at 500 sampled timesteps
+on the Stack D1 task. EfficientFlow exhibits a mean velocity change of 0.103 (std: 0.088), representing a
+significant reduction of 24.3% compared to the NoAcc baseline (mean: 0.136, std: 0.133).
+H Multi-Modal Extensions and Generalization
+H.1 Multi-Modal Performance in MimicGen
+To further investigate the adaptability and potential of our core architecture, we extend EfficientFlow to
+incorporate 3D geometric information through a voxel-based representation.
+We implemented a voxel-based variant of EfficientFlow and compared it against our original RGB-based
+model from the main paper. For context, we also include results from a strong point-cloud-based method,
+Flowpolicy (Zhang et al., 2025), and its baseline, DP3 (Ze et al., 2024). The evaluation was conducted in the
+MimicGen environment on five tasks (Stack D1, Threading D2, Square D2, Stack Three D1, and Three Pc.
+Asse. D2), with each model trained on 100 demonstrations. We report the mean of maximum success rates
+over three random seeds in Table 7.
+The Voxel-based EfficientFlow achieves superior performance by leveraging richer spatial perception and explicit
+3D geometry. This demonstrates that our strategy effectively generalizes across different input modalities.
+However, the acquisition overhead of 3D data—ranging from sensor cost to real-time processing—poses a
+barrier to real-world deployment. Consequently, while Voxels offer peak performance, our RGB variant
+remains a vital solution for scenarios where simplicity and hardware accessibility are prioritized.
+18
+Method Stack Threading Square Stack 3 3Pc. Asm. Average
+DP3 69.3±3.7 12.0±3.1 6.7±0.7 7.3±0.7 0.0±0.0 19.1
+FlowPolicy 72.0±7.1 13.3±1.9 6.0±1.6 10.0±1.6 0.0±0.0 20.3
+Ours(RGB) 94.0±1.6 31.3±1.9 20.7±1.9 48.0±0.0 10.7±2.5 41.0
+Ours(Voxel) 93.3±0.9 41.3±0.9 33.3±0.9 67.3±6.2 20.0±3.3 51.0
+Table 7Multi-modal performance comparison in the MimicGen environment. We report the mean success rates (%)
+and standard deviations over three random seeds. Our EfficientFlow framework, in both RGB and Voxel configurations,
+shows superior performance.
+H.2 Robomimic Experiment
+To further validate the generalization capabilities of our method beyond the training environment, we
+conducted experiments on the Robomimic (Mandlekar et al., 2021) benchmark. We trained EfficientFlow
+and Diffusion Policy (Chi et al., 2023) using only 20 expert demonstrations for four proficient-human (ph)
+single-arm tasks. Other hyperparameters mirror those used in our MimicGen experiment.
+Due to the limited randomness in the initial state distributions of these tasks, the data efficiency gains
+stemming from equivariance are less pronounced compared to the MimicGen experiments. Nevertheless,
+EfficientFlow consistently outperforms the baseline across the majority of tasks, securing a superior average
+success rate.
+Method Tool hang Can Lift Square Average
+DP-C 15.3±2.5 67.3±5.0 100.0±0.0 42.7±4.7 56.3
+Ours 16.7±5.7 90.7±0.9 100.0±0.0 44.0±5.9 62.9
+Table 8Performance comparison on Robomimic tasks. We report the maximum task success rate among 50 evaluations
+throughout training and standard deviations over three random seeds.
+19
+References
+Johan Bjorck, Fernando Castañeda, Nikita Cherniadev, Xingye Da, Runyu Ding, Linxi Fan, Yu Fang, Dieter Fox,
+Fengyuan Hu, Spencer Huang, et al. Gr00t n1: An open foundation model for generalist humanoid robots.arXiv
+preprint arXiv:2503.14734, 2025.
+Kevin Black, Noah Brown, Danny Driess, Adnan Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, Lachy Groom,
+Karol Hausman, Brian Ichter, et al.π0: A vision-language-action flow model for general robot control.arXiv
+preprint arXiv:2410.24164, 2024.
+Gabriele Cesa, Leon Lang, and Maurice Weiler. A program to build e (n)-equivariant steerable cnns. InInternational
+Conference on Learning Representations (ICLR), 2022.
+Cheng Chi, Zhenjia Xu, Siyuan Feng, Eric Cousineau, Yilun Du, Benjamin Burchfiel, Russ Tedrake, and Shuran Song.
+Diffusion policy: Visuomotor policy learning via action diffusion.The International Journal of Robotics Research,
+42, 2023.
+Dechen Gao, Boqi Zhao, Andrew Lee, Ian Chuang, Hanchu Zhou, Hang Wang, Zhe Zhao, Junshan Zhang, and Iman
+Soltani. Vita: Vision-to-action flow matching policy.arXiv preprint arXiv:2507.13231, 2025.
+Zhengyang Geng, Mingyang Deng, Xingjian Bai, J Zico Kolter, and Kaiming He. Mean flows for one-step generative
+modeling. InAdvances in Neural Information Processing Systems (NeurIPS), 2025.
+Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. InAdvances in Neural Information
+Processing Systems (NeurIPS), 2020.
+Haojie Huang, Dian Wang, Robin Walters, and Robert Platt. Equivariant transporter network. InProceedings of
+Robotics: Science and Systems (RSS), 2022.
+Haojie Huang, Dian Wang, Xupeng Zhu, Robin Walters, and Robert Platt. Edge grasp network: A graph-based se
+(3)-invariant approach to grasp detection. InProceedings of the IEEE International Conference on Robotics and
+Automation (ICRA), 2023.
+Haojie Huang, Owen Howell, Xupeng Zhu, Dian Wang, Robin Walters, and Robert Platt. Fourier transporter:
+Bi-equivariant robotic manipulation in 3d. InInternational Conference on Learning Representations (ICLR), 2024.
+Mingxi Jia, Dian Wang, Guanang Su, David Klee, Xupeng Zhu, Robin Walters, and Robert Platt. Seil: Simulation-
+augmented equivariant imitation learning. InProceedings of the IEEE International Conference on Robotics and
+Automation (ICRA), 2023.
+Seungyeon Kim, Byeongdo Lim, Yonghyeon Lee, and Frank C Park. Se (2)-equivariant pushing dynamics models for
+tabletop object manipulations. InConference on Robot Learning (CoRL), 2023.
+Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative
+modeling. InInternational Conference on Learning Representations (ICLR), 2023.
+Shiqi Liu, Mengdi Xu, Peide Huang, Xilun Zhang, Yongkang Liu, Kentaro Oguchi, and Ding Zhao. Continual
+vision-based reinforcement learning with group symmetries. InConference on Robot Learning (CoRL), 2023a.
+Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with
+rectified flow. InInternational Conference on Learning Representations (ICLR), 2023b.
+Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. InInternational Conference on Learning
+Representations (ICLR), 2019.
+Ajay Mandlekar, Danfei Xu, Josiah Wong, Soroush Nasiriany, Chen Wang, Rohun Kulkarni, Li Fei-Fei, Silvio Savarese,
+Yuke Zhu, and Roberto Martín-Martín. What matters in learning from offline human demonstrations for robot
+manipulation. InConference on Robot Learning (CoRL), 2021.
+Ajay Mandlekar, Soroush Nasiriany, Bowen Wen, Iretiayo Akinola, Yashraj Narang, Linxi Fan, Yuke Zhu, and Dieter
+Fox. Mimicgen: A data generation system for scalable robot learning using human demonstrations. InConference
+on Robot Learning (CoRL), 2023.
+Hai Huu Nguyen, Andrea Baisero, David Klee, Dian Wang, Robert Platt, and Christopher Amato. Equivariant
+reinforcement learning under partial observability. InConference on Robot Learning (CoRL), 2023.
+Chuer Pan, Brian Okorn, Harry Zhang, Ben Eisner, and David Held. Tax-pose: Task-specific cross-pose estimation for
+robot manipulation. InConference on Robot Learning (CoRL), 2023.
+20
+Lawrence Perko.Differential equations and dynamical systems, volume 7. Springer Science & Business Media, 2013.
+Krishan Rana, Robert Lee, David Pershouse, and Niko Suenderhauf. Imle policy: Fast and sample efficient visuomotor
+policy learning via implicit maximum likelihood estimation. InProceedings of Robotics: Science and Systems (RSS),
+2025.
+Moritz Reuss, Hongyi Zhou, Marcel Rühle, Ömer Erdinç Yağmurlu, Fabian Otto, and Rudolf Lioutikov. Flower:
+Democratizing generalist robot policies with efficient vision-language-action flow policies. InConference on Robot
+Learning (CoRL), 2025.
+Hyunwoo Ryu, Hong-in Lee, Jeong-Hoon Lee, and Jongeun Choi. Equivariant descriptor fields: Se (3)-equivariant
+energy-based models for end-to-end visual robotic manipulation learning. InInternational Conference on Learning
+Representations (ICLR), 2023.
+Juyi Sheng, Ziyi Wang, Peiming Li, and Mengyuan Liu. Mp1: Mean flow tames policy learning in 1-step for robotic
+manipulation.arXiv preprint arXiv:2507.10543, 2025.
+Anthony Simeonov, Yilun Du, Andrea Tagliasacchi, Joshua B Tenenbaum, Alberto Rodriguez, Pulkit Agrawal, and
+Vincent Sitzmann. Neural descriptor fields: Se (3)-equivariant object representations for manipulation. InProceedings
+of the IEEE International Conference on Robotics and Automation (ICRA), 2022.
+Anthony Simeonov, Yilun Du, Yen-Chen Lin, Alberto Rodriguez Garcia, Leslie Pack Kaelbling, Tomás Lozano-Pérez,
+and Pulkit Agrawal. Se (3)-equivariant relational rearrangement with neural descriptor fields. InConference on
+Robot Learning (CoRL), 2023.
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using
+nonequilibrium thermodynamics. InInternational Conference on Machine Learning (ICML), 2015.
+Dian Wang, Mingxi Jia, Xupeng Zhu, Robin Walters, and Robert Platt. On-robot learning with equivariant models.
+InConference on Robot Learning (CoRL), 2022a.
+Dian Wang, Robin Walters, and Robert Platt. So(2)-equivariant reinforcement learning. InInternational Conference
+on Learning Representations (ICLR), 2022b.
+Dian Wang, Robin Walters, Xupeng Zhu, and Robert Platt. Equivariantq learning in spatial action spaces. In
+Conference on Robot Learning (CoRL), 2022c.
+Dian Wang, Stephen Hart, David Surovik, Tarik Kelestemur, Haojie Huang, Haibo Zhao, Mark Yeatman, Jiuguang
+Wang, Robin Walters, and Robert Platt. Equivariant diffusion policy. InConference on Robot Learning (CoRL),
+2024.
+Jingyun Yang, Ziang Cao, Congyue Deng, Rika Antonova, Shuran Song, and Jeannette Bohg. Equibot: Sim (3)-
+equivariant diffusion policy for generalizable and data efficient learning. InConference on Robot Learning (CoRL),
+2024a.
+Ling Yang, Zixiang Zhang, Zhilong Zhang, Xingchao Liu, Minkai Xu, Wentao Zhang, Chenlin Meng, Stefano Ermon,
+and Bin Cui. Consistency flow matching: Defining straight flows with velocity consistency. InInternational
+Conference on Machine Learning (ICML), 2024b.
+Yanjie Ze, Gu Zhang, Kangning Zhang, Chenyuan Hu, Muhan Wang, and Huazhe Xu. 3d diffusion policy: Generalizable
+visuomotor policy learning via simple 3d representations. InProceedings of Robotics: Science and Systems (RSS),
+2024.
+Qinglun Zhang, Zhen Liu, Haoqiang Fan, Guanghui Liu, Bing Zeng, and Shuaicheng Liu. Flowpolicy: Enabling fast
+and robust 3d flow-based policy via consistency flow matching for robot manipulation. InProceedings of the AAAI
+Conference on Artificial Intelligence (AAAI), 2025.
+Tony Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn. Learning fine-grained bimanual manipulation with
+low-cost hardware. InProceedings of Robotics: Science and Systems (RSS), 2023.
+Yi Zhou, Connelly Barnes, Jingwan Lu, Jimei Yang, and Hao Li. On the continuity of rotation representations in
+neural networks. InProceedings of the IEEE/CVF Conference on computer vision and pattern recognition (CVPR),
+2019.
+Xupeng Zhu and Dian Wang. Sample efficient grasp learning using equivariant models. InProceedings of Robotics:
+Science and Systems (RSS), 2022.
+21
+Xupeng Zhu, Dian Wang, Guanang Su, Ondrej Biza, Robin Walters, and Robert Platt. On robot grasp learning using
+equivariant models.Autonomous Robots, 47, 2023.
+22

@@ -1,0 +1,672 @@
+On The Finetuning of MLIPs Through the Lens of Iterated Maps
+With BPTT
+Evan Dramko1, Yizhi Zhu2,3, Aleksandar Krivokapic4, Geoffroy Hautier2,3, Thomas Reps5, Christopher
+Jermaine1, and Anastasios Kyrillidis 1
+1Department of Computer Science, Rice University, Houston, TX, USA
+2Department of Materials Science and Nanoengineering, Rice University, Houston, TX, USA
+3Rice Advanced Materials Institute, Rice University, Houston, TX, USA
+4Faculty of Technical Sciences, University of Novi Sad, Novi Sad, Serbia
+5Department of Computer Sciences, University of Wisconsin–Madison, Madison, WI, USA
+*Corresponding author:Evan Dramko: (ed55@rice.edu)
+Abstract
+Vital to the creation of advanced materials is performing structural relaxations. Traditional ap-
+proaches built on physics-derived first-principles calculations are computationally expensive, motivating
+the creation of machine-learning interatomic potentials (MLIPs). Traditional approaches to training
+MLIPs for structural relaxations involves training models to faithfully reproduce first-principles com-
+puted forces. We propose a fine-tuning method to be used on a pretrained MLIP in which we create
+a fully-differentiable end-to-end simulation loop that optimizes the predicted final structures directly.
+Trajectories are unrolled and gradients are tracked through the entire relaxation. We show that this
+method achieves substantial performance gains when applied to pretrained models, leading to a nearly
+50% reduction in test error across the sample datasets. Interestingly, we show the process is robust to
+substantial variation in the relaxation setup, achieving negligibly different results across varied hyper-
+parameter and procedural modifications. Experimental results indicate this is due to a “preference” of
+BPTT to modify the MLIP rather than the other trainable parameters. Of particular interest to prac-
+titioners is that this approach lowers the data requirements for producing an effective domain-specific
+MLIP, addressing a common bottleneck in practical deployment.
+1 Introduction
+Problem Domain and Background.A central task in computational materials research is the determi-
+nation of physically realizable atomic structures. This problem, often referred to as structural determination,
+requires identifying configurations that satisfy the thermodynamic constraints governing crystal formation.
+A structure is considered stable if it corresponds to a local minimum of thePotential Energy Surface (PES):
+a function which maps the atomic coordinates together with atomic species, charge state, and environmen-
+tal conditions to the total energy of the system. In most applications, all parameters other than atomic
+coordinates are treated as fixed, so the PES can be regarded as a function of the atomic positions alone.
+Stable structures are typically identified via relaxation trajectories: gradient-based procedures that it-
+eratively update an initial atomic configuration toward lower-energy states according to PES gradients.
+These gradients correspond to inter-atomic forces and are commonly computed using a physics-derived first-
+principles algorithm known asdensity functional theory (DFT). While DFT provides reliable forces, each
+evaluation is expensive; full relaxations can take hours to days on high-performance computing systems,
+which makes relaxation a significant bottleneck in high-throughput materials discovery pipelines.
+MLIPs.Machine learning interatomic potentials (MLIPs) have emerged as an alternative to running
+full DFT relaxation trajectories [1, 2]. These models learn to approximate DFT by taking atomic structures
+as input and predicting forces. Because high precision is still required in many atomistic calculations, MLIPs
+are commonly used as a pre-relaxation step: they cheaply move structures closer to relaxation, after which
+1
+arXiv:2512.01067v1  [cond-mat.mtrl-sci]  30 Nov 2025
+DFT is applied for final refinement [3, 4]. Many architectural variants of MLIPs exist [4–11], but the method
+in this work is agnostic to the specific MLIP architecture chosen.
+One of the core obstacles in training MLIPs is that each new data point demands expensive first-principles
+calculations, which keeps datasets far smaller and less varied than many other machine learning domains
+[12, 13]. Because data collection is often prohibitively expensive on scale, we introduce a work focused on
+improving performance by making better use of the data already available.
+Levels of Optimization.We note that there are two levels of optimization inherent to this work: (1)
+optimization of the MLIP, and (2) optimization of the PES. Recall, we are training/optimizing the MLIP
+such that it can be used as the gradient function when we optimize along the PES. To keep these two different
+levels of optimization clear, we will denote training the MLIP as “local” optimization, and optimizing the
+structure along the PES as “global” or “PES-level” optimization.
+Definingframe.We denote byframe, a single DFT/MLIP force prediction step followed by a corre-
+sponding structural update step. Without loss of generality,frameis expressed in Eq 1.
+frame(Xt)→X t+1 =
+(
+by= MLIP(X t)
+Xt+1 =X t +η by (1)
+where we denote the matrix of coordinates for the structure asX t and predicted forces as by, andηgives the
+chosen PES-level step size.
+Novel Training Approach.Prior work trains MLIPs to match DFT forces at each structure indepen-
+dently. We instead adopt a trajectory-level finetuning approach: we unroll entire relaxation trajectories and
+apply backpropagation through time (BPTT) to update model parameters based on the quality of the final
+relaxed structure, rather than per-step force accuracy. This redefines the training objective as optimizing
+the result of the relaxation procedure directly, enabling the model to exploit trajectory-level supervision and
+improve performance without additional data. Figure 1 illustrates the setup. Notably, the model learns to
+refine its force predictions using structural information, effectively leveraging one data modality to supervise
+another.
+Connection to Iterative Maps.Regardless of the use of MLIPs or DFT, we can consider PES-level
+optimization as a fixed point computation of the functionframe1. In the real world—which follows gradient
+flow rather than gradient descent along the PES—we are guaranteed to find a local minima. Assuming
+sufficiently smallη, we observe:
+lim
+n→∞
+framen(Xn) =X ∗ (2)
+This means that stable structures are actually fixed points of theframeequation defining the update process
+between points in our trajectories. Under this view, we see that when using our BPTT procedure to finetune
+the model, we are actually creatingframeas a proxy function which seeks to match fixed points and relevant
+basins-of-attraction to the PES.
+Our primary contributions are:
+1. We introduce a full trajectory, BPTT-based, fine-tuning scheme for MLIPs
+2. We present ablation studies and analysis on the effect of each component in the PES-level optimization
+3. We tie BPTT training to iterative maps and proxy functions
+4. We validate the procedure on datasets across multiple structural domains
+2 Related Works
+2.1 MLIPs
+MLIPs, also called machine learning force fields (MLFFs), are trained to take structure snapshots 1 and pro-
+duce predictions for forces and formation energy. A dominant direction of research in MLIPs has been graph
+neural networks (GNNs), which have led to many of the leading architectures [5–11]. Another architecture
+1structure snapshots: atomic locations, atomic descriptors, etc
+2
+(a) Traditional Training Scope
+(b) BPTT Finetuning Scope
+Figure 1: In previous work, only the MLFF itself is trained. In our work, we train through
+the whole relaxation, treating the entire unrolled trajectory as one large neural network.
+of particular note to this paper is ADAPT [4], which uses a points-in-space representation of atoms rather
+than a graphical one, and uses a Transformer encoder to predict atomic forces.
+Some works focused on improving MLIP performance have looked at using targeted or active learning to
+automatically identify areas of MLIPs that need to be trained [14–16]s.
+2.2 Direct Structure Prediction
+There has been interest in predicting relaxed states of structures directly without optimizing along the PES.
+Since stable structures are found through a non-convex optimization problem, data requirements for such
+strategies are often infeasibly high [17, 18]. One work [19], shows success for the limited domain of 2d point
+defects. Another approach, [20], uses an internal iterative geometry solver to create a prediction of the final
+structure but has not been proven in a robust manner comparable to MLIPs.
+2.3 Iterative Approaches
+Literature has explored weight-tying and iterative maps extensively [21, 22], withdeep equilibrium networks
+(DEQs)[22] matching our problem domain. The majority of the research [22–24] has not been focused on
+the physical sciences. While such techniques have been shown to be successful under the right conditions
+[22, 25], they often exhibit poor training dynamics and generalizability [23, 25–27]. Due to this, they are
+often used in memory constrained circumstances [26, 27], and for theoretical exploration [24, 26–28]. Recent
+work [29] applies deep equilibrium models to predict self-consistent Hamiltonians directly, attempting to
+bypass the iterative SCF procedure that constitutes a major computational bottleneck in DFT.
+One notably related technique from materials science literature is DOGSS [30]. This technique learns
+a network that creates parameters to condition a simple proxy function which matches desired physical
+3
+properties at the minima. The network’s conditioning of the proxy function is trained though the fully-
+differentiable gradient descent optimization of the proxy. DOGSS however, does not integrate with MLIP
+literature, and instead focuses on spring constants and equilibrium distances.
+2.4 Sequence Level Work
+Backpropagation through time [31–33] is the standard method for computing gradients in recurrent neural
+networks, and is widely used throughout sequence learning literature. It remains the conventional baseline
+for training RNNs and underpins most subsequent developments in recurrent and sequence-model learning.
+There has been substantial work throughout machine learning on full-sequence training, often in the
+form of reinforcement learning from human feedback (RLHF) [34, 35]. While some aspects such as the use
+of proximal term weight controls [36] or gradient clipping [37, 38] overlap with our work, we differ strongly
+in that we have a fully-differentiable setup.
+Some work, [39, 40], has used fully-differentiable training to match molecular dynamics (MD) trajectory
+coefficients to those observed in practice. These values are useful in many aspects of materials science, but
+are orthogonal to our goal of structural relaxation. Another work [41] finds BPTT unsuitable to train a
+specific coarse-grained molecular dynamics simulation engine 2.
+3 Method
+3.1 Preliminaries
+Notation.In a slight abuse of notation, we denoteXas the atomic structure under consideration, and also
+as aR n×3 matrix of their coordinates. The ground truth relaxed structure is given byX ∗
+F , and the predicted
+structure is bXF. We denote actual forces withyand predicted forces as by.
+Evaluation: Loss and Delta Q.Many works use MSE as a measure for structural error. However, in
+crystal defect cases, MSE can overemphasize the effect of the bulk lattice, and underemphasize the effect of
+the defect center [4]. To handle this issue, we use Delta Q (Dq) as a loss function, which is MSE where the
+error from each atom is weighted by its atomic mass. Given a setX ∗ ofnatoms with massesm i, and a
+predicted set of atom locations bX,Dqis defined by:
+Dq(X∗
+F, bXF) =
+vuut
+nX
+j=1
+mj∥X∗j,: − bXj,:∥2
+2,(3)
+This metric is physically meaningful and is often used in first-principles optical property computations [42].
+ADAPT Architecture Summary.We adopt the ADAPT architecture [4] to use as our pretrained
+MLIP base due to both its effectiveness and its algorithmic simplicity. The model is defined as three-layer
+embedding MLP, a series ofnTransformer encoder blocks and a final layer linear projection. Each encoder
+block (denotedenc) is given by:
+enc(X)→X out =
+
+
+
+H1 =LN
+ 
+Xin +Attn(X in)
+
+,
+H2 =FFN
+ 
+LN(H1)
+
+,
+Xout =LN(H 2 +H 1)
+(4)
+ADAPT also uses projection and embedding operations defined by:
+proj=W pX(5)
+emb=W 2 ◦σ◦W 1 ◦σ◦W 0(X) (6)
+2This engine is not a neural network, nor should it be considered neural-network-like.
+4
+whereW p ∈R 3×dmodel ,embis a multi-layer perceptron (MLP), and◦is the function composition operator.
+Note that the embedding does not use a positional encoding because the coordinates of the each atom is
+included in the atom features given to the model. The relative ordering of atoms does not matter.
+The overall ADAPT architecture is given by:
+MLIP=proj◦enc◦...◦enc| {z }
+×n
+◦emb(X) (7)
+3.2 Trajectory Unrolling
+In this BPTT-driven fine-tuning scheme, we unroll and train end-to-end through entire relaxation trajecto-
+ries. Recallingframefrom Eq. 1, we define a rollout 3 as:
+bXF =frame◦...◦frame| {z }
+×k
+(X0) (8)
+The stopping condition is non-differentiable; it is defined as either a smallL 2 distance between successive
+steps, or a maximum threshold of steps, whichever comes first. We do not train through this stopping
+condition, rather we take theDqbetween the predicted and final structure as our loss metric:
+L=Dq(X ∗
+F , bXF) (9)
+Fundamentally, we are training the network such that:frame k(X0) = bXF →X ∗
+F . Note thatkmay not be
+the same for each rollout, meaning that we are inherently training a different function for different samples
+from the dataset.
+Experimental results indicate that, consistent with observations from RLHF-style fine-tuning, only a
+small number of epochs are required to achieve meaningful improvements. Figure 3 presents outcomes
+obtained after five epochs of fine-tuning showing that training has stabilized.
+3.3 PES-Level Step Size Controls
+Figure 2: Effect of training schemes on Si
+defect relaxations
+Central to any gradient descent procedure is the selection of
+step size. The FIRE optimizer [43] is commonly used in existing
+relaxation pipelines. While, the non-differentiable nature of it
+makes it unfit for BPTT fine-tuning, we use the pretrained
+force and energy models from [4] to establish a baseline result.
+As alternatives, we test using BPTT fine-tuning with the use
+of a: (1) simple scalar or (2) NN that predicts the step size.
+Scalar Step.As a baseline, we use a grid search to es-
+tablish the near optimal performance of ADAPT on the test
+set given perfect information. We find that a step size of 0.077
+produces the best result on the test set, as seen from results in
+Appendix D. To establish performance of our model, we test
+both using a static and a learned step size. Figure 3b shows
+there is a negligible difference in performance when allowing
+backprop to change the step size. In fact, experimental results
+show that BPTT prefers to update the MLIP weights: in the
+example shown in Figure 3b, the step size was initialized to
+0.50, but ended at∼0.49 when exposed to gradient updates. Interestingly, we find even when we deviate far
+from the pre-computed “ideal” step size, BPTT adjusts quickly to the step size, and reaches near identical
+performance. This reinforces the idea that BPTT fine-tuning is learning about the interplay of the force
+predictions and the larger descent procedure.
+3We define trajectory length askrather thanTto avoid confusion with the transpose operator,T, when the length is used
+as an exponent
+5
+Neural Network Step.We implement a single-value decoder as seen in Appendix A. This decoder
+uses the structure and the predicted forces as input, and predicts a PES-level step size. We test random
+initialization and an initialization on a model trained to always predict the value 0.077 from random noise
+interpolation, and find negligible difference in performance. The MLIP modifications are however tied to the
+PES-level step size; when using a model trained on a learned step size initialized to 0.5 in a inference time
+loop with a step of 0.005, the averageDqscore falls to over 13.77.
+Type Avg.Dq
+No BPTT 5.32
+Scalar Step Size 2.73
+Decoder (Single Value) 3.37
+Table 1: Ablation studies on learned step sizes
+Results are from the Si defect dataset
+Table 1 shows that BPTT-tuned generated trajectories outperform even the trajectories made with
+optimal, perfect-information step size with the untuned ADAPT. We find that using BPTT and a fixed step
+size yields the best overall performance, creating a∼50% reduction in error over even the perfect-information
+untuned case.
+(a) Effect of varying learned PES-step parameter initial-
+izations
+ (b) Sample run of fixed vs learned step
+Figure 3: Experimental results comparing learned and fixed scalar step sizes as applied to Si defects.
+Key takeaways from these studies are:
+1. Figure 2 shows BPTT is capable of learning a step size that outperforms domain engineered optimizers,
+2. Figure 3a shows that BPTT is capable of learning around a highly non-optimal step size such that the
+relaxations perform on par with grid-searched, perfect-information selected initial hyperparameters,
+3. Figure 3 shows BPTT modifies the force predictions such that they produce better relaxed structures,
+even at the cost of deviating from accuracy in DFT force reproduction,
+4. Table 1 shows using a neural network defined byS:X| catby→stepdoes not outperform using a scalar
+or fixed step size.
+3.4 Adaptability and Artificial Controls on Descent Dynamics
+In optimization literature, pure stochastic gradient descent (SGD) is seldom employed in practice. Instead,
+machine learning typically utilizes step-size schedulers, momentum variants, or second-order approximations.
+6
+Domain-specific optimizers have also emerged, such as the FIRE algorithm in atomistic modeling. Noise
+injection—in various forms 4—during training can enhance generalization. Moreover, the use of proximal
+weight penalties and gradient clipping helps constrain fine-tuning updates, ensuring that new policies remain
+close to their predecessors and mitigating catastrophic forgetting or overfitting.
+Type L2 Force Errors
+Pretrained MLIP 4.32
+BPTT-tuned MLIP 13.36
+Table 2: Effect of BPTT training on force
+predictions for Si defects
+Since the relaxation trajectory is inherently an opti-
+mization procedure, it is reasonable to expect that such
+modifications to the PES-level descent may have an im-
+pact on the BPTT-derived weight updates. Specifically,
+we perform ablation studies to test the effect of the PES-
+level application of: (1) noise injection 5, (2) momentum
+and annealing in steps, and (3) intentional varying of tra-
+jectory lengths though modifications of stopping condi-
+tions. We also test the effect of the MLIP-level usage of
+proximal term vs gradient clipping update controls.
+We find that none of these modifications substantively improve results, and some cause degenerative
+trajectories. This indicates that: (1) the model is capable of learning a strong set of optimization controls,
+and (2) these controls are substantively different than those we typically use. A full discussion and numeric
+results for each of these modifications is available in Appendix B.
+4 Analysis and Interpretation
+Figure 4: Si defect training loss sees
+negligible improvement, but testing loss is
+substantially improved
+We explore the effect that BPTT has on the MLIP within its
+training loop. Experimental results in Table 2 show that BPTT
+reduces the accuracy in force predictions, despite Table 1 show-
+ing it improves the final structure predicted by the relaxation
+loop. We also include 5a showing that BPTT does not achieve
+meaningful gains in performance when only allowed to update
+the PES step size and not the MLIP. Taking these two results
+in combination, we assert that BPTT fine-tuning is neither
+improving the PES-level descent parameters nor the “physical-
+ity” of the relaxation, rather it is learning a general trend in the
+structural dataset. Recall that a classic MLIP is not actually
+solving structure relaxation, it is instead training to recreate
+molecular dynamics (MD) trajectories which simulate thepath
+taken by the atoms. If the path is followed perfectly, then the
+final state will indeed by the relaxed structure. However, due
+to data shortages and the inherent imprecision of ML meth-
+ods, we observe that often in practice the predicted relaxed
+state from MLIP-based MD simulations often exhibits high er-
+ror [44, 45]. By using BPTT, we are creating a proxy functionframe1 that functions as an iterative map
+calculation. We are simply using the MLIP as a rough initialization for that function, we are not trying to
+improve the descent dynamics along the PES, but rather a function that matches key properties (namely
+locations of fixed points) to the PES. We know that the PES must have fixed points, because DFT relaxation
+itself is a fixed point calculation. This approach of creating proxy functions which match key properties to
+first-principles calculations has been used successfully in literature under different circumstances [30].
+Finding minima of the PES in inherently solving a non-convex optimization problem. Furthermore,
+it has been shown that structural calculations are ann-body problem, meaning that there does not exist
+any analytical function to represent it. Because of this, any function—including a neural network—cannot
+learn this system perfectly. Taken in combination, these two results indicate that molecular dynamics (i.e:
+gradient descent) methods are best for universal MLIPs. However, we find that BPTT is capable of imparting
+4Stochasticity can be seen as a form of “noise injection” as well, although we do not test a version of the model without due
+to compute limitations.
+5Noise injection has been utilized in literature by [10]
+7
+substantive performance gains, and while it may not be solving the original physics problem directly, it
+does learn a function that approximates well the dataset it is given. This shows iterative maps reliably
+steer systems towards stable contractions, even at the expense of faithfully representing local dynamics;
+meaning that it forces global trends over local accuracy. In an “ideal” scenario with enough data and
+compute resources, local dynamics could be learned perfectly. However, we know that this is an unreasonable
+expectation in MLIP domains. Due to this we suggest, if possible, starting with a pretrained universal
+MLIP, then fine-tuning with supervised structure to force prediction, then ending with BPTT trajectory
+level training. While this incurs a somewhat high overhead, many researchers focus on specific types or
+subsets of materials (such as silicon defects), making this well worth the effort for them.
+(a) BPTT cannot adjust the PES-level descent
+parameters alone, it must affect the MLIP to acheive
+performance gains.
+(b) BPTT performance when training from MLIP
+random initialization
+Figure 5: Effect of adjusting learning setup on Si defect samples
+Our experimental results support this; Figure 5b shows that training ADAPT on the Si defect case
+with BPTT and random initialization is unable to find a model that exhibits strong performance. Instead,
+we emphasize our work as a fine-tuning measure. Under this lense, we note a similarity toreinforcement
+learning from human feedback (RLHF)literature. We can see in Figure 4 that even though the training
+loss remains relatively stable, the testing accuracy improves substantially. This results shows that BPTT
+improves generalization, mirroring results observed in RLHF literature [46, 47].
+Other techniques that have shown success in directly training iterative approaches in materials science
+[30] do not try to train iterative neural networks, but rather create new problem setups altogether. However,
+DFT and MLIP literature are an established part of workflows, presenting a hurtle for such approaches.
+5 Results
+Among modern research directions in advanced materials,crystals—periodic, infinitely repeating arrange-
+ments of atoms known as lattices—are of particular relevance. We validate BPTT fine-tuning by testing
+on two different datasets which represent fundamentally different types of crystal domains. The success of
+BPTT fine-tuning under such different domains shows that its benefit is not limited to a specific problem
+scope.
+5.1 Crystal Defects.
+A central theme in materials design is the deliberate introduction ofdefects: controlled disruptions of an
+otherwise perfect lattice to engineer specific electrical, magnetic, or quantum properties. This dataset,
+sourced from ADAPT [4], focuses on point defects in silicon. Point defects occur wherever the crystal’s
+8
+regular structure is broken in a constrained local region. They are typically classified into three categories:
+i)Substitution:a lattice atom is replaced with a different element;ii)interstitial:an additional atom is
+inserted between lattice sites; and,iii)vacancy:a lattice site is missing an atom.
+These seemingly simple atomic irregularities—vacancies or irregular atoms within a crystal lattice—
+are fundamental to modern electronic and quantum technologies. They can also combine to form defect
+complexes, where multiple point defects interact within the same region of the crystal. Such engineered
+defects are the basis of semiconductor doping for high-performance computing, and they are central to
+emerging efforts to create stable qubits and quantum sensors.
+Type AvgDq
+MACE + FIRE 12.59
+ADAPT + FIRE 6.73
+ADAPT withStep=0.077 5.25
+BPTT Tuned 2.73
+Table 3: Full effect of BPTT tuning
+As summarized in Table 3, fine-tuning with BPTT produces
+notably improved final configurations. Qualitative analysis of
+the resulting defect structures shows that the defect centers—
+regions of greatest practical relevance—exhibit the most pro-
+nounced improvements. In particular, BPTT has a significant
+influence on the localization of interstitial defect atoms in the
+test cases. These observations confirm that the improvements
+are not attributable to trivial stabilization of the bulk lattice,
+which would be unlikely to produce a substantial reduction in
+the number of DFT steps required for full relaxation. It is
+shown in [4] that increasing the size and training time of the pretrained ADAPT model on this dataset does
+not improve its performance; this shows that BPTT fine-tuning is achieving accuracy in relaxations that
+would have been impossible with regular MLIP training.
+Visual inspection of randomly selected samples from the test set shows that the defect centers exhibit
+noticeable improvements. Defect centers are the regions with the greatest structural evolution, and thus both
+the area of primary interest for scientists as well as the area which largely determines how many relaxation
+steps are needed. In particular, BPTT has a significant influence on the localization of interstitial defect
+atoms in the test cases. These observations confirm that the improvements are not attributable to trivial
+stabilization of the bulk lattice, which would be unlikely to produce a substantial reduction in the number
+of DFT steps required for full relaxation.
+5.2 Pure Crystals
+Figure 6: BPTT tuning improves pure
+crystal results by roughly 50%.
+We consider a subset of the dataset from [8], which is itself a
+curation of data from the Materials Project [48]. Full details
+on the dataset preparation are in Appendix C.1. This contains
+pure crystal cells. Each cell is assumed to be subject to the
+periodic boundary condition, and is part of an infinitely re-
+peating regular lattice. Due to the smaller number of atoms
+and lack of specific interest areas, we use standard MSE loss
+as our metric for this dataset. Since no pretrained version ex-
+ists, we train ADAPT [4] first on first predictions, then use
+BPTT fine-tuning. We show that BPTT leads to a substantial
+increase in final-structure accuracy, as shown in Figure 6.
+6 Discussion
+We present a method for fine-tuning MLIPs that uses structure
+information to modify force predictions. We calculate fully-
+differentiable relaxation trajectories using MLIPs, and then
+perform a BPTT update. This work shows dramatic increases
+in prediction accuracy. We provide ablation studies highlight-
+ing the impact different common gradient descent schemes have when integrated into the BPTT pipeline,
+and find that surprisingly the algorithm is capable of adapting around a fixed scalar PES-level step size to
+match or outperform any other procedure.
+9
+References
+[1] Volker L Deringer, Miguel A Caro, and G´ abor Cs´ anyi. Machine learning interatomic potentials as
+emerging tools for materials science.Advanced Materials, 31(46):1902765, 2019.
+[2] J¨ org Behler. Perspective: Machine learning potentials for atomistic simulations.The Journal of chemical
+physics, 145(17), 2016.
+[3] Hugo Rossignol, Michail Minotakis, Matteo Cobelli, and Stefano Sanvito. Machine-learning-assisted
+construction of ternary convex hull diagrams, 2023. URLhttps://arxiv.org/abs/2308.15907.
+[4] Evan Dramko, Yihuang Xiong, Yizhi Zhu, Geoffroy Hautier, Thomas Reps, Christopher Jermaine, and
+Anastasios Kyrillidis. Adapt: Lightweight, long-range machine learning force fields without graphs.
+arXiv preprint arXiv:2509.24115, 2025.
+[5] Ilyes Batatia, David P Kovacs, Gregor Simm, Christoph Ortner, and G´ abor Cs´ anyi. Mace: Higher
+order equivariant message passing neural networks for fast and accurate force fields.Advances in neural
+information processing systems, 35:11423–11436, 2022.
+[6] Chi Chen and Shyue Ping Ong. A universal graph deep learning interatomic potential for the periodic
+table.Nature Computational Science, 2(11):718–728, 2022.
+[7] Kamal Choudhary and Brian DeCost. Atomistic line graph neural network for improved materials
+property predictions.npj Computational Materials, 7(1):185, 2021.
+[8] Bowen Deng, Peichen Zhong, KyuJung Jun, Janosh Riebesell, Kevin Han, Christopher J Bartel, and
+Gerbrand Ceder. Chgnet as a pretrained universal neural network potential for charge-informed atom-
+istic modelling.Nature Machine Intelligence, 5(9):1031–1041, 2023.
+[9] Han Yang, Chenxi Hu, Yichi Zhou, Xixian Liu, Yu Shi, Jielan Li, Guanzhi Li, Zekun Chen, Shuizhou
+Chen, Claudio Zeni, et al. Mattersim: A deep learning atomistic model across elements, temperatures
+and pressures.arXiv preprint arXiv:2405.04967, 2024.
+[10] Gowoon Cheon, Lusann Yang, Kevin McCloskey, Evan J Reed, and Ekin D Cubuk. Crystal structure
+search with random relaxations using graph networks.Preprint at https://arxiv. org/abs/2012.02920,
+2020.
+[11] Albert Musaelian, Simon Batzner, Anders Johansson, Lixin Sun, Cameron J Owen, Mordechai Korn-
+bluth, and Boris Kozinsky. Learning local equivariant representations for large-scale atomistic dynamics.
+Nature Communications, 14(1):579, 2023.
+[12] Bing Huang, Guido Falk von Rudorff, and O Anatole von Lilienfeld. The central role of density functional
+theory in the ai age.Science, 381(6654):170–175, 2023.
+[13] Lukas H¨ ormann, Wojciech G Stark, and Reinhard J Maurer. Machine learning and data-driven methods
+in computational surface and interface science.npj Computational Materials, 11(1):196, 2025.
+[14] Ganesh Sivaraman, Anand Narayanan Krishnamoorthy, Matthias Baur, Christian Holm, Marius Stan,
+G´ abor Cs´ anyi, Chris Benmore, and´Alvaro V´ azquez-Mayagoitia. Machine-learned interatomic potentials
+by active learning: amorphous and liquid hafnium dioxide.npj Computational Materials, 6(1):104, 2020.
+[15] Ryan Jacobs, Dane Morgan, Siamak Attarian, Jun Meng, Chen Shen, Zhenghao Wu, Clare Yijia Xie,
+Julia H Yang, Nongnuch Artrith, Ben Blaiszik, et al. A practical guide to machine learning interatomic
+potentials–status and future.Current Opinion in Solid State and Materials Science, 35:101214, 2025.
+[16] Patrick WV Butler, Roohollah Hafizi, and Graeme M Day. Machine-learned potentials by active learning
+from organic crystal structure prediction landscapes.The Journal of Physical Chemistry A, 128(5):945–
+957, 2024.
+10
+[17] Tom Sercu, Robert Verkuil, Joshua Meier, Brandon Amos, Zeming Lin, Caroline Chen, Jason Liu, Yann
+LeCun, and Alexander Rives. Neural potts model.bioRxiv, pages 2021–04, 2021.
+[18] Rui Shu, Hung H Bui, Shengjia Zhao, Mykel J Kochenderfer, and Stefano Ermon. Amortized inference
+regularization.Advances in Neural Information Processing Systems, 31, 2018.
+[19] Ziduo Yang, Xiaoqing Liu, Xiuying Zhang, Pengru Huang, Kostya S Novoselov, and Lei Shen. Modeling
+crystal defects using defect informed neural networks.npj Computational Materials, 11(1):229, 2025.
+[20] Ziduo Yang, Yiming Zhao, Xiaoqing Liu, Xiuying Zhang, Yifan Li, Qiujie Lyu, Calvin Yu-Chian Chen,
+and Lei Shen. Scaling crystal structure relaxation with a universal trustworthy deep generative model.
+arXiv e-prints, pages arXiv–2404, 2024.
+[21] Lu´ ıs B Almeida. Backpropagation in perceptrons with feedback. InNeural computers, pages 199–208.
+Springer, 1988.
+[22] Shaojie Bai, J Zico Kolter, and Vladlen Koltun. Deep equilibrium models.Advances in neural infor-
+mation processing systems, 32, 2019.
+[23] Shaojie Bai, Vladlen Koltun, and J Zico Kolter. Stabilizing equilibrium models by jacobian regulariza-
+tion.arXiv preprint arXiv:2106.14342, 2021.
+[24] Christian Daniele, Silvia Villa, Samuel Vaiter, and Luca Calatroni. Deep equilibrium models for poisson
+imaging inverse problems via mirror descent, 2025. URLhttps://arxiv.org/abs/2507.11461.
+[25] Atish Agarwala and Samuel S Schoenholz. Deep equilibrium networks are sensitive to initialization
+statistics. InInternational Conference on Machine Learning, pages 136–160. PMLR, 2022.
+[26] Haixiang Sun and Ye Shi. Understanding representation of deep equilibrium models from neural collapse
+perspective.Advances in Neural Information Processing Systems, 37:9634–9667, 2024.
+[27] Mateusz Gabor, Tomasz Piotrowski, and Renato LG Cavalcante. Positive concave deep equilibrium
+models.arXiv preprint arXiv:2402.04029, 2024.
+[28] Tianxiang Gao, Xiaokai Huo, Hailiang Liu, and Hongyang Gao. Wide neural networks as gaussian
+processes: Lessons from deep equilibrium models, 2023. URLhttps://arxiv.org/abs/2310.10767.
+[29] Zun Wang, Chang Liu, Nianlong Zou, He Zhang, Xinran Wei, Lin Huang, Lijun Wu, and Bin Shao.
+Infusing self-consistency into density functional theory hamiltonian prediction via deep equilibrium
+models, 2024. URLhttps://arxiv.org/abs/2406.03794.
+[30] Junwoong Yoon and Zachary W Ulissi. Differentiable optimization for the prediction of ground state
+structures (dogss).Physical Review Letters, 125(17):173001, 2020.
+[31] David E Rumelhart, Geoffrey E Hinton, and Ronald J Williams. Learning representations by back-
+propagating errors.nature, 323(6088):533–536, 1986.
+[32] Paul J Werbos. Backpropagation through time: what it does and how to do it.Proceedings of the IEEE,
+78(10):1550–1560, 2002.
+[33] Ronald J Williams and David Zipser. A learning algorithm for continually running fully recurrent neural
+networks.Neural computation, 1(2):270–280, 1989.
+[34] Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep
+reinforcement learning from human preferences.Advances in neural information processing systems, 30,
+2017.
+[35] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong
+Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow in-
+structions with human feedback.Advances in neural information processing systems, 35:27730–27744,
+2022.
+11
+[36] Team Cohere, Arash Ahmadian, Marwan Ahmed, Jay Alammar, Milad Alizadeh, Yazeed Alnumay,
+Sophia Althammer, Arkady Arkhangorodsky, Viraat Aryabumi, Dennis Aumiller, et al. Command a:
+An enterprise-ready large language model.arXiv preprint arXiv:2504.00698, 2025.
+[37] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms.arXiv preprint arXiv:1707.06347, 2017.
+[38] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi
+Zhou, Wei Li, and Peter J Liu. Exploring the limits of transfer learning with a unified text-to-text
+transformer.Journal of machine learning research, 21(140):1–67, 2020.
+[39] Joe G Greener. Differentiable simulation to develop molecular dynamics force fields for disordered
+proteins.Chemical Science, 15(13):4897–4909, 2024.
+[40] Joe G Greener. Reversible molecular simulation for training classical and machine-learning force fields.
+Proceedings of the National Academy of Sciences, 122(22):e2426058122, 2025.
+[41] Ryan K Krueger, Megan C Engel, Ryan Hausen, and Michael P Brenner. A differentiable model of
+nucleic acid dynamics.arXiv e-prints, pages arXiv–2411, 2024.
+[42] Audrius Alkauskas, Bob B Buckley, David D Awschalom, and Chris G Van de Walle. First-principles
+theory of the luminescence lineshape for the triplet transition in diamond nv centres.New Journal of
+Physics, 16(7):073026, 2014.
+[43] Erik Bitzek, Pekka Koskinen, Franz G¨ ahler, Michael Moseler, and Peter Gumbsch. Structural relaxation
+made simple.Physical review letters, 97(17):170201, 2006.
+[44] Yunsheng Liu, Xingfeng He, and Yifei Mo. Discrepancies and error evaluation metrics for machine
+learning interatomic potentials.npj Computational Materials, 9(1):174, 2023.
+[45] Yifan Li, Xiuying Zhang, and Lei Shen. A critical review of machine learning interatomic potentials
+and hamiltonian.Journal of Materials Informatics, 5(4):N–A, 2025.
+[46] Binghai Wang, Rui Zheng, Lu Chen, Yan Liu, Shihan Dou, Caishuang Huang, Wei Shen, Senjie Jin,
+Enyu Zhou, Chenyu Shi, et al. Secrets of rlhf in large language models part ii: Reward modeling.arXiv
+preprint arXiv:2401.06080, 2024.
+[47] Zhenyu Hou, Pengfan Du, Yilin Niu, Zhengxiao Du, Aohan Zeng, Xiao Liu, Minlie Huang, Hongning
+Wang, Jie Tang, and Yuxiao Dong. Does rlhf scale? exploring the impacts from data, model, and
+method.arXiv preprint arXiv:2412.06000, 2024.
+[48] Anubhav Jain, Shyue Ping Ong, Geoffroy Hautier, Wei Chen, William Davidson Richards, Stephen
+Dacek, Shreyas Cholia, Dan Gunter, David Skinner, Gerbrand Ceder, et al. Commentary: The materials
+project: A materials genome approach to accelerating materials innovation.APL materials, 1(1), 2013.
+[49] Xuhong Li, Yves Grandvalet, and Franck Davoine. Explicit inductive bias for transfer learning with
+convolutional networks, 2018. URLhttps://arxiv.org/abs/1802.01483.
+[50] Chenghao Yang and Xuezhe Ma. Improving stability of fine-tuning pretrained language models via
+component-wise gradient norm clipping, 2022. URLhttps://arxiv.org/abs/2210.10325.
+12
+A Scalar Decoder Head For Step Size
+ADAPT provides the forces (gradient) of the PES (objective function), but does not tell us how large of a
+step we should take. We present a method that takes both the structure and forces as input, and outputs
+a step size for this iteration of the descent. This step-scaling and update procedure,stepis defined in two
+parts: an upscaling projection to map from the native to embedding dimensions, and a scaler decoder head
+to produce a single step size for the whole structure. The scaler decoder head,decis defined by:
+dec(X,q)→ by=
+
+
+
+M=MLIP(X),
+h0 =LN(q+Attn(q,M,M)),
+h1 =LN(h 0 +MLP(h 0)),
+by=Wh 1 +b.
+(10)
+where the notation follows that of Section 3.1, and dropout is applied afterAttnandMLP. Recall that
+M∈R n×dmodel , and note thatW∈R 1×n . We use a dummy tensorqof all 1sto control the dimension of
+the output and force it to be scalar. Although it is a matrix, we denoteq∈R (1×dmodel) in lower-case vector
+form to make clear that it has only one non-trivial dimension.
+The fullstepmethod is given by:
+step(X)→X ′ =
+
+
+
+Z=X
+
+catMLIP(X),
+H=W 2Z+W 1σ(W0Z),
+s=dec(H),
+X′ =s·MLIP(X) +X
+(11)
+WhereW 2 ∈R dmodel×15 and ifd model = 15 thenW 2 =I.
+B Ablation Studies
+B.1 Exploration Noise
+A common technique used in sequence fine-tuning tasks is the addition of noise into model weights or update
+steps with the intention to force the model to explore weights. Such noise is usually annealed over epochs,
+as the goal of the model shifts from exploration to exploitation. We conduct studies on the effect of noise
+in our BPTT approach, and find that it leads to vastly diminished results, even performing worse than the
+original model before the fine-tuning. This is a surprising result given the findings of [10] which claims that
+noise injection improves overall performance.
+B.2 Proximal Term vs Gradient Clipping
+Often when performing fine-tuning tasks, a proximalL 2-loss term anchoring the model weights to the
+pretrained version is added to ensure that the model does not stray too far and overfit [49]. Other have
+proposed using aggressive gradient clipping as an alternative [50]. Our experiments find there is a negligible
+performance difference between the two approaches. We adopt the gradient clipping becuase it is more
+computational lighter compared to the proximal-term approach.
+B.3 Use of Momentum and Step Annealing
+Applying a momentum term to the descent term of ADAPT without BPTT yields improved results. Similarly,
+using a multiplicative annealing—such as 0.99 k on stepk—yields beneficial results. In Table 4, we report
+experimental results investigating the effect that these two changes produce when added into the BPTT
+descent trajectories. We note that the initialization value for the scalar step size hyperparameter is 0.5.
+13
+Setup AvgDq
+ADAPT 8.47
+ADAPT+Momentum 7.67
+ADAPT+Anneal 7.28
+ADAPT+Momentum+Anneal 7.49
+BPTT 2.73
+BPTT+Momentum 3.47
+BPTT+Anneal 1928.30
+BPTT+Momentum+Anneal 1969.71
+Table 4: Characterizing the effect of momentum weight of 0.05 and 0.99 k annealing-step factor on stepk.
+B.4 Intentional Modification of Trajectory Length
+During the training process, different examples may run for different numbers of steps. Recalling the view
+of this problem setup as a deep neural network made of a repeated block, this differing numbers of block
+instances means that we are optimizing for an inherently different situation in each example. To establish
+the impact of such potential mismatches, we present experiments in which we artificially vary the stopping
+threshold after each batch of training. In previous experiments, a threshold of 0.001 in total root mean
+squared error (RMSE) atomic movement across the structure is used, with a maximum of 75 steps being
+allowed. Under this new paradigm, we randomly varied the threshold between 0.01 and 0.0001, and randomly
+varied the maximum number of frames between 50 and 75. Results from this are presented in Table 5, and
+show that such a training setup leads to slightly worse results. The hope of this training scheme— now
+disproved—is that it would worsen results on the training set, but could force better generalization and
+improve test set performance.
+Stopping Condition AvgDq
+Fixed 2.92
+Variable 3.19
+Table 5: Characterizing the effect of varying stopping conditions
+C Hyperparameters and Reproducibility
+Unless otherwise noted in Section B.4 or Section B.3, results are from trials using an RMSE threshold of
+0.001. We impose a maximum of 75 frames in a trajectory for the Si defect case, and a maximum of 45
+frames per trajectory for the pure crystals case.
+C.1 CHGNet Pure Crystals Data Subset
+We use the dataset curation from CHGNet [8]. To avoid prohibitively large runtimes, we select the first
+20,101 examples as the dataset. Matching to the quantities set in [4], we use the first 100 trajectories as
+testing data and the rest as training data. Pure crystal trajectories are often much shorter than those from
+defects, so we use a substantially larger quantity to create a dataset of similar number of frames to that of
+the silicon defects from [4]. The MLIP is first trained on the structure-force pairs from the flattened 20,001
+training trajectories. After, the model is finetuned using BPTT on the 16,984 trajectories of length greater
+than two with constant atom counts throughout the trajectory. Finally, testing results on the 96 of the 100
+test trajectories are reported, four trajectories (sequentially trajectories 15, 17, 19, 63) has mismatched atom
+counts throughout the trajectory in the dataset, and were thus discarded.
+14
+D ADAPT Optimal PES Step
+In Table 6 we show the average testingDqfor selected values of the PES-level step size. Notably, comparing
+BPTT against one of these values unfairly disadvantages BPTT because BPTT has no knowledge of the the
+test set, whereas these hyperparameters are fit directly on the test set.
+Table 6: Hyperparameter Values for PES-Level Descent of ADAPT
+Step Size AvgDq
+0.001 12.38
+0.005 9.88
+0.007 9.15
+0.009 8.61
+0.011 8.23
+0.013 7.90
+0.015 7.63
+0.017 7.46
+0.019 7.29
+0.021 7.16
+0.025 6.90
+0.029 6.71
+0.033 6.49
+0.037 6.35
+0.039 6.27
+0.045 6.05
+0.049 5.91
+0.063 5.42
+0.067 5.38
+0.071 5.33
+0.073 5.34
+0.075 5.33
+0.077 5.32
+0.079 5.37
+0.081 5.41
+0.083 5.40
+0.085 5.40
+0.087 5.45
+0.091 5.35
+0.095 5.37
+0.15 9.18
+0.25 20.46
+15

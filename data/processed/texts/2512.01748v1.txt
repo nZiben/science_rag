@@ -1,0 +1,468 @@
+SA-ADP: Sensitivity-Aware Adaptive Differential
+Privacy for Large Language Models
+Author’s draft for soliciting feedback - December 2, 2025
+Stella Etuk
+School of Information Technology
+Carleton University
+stellaetuk@cmail.carleton.ca
+Ashraf Matrawy
+School of Information Technology
+Carleton University
+ashraf.matrawy@carleton.ca
+Abstract—Despite advances in the use of large language
+models (LLMs) in downstream tasks, their ability to memorize
+information has raised privacy concerns. Therefore, protecting
+personally identifiable information (PII) during LLM training
+remains a fundamental challenge. Conventional methods like
+Differential Privacy-Stochastic Gradient Descent (DP-SGD)
+provide robust privacy protection via uniform noising, protecting
+PII regardless of its distinct sensitivity. This comes at the expense
+of the model’s utility, leading to a trade-off. In this paper, we
+propose SA-ADP, a sensitivity-aware approach that allocates
+noise based on the sensitivity of individual PII. We evaluated our
+method on four datasets (ABCD, CUSTOMERSIM, Wikitext-2,
+and UNSW-NB15 ). Our results show that SA-ADP achieves
+results comparable to the baseline (No-DP) and the conventional
+DP-SGD. This means that our method did not degrade the
+model’s utility while still maintaining strong privacy protection.
+Index Terms—Adaptive Differential Privacy, Large Language
+Models, Sensitivity Scoring, Personally Identifiable Information
+I. INTRODUCTION
+Large Language Models (LLMs) such as GPT by OpenAI
+and others have significantly advanced the field of natural
+language processing [1], powering applications such as
+chatbots, content generation, translation, and more. These
+models are trained on a large corpus of real-world data [2] that
+often contains Personally Identifiable Information (PII), such
+as names, email addresses, phone numbers, and other sensitive
+information. This poses a serious privacy risk, as LLMs can
+memorize and expose such private information during model
+inference [3].
+The risk of PII leakage highlights the critical importance of
+privacy protection during LLM training and fine-tuning [4].
+Differential Privacy (DP) offers a promising solution, with
+Differential Privacy Stochastic Gradient Descent (DP-SGD)
+[5] being a widely used variant. DP-SGD adds calibrated
+noise to clipped gradients during training, thereby obscuring
+the contribution of any single data point and mitigating
+privacy risks. Although this technique improves privacy, it
+also introducesa trade-off between the model’s utility and
+privacy, where excessive noise reduces model performance,
+whereas insufficient noise compromises privacy [6].A further
+limitationof standard DP methods is the uniform application
+of noise across all tokens, without considering differences
+in sensitivity. For instance, a Social Security Number (SSN)
+poses far greater risk than a first name, yet both are treated
+equally under conventional DP-SGD. This approach results in
+inefficiencies in the privacy–utility trade-off.
+To address this limitation, we propose a textbf
+Sensitivity-Aware Adaptive Differential Privacy (SA-ADP)
+mechanism that adaptively adds noise to gradients based on
+token sensitivity. This proposed approach follows a three-stage
+pipeline: Detection, Scoring, and Noising. First, we use PII
+detection algorithms to detect sensitive tokens within the
+training data. Next, each token is assigned a normalized
+sensitivity score (0.0–1.0) based on its frequency, linkability,
+and datatype classification. Finally, we apply per-token
+adaptive noise during gradient clipping, with high-sensitivity
+tokens receiving stronger noise (0.51 - 1.00) and low noise to
+tokens classified as low sensitivity (0.01 - 0.50). The R ´enyi
+Differential Privacy (RDP) accountant is then used to track
+and bound the cumulative privacy loss budget throughout the
+training process, thereby guaranteeing privacy [7].
+This paper makes the followingcontributions:
+1a) We propose Sensitivity-Aware Adaptive Differential
+Privacy (SA-ADP), a novel framework for LLM fine-tuning
+that adjusts noise levels according to token-level PII
+sensitivity.
+1b) We design an adaptive Detection–Scoring–Noising pipeline
+that introduces token-level sensitivity scoring based on
+frequency, linkability, and data type classification, enabling
+fine-grained, adaptive privacy protection.
+2) We implement and evaluate SA-ADP on four datasets
+(UNSW, ABCD, Wikitext-2, and CUSTOMERSIM
+dataset), demonstrating that our token-level adaptive
+approach maintains a strong privacy level while preserving
+model utility across diverse data scenarios.
+II. RELATEDWORK
+Privacy Risks in LLM: Recent studies have shown that
+LLMs can memorize and reproduce sensitive content from
+their training data [8], particularly when trained on large-scale,
+unfiltered datasets. This has also raised serious concerns
+about the development and deployment of LLMs in sensitive
+sectors like healthcare and financial institutions. LLMs can
+arXiv:2512.01748v1  [cs.LG]  1 Dec 2025
+infer personal attributes from user input beyond memorized
+data [9]. To mitigate these risks, researchers have proposed
+various methods, such as Differential Privacy (DP) [10], data
+anonymisation for text data [11], and data scrubbing with
+machine unlearning [12], self-normalizing DP methods as
+proposed by Ibitoye et al. [13], DP with stochastic gradient
+clipping (DP-SGD) [5], all in an attempt to preserve the
+privacy of PIIs. While DP-SGD operates at the per-sample or
+per-record level, clipping each sample’s gradient and applying
+uniform Gaussian noise to the aggregated gradient, our
+approach focuses on per-token adaptive noise injection based
+on PII sensitivity, enabling fine-grained privacy protection.
+Differential Privacy: Differential Privacy (DP) introduced
+by Dwork [14] is a framework that ensures that the presence
+or absence of any individual data point does not affect
+the output. Building on this, Abadi et al. [5] proposed
+”Differential Privacy Stochastic Gradient Descent” (DP-SGD),
+which applies per-sample gradients clipping and adds Gaussian
+noise uniformly to the gradients during model training. This
+framework has become one of the most prominent techniques
+for data preservation. While these methods ensured privacy, the
+trade-off was the model’s utility. Since then, different variants
+of the DP-SGD method have surfaced to train efficiently [15]
+or improve noise calibration [3], [16] in an attempt to enhance
+model utility while maintaining privacy. Still, none of these
+methods have considered the unique sensitivity of each PIIs
+token contained in the training data before adding noise.
+III. THEPROPOSEDSENSITIVITY-AWAREADAPTIVE
+DIFFERENTIALPRIVACYMODEL(SA-ADP)
+This section presents the architectural and algorithmic
+components of our proposed SA-ADP framework for
+privacy-preserving fine-tuning of LLMs, with a primary focus
+on balancing privacy and utility.
+As shown in Fig. 1, we proposeSensitivity Aware
+Adaptive Differential Privacy (SA-ADP), which introduces
+token-specific privacy modulation based on PII sensitivity.
+The mechanism is built by introducing three core steps into
+the training pipeline: PII detection, sensitivity scoring, and
+adaptive noise allocation. The following subsections explain
+each core of our proposed method.
+A. PII Detection
+We utilize a LangChain-based privacy agent powered by
+LLaMA 3 (via Ollama) [17]–[19]to automatically extract PII
+elements from structured text records. Each record is passed
+to the agent with a task-specific prompt, and the model returns
+a structured array listing PII fields and values. This detection
+process is applied over a corpus of dataset entries.
+B. Sensitivity Scoring
+To enable token-level adaptive differential privacy, we first
+identify and determine the sensitivity levels of the different
+PII types (pi ) in the training data. This involves detecting PII
+types and assigning each a sensitivity score based on three
+dimensions (Frequency, Linkability, and Datatype) that could
+reflect the risk level of a PII type [20]. Fig. 2 illustrates the
+process used for this analysis.
+1) Scoring Dimension:Each detected PII token is scored
+along three dimensions:
+•Frequency Score (S freq): This measures the rarity of PII
+type in the dataset. Letp i denote thei-th detected PII type
+in the dataset and letP={p 1, p2, . . . , pn}represent the
+complete set of detected PII types.
+Sfreq(pi) = 1−f(pi)
+N (1)
+wheref(p i)is the count of each PII typep i, andNis
+the total number PII count in the dataset.
+•Linkability Score (S link): Indicates how likely a PII type
+can be linked with others. This is assessed by querying
+an LLM agent:
+Slink(pi) =
+(
+1,if PII type is linkable
+0,otherwise (2)
+•DataType Classification Score (S datatype): Determines
+whether the PII type is legally recognized under global
+privacy laws (e.g., GDPR, HIPAA):
+Sdatatype(pi) =
+(
+1,if PII type is datatype protected
+0,otherwise
+(3)
+2) Aggregated Privacy Sensitivity Index:The three scores
+are combined into a unified privacy sensitivity indexS final ∈
+[0,1]through a weighted linear combination:
+Sfinal(pi) =W1·Sfreq(pi)+W2·Slink(pi)+W3·Sdatatype(pi)(4)
+The weights were selected to emphasize rarity while
+balancing contextual and regulatory importance. In this case,
+we set: frequency = 0.4, linkability = 0.3, and datatype = 0.3
+Algorithm 1:PII Sensitivity Scoring
+Input:DatasetD, Detected PII setP
+Output:Sensitivity score mappingS final(pi)for all
+pi ∈P
+Compute total PII count:N←count words(D);
+foreachPII typep∈Pdo
+Compute frequency score:S freq(p)←1− f(p)
+N ;
+Query LLM for linkability score:S link(p)∈ {0,1};
+Query LLM for datatype classification score:
+Sdatatype(p)∈ {0,1};
+Compute final sensitivity score:;
+Sfinal(p)←
+0.4·S freq(p) + 0.3·Slink(p) + 0.3·Sdatatype(p);
+3) Algorithm 1: Algorithmic Implementation:
+2
+Fig. 1. Gradient Perturbation in the SA-ADP Framework. At1, PII are
+detected from the input data and passed to the scoring engine at2, where each
+token is assigned a sensitivity score. An adaptively calibrated noise multiplier
+is then computed and used at3to inject Gaussian noise adaptively into the
+clipped gradients [5] during the backward pass, ensuring stronger perturbation
+for high-sensitivity tokens and minimal distortion for low-sensitivity ones.
+Fig. 2. PII Detection and Sensitivity Scoring. A detection agent processes
+raw input to identify PII tokens. Each identified token is scored based on
+frequency, linkability, and datatype parameters. The resulting sensitivity score
+is used to inform adaptive privacy mechanisms.
+C. Noise Calibration Strategy
+Since the privacy guarantee in Differential Privacy (DP) is
+defined by the budget parameterϵ, DP algorithms regulate
+privacy by introducing a unitless Gaussian noiseσ, which is
+calibrated inversely toϵinto the training data. [21]. To enable
+fine-grained privacy control, our approach adaptively calibrates
+σon a per-token basis ( for each PII type) using the computed
+sensitivity scoresS final(pi) ∈[0,1]in equation 4. We have that:
+ϵ= C
+σ (5)
+(where C is the clipping norm as proposed in the framework
+of Abadi et al. [5]
+The noise calibration strategy introduces a deterministic
+mapping functionF:S final(pi) →σ, which assigns each token
+a Gaussian noise scale according to its sensitivity:
+σ=
+
+
+
+σlow,if0.01≤S final(pi) ≤0.50
+σhigh,if0.51≤S final(pi) ≤1.00
+0,otherwise
+(6)
+Whereσ low andσ high are adjustable noise calibration
+constants (in our experiments, 2.0 and 3.0, respectively). This
+mapping ensures that higher-sensitivity tokens are injected
+with stronger noise, while non-sensitive tokens are perturbed
+minimally, thus preserving model utility.
+Algorithm 2:Token-wise Noise Injection
+Input:Token sequenceT= [t 1, . . . , tn], Sensitivity
+scoresS= [s 1, . . . , sn], gradient vector
+G= [g1, . . . , gn], noise mapM
+Output:Noised gradient vector ˆG
+fori←1tondo
+σi ← M(si);// Map score to noise
+level
+ˆgi ←clip(g i, C);// Clip gradient norm
+ifσ i >0then
+ˆgi ←ˆgi +N(0, σ2
+i C2I);// Add
+Gaussian noise Adapted from the
+core DP-SGD mechanism by Abadi
+et al. [5]
+end
+Storeˆgi in ˆG
+end
+return ˆG
+IV. EXPERIMENTS
+Datasets: To evaluate the effectiveness of SA-ADP, we
+fine-tune the GPT-2 base model on both unstructured and
+structured datasets. For the unstructured dataset, we used the
+Wikitext-2 Dataset, a natural language corpus commonly
+used as a benchmark for language model performance [22].
+We also considered two synthetic conversational datasets,
+which include theABCD Datasetintroduced by Shi et al.
+[15] and theCustomerSim Datasetused in [16]. Finally,
+we used theUNSW-NB15network traffic dataset [23] for
+structured data. This coverage ensures that the framework
+is empirically validated across diverse data modalities where
+privacy sensitivity and linguistic utility interact in different
+ways.
+Model Fine-tuning with SA-ADP: We fine-tune a
+pre-trainedGPT-2model using our SA-ADP framework. The
+training uses the Adam optimizer with a constant learning
+rateη= 0.001, a batch size of 16, and a sequence length
+of 512 over three epochs with a sample rateq= 0.1.
+Differential privacy is achieved by applying adaptive Gaussian
+noiseσ i ∈[3.0,2.0]and gradient clipping (C= 1.0) with
+stronger noise assigned to more sensitive tokens and minimal
+perturbation for less sensitive ones. We also implemented the
+DP-SGD framework under the same hyperparameter tuning
+for comparison.
+3
+Privacy Accounting: To quantify the privacy guarantees of
+the method, we use R ´enyi Differential Privacy (RDP) as our
+accounting framework, following the formulation introduced
+by Mironov [7]. This approach enables cumulative tracking of
+privacy loss budget (ϵ) across training steps. We use a fixed
+R´enyi orderα= 32and a target deltaδ= 10 −5 for all runs.
+The final privacy levels are computed using the standard RDP
+conversion [7]
+ϵ= min
+α>1
+
+ϵRDP, total(α) +log(1/δ)
+α−1
+
+.(7)
+V. RESULTS ANDEVALUATION
+This section presents the performance of our proposed
+SA-ADP framework and the DP-SGD framework, evaluated
+and compared using accuracy, perplexity, and privacy
+budgeting metrics.
+A.Evaluation Metrics
+We evaluate the effectiveness of the proposed SA-ADP
+mechanism using two key dimensions.
+Utility: To comprehensively evaluate the proposed SA-ADP
+mechanism, we use both utility- and privacy-oriented
+metrics. Utility is measured through classification accuracy
+and language modeling perplexity. Accuracy reflects the
+model’s ability to correctly classify or predict task-specific
+labels, particularly relevant for structured datasets such
+as UNSW-NB15. Perplexity measures how well the
+model predicts token sequences, indicating fluency and
+generalization; lower values signal outputs closer to natural
+human language, which is essential for conversational datasets
+such as ABCD.
+Privacy: Privacy is quantified through the privacy loss
+budget parameter(ϵ, δ)under the R ´enyi Differential Privacy
+(RDP) framework. A lower value of indicates stronger privacy
+levels, meaning the model’s output is less influenced by any
+single training example. We adopted a fixedδ= 10 −5 for all
+experiments to allow consistent comparisons between models.
+The detailed evaluation metrics of our SA-ADP and
+DP-SGD mechanisms across datasets are summarized in
+Table I.
+B.Results and Discussion
+Privacy-Utility Trade-offs with SA-ADP:We evaluate the
+SA-ADP framework across multiple benchmark datasets with
+varying PII density (the proportion of tokens in a dataset
+that are identified as PII, in contrast to datasets where most
+tokens are non-PII). Compared with the baseline (No DP),
+SA-ADP maintains comparable performance in both accuracy
+and perplexity (Fig. 3 for the accuracy comparison and
+Fig. 4 for the perplexity comparison), indicating that the
+SA-ADP framework does not degrade the model. Compared
+to DP-SGD, SA-ADP slightly outperforms it in perplexity
+(lower is better) while maintaining a low privacy loss budget
+(ϵ) across all datasets (See Table I). This is particularly evident
+in conversational datasets (ABCD and CustomerSim) with low
+PII density. For the Wikitext-2 benchmark, which has a higher
+density of PII, a similar trend is observed, as the model does
+not suffer significant degradation compared to the baseline
+despite an increase in itsϵvalue.
+Consistency of SA-ADP Across Structured and
+Unstructured Data:Our framework was tested across datasets
+spanning several domains (Structured and unstructured). In
+the structured networking domain using the UNSW-NB15
+dataset, DP-SGD performance decreased ( Fig.3 and Fig.4)
+as noise increased, whereas SA-ADP maintained good
+performance while still strongly preserving privacy. This
+flexibility highlights the scalability of SA-ADP across
+heterogeneous real-world scenarios These findings directly
+address the limitations outlined in the problem statement. The
+uniform noise of the conventional method either overprotects
+low-sensitive tokens at the cost of utility or under-protects
+high-sensitive tokens, creating privacy risks. SA-ADP
+overcomes this by tailoring noise to token sensitivity.
+Overall, the results suggest that moving from global to
+token-sensitive privacy mechanisms is a decisive step toward
+deployable, regulation-aligned LLM fine-tuning, particularly
+in PII-dense domains.
+Fig. 3. Accuracy Comparison between SA-ADP and DP-SGD across all three
+Datasets.
+Fig. 4. Perplexity Comparison between SA-ADP and DP-SGD across all
+three Datasets. Lower perplexity indicates better fluency.
+VI. CONCLUSION
+This paper introducedSensitivity-Aware Adaptive
+Differential Privacy (SA-ADP), a token-level mechanism
+4
+TABLE I
+COMPARISON OFBASELINE(NODP), SA-ADP,ANDDPSGD ACROSSDATASETS
+Datasets
+Baseline (No DP) SA-ADP DPSGDσ=2 DPSGDσ=3
+Accuracy Perplexity Accuracy Perplexity Epsilon Accuracy Perplexity Epsilon Accuracy Perplexity Epsilon
+UNSW-NB15 76.67 1.05 76.92 1.05 0.1869 76.48 3.33 1.7246 5.82 8.22 1.0712
+ABCD 97.69 1.03 97.68 1.03 0.1858 97.73 1.09 1.5039 97.72 1.10 0.9401
+Wikitext-2 62.55 2.95 60.96 3.05 0.7697 38.12 20.17 2.7711 25.01 133.51 1.1259
+CUSTOMERSIM 94.20 1.18 94.22 1.18 0.6399 94.20 1.38 2.5096 94.21 1.51 1.5319
+Fig. 5. Privacy budget between ADP and DP-SGD across all Datasets.
+that adaptively scales noise according to the sensitivity of
+each token. Unlike conventional DP-SGD, which applies
+uniform perturbation, SA-ADP aligns privacy noise with token
+importance, thereby achieving a tighter privacy-utility balance.
+Across four datasets: UNSW-NB15, ABCD, Wikitext-2, and
+CustomerSim, SA-ADP reduced the average privacy budget
+ϵby approximately75%while maintaining about99%of
+baseline utility.
+These results demonstrate that a sensitivity-driven privacy
+control can overcome the inefficiencies of uniform noising
+and enable practical privacy preservation in PII-dense
+environments. Ultimately, SA-ADP provides a modular and
+adaptive framework for privacy-preserving learning that is
+well-suited to a range of data sensitivity regimes and
+regulatory requirements.
+REFERENCES
+[1] A. P. Wibawa, F. Kurniawanet al., “Advancements in natural language
+processing: Implications, challenges, and future directions,”Telematics
+and Informatics Reports, vol. 16, p. 100173, 2024.
+[2] Y . Ju and H. Ma, “Training data for large language model,”arXiv
+preprint arXiv:2411.07715, 2024.
+[3] T. Singh, H. Aditya, V . K. Madisetti, and A. Bahga, “Whispered
+tuning: Data privacy preservation in fine-tuning llms through differential
+privacy,”Journal of Software Engineering and Applications, vol. 17,
+no. 1, pp. 1–22, 2024.
+[4] Z. Charles, A. Ganesh, R. McKenna, H. B. McMahan, N. Mitchell,
+K. Pillutla, and K. Rush, “Fine-tuning large language models with
+user-level differential privacy,”arXiv preprint arXiv:2407.07737, 2024.
+[5] M. Abadi, A. Chu, I. Goodfellow, H. B. McMahan, I. Mironov,
+K. Talwar, and L. Zhang, “Deep learning with differential privacy,” in
+Proceedings of the 2016 ACM SIGSAC Conference on Computer and
+Communications Security, 2016, pp. 308–318.
+[6] S. Das, C. Kolling, M. A. Khan, M. Amani, B. Ghosh, Q. Wu,
+T. Speicher, and K. P. Gummadi, “Revisiting privacy, utility, and
+efficiency trade-offs when fine-tuning large language models,”arXiv
+preprint arXiv:2502.13313, 2025.
+[7] I. Mironov, “R ´enyi differential privacy,” in2017 IEEE 30th Computer
+Security Foundations Symposium (CSF). IEEE, 2017, pp. 263–275.
+[8] N. Carlini, C. Liu, U. Erlingsson, J. Kos, and D. Song, “The secret
+sharer: Evaluating and testing unintended memorization in neural
+networks,” in28th USENIX Security Symposium (USENIX Security 19),
+2019, pp. 267–284.
+[9] R. Staab, M. Vero, M. Balunovi ´c, and M. Vechev, “Beyond
+memorization: Violating privacy via inference with large language
+models,”arXiv preprint arXiv:2310.07298, 2023.
+[10] C. Dwork, F. McSherry, K. Nissim, and A. Smith, “Calibrating noise
+to sensitivity in private data analysis,” inTheory of cryptography
+conference. Springer, 2006, pp. 265–284.
+[11] P. Lison, I. Pil ´an, D. Sanchez, M. Batet, and L. Øvrelid, “Anonymisation
+models for text data: State of the art, challenges and future directions,”
+inProceedings of the 59th Annual Meeting of the Association for
+Computational Linguistics and the 11th International Joint Conference
+on Natural Language Processing (Volume 1: Long Papers), 2021, pp.
+4188–4203.
+[12] J. Ren, Y . Xing, Y . Cui, C. C. Aggarwal, and H. Liu, “Sok: Machine
+unlearning for large language models,”arXiv preprint arXiv:2506.09227,
+2025.
+[13] O. Ibitoye, M. O. Shafiq, and A. Matrawy, “Differentially private
+self-normalizing neural networks for adversarial robustness in federated
+learning,”Computers & Security, vol. 116, p. 102631, 2022.
+[14] C. Dwork, “Differential privacy,” inInternational colloquium on
+automata, languages, and programming. Springer, 2006, pp. 1–12.
+[15] W. Shi, R. Shea, S. Chen, C. Zhang, R. Jia, and Z. Yu, “Just fine-tune
+twice: Selective differential privacy for large language models,”arXiv
+preprint arXiv:2204.07667, 2022.
+[16] W. Shi, A. Cui, E. Li, R. Jia, and Z. Yu, “Selective differential privacy
+for language modeling,”arXiv preprint arXiv:2108.12944, 2021.
+[17] H. Chase and L. Team, “Langchain: Building applications with llms
+through composability,” 2023. [Online]. Available: https://github.com/
+langchain-ai/langchain
+[18] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian,
+A. Al-Dahle, and et al., “The llama 3 herd of models,”arXiv preprint
+arXiv:2407.21783, 2024. [Online]. Available: https://arxiv.org/abs/2407.
+21783
+[19] H. Lin and T. Safi, “ollamar: An r package for running large language
+models,”Journal of Open Source Software, vol. 10, no. 105, p. 7211,
+Jan. 2025. [Online]. Available: https://joss.theoj.org/papers/10.21105/
+joss.07211
+[20] E. McCallister,Guide to protecting the confidentiality of personally
+identifiable information. Diane Publishing, 2010.
+[21] P. Nanayakkara, M. A. Smart, R. Cummings, G. Kaptchuk, and E. M.
+Redmiles, “What are the chances? explaining the epsilon parameter in
+differential privacy,” in32nd USENIX Security Symposium (USENIX
+Security 23), 2023, pp. 1613–1630.
+[22] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel
+mixture models,”arXiv preprint arXiv:1609.07843, 2016.
+[23] N. Moustafa and J. Slay, “Unsw-nb15: a comprehensive data set for
+network intrusion detection systems (unsw-nb15 network data set),”
+in2015 military communications and information systems conference
+(MilCIS). IEEE, 2015, pp. 1–6.
+5

@@ -1,0 +1,906 @@
+Structured Spectral Reasoning for
+Frequency-Adaptive Multimodal Recommendation
+Wei Yang1,2∗ Rui Zhong1∗ Yiqun Chen3∗ Chi Lu1† Peng Jiang1
+1Kuaishou Technology 2University of Southern California
+3Renmin University of China
+{yangwei08,luchi}@kuaishou.com,chenyiqun990321@ruc.edu.cn
+Abstract
+Multimodal recommendation aims to integrate collaborative signals with hetero-
+geneous content such as visual and textual information, but remains challenged
+by modality-specific noise, semantic inconsistency, and unstable propagation over
+user–item graphs. These issues are often exacerbated by naive fusion or shallow
+modeling strategies, leading to degraded generalization and poor robustness. While
+recent work has explored the frequency domain as a lens to separate stable from
+noisy signals, most methods rely on static filtering or reweighting, lacking the
+ability to reason over spectral structure or adapt to modality-specific reliability.
+To address these challenges, we propose a Structured Spectral Reasoning (SSR)
+framework for frequency-aware multimodal recommendation. Our method follows
+a four-stage pipeline:(i) Decomposegraph-based multimodal signals into spectral
+bands via graph-guided transformations to isolate semantic granularity;(ii) Mod-
+ulateband-level reliability with spectral band masking, a training-time masking
+with prediction-consistency objective that suppresses brittle frequency components;
+(iii) Fusecomplementary frequency cues using hyperspectral reasoning with low-
+rank cross-band interaction; and(iv) Alignmodality-specific spectral features via
+contrastive regularization to promote semantic and structural consistency. Experi-
+ments on three real-world benchmarks show consistent gains over strong baselines,
+particularly under sparse and cold-start settings. Additional analyses indicate that
+structured spectral modeling improves robustness and provides clearer diagnostics
+of how different bands contribute to performance.
+1 Introduction
+Multimodal recommendation [ 1, 2, 3, 4] has become a central paradigm in modern information
+systems. It leverages auxiliary signals such as visual content, textual metadata and structural
+interactions to improve user preference modeling and content understanding [5, 6, 7, 8, 9]. These
+signals provide complementary semantics but also introduce modality-specific noise [ 10, 11, 12],
+semantic misalignment [13, 14] and representational redundancy [15, 16, 17]. The difficulties become
+more pronounced in graph-based architectures where user–item relations are propagated through
+neighborhoods [18, 19, 20]. In this setting, spurious cues from particular modalities, for example
+stylistic image patterns or ambiguous wording, can diffuse across the graph and affect otherwise
+unrelated nodes [21, 22, 23, 24]. The result is unstable representations and degraded performance,
+especially under cold-start or noisy conditions. Many existing approaches fuse modalities in the raw
+feature space [25, 26, 27], which limits control over how different semantic granularities interact
+across the graph. These challenges call for a structured approach to semantic disentanglement that
+isolates stable signals while suppressing unstable ones [28, 29, 30, 31].
+∗Equal contribution.
+†Corresponding author.
+39th Conference on Neural Information Processing Systems (NeurIPS 2025).
+arXiv:2512.01372v1  [cs.IR]  1 Dec 2025
+Recently, frequency-domain modeling has gained traction as a promising perspective [32, 33, 34]. By
+transforming signals into spectral components, models can expose structural patterns across different
+frequency bands [35, 36, 37]. Low-frequency components often encode smooth, global semantics
+such as long-term user intent or item popularity, while high-frequency components capture fine-
+grained variations or local inconsistencies [38, 39, 40]. This decomposition enables models to analyze
+and potentially filter modality-specific signals with greater precision. However, advanced approaches
+such as SMORE [15] and ChebyCF [41] largely rely on static reweighting or low-pass filtering and
+therefore lack explicit reasoning about band semantics or cross-frequency dependencies. Moreover,
+the use of frequency decomposition itself is often heuristic, without a principled mechanism to
+separate informative bands from noisy ones. Consequently, useful detail may be suppressed and
+unstable components may be retained, particularly when semantics vary across items and users.
+These limitations are particularly acute in multimodal graph recommendation, where heterogeneous
+modalities interact within a topologically entangled space [ 42, 43, 44, 45]. Visual and textual
+semantics differ in granularity and abstraction, and they also differ in spectral distribution, which
+makes naïve fusion or static attention insufficient [15, 46, 47]. In this setting, robust representations
+should support adaptive modulation across frequency bands so that components influence one another
+based on semantic content and contextual relevance [38, 40, 48]. They should also enforce band-wise
+consistency across modalities to prevent collapse or redundancy within the decomposed space [49, 50].
+However, current architectures lack a unified mechanism to model these structured relationships across
+frequency, modality and graph topology. At the same time, any solution must remain computationally
+tractable on large graphs and compatible with standard training pipelines. It should also provide clear
+diagnostics at the band level so that practitioners can inspect which frequencies and modalities drive
+recommendations. This motivates the need for approaches that account for band-level structure and
+maintain robustness across modalities.
+To address these challenges, we proposeStructuredSpectralReasoning (SSR) for frequency-aware
+multimodal graph recommendation. SSR follows a four-stage pipeline thatdecomposes,modulates,
+fusesandalignssignals within a shared spectral coordinate system. Motivated by the observation
+that frequency mapping reveals band-wise structure capturing collaborative semantics and modality-
+specific detail, we organize learning around band-level operations and supervision. Instead of treating
+bands as static or lightly reweighted features, SSR converts inputs into spectral representations and
+then reasons about their informativeness and stability. We introduce Spectral Band Masking (SBM),
+a training-time band-level perturbation with a prediction-consistency objective that reduces reliance
+on brittle bands and improves robustness. We also design a graph-compatible hyperspectral operator
+(G-HSNO) that models cross-band and cross-modality dependencies through a compact low-rank
+parameterization. In addition, a spectral contrastive objective promotes band-wise cross-modal
+consistency without inference overhead. Together, these components provide a cohesive and efficient
+approach to structured spectral modeling for multimodal graphs.
+In summary, the main contributions of this work are as follows:
+• We present a unified four-stage framework for frequency-aware multimodal graph recom-
+mendation that places multimodal signals in a shared spectral space and performs band-wise
+decomposition, modulation, fusion, and alignment.
+• We design a graph-compatible hyperspectral operator (G-HSNO) that models cross-band
+and cross-modality dependencies with a compact low-rank parameterization, achieving a
+strong accuracy and efficiency trade-off.
+• Extensive experiments across multiple benchmarks show consistent gains over advanced
+baselines, with particularly strong improvements for cold-start users. Ablation and diagnostic
+analyses validate the effectiveness of each module.
+2 RELATED WORK
+2.1 Multi-modal Recommendation
+Multimodal recommendation integrates auxiliary content such as images, text and audio to strengthen
+user preference modeling, especially under sparse supervision [51, 52, 53]. Early work augments
+collaborative filtering with side content [ 54, 55, 56]. Subsequent methods build modality-aware
+graph architectures to propagate and fuse signals along user–item relations [57, 58, 59, 60, 61, 62].
+2
+To mitigate cross-modal misalignment and semantic noise, recent approaches employ contrastive
+learning [63, 64], regularization [ 65, 66] and intention-aware designs [ 67, 68]. AlignRec [ 47]
+enforces modality–ID consistency, while PromptMM [69] enables lightweight adaptation. Generative
+strategies, including diffusion models [70], adversarial alignment [71] and large language models [72,
+73, 74, 75], further improve robustness under heterogeneity. In addition, empowered by the reasoning
+capacity of large language models [76, 77] and multi-agent systems [78, 79, 80], recent advances such
+as Rec-GPT4V [1] and UniMP [81] leverage large vision–language models to strengthen multimodal
+semantic understanding and improve reasoning over heterogeneous content, showing encouraging
+performance in personalized recommendation.
+2.2 Frequency-aware Representation Learning
+Frequency-domain modeling has recently emerged as a promising alternative to time- or topology-
+domain learning in recommendation tasks [ 34, 35]. In sequential modeling, various approaches
+leverage spectral transformations to capture user intent dynamics and mitigate temporal noise [36,
+38], while others propose frequency-aware contrastive objectives or neural filtering for periodic
+behavior tracking [82, 83]. CFIT4SRec [36] adopts frequency-based contrastive learning frameworks,
+leveraging Fourier transformations to construct robust augmented views and improve representation
+learning. FEARec [38] and HMFTRec [34] add spectral attention and multi-frequency modules to
+capture low and high frequency signals beyond augmentation. For graph-based recommendation,
+ChebyCF [ 41], SelfGNN [ 84], and SComGNN [ 85] reformulate GNN propagation as spectral
+filtering, improving expressivity and denoising capacity. In multimodal settings, SMORE [ 15]
+explicitly models frequency-specific modality fusion, while FREEDOM [ 66] and MMGCL [ 64]
+implicitly introduce spectral diversity through augmentation. Nonetheless, most of these methods
+either treat frequency bands as static views or lack explicit modeling of band reliability and inter-band
+interactions. We address these gaps by pursuing adaptive, band-aware integration that regulates
+sensitivity to brittle components and supports interpretable cross-modal fusion.
+3 Proposed Method
+The problem definition can be found in Appendix A. In this section, we presentSSR, a frequency-
+aware multimodal recommendation framework illustrated in Figure 1.
+3.1 Spectral Transformation of Multimodal Graph Signals
+Multimodal recommendation integrates diverse signals such as ID embeddings and content features
+from images and text into a unified user–item representation. A central challenge is the semantic and
+statistical heterogeneity across modalities, which often live in incompatible spaces and emphasize
+different levels of granularity. Conventional fusion strategies, including feature concatenation and
+attention-based aggregation, operate in the raw feature domain and do not capture the structural
+relationships induced by user–item interactions. In contrast, viewing these representations as graph
+signals enables frequency-aware modeling in which components are disentangled by their spectral
+characteristics. Low-frequency components capture shared global preference patterns, whereas
+high-frequency components encode fine-grained, modality-specific variations. Motivated by this
+perspective, we transform multimodal features into a unified frequency domain where band-level
+alignment is feasible and fusion becomes more interpretable. This transformation provides a coherent
+basis to mitigate cross-modal misalignment, improve semantic compositionality, and support adaptive
+selection of frequency components for downstream recommendation.
+Graph Representation and Spectral Decomposition.Given a user–item bipartite graph G=
+(N,E) with adjacency matrix A [86, 87], we use the symmetric normalized Laplacian L=I−
+D−1/2AD−1/2, where D is the degree matrix. For each node n∈ N, the associated signal (e.g.,
+an ID embedding or a multimodal feature) is xn ∈R d. Stacking all nodes yields X∈R |N|×d .
+We analyze X in the spectral domain via the eigendecomposition L=UΛU ⊤, where U contains
+orthonormal eigenvectors and Λ is diagonal with eigenvalues. The graph Fourier transform (GFT) is
+bX=U ⊤X and the inverse transform is X=U bX. Each row of bX corresponds to a graph frequency
+(eigenmode). In the next step we group these modes into bands for downstream processing.
+3
+Figure 1: Overall architecture of our proposed framework. The model follows a structured four-stage
+pipeline:(i) Decompositionperforms modality-specific graph wavelet transformation to disentangle
+multi-frequency components;(ii) Modulationapplies Spectral Band Masking (SBM) to perturb and
+down-weight unreliable bands in a task-adaptive manner;(iii) Fusionleverages a low-rank Graph
+HyperSpectral Neural Operator (G-HSNO) to reason over cross-band and cross-modal dependencies;
+and(iv) Alignmentintroduces Spectral Contrastive Regularization (SCR) to enforce semantic
+consistency and spectral robustness across modalities.
+Frequency Band Construction.We divide the spectrum into M frequency bands using the energy
+distribution of spectral coefficients. Let bxk denote the k-th row of bX, and define its energy as
+Ek =∥ bxk∥2
+2. We compute the cumulative energy over ordered eigenmodes and partition the
+frequency axis into M contiguous sets {F1, . . . ,FM } such that each band contributes approximately
+equal total energy,
+X
+k∈Fm
+Ek ≈ 1
+M
+|N|X
+k=1
+Ek ,(1)
+which yields bands with comparable signal mass and avoids extreme imbalance across modes. Given
+the orthonormal basis U= [u1, . . . ,u|N| ], the reconstruction for bandm is X(m) = P
+k∈Fm uk bx⊤
+k ,
+where uk is the k-th eigenvector. Each X(m) captures information at a specific semantic resolution,
+with lower-index bands concentrating smoother components and higher-index bands emphasizing
+localized variations. In practice, M is treated as a hyperparameter. Bands may be formed using
+various rules, such as equal-energy quantiles of the cumulative spectrum or uniform splits in the
+eigenvalue domain.
+Semantic-Aware Frequency Fusion.Given the band-specific components {X(m)}M
+m=1, we aggre-
+gate them into a unified node representation with adaptive gates. Let x(m)
+n denote the n-th row of
+X(m). The fused embedding for nodenis
+zn =
+MX
+m=1
+α(m)
+n x(m)
+n ,(2)
+where α(m)
+n ∈R ≥0 are band-specific weights produced from node context, for example an MLP
+over the ID embedding and optional band statistics, and normalized with a softmax over m so
+that P
+m α(m)
+n = 1. This allows each node to emphasize informative bands while down-weighting
+unstable ones. Because subsequent linear operators distribute over the sum, the fusion can be placed
+before or after standard graph layers without changing the rest of the pipeline.
+3.2 Spectral Band Masking with Consistency Training
+Multimodal user–item graphs exhibit frequency components with different semantic roles and unequal
+reliability [15, 38]. Low-frequency bands tend to reflect smooth collaborative structure such as long-
+term preferences or popularity, whereas higher bands capture localized variation that is often modality
+sensitive. In practice, the latter can correlate with interactions yet fluctuate across items, users and
+4
+contexts due to sampling noise, content artifacts and instance-specific patterns. Standard training
+objectives amplify correlations that are easiest to exploit, which biases the predictor toward narrow
+spectral slices and encourages shortcut behavior. The result is increased sensitivity to small spectral
+perturbations and weaker generalization under sparsity or cold start. A robustness mechanism should
+therefore regulate sensitivity at the band level during training while leaving the inference pathway
+unchanged.
+To mitigate this issue, we introduceSpectral Band Masking(SBM), a training-time band-level
+robustness mechanism. During training, SBM randomly masks a subset of frequency bands and
+imposes a prediction-consistency objective between the full-spectrum and masked inputs. This
+structured perturbation reduces over-reliance on any single band, encourages the model to distribute
+evidence across more stable components and improves robustness under distribution shift. SBM is
+lightweight, architecture-agnostic and integrates seamlessly with the spectral pipeline.
+Band-wise Masking.Let {X(m)}M
+m=1 denote the band-wise features as defined in Section 3.1, and
+let x(m) be the per-node slice. During training, we sample a binary mask γ∈ {0,1}M with masking
+rateπ,
+γm ∼Bernoulli(1−π) (m= 1, . . . , M),(3)
+and construct a masked spectral view
+˜x=
+MX
+m=1
+γm x(m).(4)
+Zeroing entire bands injects a structured perturbation at the spectral level while keeping the graph
+topology and within-band structure unchanged. We use uniform masking over bands in the main
+experiments. Energy-aware schedules and curriculum masks can be used as alternatives.
+Consistency Objective.To stabilize training under these spectral perturbations, we pair the masked
+view with the full-spectrum inputx= P
+m x(m) and encourage prediction agreement:
+LSBM =E γ
+f(x)−f( ˜x)
+2
+2.(5)
+This objective acts as band-aware perturbation with a prediction-consistency regularizer. It discour-
+ages reliance on any single narrow band, reduces co-adaptation between bands and modalities, and
+distributes evidence across more stable components. LSBM is optimized jointly with the main task
+loss. The objective adds negligible overhead and makes no changes at inference time.
+3.3 Graph HyperSpectral Neural Operator (G-HSNO)
+While frequency decomposition disentangles semantics across spectral bands, and band-level masking
+improves robustness to brittle cues, the system still needs a dedicated module to reason over frequency-
+structured inputs and extract task-relevant information. Traditional graph neural networks (e.g.,
+GCNs) operate primarily in the spatial domain and often aggregate neighbor information uniformly
+or with simple attention. Such models are limited in capturing complex cross-frequency and cross-
+modality interactions, especially in multimodal recommendation where frequency semantics vary
+across modalities. A suitable module should explicitly model interactions among bands and modalities
+while respecting graph structure. It should also provide controllable capacity and low overhead so
+that it remains practical at scale.
+To address this gap, we introduce theGraph HyperSpectral Neural Operator (G-HSNO), a spectral
+operator that learns joint representations across three axes: frequency bands, modality types and
+graph topology. G-HSNO draws inspiration from neural operators in scientific computing and adapts
+the idea to discrete graph signals with multimodal frequency structure.
+Operator Design.Let x(m)
+v ∈R d denote the m-th frequency-band representation of node v. We
+aggregate all bands into a tensor X∈R |N|×M×d and define G-HSNO as a spectral operator that
+models inter-band interactions. For each nodevand output bandm,
+Z= HSNO(X),Z (m)
+v =
+MX
+n=1
+Kmn x(n)
+v ,withK mn ∈R d×d.(6)
+5
+Collecting Z(m)
+v over all nodes yields Z∈R |N|×M×d . To reduce parameter complexity and avoid
+overfitting, we adopt alow-rank factorizationof the kernel using Canonical Polyadic (CP) decom-
+position, Kmn = Pr
+i=1 Wq(m, i)Wk(n, i)V(i),W q,W k ∈R M×r ,V (i) ∈R d×d, where Wq
+and Wk are shared query/key matrices across bands and r is a predefined rank. This structure allows
+G-HSNO to model second-order interactions between frequency bands while controlling capacity
+and computation.
+Graph-aware Enhancement.To incorporate topological context, we apply a linear projection
+followed by graph-aware scaling and gating:
+H(m)
+v =σ
+ 
+W Z(m)
+v
+
+⊙g (m)
+v ,(7)
+where W∈R d′×d is a shared projection, σ(·) is a nonlinearity and g(m)
+v ∈R d′
+is a learnable
+frequency-wise gate informed by graph structure (see Section 3.1). We setd ′ =dby default.
+The final node representation sums over frequencies, zv = PM
+m=1 H(m)
+v . Compared with standard
+GNN layers or modality-level attention, this step supports structured, spectrum-aware fusion with
+modest inductive bias. The low-rank kernel controls capacity, and the graph-aware gate enables
+topologically adaptive adjustments.
+3.4 Spectral Contrastive Regularization
+To strengthen semantic alignment and structural integrity in the spectral space, we introduce a
+lightweight auxiliary objective calledSpectral Contrastive Regularization (SCR). Although G-HSNO
+models frequency-aware graph signals in a structured manner, representations from different modali-
+ties can still be inconsistent or collapse within the same band because of noise or weak alignment.
+Intuitively, components that lie in the same band (for example, image and text embeddings at band
+m) should encode comparable global or local semantics. In practice, distributional heterogeneity can
+cause divergence or entanglement with unrelated spectral patterns. SCR addresses this by applying
+a contrastive loss that encourages intra-band cross-modal consistency while preserving separation
+across bands. Formally, let x(m,img)
+v and x(m,txt)
+v denote the m-th band representations of item v
+from image and text. These form a positive pair. Negatives are sampled from either different items
+v′ ̸=vat the same band or from any item at different bandsm ′ ̸=m. The loss is
+LSCR =−log exp
+ 
+sim(x(m,img)
+v ,x (m,txt)
+v )/τ
+
+P
+(v′,m′)̸=(v,m)
+exp
+ 
+sim(x(m,img)
+v ,x (m′,·)
+v′ )/τ
+,(8)
+where sim(·,·) is cosine similarity, τ >0 is a temperature and x(m′,·)
+v′ denotes a representation
+from either modality. This regularization aligns cross-modal signals within each band and enforces
+band-level discriminability. It introduces no extra inference cost and serves as a modular complement
+to the main objective. Our model is designed to be lightweight and efficient, with all frequency-aware
+modules implemented via sparse and batched operations.
+3.5 Training and Optimization
+The model is trained to predict user–item interaction probabilities from spectral-aware representations.
+For each pair (u, v), the interaction score is ˆyuv =σ(z ⊤
+u zv), where zu and zv are the final user and
+item embeddings, and σ(·) is the sigmoid function. The objective combines binary cross-entropy
+with two auxiliary losses: a band-masking consistency loss LSBM that encourages prediction stability
+under spectral perturbations, and a spectral contrastive lossLSCR that aligns modality-specific features
+within each band. The final loss is
+L=L BCE +λL SBM +ηL SCR,(9)
+where λ, η≥0 control the strength of the auxiliary terms. We optimize the model end to end with
+mini-batch stochastic gradient descent. No masking or rescaling is applied at inference time.
+6
+4 Experiments
+4.1 Experimental Settings
+Datasets and Baselines.We conduct experiments on three standard Amazon subsets (Baby, Sports,
+Clothing) using full-ranking metrics (Recall@K, NDCG@K). A broad range of collaborative, multi-
+modal, and graph-based baselines are compared. For full dataset details, preprocessing, and baseline
+list, please refer to Appendix B.
+4.2 Overall Performance Comparison (RQ1)
+Table 1 summarizes the top-K recommendation performance across three multimodal Amazon
+datasets. Our proposed SSR achieves consistent and significant improvements over all baseline models.
+This performance advantage is particularly evident on sparse datasets like Clothing, where SSR
+outperforms prior frequency-aware models such as SMORE by +5.0% in Recall@10. These gains can
+be attributed to SSR’s ability to capture fine-grained, frequency-aware multimodal semantics that are
+often overlooked or insufficiently captured in prior approaches. While recent methods like SMORE
+leverage frequency-domain projection to suppress modality noise, they treat frequency components
+uniformly and lack structural modeling of collaborative signals. AlignRec and MMIL introduce
+advanced alignment or intention modeling mechanisms, but still operate in the time domain and fail
+to differentiate spectral semantics at varying granularity. In contrast, SSR explicitly decomposes
+multimodal representations into interpretable frequency bands via spectral graph transformation,
+dynamically fuses them through gated hyper-spectral operations, and further regularizes mid-band
+interactions via spectrum-aware contrastive learning. This design enables SSR to not only denoise but
+also extract highly discriminative and complementary signals across modalities and frequency levels.
+Table 1: Recommendation performance on three Amazon benchmarks. SSR achieves consistent
+improvements over collaborative, graph-based, and multi-modal baseline.
+Dataset MetricBPR LightGCN VBPR MMGCN GRCN DualGNN RecV AE LATTICE BM3 FREEDOM DiffMM MMIL AlignRec SMORESSR
+Baby
+R@10 0.0357 0.0479 0.0418 0.0413 0.0538 0.0507 0.0501 0.0561 0.0573 0.0624 0.0617 0.0670 0.0674 0.06800.0728R@20 0.0575 0.0754 0.0667 0.0649 0.0832 0.0782 0.0811 0.0867 0.0904 0.0985 0.0978 0.1035 0.10460.10350.1103N@10 0.0192 0.0257 0.0223 0.0211 0.0285 0.0264 0.0275 0.0305 0.0311 0.0324 0.0321 0.0361 0.0363 0.03650.0395N@20 0.0249 0.0328 0.0287 0.0275 0.0364 0.0335 0.0358 0.0383 0.0395 0.0416 0.0408 0.0455 0.04580.04570.0491
+Sports
+R@10 0.0432 0.0569 0.0561 0.0394 0.0607 0.0574 0.0603 0.0628 0.0659 0.0705 0.0687 0.0747 0.0758 0.07620.0825R@20 0.0653 0.0864 0.0857 0.0625 0.0928 0.0881 0.0916 0.0961 0.0987 0.1077 0.1035 0.1133 0.11600.11420.1203N@10 0.0241 0.0311 0.0305 0.0203 0.0335 0.0316 0.0348 0.0339 0.0357 0.0382 0.0357 0.0405 0.04140.04080.0449N@20 0.0298 0.0387 0.0386 0.0266 0.0421 0.0393 0.0431 0.0431 0.0443 0.0478 0.0458 0.0505 0.05170.05060.0547
+Clothing
+R@10 0.0206 0.0361 0.0283 0.0221 0.0425 0.0447 0.0330 0.0503 0.0577 0.0616 0.0593 0.0643 0.0651 0.06590.0708R@20 0.0303 0.0544 0.0418 0.0357 0.0661 0.0663 0.0485 0.0755 0.0845 0.0917 0.0874 0.0961 0.09930.09870.1032N@10 0.0114 0.0197 0.0162 0.0116 0.0227 0.0237 0.0187 0.0277 0.0316 0.0333 0.0325 0.0348 0.0356 0.03600.0386N@20 0.0138 0.0243 0.0196 0.0151 0.0283 0.0289 0.0227 0.0356 0.0387 0.0409 0.0396 0.0428 0.0437 0.04430.0466
+4.3 Cold-start User Performance (RQ2)
+To evaluate model robustness under user cold-start scenarios, we examine top-K recommendation
+performance for users with limited interaction history. As shown in Table 2, our proposed SSR
+consistently outperforms all baselines across three datasets and four evaluation metrics, with particu-
+larly strong gains in Recall@20 metrics (e.g., +10.0% over SMORE onBaby). These improvements
+validate our key design principle: rather than assuming a uniform representation fusion for all users,
+SSR leverages frequency-aware decomposition and user-specific gating to tailor the semantic em-
+phasis across low, mid, and high bands. Compared to prior models such as SMORE and MMIL,
+which adopt static fusion schemes or modality-aligned latent spaces, SSR introduces gated hyper-
+spectral operations and spectral contrastive regularization that adaptively enhance discriminative cues
+even under sparse data. The model’s ability to selectively amplify high-frequency discriminative
+signals is particularly important for personalizing recommendations when strong interaction priors
+are unavailable, making it especially valuable in cold-start settings. Moreover, the consistent lead
+across all frequency bands highlights the efficacy of our frequency decomposition design in isolating
+modality-relevant semantics and suppressing irrelevant noise. These results suggest that SSR not
+only performs well under typical conditions but also generalizes effectively to sparse and unseen user
+behaviors, confirming its value as a robust and adaptive recommendation framework.
+7
+Table 2: Performance comparison in cold-start user scenarios (users with ≤ 5 interactions). SSR
+consistently outperforms strong baselines, demonstrating its robustness in sparse conditions and
+effectiveness in adaptive multimodal modeling.
+Model Amazon-Baby Amazon-Sports Amazon-Clothing
+R@10 R@20 N@10 N@20 R@10 R@20 N@10 N@20 R@10 R@20 N@10 N@20
+GRCN 0.0510 0.0770 0.0268 0.0333 0.0556 0.0814 0.0305 0.0370 0.0416 0.0648 0.0213 0.0271
+BM3 0.0549 0.0845 0.0288 0.0363 0.0581 0.0920 0.0305 0.0390 0.0424 0.0614 0.0229 0.0276
+LATTICE 0.0570 0.0827 0.0298 0.0362 0.0380 0.0570 0.0205 0.0252 0.0414 0.0555 0.0218 0.0254
+FREEDOM 0.0535 0.0880 0.0297 0.0384 0.0622 0.0933 0.0328 0.0406 0.0444 0.0671 0.0241 0.0298
+MMIL 0.0672 0.1014 0.0377 0.0463 0.0759 0.1141 0.0422 0.0517 0.0635 0.0948 0.0341 0.0423
+SMORE 0.0687 0.1019 0.0381 0.0464 0.0788 0.1158 0.0420 0.0512 0.0676 0.0983 0.0369 0.0446
+SSR0.0765 0.1125 0.0424 0.0516 0.0832 0.1227 0.0439 0.0541 0.0698 0.1012 0.0387 0.0467
+Figure 2: Ablation and sensitivity analysis. The left plot shows the impact of removing key
+components from SSR, validating the effectiveness of each module. The right three plots illustrate
+the influence of the information bottleneck weight λ, contrastive loss weight η, and the number of
+frequency bandsM, confirming the stability of SSR under a range of hyperparameter settings.
+4.4 Ablation Study and Sensitivity Analysis (RQ3)
+We conduct ablations to quantify the contribution of each component: semantic-aware fusion (SAF),
+the hyperspectral operator (G-HSNO), spectral regularizers (SBM and SCR), and multimodal inputs.
+As shown in Fig. 2, removing any component leads to clear performance degradation. Notably,
+removingSAMcauses the most significant drop, confirming the importance of semantically guided
+decomposition. ExcludingG-HSNOalso harms accuracy, indicating that cross-band and cross-
+modality reasoning is vital for capturing diverse user–item patterns.SBMandSCRyield smaller
+but consistent gains, improving robustness and alignment. Eliminating multimodal inputs and using
+ID features only leads to the weakest results, highlighting the utility of complementary content
+signals. These findings show that spectral semantics, adaptive fusion and modality reasoning act
+in a complementary manner within our architecture. We also perform sensitivity analysis over λ,
+η and M, and observe stable performance across a broad range of settings (results are reported in
+Appendix C.1).
+4.5 Cross-Modality Distribution in Frequency Bands (RQ4)
+To investigate how frequency decomposition shapes cross-modal representations, we visualize the
+distribution of user embeddings across low, mid and high bands for three modalities: ID, visual and
+textual. As shown in Fig. 3, in the low-frequency band, the three modalities form distinct and well-
+separated clusters, indicating that this frequency component preserves modality-specific semantics
+such as identity priors, visual styles, and coarse-grained textual categories. In the mid-frequency
+band, modality boundaries begin to blur, revealing interaction patterns and semantic alignment across
+modalities. This observation is consistent with applying frequency-aware fusion using G-HSNO and
+band-level regularization using SBM to capture synergistic cross-modal signals. In the high-frequency
+band, the embeddings from different modalities become densely entangled, suggesting the emergence
+of fine-grained, modality-agnostic representations that are highly discriminative but also sensitive to
+noise. This validates the necessity of spectral decomposition as a core design: it not only disentangles
+semantics across frequency and modality axes but also provides an interpretable basis for adaptive
+fusion and regularization. The observed patterns strongly support our hypothesis that frequency-aware
+modeling enables structured representation evolution, and reinforce the design effectiveness of our
+SBM and G-HSNO components.
+8
+Figure 3:t-SNE visualization of user embeddings across frequency bands.Each subfigure
+illustrates ID, Visual, and Textual embedding distributions under a specific band.
+Figure 4:Left: Cross-modality center distances across frequency bands, highlighting increasing
+alignment in mid-frequency and modality-agnostic fusion in high-frequency regions.Right: KDE
+plots of frequency gating weights for cold-start vs. non-cold users.
+4.6 Cross-Frequency Analysis of Modality Center Distances (RQ5)
+We further assess cross-modal alignment across frequency bands by measuring pairwise distances
+between the centers of the ID, visual and textual representations. Concretely, for each band we
+compute a modality center as the mean embedding over items and then evaluate distances between
+modality centers. As shown in Fig. 4, the distances are minimized in the mid-frequency region,
+indicating that this band best captures shared cross-modal semantics. In contrast, low-frequency
+bands encode stable, modality-specific structure, whereas high-frequency bands reflect sparse or
+noisy variation. These asymmetric patterns motivate differentiated modeling across bands. Our
+design leverages this by applying spectrum-specific fusion (G-HSNO) and band-level regularization
+(SBM) in the mid-frequency region, where cross-modal synergy is most pronounced.
+4.7 Adaptive Spectral Modulation under Representation Uncertainty (RQ6)
+Our design is grounded in the idea that frequency components reflect different semantic roles, and that
+adapting their influence based on input uncertainty is key to effective recommendation. To validate
+this hypothesis, we conduct an analysis under the cold-start scenario. As shown in Fig. 4, cold-start
+items rely more on low and mid frequency signals, while non-cold items emphasize high-frequency
+cues. This behavior emerges from the interplay of spectral decomposition, G-HSNO, and contrastive
+regularization. These findings highlight that spectral semantics are not uniformly informative, and
+their utility is tightly coupled with data sparsity and user context. This also suggests that frequency-
+aware mechanisms can serve as a proxy for uncertainty estimation in representation learning. A
+thorough and comprehensive analysis is provided in Appendix C.3.
+5 Conclusion
+In this paper, we propose a structured spectral learning framework for multimodal graph recommenda-
+tion that addresses modality noise, semantic inconsistency, and propagation instability via a four-stage
+pipeline: decomposition, band-level modulation, hyperspectral fusion, and alignment. Extensive
+experiments validate its effectiveness and robustness across diverse datasets. Future directions include
+integrating LLMs for reasoning-aware spectral graphs, designing adaptive spectral controllers, and
+extending to broader graph inference tasks such as dynamic modeling and temporal reasoning.
+9
+References
+[1] Yuqing Liu, Yu Wang, Lichao Sun, and Philip S Yu. Rec-gpt4v: Multimodal recommendation
+with large vision-language models.arXiv preprint arXiv:2402.08670, 2024.
+[2] Daniele Malitesta, Giandomenico Cornacchia, Claudio Pomo, Felice Antonio Merra, Tom-
+maso Di Noia, and Eugenio Di Sciascio. Formalizing multimedia recommendation through
+multimodal deep learning.ACM Transactions on Recommender Systems, 2024.
+[3] Yang Xu, Gao Cong, Lei Zhu, and Lizhen Cui. Mmpoi: A multi-modal content-aware framework
+for poi recommendations. InProceedings of the ACM Web Conference 2024, pages 3454–3463,
+2024.
+[4] Jinfeng Xu, Zheyu Chen, Shuo Yang, Jinze Li, Hewei Wang, and Edith CH Ngai. Mentor:
+multi-level self-supervised learning for multimodal recommendation. InProceedings of the
+AAAI Conference on Artificial Intelligence, volume 39, pages 12908–12917, 2025.
+[5] Li He, Hongxu Chen, Dingxian Wang, Shoaib Jameel, Philip Yu, and Guandong Xu. Click-
+through rate prediction with multi-modal hypergraphs. InProceedings of the 30th ACM
+International Conference on Information & Knowledge Management, pages 690–699, 2021.
+[6] Hongyu Zhou, Xin Zhou, Zhiwei Zeng, Lingzi Zhang, and Zhiqi Shen. A comprehensive survey
+on multimodal recommender systems: Taxonomy, evaluation, and future directions.arXiv
+preprint arXiv:2302.04473, 2023.
+[7] Wei Yang, Tengfei Huo, Zhiqiang Liu, and Chi Lu. based multi-intention contrastive learning
+for recommendation. InProceedings of the 46th International ACM SIGIR Conference on
+Research and Development in Information Retrieval, pages 2339–2343, 2023.
+[8] Wei Wei, Chao Huang, Lianghao Xia, and Chuxu Zhang. Multi-modal self-supervised learning
+for recommendation. InProceedings of the ACM web conference 2023, pages 790–800, 2023.
+[9] Xinglong Wu, Anfeng Huang, Hongwei Yang, Hui He, Yu Tai, and Weizhe Zhang. Towards
+bridging the cross-modal semantic gap for multi-modal recommendation.arXiv preprint
+arXiv:2407.05420, 2024.
+[10] Qijiong Liu, Jieming Zhu, Yanting Yang, Quanyu Dai, Zhaocheng Du, Xiao-Ming Wu, Zhou
+Zhao, Rui Zhang, and Zhenhua Dong. Multimodal pretraining, adaptation, and generation
+for recommendation: A survey. InProceedings of the 30th ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining, pages 6566–6576, 2024.
+[11] Guipeng Xv, Xinyu Li, Ruobing Xie, Chen Lin, Chong Liu, Feng Xia, Zhanhui Kang, and Leyu
+Lin. Improving multi-modal recommender systems by denoising and aligning multi-modal
+content and user feedback. InProceedings of the 30th ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining, pages 3645–3656, 2024.
+[12] Yuxin Qi, Quan Zhang, Xi Lin, Xiu Su, Jiani Zhu, Jingyu Wang, and Jianhua Li. Seeing beyond
+noise: Joint graph structure evaluation and denoising for multimodal recommendation. In
+Proceedings of the AAAI Conference on Artificial Intelligence, volume 39, pages 12461–12469,
+2025.
+[13] Zixuan Yi, Zijun Long, Iadh Ounis, Craig Macdonald, and Richard Mccreadie. Enhancing
+recommender systems: Deep modality alignment with large multi-modal encoders.ACM
+Transactions on Recommender Systems, 3(4):1–25, 2025.
+[14] Yucong Luo, Qitao Qin, Hao Zhang, Mingyue Cheng, Ruiran Yan, Kefan Wang, and Jie
+Ouyang. Molar: Multimodal llms with collaborative filtering alignment for enhanced sequential
+recommendation.arXiv preprint arXiv:2412.18176, 2024.
+[15] Rongqing Kenneth Ong and Andy WH Khong. Spectrum-based modality representation fusion
+graph convolutional network for multimodal recommendation.arXiv preprint arXiv:2412.14978,
+2024.
+10
+[16] Wei Yang, Jie Yang, and Yuan Liu. Multimodal optimal transport knowledge distillation for
+cross-domain recommendation. InProceedings of the 32nd ACM International Conference on
+Information and Knowledge Management, pages 2959–2968, 2023.
+[17] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng Lin,
+Yichen Zheng, Shiyao Wang, Qigen Hu, et al. Qarm: Quantitative alignment multi-modal
+recommendation at kuaishou.arXiv preprint arXiv:2411.11739, 2024.
+[18] Xiang Wang, Hongye Jin, An Zhang, Xiangnan He, Tong Xu, and Tat-Seng Chua. Disentangled
+graph collaborative filtering. InProceedings of the 43rd international ACM SIGIR conference
+on research and development in information retrieval, pages 1001–1010, 2020.
+[19] Kang Liu, Feng Xue, Dan Guo, Peijie Sun, Shengsheng Qian, and Richang Hong. Multimodal
+graph contrastive learning for multimedia-based recommendation.IEEE Transactions on
+Multimedia, 25:9343–9355, 2023.
+[20] Kang Liu, Feng Xue, Dan Guo, Le Wu, Shujie Li, and Richang Hong. Megcf: Multimodal
+entity graph collaborative filtering for personalized recommendation.ACM transactions on
+information systems, 41(2):1–27, 2023.
+[21] Wenqian Ye, Guangtao Zheng, Yunsheng Ma, Xu Cao, Bolin Lai, James M Rehg, and Aidong
+Zhang. Mm-spubench: Towards better understanding of spurious biases in multimodal llms.
+arXiv preprint arXiv:2406.17126, 2024.
+[22] Huishi Luo, Fuzhen Zhuang, Ruobing Xie, Hengshu Zhu, Deqing Wang, Zhulin An, and
+Yongjun Xu. A survey on causal inference for recommendation.The Innovation, 5(2), 2024.
+[23] Shuyuan Xu, Jianchao Ji, Yunqi Li, Yingqiang Ge, Juntao Tan, and Yongfeng Zhang. Causal
+inference for recommendation: Foundations, methods and applications.ACM Transactions on
+Intelligent Systems and Technology, 2023.
+[24] Junpeng Fang, Gongduo Zhang, Qing Cui, Lihong Gu, Longfei Li, Jinjie Gu, and Jun Zhou.
+Counterfactual data augmentation for debiased coupon recommendations based on potential
+knowledge. InCompanion Proceedings of the ACM Web Conference 2024, pages 93–102, 2024.
+[25] Fangye Wang, Yingxu Wang, Dongsheng Li, Hansu Gu, Tun Lu, Peng Zhang, and Ning Gu.
+Cl4ctr: A contrastive learning framework for ctr prediction. InProceedings of the Sixteenth
+ACM International Conference on Web Search and Data Mining, pages 805–813, 2023.
+[26] Shuaiyang Li, Feng Xue, Kang Liu, Dan Guo, and Richang Hong. Multimodal graph causal
+embedding for multimedia-based recommendation.IEEE Transactions on Knowledge and Data
+Engineering, 2024.
+[27] Sungjune Kim, Seongjun Yun, Jongwuk Lee, Gyusam Chang, Wonseok Roh, Dae-Neung Sohn,
+Jung-Tae Lee, Hogun Park, and Sangpil Kim. Self-supervised multimodal graph convolutional
+network for collaborative filtering.Information Sciences, 653:119760, 2024.
+[28] Jiwan Kim, Hongseok Kang, Sein Kim, Kibum Kim, and Chanyoung Park. Disentangling and
+generating modalities for recommendation in missing modality scenarios. InProceedings of
+the 48th International ACM SIGIR Conference on Research and Development in Information
+Retrieval, pages 1820–1829, 2025.
+[29] Xixun Lin, Rui Liu, Yanan Cao, Lixin Zou, Qian Li, Yongxuan Wu, Yang Liu, Dawei Yin, and
+Guandong Xu. Contrastive modality-disentangled learning for multimodal recommendation.
+ACM Transactions on Information Systems, 43(3):1–31, 2025.
+[30] Jiajie Su, Chaochao Chen, Weiming Liu, Yuhang Wang, Yihao Wang, Zheqi Lv, Xiaolin
+Zheng, and Jianwei Yin. Modality-aware diffusion augmentation with consistent subspace
+disentanglement for session-based recommendation. InProceedings of the 31st ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining V . 2, pages 2668–2679, 2025.
+[31] Xin Zhou and Chunyan Miao. Disentangled graph variational auto-encoder for multimodal
+recommendation with interpretability.IEEE Transactions on Multimedia, 26:7543–7554, 2024.
+11
+[32] Jiafeng Xia, Dongsheng Li, Hansu Gu, Tun Lu, Peng Zhang, Li Shang, and Ning Gu. Frequency-
+aware graph signal processing for collaborative filtering. InCompanion Proceedings of the
+ACM on Web Conference 2025, pages 1417–1421, 2025.
+[33] Shaowen Peng, Kazunari Sugiyama, and Tsunenori Mine. Less is more: Reweighting important
+spectral graph features for recommendation. InProceedings of the 45th International ACM
+SIGIR conference on research and development in information retrieval, pages 1273–1282,
+2022.
+[34] Zhenyi Fan, Hongbin Zhang, Guangyu Lin, Lianglun Cheng, Zhuowei Wang, and Chong
+Chen. Hierarchical multi-frequency transform for sequential recommendation. In2024 27th
+International Conference on Computer Supported Cooperative Work in Design (CSCWD), pages
+1559–1564. IEEE, 2024.
+[35] Shijie Luo, Jianxia Chen, Tianci Yu, Shi Dong, Gaohang Jiang, and Ninglong Ding. Dual
+frequency-based temporal sequential recommendation. In2024 International Joint Conference
+on Neural Networks (IJCNN), pages 1–8. IEEE, 2024.
+[36] Yichi Zhang, Guisheng Yin, and Yuxin Dong. Contrastive learning with frequency-domain
+interest trends for sequential recommendation. InProceedings of the 17th ACM conference on
+recommender systems, pages 141–150, 2023.
+[37] Yehjin Shin, Jeongwhan Choi, Hyowon Wi, and Noseong Park. An attentive inductive bias for
+sequential recommendation beyond the self-attention. InProceedings of the AAAI conference
+on artificial intelligence, volume 38, pages 8984–8992, 2024.
+[38] Xinyu Du, Huanhuan Yuan, Pengpeng Zhao, Jianfeng Qu, Fuzhen Zhuang, Guanfeng Liu,
+Yanchi Liu, and Victor S Sheng. Frequency enhanced hybrid attention network for sequential
+recommendation. InProceedings of the 46th international ACM SIGIR conference on research
+and development in information retrieval, pages 78–88, 2023.
+[39] Yanhua Huang, Weikun Wang, Lei Zhang, and Ruiwen Xu. Sliding spectrum decomposition
+for diversified recommendation. InProceedings of the 27th ACM SIGKDD conference on
+knowledge discovery & data mining, pages 3041–3049, 2021.
+[40] Yongqiang Han, Hao Wang, Kefan Wang, Likang Wu, Zhi Li, Wei Guo, Yong Liu, Defu Lian,
+and Enhong Chen. Efficient noise-decoupling for multi-behavior sequential recommendation.
+InProceedings of the ACM Web Conference 2024, pages 3297–3306, 2024.
+[41] Chanwoo Kim, Jinkyu Sung, Yebonn Han, and Joonseok Lee. Graph spectral filtering with
+chebyshev interpolation for recommendation.arXiv preprint arXiv:2505.00552, 2025.
+[42] Lanling Xu, Zhen Tian, Bingqian Li, Junjie Zhang, Daoyuan Wang, Hongyu Wang, Jinpeng
+Wang, Sheng Chen, and Wayne Xin Zhao. Sequence-level semantic representation fusion
+for recommender systems. InProceedings of the 33rd ACM International Conference on
+Information and Knowledge Management, pages 5015–5022, 2024.
+[43] Yang Li, Qi’Ao Zhao, Chen Lin, Jinsong Su, and Zhilin Zhang. Who to align with: Feedback-
+oriented multi-modal alignment in recommendation systems. InProceedings of the 47th
+International ACM SIGIR Conference on Research and Development in Information Retrieval,
+pages 667–676, 2024.
+[44] Zixuan Yi and Iadh Ounis. A unified graph transformer for overcoming isolations in multi-modal
+recommendation. InProceedings of the 18th ACM Conference on Recommender Systems, pages
+518–527, 2024.
+[45] Haoyue Bai, Le Wu, Min Hou, Miaomiao Cai, Zhuangzhuang He, Yuyang Zhou, Richang
+Hong, and Meng Wang. Multimodality invariant learning for multimedia-based new item
+recommendation. InProceedings of the 47th International ACM SIGIR Conference on Research
+and Development in Information Retrieval, pages 677–686, 2024.
+[46] Junliang Yu, Xin Xia, Tong Chen, Lizhen Cui, Nguyen Quoc Viet Hung, and Hongzhi Yin.
+Xsimgcl: Towards extremely simple graph contrastive learning for recommendation.IEEE
+Transactions on Knowledge and Data Engineering, 36(2):913–926, 2023.
+12
+[47] Yifan Liu, Kangning Zhang, Xiangyuan Ren, Yanhua Huang, Jiarui Jin, Yingjie Qin, Ruilong
+Su, Ruiwen Xu, Yong Yu, and Weinan Zhang. Alignrec: Aligning and training in multimodal
+recommendations. InProceedings of the 33rd ACM International Conference on Information
+and Knowledge Management, pages 1503–1512, 2024.
+[48] Xinyu Du, Huanhuan Yuan, Pengpeng Zhao, Junhua Fang, Guanfeng Liu, Yanchi Liu, Victor S
+Sheng, and Xiaofang Zhou. Contrastive enhanced slide filter mixer for sequential recommen-
+dation. In2023 IEEE 39th International Conference on Data Engineering (ICDE), pages
+2673–2685. IEEE, 2023.
+[49] Yi Wang, Conrad M Albrecht, Nassim Ait Ali Braham, Chenying Liu, Zhitong Xiong, and
+Xiao Xiang Zhu. Decoupling common and unique representations for multimodal self-
+supervised learning. InEuropean Conference on Computer Vision, pages 286–303. Springer,
+2024.
+[50] Sirnam Swetha, Mamshad Nayeem Rizve, Nina Shvetsova, Hilde Kuehne, and Mubarak Shah.
+Preserving modality structure improves multi-modal learning. InProceedings of the IEEE/CVF
+International Conference on Computer Vision, pages 21993–22003, 2023.
+[51] Ruining He and Julian McAuley. Vbpr: visual bayesian personalized ranking from implicit
+feedback. InProceedings of the AAAI conference on artificial intelligence, volume 30, 2016.
+[52] Xu Chen, Hanxiong Chen, Hongteng Xu, Yongfeng Zhang, Yixin Cao, Zheng Qin, and
+Hongyuan Zha. Personalized fashion recommendation with visual explanations based on
+multimodal attention network: Towards visually explainable recommendation. InProceedings
+of the 42nd International ACM SIGIR Conference on Research and Development in Information
+Retrieval, pages 765–774, 2019.
+[53] Wei Yang, Haoran Zhang, and Li Zhang. Variational invariant representation learning for
+multimodal recommendation. InProceedings of the 2024 SIAM International Conference on
+Data Mining (SDM), pages 752–760. SIAM, 2024.
+[54] Yashar Deldjoo, Markus Schedl, and Peter Knees. Content-driven music recommendation:
+Evolution, state of the art, and challenges.arXiv preprint arXiv:2107.11803, 2021.
+[55] Senrong Xu, Liangyue Li, Yuan Yao, Zulong Chen, Han Wu, Quan Lu, and Hanghang Tong.
+Musenet: Multi-scenario learning for repeat-aware personalized recommendation. InProceed-
+ings of the Sixteenth ACM International Conference on Web Search and Data Mining, pages
+517–525, 2023.
+[56] Wang-Cheng Kang, Chen Fang, Zhaowen Wang, and Julian McAuley. Visually-aware fash-
+ion recommendation and design with generative image models. In2017 IEEE international
+conference on data mining (ICDM), pages 207–216. IEEE, 2017.
+[57] Yinwei Wei, Xiang Wang, Liqiang Nie, Xiangnan He, Richang Hong, and Tat-Seng Chua.
+Mmgcn: Multi-modal graph convolution network for personalized recommendation of micro-
+video. InProceedings of the 27th ACM international conference on multimedia, pages 1437–
+1445, 2019.
+[58] Yinwei Wei, Xiang Wang, Liqiang Nie, Xiangnan He, and Tat-Seng Chua. Graph-refined
+convolutional network for multimedia recommendation with implicit feedback. InProceedings
+of the 28th ACM international conference on multimedia, pages 3541–3549, 2020.
+[59] Qifan Wang, Yinwei Wei, Jianhua Yin, Jianlong Wu, Xuemeng Song, and Liqiang Nie. Dualgnn:
+Dual graph neural network for multimedia recommendation.IEEE Transactions on Multimedia,
+25:1074–1084, 2021.
+[60] Junliang Yu, Hongzhi Yin, Xin Xia, Tong Chen, Lizhen Cui, and Quoc Viet Hung Nguyen. Are
+graph augmentations necessary? simple graph contrastive learning for recommendation. In
+Proceedings of the 45th International ACM SIGIR Conference on Research and Development in
+Information Retrieval, pages 1294–1303, 2022.
+13
+[61] Tengyue Han, Pengfei Wang, Shaozhang Niu, and Chenliang Li. Modality matches modality:
+Pretraining modality-disentangled item representations for recommendation. InProceedings of
+the ACM Web Conference 2022, pages 2058–2066, 2022.
+[62] Zhulin Tao, Xiaohao Liu, Yewei Xia, Xiang Wang, Lifang Yang, Xianglin Huang, and Tat-
+Seng Chua. Self-supervised learning for multimedia recommendation.IEEE Transactions on
+Multimedia, 2022.
+[63] Xin Zhou, Hongyu Zhou, Yong Liu, Zhiwei Zeng, Chunyan Miao, Pengwei Wang, Yuan
+You, and Feijun Jiang. Bootstrap latent representations for multi-modal recommendation. In
+Proceedings of the ACM Web Conference 2023, pages 845–854, 2023.
+[64] Zixuan Yi, Xi Wang, Iadh Ounis, and Craig Macdonald. Multi-modal graph contrastive
+learning for micro-video recommendation. InProceedings of the 45th International ACM SIGIR
+Conference on Research and Development in Information Retrieval, pages 1807–1811, 2022.
+[65] Jinghao Zhang, Yanqiao Zhu, Qiang Liu, Shu Wu, Shuhui Wang, and Liang Wang. Mining
+latent structures for multimedia recommendation. InProceedings of the 29th ACM International
+Conference on Multimedia, pages 3872–3880, 2021.
+[66] Xin Zhou and Zhiqi Shen. A tale of two graphs: Freezing and denoising graph structures for
+multimodal recommendation. InProceedings of the 31st ACM International Conference on
+Multimedia, pages 935–943, 2023.
+[67] Wei Yang and Qingchen Yang. Multimodal-aware multi-intention learning for recommendation.
+InProceedings of the 32nd ACM International Conference on Multimedia, pages 5663–5672,
+2024.
+[68] Zhiqiang Guo, Guohui Li, Jianjun Li, and Huaicong Chen. Topicvae: Topic-aware disentangle-
+ment representation learning for enhanced recommendation. InProceedings of the 30th ACM
+International Conference on Multimedia, pages 511–520, 2022.
+[69] Wei Wei, Jiabin Tang, Lianghao Xia, Yangqin Jiang, and Chao Huang. Promptmm: Multi-modal
+knowledge distillation for recommendation with prompt-tuning. InProceedings of the ACM
+Web Conference 2024, pages 3217–3228, 2024.
+[70] Yangqin Jiang, Lianghao Xia, Wei Wei, Da Luo, Kangyi Lin, and Chao Huang. Diffmm: Multi-
+modal diffusion model for recommendation. InProceedings of the 32nd ACM International
+Conference on Multimedia, pages 7591–7599, 2024.
+[71] Meiyu Liang, Junping Du, Xiaowen Cao, Yang Yu, Kangkang Lu, Zhe Xue, and Min Zhang.
+Semantic structure enhanced contrastive adversarial hash network for cross-media representation
+learning. InProceedings of the 30th ACM International Conference on Multimedia, pages
+277–285, 2022.
+[72] Rui Zhao, Rui Zhong, Haoran Zheng, Wei Yang, Chi Lu, Beihong Jin, Peng Jiang, and
+Kun Gai. Hierarchical sequence id representation of large language models for large-scale
+recommendation systems. InCompanion Proceedings of the ACM on Web Conference 2025,
+pages 641–650, 2025.
+[73] Yu Xia, Rui Zhong, Hao Gu, Wei Yang, Chi Lu, Peng Jiang, and Kun Gai. Hierarchical tree
+search-based user lifelong behavior modeling on large language model. InProceedings of
+the 48th International ACM SIGIR Conference on Research and Development in Information
+Retrieval, pages 1758–1767, 2025.
+[74] Hao Gu, Rui Zhong, Yu Xia, Wei Yang, Chi Lu, Peng Jiang, and Kun Gai. R 4ec: A reasoning,
+reflection, and refinement framework for recommendation systems. InProceedings of the
+Nineteenth ACM Conference on Recommender Systems, pages 411–421, 2025.
+[75] Yu Xia, Rui Zhong, Zeyu Song, Wei Yang, Junchen Wan, Qingpeng Cai, Chi Lu, and Peng
+Jiang. Trackrec: Iterative alternating feedback with chain-of-thought via preference alignment
+for recommendation.arXiv preprint arXiv:2508.15388, 2025.
+14
+[76] Yiqun Chen, Qi Liu, Yi Zhang, Weiwei Sun, Xinyu Ma, Wei Yang, Daiting Shi, Jiaxin Mao,
+and Dawei Yin. Tourrank: Utilizing large language models for documents ranking with a
+tournament-inspired strategy. InProceedings of the ACM on Web Conference 2025, pages
+1638–1652, 2025.
+[77] Yiqun Chen, Lingyong Yan, Weiwei Sun, Xinyu Ma, Yi Zhang, Shuaiqiang Wang, Dawei Yin,
+Yiming Yang, and Jiaxin Mao. Improving retrieval-augmented generation through multi-agent
+reinforcement learning.arXiv preprint arXiv:2501.15228, 2025.
+[78] Zhefan Wang, Yuanqing Yu, Wendi Zheng, Weizhi Ma, and Min Zhang. Macrec: A multi-agent
+collaboration framework for recommendation. InProceedings of the 47th International ACM
+SIGIR Conference on Research and Development in Information Retrieval, pages 2760–2764,
+2024.
+[79] Wei Yang and Jesse Thomason. Learning to deliberate: Meta-policy collaboration for agentic
+llms with multi-agent reinforcement learning.arXiv preprint arXiv:2509.03817, 2025.
+[80] Wen Ye, Wei Yang, Defu Cao, Yizhou Zhang, Lumingyuan Tang, Jie Cai, and Yan Liu. Domain-
+oriented time series inference agents for reasoning and automated analysis.arXiv preprint
+arXiv:2410.04047, 2024.
+[81] Tianxin Wei, Bowen Jin, Ruirui Li, Hansi Zeng, Zhengyang Wang, Jianhui Sun, Qingyu Yin,
+Hanqing Lu, Suhang Wang, Jingrui He, et al. Towards unified multi-modal personalization:
+Large vision-language models for generative recommendation and beyond.arXiv preprint
+arXiv:2403.10667, 2024.
+[82] Zhibin Yang, Jiwei Qin, Jie Ma, and Donghao Zhang. Farec: frequency domain enhanced filter
+for sequential recommendation.Computing, 107(5):114, 2025.
+[83] Junjie Zhang, Ruobing Xie, Hongyu Lu, Wenqi Sun, Wayne Xin Zhao, Yu Chen, and Zhanhui
+Kang. Frequency-augmented mixture-of-heterogeneous-experts framework for sequential
+recommendation. InProceedings of the ACM on Web Conference 2025, pages 2596–2605,
+2025.
+[84] Yuxi Liu, Lianghao Xia, and Chao Huang. Selfgnn: Self-supervised graph neural networks for
+sequential recommendation. InProceedings of the 47th International ACM SIGIR Conference
+on Research and Development in Information Retrieval, pages 1609–1618, 2024.
+[85] Haitong Luo, Xuying Meng, Suhang Wang, Hanyun Cao, Weiyao Zhang, Yequan Wang, and
+Yujun Zhang. Spectral-based graph neural networks for complementary item recommendation.
+InProceedings of the AAAI Conference on Artificial Intelligence, volume 38, pages 8868–8876,
+2024.
+[86] Michaël Defferrard, Xavier Bresson, and Pierre Vandergheynst. Convolutional neural networks
+on graphs with fast localized spectral filtering.Advances in neural information processing
+systems, 29, 2016.
+[87] Felix Wu, Amauri Souza, Tianyi Zhang, Christopher Fifty, Tao Yu, and Kilian Weinberger.
+Simplifying graph convolutional networks. InInternational conference on machine learning,
+pages 6861–6871. Pmlr, 2019.
+[88] Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme. Bpr:
+Bayesian personalized ranking from implicit feedback.arXiv preprint arXiv:1205.2618, 2012.
+[89] Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, Yongdong Zhang, and Meng Wang. Lightgcn:
+Simplifying and powering graph convolution network for recommendation. InProceedings of
+the 43rd International ACM SIGIR conference on research and development in Information
+Retrieval, pages 639–648, 2020.
+[90] Ilya Shenbin, Anton Alekseev, Elena Tutubalina, Valentin Malykh, and Sergey I Nikolenko.
+Recvae: A new variational autoencoder for top-n recommendations with implicit feedback.
+InProceedings of the 13th international conference on web search and data mining, pages
+528–536, 2020.
+15
+[91] Xin Zhou. Mmrec: Simplifying multimodal recommendation. InProceedings of the 5th ACM
+International Conference on Multimedia in Asia Workshops, pages 1–2, 2023.
+[92] Xavier Glorot and Yoshua Bengio. Understanding the difficulty of training deep feedfor-
+ward neural networks. InProceedings of the thirteenth international conference on artificial
+intelligence and statistics, pages 249–256. JMLR Workshop and Conference Proceedings, 2010.
+[93] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization.arXiv preprint
+arXiv:1412.6980, 2014.
+16
+A Problem Formulation
+We focus on the task of personalized recommendation with multimodal item content, where the goal
+is to predict user preferences by leveraging both historical interactions and rich item descriptions.
+Let U and V denote the sets of users and items, respectively. The observed implicit feedback is
+represented by a binary interaction matrix R∈ {0,1}|U|×|V| , where Ruv = 1indicates that user u
+has interacted with item v, and Ruv = 0denotes unobserved behavior. Each user u∈ Uand item
+v∈ Vis associated with an ID-based embedding eid
+u,e id
+v ∈R did that encodes collaborative filtering
+signals. In addition, each item is accompanied by multimodal content from a set of modalities
+C={img,txt}, wheree (c)
+v ∈R dc denotes the representation of itemvin modalityc∈ C.
+To unify both interaction and multimodal semantics, we formulate the recommendation scenario as a
+graph-based learning problem. Specifically, we construct a bipartite user-item graph G= (N,E) ,
+where the node set N=U ∪ Vcontains users and items, and the edge set E ⊆ U × Vreflects
+observed interactions. The adjacency matrix A∈ {0,1}|N|×|N| captures the connectivity structure
+of the interaction graph.
+Under this formulation, the ID embeddings and multimodal features can be treated as semantic
+signals defined over the graph G. The recommendation task thus becomes a graph signal inference
+problem: learning a spectral-aware node representation function f:N →R d that jointly captures
+topological context and content semantics. The predicted relevance score between user u and item v
+is computed as
+ˆruv =f(u) ⊤f(v),(10)
+where f(·) denotes the frequency-aware and task-adaptive representation for each node. The system
+then ranks all candidate items based onˆruv and recommends the top-Nmost relevant items.
+B Experimental Settings
+B.1 Datasets
+To comprehensively evaluate the effectiveness of our proposed framework, we conduct experiments
+on three representative subsets of the Amazon Product Review corpus 3, widely adopted in multi-
+modal recommendation literature [15, 51]. We select categories with diverse product types and rich
+multimodal metadata:Baby,Sports and Outdoors, andClothing, Shoes and Jewelry(referred to
+as Baby, Sports, and Clothing). Each dataset contains explicit user-item interaction records along
+with high-quality product images and textual descriptions. To ensure data reliability and evaluation
+fairness, we apply the standard 5-core preprocessing, retaining users and items with at least five
+interactions. These features serve as the multimodal input for all methods that support side content.
+Dataset statistics are reported in Table 3.
+Table 3: Statistics of the Amazon datasets used in our experiments.
+Dataset #Users #Items #Interactions Interaction Density
+Baby 19,445 7,050 139,110 0.101%
+Sports 35,598 18,357 256,308 0.039%
+Clothing 39,387 23,033 237,488 0.026%
+B.2 Baseline Models
+We benchmark our approach against a diverse suite of strong baseline models spanning three major
+categories: collaborative filtering (CF), multimodal recommendation (MM), and graph-based archi-
+tectures (GNN-based). In the CF category, we considerBPR[ 88], a foundational pairwise ranking
+model based on matrix factorization, andLightGCN[ 89], which simplifies GCNs by removing
+non-linear components for efficient collaborative signal propagation. For multimodal baselines, we
+includeVBPR[ 51], which enhances MF with visual signals;MMGCN[ 57],GRCN[ 58], andDual-
+GNN[ 59], which incorporate modality-aware graph learning designs. We further compare with more
+3http://jmcauley.ucsd.edu/data/amazon/
+17
+recent models that incorporate autoencoder, self-supervised learning or regularization techniques,
+such asRecV AE[90],SLMRec[ 62],LATTICE[ 65],BM3[ 63], andFREEDOM[ 61]. Finally,
+we include advanced models leveraging diffusion processes and alignment strategies, including
+DiffMM[70],MMIL[67],AlignRec[47], and the frequency-aware methodSMORE[15].
+B.3 Evaluation Protocol
+We evaluate with a full ranking protocol that reflects practical deployment. For each test user the
+model ranks all items not seen in training. We reportRecall@KandNDCG@Kfor K∈ {10,20}.
+Recall@K measures top K hit coverage. NDCG@K measures rank aware relevance.
+We build splits in chronological order with an 80/10/10 ratio for train, validation, and test. During
+training we use negative sampling. Each positive interaction is paired with one randomly chosen item
+that the user did not interact with to provide contrastive supervision.
+B.4 Implementation Details
+We implement our method using PyTorch within the MMRec benchmarking framework [91]. We
+use 64-dimensional embedding vectors for all item and user representations and apply Xavier
+initialization [92]. The model is optimized using the Adam optimizer [ 93] with a batch size of
+2048. Learning rates are tuned from {0.0001,0.0005,0.001,0.005} using the validation set. Early
+stopping is triggered if Recall@20 does not improve within 20 validation steps. We conduct extensive
+ablations on the number of frequency bands M∈ {2,3,4,5} and evaluate regularization weights
+for the spectral consistency loss and contrastive term from {0.0001,0.001,0.01,0.1,1.0} . All
+hyperparameter choices are selected based on validation performance. Our code and preprocessed
+datasets will be released to ensure reproducibility.
+C Experiments Analysis
+C.1 Sensitive Analysis
+To evaluate the robustness and generalizability of our approach, we conduct parameter sensitivity
+experiments on three key hyperparameters: the spectral masking regularization weight λ, the spectral
+contrastive regularization weight η, and the number of frequency bandsM used in decomposition. As
+shown in Fig. 2, our model exhibits stable performance across a wide range of values, underscoring
+its robustness to hyperparameter choices. For λ, we observe a consistent performance peak around
+10−2, with degradation when λ becomes excessively large (≥0.1 ), suggesting that overly aggressive
+suppression of spectral noise may harm useful information flow. A similar pattern emerges for η,
+where moderate contrastive regularization (η≈10 −3 ∼10 −2) improves spectral alignment, but large
+values quickly deteriorate performance due to over-constraining the representation space. Finally,
+varying the number of frequency bands M reveals that a three- or four-band decomposition provides
+the best trade-off: too few bands limit spectral expressiveness, while too many introduce noise
+and overfitting. These findings validate our design principle of moderate, structure-aware spectral
+decomposition with targeted regularization, and demonstrate that our model achieves strong results
+without requiring extensive hyperparameter tuning.
+C.2 Cross-Frequency Analysis of Modality Center Distances
+We examine the spectral dynamics of modality alignment by measuring pairwise distances between
+the centers of ID, visual and textual representations across frequency bands. As shown in Fig. 4,
+the distances are smallest in the mid frequency region. This suggests that this band captures shared
+semantic signals across modalities. The effect is meaningful and not due to chance. Cross modal
+coherence is not uniform across the spectrum. It peaks at intermediate spectral scales. The low
+frequency region encodes stable modality specific structure such as identity priors or global style. The
+high frequency region highlights sharp or noisy components that are often unique to one modality.
+These asymmetric patterns support differentiated strategies for each band. Our architecture follows
+this idea. It applies spectrum specific fusion (G-HSNO) and regularization (SBM) in the mid
+frequency band where cross modal synergy is strongest. This analysis supports our central claim.
+18
+Frequency aware modeling exposes the spectral locality of modality alignment and clarifies semantic
+granularity that conventional fusion would hide.
+C.3 Adaptive Spectral Modulation under Representation Uncertainty
+Our framework is built on the premise that different frequency components carry distinct semantic
+roles, ranging from stable structural priors to fine-grained discriminative cues, and that effective
+recommendation requires instance-aware modulation across this spectrum. To validate this capability,
+we examine a controlled setting where item representations vary in semantic certainty, namely the
+cold-start scenario. As shown in Fig. 4, cold-start items exhibit dominant reliance on low- and mid-
+frequency signals, reflected by sharply peaked spectral weights in these bands, while high-frequency
+components are significantly attenuated. Non-cold items, in contrast, show more distributed and
+high-frequency-skewed preferences that leverage richer personalized cues. This divergence arises not
+from a single module but from our unified design that combines spectral decomposition, gated hybrid
+spectral operators (G-HSNO), and contrastive regularization. The model does not apply a static
+fusion; it learns to regulate spectral emphasis based on input uncertainty. This analysis empirically
+substantiates the necessity of frequency-aware modeling and confirms the system’s ability to achieve
+fine-grained, context-adaptive representation control.
+C.4 Discussion
+Our study demonstrates that frequency-aware modeling provides a structured and interpretable lens
+for understanding multimodal interactions in recommendation systems. By decomposing user–item
+representations into distinct spectral bands, the proposed framework captures complementary semantic
+cues across modalities and enables adaptive fusion guided by spectral semantics. The integration
+of band-level modulation and spectrum-level regularization further enhances robustness against
+modality noise and data sparsity, allowing the model to dynamically adjust its emphasis based on
+uncertainty and interaction context. This design not only improves performance but also offers a
+more transparent explanation of how multimodal signals contribute to preference formation across
+different frequency levels. Despite its effectiveness, our method still has several limitations. First,
+while spectral decomposition enhances interpretability, it introduces additional computational cost
+compared to purely time- or topology-domain approaches. Second, the selection of decomposition
+granularity (i.e., the number of frequency bands) remains heuristic and may require dataset-specific
+tuning. Third, although our model captures intra- and inter-band correlations, it assumes a fixed
+transformation basis that might not fully generalize to highly non-stationary multimodal patterns.
+Finally, the current framework focuses on static multimodal graphs, extending it to temporal or
+dynamic user behaviors represents an important future direction. Addressing these limitations could
+further strengthen the generality and scalability of frequency-aware recommendation systems.
+19

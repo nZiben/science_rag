@@ -1,0 +1,680 @@
+Modality-Augmented Fine-Tuning of Foundation Robot Policies for
+Cross-Embodiment Manipulation on GR1 and G1
+Junsung Park1, Hogun Kee 1, and Songhwai Oh 1
+1Department of Electrical and Computer Engineering, Seoul National University
+Abstract— We present a modality-augmented fine-tuning
+framework for adapting foundation robot policies to diverse
+embodiments. Our study evaluates two settings: (i) the GR1
+embodiment using the public HuggingFace dataset, where we
+introduce post-processed modalities including binary contact
+signals and ZoeDepth-generated metric depth; and (ii) the
+Unitree G1 embodiment, for which we build a new multi-modal
+dataset using cuRobo motion planning, inverse kinematics,
+and ground-truth contact-force measurements (HuggingFace
+repository).
+Modality augmentation consistently improves policy perfor-
+mance across embodiments. On GR1, adding contact-state cues
+and RGB-D fusion increases online success from 51% to 63%.
+On the G1Pick Apple to Bowltask, zero-shot GR00T achieves
+0% success, standard fine-tuning reaches 48%, and our contact-
+enhanced model attains up to 94%.
+Overall, our results show that lightweight post-processing
+strengthens GR1 policies, while high-quality multi-modal data
+enables reliable Unitree G1 embodiment transfer. This work
+demonstrates a unified, data-centric pathway for extending
+foundation robot policies through targeted modality design and
+multi-modal fine-tuning.
+I. INTRODUCTION
+Recent advances in foundation robot policies have demon-
+strated that large-scale, vision-language-action (VLA) mod-
+els such as Isaac GR00T N1.5 [9] and PiZero can serve as
+strong generalist controllers capable of performing diverse
+manipulation tasks. These models leverage massive demon-
+stration datasets and diffusion-based action generation [1],
+[2], [3], enabling robust trajectory synthesis and long-horizon
+control. However, despite these successes, current founda-
+tion policies still exhibit notable limitations when deployed
+in fine-grained manipulation settings that require accurate
+perception of contact events, reliable depth reasoning, and
+precise interaction-aware control.
+As highlighted in the GR00T N1 report [9], existing
+robotic datasets form an archipelago of “data islands” arising
+from heterogeneous embodiments, sensing configurations,
+and control modes. This heterogeneity prevents foundation
+models from leveraging Internet-scale data in the same way
+as language or vision models. Moreover, cross-embodiment
+generalization remains challenging because robot morphol-
+ogy and kinematic structure fundamentally shape the distri-
+bution of feasible motions and interaction strategies. While
+GR00T addresses part of this challenge through embodiment-
+specific encoders and a dual-system architecture, its general-
+ization ability is ultimately bounded by the modalities present
+in its training data.
+A concrete example of these modality limitations appears
+in the publicly available GR1 dataset on HuggingFace,
+which provides RGB observations and proprioceptive states
+but lacks key interaction-centric modalities such as depth,
+binary contact indicators, or force measurements. Without
+these modalities, VLA models must infer contact and ob-
+ject interaction boundaries purely from color imagery—an
+ill-posed problem in scenarios involving occlusion, object
+overlap, or visually ambiguous contact transitions. As a
+result, GR00T-style policies often struggle to detect stable
+grasps, reason about object–robot contact timing, or maintain
+closed-loop stability during contact-rich manipulation. These
+limitations become even more pronounced when transferring
+a foundation model to a new embodiment such as the Unitree
+G1, where differences in kinematics, actuation, workspace
+geometry, and camera placement further degrade zero-shot
+performance.
+To address these limitations, we adopt a data-centric and
+modality-augmented fine-tuning strategy. For the GR1 em-
+bodiment, we enrich the original dataset by post-processing
+demonstrations to estimate metric depth via ZoeDepth and
+by injecting binary contact signals derived from collision
+reasoning within the simulator. This yields a multi-modal
+variant of the GR1 dataset suitable for training policies
+that better understand object interaction boundaries. For
+the G1 embodiment—where no public dataset exists—we
+generate a fully customized multi-modal demonstration set
+using cuRobo-based motion planning and inverse kinemat-
+ics [17]. This pipeline provides precise trajectories paired
+with ground-truth contact force measurements, enabling us to
+analyze how modality composition and embodiment-specific
+data influence policy adaptation.
+Our contributions are threefold. (1) We construct multi-
+modal GR1 and G1 datasets that incorporate depth and
+contact information, addressing the modality bottlenecks
+that limit current VLA foundation policies. (2) We pro-
+pose lightweight architectural augmentations for incorpo-
+rating contact and depth signals into the GR00T diffusion
+policy without modifying the core model structure. (3)
+We demonstrate that modality-augmented fine-tuning sub-
+stantially improves manipulation success rates and enables
+strong embodiment transfer from GR1 to G1, reducing the
+performance gap introduced by morphological differences.
+Overall, this work presents a practical pathway for adapt-
+ing foundation robot policies to new embodiments and
+interaction-rich tasks by explicitly engineering the sensory
+arXiv:2512.01358v1  [cs.RO]  1 Dec 2025
+modalities that underpin robust manipulation.
+II. PRELIMINARIES
+A. Diffusion Policy
+Diffusion policy is a generative action model that for-
+mulates robot control as a conditional denoising process.
+Instead of predicting actions directly, the policy learns a
+diffusion model that iteratively transforms a noisy latent
+action representation into a feasible trajectory conditioned
+on observations. This formulation is grounded in denoising
+diffusion probabilistic models [1] and their implicit vari-
+ants [2], and has recently been extended to Transformer-
+based architectures such as DiT [3].
+Formally, leto t denote the observation at timet, includ-
+ing proprioceptive states or visual features, and leta t:t+H
+represent a future action sequence over a horizonH. The
+diffusion policy samples a noisy latentx T from a Gaussian
+prior and gradually denoises it overTsteps using a learned
+denoising networkϵ θ:
+xt−1 = 1√αt
+
+xt − 1−α t√1−¯αt
+ϵθ(xt,o t)
+
++σ tz.
+Here,α t andσ t follow a predefined noise schedule, and
+zis Gaussian noise. After the final denoising step, the clean
+latentx 0 is decoded into an action sequence via
+at:t+H =f θ(x0).
+Replacing the traditional UNet with a Transformer
+backbone—as done in DiT and subsequent robotic diffu-
+sion policies—enables scalability and improves multimodal
+conditioning. This approach provides two key advantages
+for robot manipulation: (1)Multimodality: the policy can
+generate diverse yet valid action trajectories under ambigu-
+ous perception, and (2)Temporal coherence: predicting full
+action sequences improves stability for long-horizon tasks.
+B. Isaac GR00T
+Isaac GR00T is an open Vision-Language-Action (VLA)
+foundation model designed for general-purpose humanoid
+robotics [9]. As illustrated in Fig. 1, GR00T adopts a dual-
+system cognitive architecture inspired by human System 1
+and System 2 processing. System 2 is a Vision-Language
+Model (VLM) that interprets instructions and visual obser-
+vations, while System 1 is a Diffusion Transformer (DiT)
+that performs low-level motor action generation.
+The VLM encodes RGB images into visual tokens and
+tokenizes language instructions into text tokens, providing
+semantic grounding of the task objective and object re-
+lationships. In parallel, the robot’s proprioceptive state is
+embedded into state tokens through embodiment-specific
+encoders. All tokens are then passed to the DiT module,
+which applies the diffusion-based action generation described
+in Sec. II-A using transformer-based denoising rather than a
+UNet. This enables improved scalability, conditioning, and
+data efficiency.
+Fig. 1. Overview of the GR00T dual-system architecture. System 2 (VLM)
+processes image observations and language instructions into semantic to-
+kens, while System 1 (Diffusion Transformer) generates motor actions via
+iterative denoising conditioned on multimodal tokens.
+A central design goal of GR00T is embodiment general-
+ity. State and action projection layers embed each robot’s
+observation and action space into a unified token dimension,
+allowing the same diffusion policy to be fine-tuned across
+heterogeneous embodiments such as the Fourier GR1 or the
+Unitree G1. This provides a strong foundation for building
+manipulation policies, while still allowing additional modal-
+ities such as depth or contact to be incorporated during fine-
+tuning.
+In this work, GR00T serves as the base policy for modality
+augmentation. By enriching the GR1 dataset with post-
+processed depth and contact estimates, and by constructing
+a fully multi-modal G1 dataset that includes contact force
+measurements, we investigate how GR00T’s diffusion-based
+architecture adapts to richer sensory inputs and transfers
+across embodiments.
+III. PROBLEMFORMULATION
+A. Task Definition
+We consider two robot embodiments: the Fourier GR1
+and the Unitree G1. For the GR1 platform, we use three
+manipulation tasks from the publicly available GR1 dataset
+on HuggingFace: (1)Pick-and-Place Can to Drawer Close,
+(2)Pick-and-Place Potato to Microwave Close, and (3)
+Pick-and-Place Wine to Cabinet Close. Each task requires
+long-horizon manipulation with object interaction, container
+insertion, and precise end-effector control.
+For the G1 embodiment, no public dataset exists; there-
+fore, we focus on a single custom-defined task,Pick Apple
+to Bowl, which requires stable grasp acquisition, object
+transport, and placement. This task allows us to evaluate
+embodiment adaptation under newly collected multi-modal
+data.
+B. Multi-Embodiment Policy Adaptation
+Adapting a single foundation policy to both GR1 and G1
+introduces two primary challenges.
+Observation-space mismatch.:The GR1 dataset pro-
+vides RGB images and proprioceptive states, but lacks depth,
+contact indicators, or force feedback. In contrast, the G1
+Fig. 2. Visualization of the G1 data collection environment. Left: front
+view of the scene setup. Right: ego-centric view from the robot’s onboard
+camera during demonstration execution.
+dataset we construct includes RGB-D observations, propri-
+oception, and ground-truth contact forces. As a result, the
+policy must operate under heterogeneous and embodiment-
+specific sensory modalities across the two platforms.
+Action-space mismatch.:Beyond sensory differences,
+the two robots differ significantly in embodiment. The GR1
+platform uses a Fourier hand with 6 DoF, paired with a 7-DoF
+arm (13 DoF per arm, 26 DoF for both upper limbs), whereas
+the G1 platform employs a 7-DoF dexterous hand combined
+with a 7-DoF arm (14 DoF per arm, 28 DoF total). These
+differences in hand kinematics, finger actuation, and joint
+coordination introduce a non-trivial embodiment gap, raising
+the question of whether a single diffusion-based policy can
+transfer effectively across robots whose gripper morphology
+and manipulability differ substantially.
+C. Objective
+Our goal is to enable a single diffusion-based policy
+to operate robustly across two robot embodiments with
+heterogeneous sensing and action modalities. To this end,
+we consider two complementary datasets: (i) an RGB-only
+GR1 dataset that we augment with estimated depth maps and
+binary contact indicators, and (ii) a custom multi-modal G1
+dataset that includes RGB-D observations, proprioception,
+cuRobo-generated reference trajectories, and ground-truth
+contact-force measurements.
+The objective is to fine-tune a unified policy that can:
+•perform stable and contact-aware manipulation by lever-
+aging richer sensory modalities, and
+•transfer effectively across robots with different embodi-
+ments, hand structures, and action spaces (GR1→G1).
+More formally, we aim to learn a policyπ θ that generates
+action sequences via a diffusion denoising process while
+maintaining consistency and performance under variations
+in embodiment, sensing modality, and task specifications.
+The policy should generalize across both datasets and exploit
+modality augmentation to improve robustness in contact-rich
+manipulation scenarios.
+IV. PROPOSEDMETHOD
+A. G1 Dataset Creation
+Unlike the GR1 platform, no public dataset exists for
+the Unitree G1. Moreover, the G1 embodiment differs sub-
+stantially in hand morphology (7-DoF dexterous hand) and
+Fig. 3.State vs. Action per G1 joint.For each joint, we visualize the
+proprioceptive state (blue) and the executed action command (red) over time.
+The trajectories generated through cuRobo-based planning exhibit smooth,
+consistent evolution across the 20 DoF upper-limb chain, ensuring high-
+quality supervision for diffusion policy fine-tuning.
+upper-limb kinematics (7-DoF arm), making direct transfer
+from GR1 challenging. To enable modality-augmented fine-
+tuning and embodiment evaluation, we construct a high-
+quality, multi-modal demonstration dataset for thePick Apple
+to Bowltask using a motion-planning–driven pipeline.
+Trajectory generation via cuRobo.:We leverage
+cuRobo’s GPU-accelerated motion planner to generate
+smooth and collision-free end-effector trajectories. For
+each demonstration, cuRobo computes dynamically feasi-
+ble Cartesian paths that satisfy grasping and placement
+constraints. These trajectories are converted to G1 joint-
+space commands using an analytical inverse kinematics (IK)
+solver, producing reference trajectories with high temporal
+consistency.
+Proprioception and joint-action recording.:During tra-
+jectory rollout, we record the full proprioceptive state, in-
+cluding joint positions, joint velocities, and end-effector
+poses. We also log the executed joint actions generated by
+the controller at each timestep. Fig. 3 shows an example of
+the recorded state–action alignment across the 20 joints of
+the G1 upper-limb chain, demonstrating that the generated
+trajectories exhibit smooth and physically valid motion pro-
+files.
+Ground-truth contact force measurement.:A key fea-
+ture of the G1 dataset is the availability of accurate contact-
+force feedback from the dexterous hand. For each frame,
+we extract fingertip and palm contact forces using the G1
+physics engine. These signals allow the policy to learn fine-
+grained interaction cues such as grasp stability, slip, and
+object contact boundaries.
+Fig. 4 illustrates the per-finger contact forces during a
+representative demonstration. The left thumb, left middle
+finger, and palm exhibit strong, temporally structured contact
+patterns during grasping, while other fingers remain inac-
+tive—highlighting the asymmetric force distribution charac-
+teristic of dexterous manipulation.
+Fig. 4.Contact forces per finger over time.The G1 dexterous hand
+provides high-fidelity fingertip and palm force measurements. During grasp
+execution, contact is concentrated on specific fingers (left thumb, middle,
+and palm), while others remain inactive. These rich interaction signals are
+used to train contact-aware diffusion policies.
+Multi-modal observation structure.:Each demonstra-
+tion in the G1 dataset includes:
+•RGB-D observationsfrom the onboard camera,
+•full proprioception(joint positions, velocities, end-
+effector pose),
+•cuRobo-generated joint-space reference trajectories,
+•fingertip and palm contact-force vectors.
+This multi-modal dataset provides the dense physical
+and perceptual cues necessary for training policies capa-
+ble of contact-rich manipulation and for evaluating cross-
+embodiment transfer from GR1 to G1.
+B. Contact Augmentation for GR1 Dataset
+The GR1 dataset does not contain any contact information,
+preventing the policy from identifying grasp events, slip
+boundaries, or object–robot interaction timing. To compen-
+sate for this modality gap, we introduce two complementary
+forms of contact augmentation: (1) fusing collision-derived
+contact signals directly into the robot’s proprioceptive state,
+and (2) treating contact as a distinct modality through a
+dedicated contact encoder.
+1) Fusing Contact into Proprioceptive State:We first
+adopt a lightweight strategy that augments the GR1 pro-
+prioceptive state vector with a binary contact indicator. For
+each timestep, we detect collisions between the end-effector
+and the manipulated object in simulation and assign a 1-
+bit contact valuec t ∈ {0,1}, which is concatenated to the
+original state vector:
+˜st = [s joints
+t , ct ].
+This minimally increases the input dimension of the state
+encoder while allowing the diffusion policy to reason about
+object interaction boundaries. The augmented state is passed
+through the embodiment-specific state encoder to obtain a
+contact-aware embedding:
+zt =StateEnc(˜st).
+Fig. 5.Dedicated Contact Encoder Module.Instead of concatenating
+contact into the proprioceptive state, the binary (or continuous) contact sig-
+nalc t is processed by a learnable Contact Encoder. The resulting embedding
+is input to the DiT blocks as a separate modality, alongside vision, language,
+and state tokens. This design treats contact as an independent modality and
+allows the policy to learn richer interaction-aware representations.
+During denoising, this embedding conditions the DiT
+backbone via cross-attention, directly influencing noise pre-
+diction:
+xt−1 = 1√αt
+
+xt −β t ϵθ(xt, zt, t)
+
++σ tz,
+wherex t is the noisy action,ϵ θ is the DiT denoiser, andt
+is the diffusion step.
+This simple augmentation provides a strong supervisory
+signal: contact-aware embeddings help the policy stabilize
+grasping actions, prevent premature release, and improve the
+consistency of object transport behaviors.
+2) Dedicated Contact Encoder Module:To treat contact
+as an independent sensory modality rather than a scalar fea-
+ture embedded into the proprioceptive state, we introduce a
+dedicated contact encoder module (Fig. 5). Here, the contact
+signalc t is encoded through a learnable MLP before entering
+the diffusion transformer, allowing the model to represent
+interaction dynamics at a higher level of abstraction.
+Formally, the contact embedding is obtained as:
+zcontact
+t =ContactEnc(c t),
+which captures temporal and semantic structure in the contact
+sequence. The full conditioning set for each DiT block
+becomes:
+Zt =
+
+zvision
+t , ztext
+t , zstate
+t , zcontact
+t
+
+,
+ensuring that contact is treated as a first-class modality, equal
+in importance to vision and proprioception.
+By injecting contact as an independent token stream,
+the denoiserϵ θ gains explicit access to tactile cues during
+each diffusion step. This enables the model to differentiate
+between weak vs. strong grasp phases, detect pre-contact
+vs. post-contact transitions, and learn more expressive rep-
+resentations for contact-rich manipulation.
+C. Depth Augmentation (RGB-D Fusion)
+The GR1 dataset contains only RGB observations, which
+restricts the policy’s ability to reason about 3D geome-
+try, object boundaries, and occlusions. To overcome this
+limitation, we generate metric depth maps for all GR1
+Fig. 6.RGB and Estimated Depth for GR1 Demonstrations.Left:
+original RGB observation from the GR1 simulator. Right: corresponding
+metric depth map computed by ZoeDepth. Depth enhances geometric
+reasoning by capturing spatial structure such as object shape, table height,
+and cabinet geometry.
+Fig. 7. Example simulation environments used for online evaluation.
+Each rollout randomizes object placement, textures, lighting, and robot
+configuration to assess robustness.
+demonstrations using ZoeDepth, a state-of-the-art monocular
+depth estimator capable of producing scale-consistent depth
+predictions. The resulting RGB-D frames equip the policy
+with explicit geometric cues that are essential for contact-
+rich manipulation.
+Extending the Vision Encoder for RGB-D Input.:
+GR00T’s Eagle-2 ViT processes16×16RGB patches using
+a linear projection layer. To incorporate depth, we expand
+the patch embedding from 3 to 4 channels. For each16×16
+patchP t from the RGB-D inputI t ∈R H×W×4 :
+et =W patch ·Flatten(P t) +b patch,
+with
+Wpatch ∈R d×(16×16×4).
+To stabilize early training, the depth-channel weights are
+initialized using RGB kernel averaging:
+W(D)
+patch = 1
+3
+
+W(R)
+patch +W (G)
+patch +W (B)
+patch
+
+.
+RGB-D Token Fusion.:The depth map is concatenated
+with the RGB channels prior to the Vision Encoder, forming
+an RGB-D input that undergoes early fusion through the
+expanded patch embedding layer. Once embedded, the RGB-
+D patches pass through the standard ViT encoder with-
+out architectural modification. The resulting tokens{z img
+t }
+encode both appearance and geometric structure, enabling
+the diffusion policy to reason more effectively about depth
+discontinuities, grasp approach angles, and occluded object
+surfaces.
+V. EXPERIMENTS
+A. Experimental Settings
+Hardware and Environment.:All experiments are con-
+ducted on a single NVIDIA A6000 GPU using the official
+GR00T fine-tuning framework. Online evaluation is per-
+formed in a robosuite and robocasa based simulator via a
+server–client inference pipeline, while offline evaluation uses
+trajectory reconstruction MSE computed from the dataset.
+Training Configuration.:We fine-tune the GR00T-N1.5-
+3B base model with the vision tower and VLM back-
+bone frozen. Only the projector and embodiment-specific
+state/action encoders are updated. Training uses the AdamW
+optimizer with a learning rate of1e−4, weight decay of
+1e−5, cosine LR schedule with 5% warmup, and batch size
+32. Models are trained for 20k steps usingbf16precision.
+Checkpoints are saved every 5,000 steps.
+Diffusion and Policy Head.:Action generation uses
+GR00T’s diffusion transformer with 12 layers, 8-head cross-
+attention, hidden size 1024, and GELU activation. Flow-
+matching training employs a Beta noise distribution (α=1.5,
+β=1.0) with 1,000 timestep discretization.
+B. Evaluation Protocol
+We evaluate all models using two complementary pro-
+cedures: (1) offline trajectory reconstruction and (2) online
+policy rollout in simulation. This dual protocol allows us to
+measure both the accuracy of the diffusion model’s action
+prediction and its real-time manipulation capability.
+Offline Evaluation (Trajectory MSE).:Given an obser-
+vation sequenceo t from the dataset, the diffusion policy
+predicts a 16-step action sequence ˆat:t+H through iterative
+denoising. We compute the mean-squared error (MSE) be-
+tween the predicted and ground-truth actions:
+MSE= 1
+H
+H−1X
+k=0
+∥ˆat+k −a t+k∥2
+2 .
+This metric quantifies the policy’s ability to reconstruct
+expert trajectories and reflects the quality of multimodal con-
+ditioning (contact, depth, proprioception). Offline evaluation
+is performed on held-out validation data from both GR1 and
+G1 datasets.
+Online Evaluation (Success Rate).:To evaluate real-
+time manipulation performance, we deploy the policy in a
+simulator stack composed ofrobosuiteandrobocasa.
+robosuiteprovides the manipulation task environments,
+whilerobocasasupplies object assets, scene setups, and
+interaction configurations used for household and pick-and-
+place scenarios.We adopt a server–client inference loop in
+which, at each timestep, the client captures the current RGB
+(or RGB-D) observations and proprioceptive states, packages
+them into a policy query, and sends the request to the
+inference server. The server processes this input through the
+GR00T policy and returns the predicted action, which is
+immediately applied to the simulator.
+The success rate is computed as:
+Success Rate= # successful rollouts
+# total rollouts .
+For each task, we perform 20 randomized rollouts with
+varying initial object positions and robot configurations to
+evaluate robustness.
+Complementary Nature of the Metrics.:Offline MSE
+captures the model’s ability to match expert demonstra-
+tions but does not fully reflect closed-loop stability. On-
+line evaluation measures actual manipulation success under
+embodiment-specific dynamics, noisy perceptual conditions,
+and contact-rich interactions. Together, these metrics provide
+a comprehensive assessment of policy quality across GR1
+and G1 embodiments.
+C. GR1 Experiments: Modality Augmentation Analysis
+We conduct a modality-wise ablation study on the publicly
+released GR1 dataset to evaluate the effect of contact and
+depth augmentation on both offline trajectory reconstruction
+and online manipulation performance.
+1) Online Evaluation (Success Rate):Table 1 summarizes
+the online success rates measured through simulation rollouts
+across three GR1 tasks. Contact-state augmentation provides
+modest gains, while depth augmentation significantly im-
+proves success under visually ambiguous scenarios. The full
+model incorporating both depth and contact achieves the
+highest success rate across all evaluated tasks.
+2) Offline Evaluation (MSE):Table 2 reports the mean-
+squared error (MSE) between the predicted and ground-
+truth action trajectories for thePnP Can to Drawer Close
+task. Among all configurations, depth augmentation provides
+the most substantial improvement in offline reconstruction
+quality, indicating that geometric cues significantly reduce
+ambiguity in action prediction. Furthermore, combining both
+depth and contact information yields the lowest overall
+error, demonstrating the complementary benefit of integrating
+multi-modal signals into the diffusion denoising process.
+D. G1 Experiments: Embodiment Transfer with Custom
+Multi-Modal Data
+To assess embodiment transfer and quantify the impact of
+contact-rich demonstrations on the Unitree G1, we perform
+a modality ablation study on a customizedPick Apple to
+Bowldataset generated using cuRobo-based motion plan-
+ning and ground-truth force measurements. Compared to the
+GR1 platform, the G1 provides explicit 6-axis force sensing
+and a 7-DoF dexterous hand, offering a more informative
+testbed for analyzing how contact and geometric modalities
+contribute to fine-grained manipulation.
+Model Configuration Success Rate (%) MSE
+GR00T N1.5 (Zero-shot)0.0%0.35719
+GR00T N1.5 (Finetuning)48.0%0.031716
+Ours (+ Contact Encoder)74.0%0.024407
+Ours (+ Contact State)94.0%0.018623
+Ours (+ Depth)82.0%0.022596
+TABLE I
+ABLATION STUDY ON MULTI-MODAL AUGMENTATION FOR
+EMBODIMENT TRANSFER ONUNITREEG1.
+1) Online Evaluation (Success Rate):Table 1. reports the
+online evaluation results across all modality configurations.
+Zero-shot GR00T N1.5 fails entirely on the G1, underscoring
+the substantial embodiment gap between GR1 and G1 in
+hand morphology, sensor topology, and contact dynamics.
+Finetuning with 5K embodiment-aligned demonstrations im-
+Fig. 8. Comparison between ground-truth actions, predicted actions, and
+executed inference points across the first three action dimensions. The model
+closely tracks the demonstration trajectory, indicating stable diffusion-based
+denoising and accurate action reconstruction.
+proves performance to 48%, demonstrating that platform-
+specific data is essential for stable closed-loop control.
+Incorporating contact-force measurements yields signifi-
+cant additional gains. Modeling force signals as an aux-
+iliary modality increases success to 74%, indicating that
+contact cues provide valuable information for regulating
+grasp pressure and mitigating slip during the transport phase.
+The best performance (94%) arises when force signals are
+fused directly into the proprioceptive state representation,
+suggesting that early fusion produces richer latent dynamics
+and stronger conditioning for the diffusion-based denoising
+process.
+Depth augmentation also contributes substantial improve-
+ments. Integrating depth features achieves an 82% success
+rate, showing that 3D geometry aids in resolving self-
+occlusion, disambiguating the apple–bowl interaction region,
+and stabilizing approach trajectories. However, unlike the
+GR1—where depth was the dominant performance factor due
+to limited contact sensing—the G1 benefits more from force-
+aware modalities. This indicates that depth alone cannot cap-
+ture the fine-scale local interactions required for dexterous
+contact-rich manipulation.
+Cross-Embodiment Insight.:Overall, the results high-
+light that optimal modality design is inherently embodiment-
+specific. GR1 derives most of its improvement from geomet-
+ric augmentation, whereas G1 relies primarily on contact-rich
+supervision to compensate for its higher manipulation dex-
+terity and increased interaction complexity. These findings
+underscore that successful transfer of foundation policies to
+new platforms requires aligning sensory modalities with the
+target robot’s kinematic structure and physical interaction
+characteristics.
+VI. CONCLUSION ANDFUTUREWORK
+This work presented a modality-augmented fine-tuning
+framework for adapting foundation robot policies to hetero-
+geneous embodiments. Using the GR1 dataset, we showed
+that depth augmentation substantially improves both offline
+trajectory reconstruction and online manipulation success,
+while contact-state integration provides complementary gains
+for contact-rich tasks. To address the limitations of RGB-
+only public datasets, we introduced a customized multi-
+modal dataset for the Unitree G1, generated using cuRobo-
+based motion planning and ground-truth force measurements.
+Experiments demonstrate that contact-force supervision is
+essential for reliable control on the G1 platform: while zero-
+shot GR00T fails due to embodiment mismatch, incorpo-
+rating contact information yields a dramatic performance
+increase, achieving up to 94% success in thePick Apple to
+Bowltask.
+Our cross-embodiment analysis highlights that optimal
+modality selection depends strongly on robot morphology
+and sensing capabilities: depth is most beneficial for the
+GR1’s visually ambiguous manipulation scenes, whereas ex-
+plicit contact-force feedback is crucial for the G1’s dexterous
+hand and grasp-centric behaviors. These findings underscore
+the importance of tailoring modality design and dataset
+construction to the target embodiment when deploying foun-
+dation policies across platforms.
+Future Work.There are several promising directions for
+extending this study. First, integrating real-world sensory
+streams—such as tactile arrays, joint torque measurements,
+and stereo depth—would enable evaluation beyond simu-
+lation and support robust sim-to-real deployment. Second,
+jointly training the vision, language, and diffusion modules,
+rather than relying on frozen VLM backbones, may lead
+to stronger multi-modal fusion and improved generalization.
+Third, expanding the G1 dataset to additional task families
+and more diverse environments would facilitate large-scale
+multi-embodiment benchmarking. Fourth, exploring cross-
+robot policy distillation or embodiment-conditioned latent
+representations may further improve transfer between mor-
+phologically distinct robots.
+Another promising direction is the development of a
+contact-adaptive denoising schedulefor diffusion policies.
+Prior to establishing contact, the policy could employ a
+larger number of denoising iterations with higher noise
+levels (σt) to encourage broader action exploration, improve
+wrist alignment, and mitigate approach-phase miscalibration.
+After contact is detected, the algorithm could transition to
+fewer iterations with lowerσ t, yielding a contact-conditioned
+βt/σt schedule that stabilizes grasp execution and reduces
+action variance during transport. Such adaptive schedules
+may significantly improve closed-loop robustness in contact-
+rich manipulation.
+Overall, our results demonstrate that modality-aware fine-
+tuning, combined with carefully constructed multi-modal
+datasets, provides an effective pathway for adapting founda-
+tion robot policies to new embodiments and unlocking robust
+manipulation capabilities across platforms.
+REFERENCES
+[1] J. Ho, A. Jain, and P. Abbeel, “Denoising diffusion probabilistic
+models,” inAdvances in Neural Information Processing Systems, 2020.
+[2] J. Song, C. Meng, and S. Ermon, “Denoising diffusion implicit
+models,” inInternational Conference on Learning Representations,
+2021.
+[3] W. Peebles and S. Xie, “Scalable diffusion models with transform-
+ers,” inProceedings of the IEEE/CVF International Conference on
+Computer Vision, 2023.
+[4] Y . Lipman et al., “Flow matching for generative modeling,” inInter-
+national Conference on Learning Representations, 2023.
+[5] J.-B. Alayrac et al., “Flamingo: A visual language model for few-
+shot learning,” inAdvances in Neural Information Processing Systems,
+2022.
+[6] A. Brohan et al., “RT-2: Vision-language-action models transfer web
+knowledge to robotic control,” Google DeepMind technical report,
+2023.
+[7] P. Jain et al., “OpenVLA: An open vision-language-action model for
+generalist robots,” Technical report, 2024.
+[8] T. Kollar et al., “Octo: An embodied foundation model for robotic
+manipulation,” Technical report, 2024.
+[9] NVIDIA, “GR00T N1: An open foundation model for generalist
+humanoid robots,” NVIDIA Research report, 2025.
+[10] Y . Xia et al., “PerAct: Perception-and-action transformers for robotic
+manipulation,” inConference on Robot Learning, 2022.
+[11] T. Chi et al., “Diffusion policy: Visuomotor policy learning via action
+diffusion,” inRobotics: Science and Systems, 2023.
+[12] H. Jang et al., “Depth-aware policy learning for robot manipulation,”
+inIEEE International Conference on Robotics and Automation, 2024.
+[13] R. Calandra et al., “Deep tactile representation learning,”International
+Journal of Robotics Research, 2021.
+[14] A. Church et al., “Learning contact-rich manipulation with differen-
+tiable physics,” inRobotics: Science and Systems, 2022.
+[15] A. Z. Wang et al., “robosuite: A modular simulation framework for
+robot learning,” inIEEE International Conference on Robotics and
+Automation, 2020.
+[16] M. Li et al., “RoboCasa: Large-scale household simulation for robotic
+manipulation,” Meta AI technical report, 2023.
+[17] P. Sundaram et al., “cuRobo: Parallelized motion generation for
+complex robotic systems,” NVIDIA Research report, 2023.
+[18] D. Berenson et al., “Learning neural inverse kinematics solvers for
+articulated robots,” inIEEE International Conference on Robotics and
+Automation, 2022.
+[19] S. Bhat et al., “ZoeDepth: Zero-shot metric monocular depth esti-
+mation,” inIEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2023.
+[20] J. T. Wu et al., “EgoSchema: Scaling robot learning with egocentric
+multimodal data,” Technical report, 2024.

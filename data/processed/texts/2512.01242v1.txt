@@ -1,0 +1,1433 @@
+Generative Adversarial Gumbel MCTS for Abstract Visual Composition
+Generation
+Zirui Zhao1* Boye Niu2* David Hsu1 Wee Sun Lee1
+1National University of Singapore 2University of Sydney
+ziruiz@u.nus.edu
+Abstract
+We studyabstract visual composition, in which identity is
+primarily determined by the spatial configuration and rela-
+tions among a small set of geometric primitives (e.g., parts,
+symmetry, topology). They are invariant primarily to tex-
+ture and photorealistic detail. Composing such structures
+fromfixed componentsundergeometric constraintsand
+vague goal specification(such as text) is non-trivial due to
+combinatorial placement choices, limited data, and discrete
+feasibility (overlap-free, allowable orientations), which cre-
+ate a sparse solution manifold ill-suited to purely statisti-
+cal pixel-space generators. We propose a constraint-guided
+framework that combines explicit geometric reasoning with
+neural semantics. An AlphaGo-style search enforces fea-
+sibility, while a fine-tuned vision-language model scores
+semantic alignment as reward signals. Our algorithm
+uses a policy network as a heuristic in Monte-Carlo Tree
+Search and fine-tunes the network via search-generated
+plans. Inspired by the Generative Adversarial Network, we
+use the generated instances for adversarial reward refine-
+ment. Over time, the generation should approach the actual
+data more closely when the reward model cannot distin-
+guish between generated instances and ground-truth. In the
+Tangram Assembly task, our approach yields higher valid-
+ity and semantic fidelity than diffusion and auto-regressive
+baselines, especially as constraints tighten.
+1. Introduction
+Abstract visual concepts, those defined by structural rela-
+tions among primitives rather than by rich texture or appear-
+ance, underlie many forms of human reasoning, communi-
+cation and design. For example, architectural blueprints,
+engineering schematics, iconography and signage com-
+pose meaning from simplified geometric forms across con-
+texts. We therefore foregroundvisual composition: mean-
+ing emerges from how simple parts are arranged into struc-
+*Equal contribution.
+GAG MCTS
+Classiﬁer-
+guided 
+Diffusion
+Person 
+sitting
+Perched 
+bird
+Thumb 
+up
+Figure 1. The Tangram assembly task. The seven pieces are placed
+on the board to form the target shape, described by the text prompt
+such as “perched bird”. We show that our GAG MCTS can gener-
+ate semantically aligned abstract visual concepts under hard con-
+straints and limited data, while diffusion models perform poorly.
+ture. We call a visual conceptabstractwhen its identity
+is specified primarily by structural regularities over simple
+primitives (shape, part relations, closure, symmetry), con-
+sistent with structural accounts and Gestalt principles of
+perceptual organisation [3, 50]. In this paper, we study com-
+position explicitly by assembling fixed geometric pieces
+into target silhouettes or layouts from weak language cues
+(e.g., “bird,” “boat”), e.g., Tangram Assembly in Fig 1.
+Composing with fixed pieces under geometric con-
+straints differs fundamentally from naturalistic synthesis.
+First, feasibility isdiscrete and brittle: a single overlap or
+misalignment invalidates a composition; the feasible set is
+sparse and highly non-convex. Second, search iscombina-
+torial: at each step, the system must choose which piece,
+where, and how to orient it while preserving future flexibil-
+ity. Related packing/cutting problems are NP-hard even in
+simplified rectangular settings, underscoring intrinsic diffi-
+culty [16, 22]. Third, semantics areunderspecified: tex-
+tual prompts imply global shape regularities without pre-
+scribing unique layouts. Data-driven generators trained to
+match pixel statistics (e.g., diffusion, latent diffusion) ex-
+cel at appearance but struggle toguaranteehard constraints
+or discover valid layouts from limited supervision [19, 42].
+Object-centric auto-regressive transformer approaches ar-
+1
+arXiv:2512.01242v1  [cs.CV]  1 Dec 2025
+gue for compositional structure, but still lack exact con-
+straint enforcement during synthesis [35].
+To address these challenges, we propose an AlphaGo-
+like framework that integrates hard constraints into Monte
+Carlo Tree Search (MCTS) and employs a vision-language
+model to assess whether a generated configuration matches
+the textual goal. The key assumption is that validating an
+abstract visual composition is easier than learning to com-
+pose it directly. Prior work shows that fine-tuned vision-
+language models can reach human-level accuracy in recog-
+nising abstract tangram shapes [25], suggesting their suit-
+ability as reward models for evaluating candidate solutions.
+Our method adopts an AlphaGo-style algorithm [47],
+where hard constraints are embedded in the transition model
+to prune infeasible actions. A fine-tuned CLIP model [40]
+serves as the reward function, measuring the semantic align-
+ment between the final assembly and the goal description.
+Because such scorers may be permissive or inconsistent
+on out-of-distribution samples, we introduce adversarial re-
+ward refinement to better distinguish valid from near-miss
+compositions. The policy guiding MCTS is trained using
+Proximal Policy Optimisation [45] (PPO) with the refined
+reward, and the resulting policy is further used to gener-
+ate hard negative examples for continued adversarial re-
+ward refinement. This framework enhances sample effi-
+ciency through constraint-based pruning and improves se-
+mantic faithfulness by leveraging language-aligned visual
+features.
+We evaluate onTangram assembly: seven fixed pieces
+must depict a textual concept; this probes joint semantic
+and geometric competence. We found that methods with-
+out search are limited in generating semantically aligned
+abstract visual concepts. To better understand the issues, we
+relax the problem into arectangle compositiontask, where
+a composition is semantically valid if all pieces lie within a
+bounded area of width and height specified by the text. We
+found that the diffusion model and PPO achieved great per-
+formance in generation with weak geometrical constraints,
+but performed poorly with tight geometrical constraints.
+Across both, the proposed search-based generator achieves
+higher geometric validity and semantic agreement than dif-
+fusion and autoregressive baselines, with gains increasing
+under tighter constraints [22].
+In summary, we proposed a hybrid method combining
+constraint-aware search with language-aligned visual re-
+wards and adversarial refinement, specifically for abstract
+visual composition under hard constraints and limited data.
+Our method performs substantially better in Tangram as-
+sembly and rectangle composition problems than diffusion,
+auto-regressive transformer, and PPO-based methods.
+2. Related work
+Abstract visual reasoning.Abstract visual concepts are
+intangible ideas or notions that lack a physical form or con-
+crete attributes. They cannot be directly perceived and typi-
+cally denote qualities, relationships, or processes [4]. Those
+concepts have long been used to explore how people col-
+laborate in communication when there are no established
+naming conventions, dating back to [30]. Tangrams were
+introduced as a research tool by [9]. Although these fig-
+ures are composed of the same seven basic shapes, they in-
+spire a diverse range of figurative descriptions, reflecting
+different ways of conceptualising them [2, 5, 13, 20, 21].
+A recent study [25] focuses on the tangram reasoning for
+classification purposes using modern vision-language mod-
+els. Those models process multimodal data through joint
+encoding, which captures richer interactions [7, 28, 36], or
+separate encoding, which is more flexible [26, 41].
+For generating/visualising abstract visual concepts, there
+are a much smaller number of studies. Some research works
+use a diffusion model to generate images with abstract style
+or vector format (e.g., SVG) given language descriptions
+[15, 23, 43, 51, 53] or photo-realistic images [31, 37]. Some
+studies [10, 17, 32, 34, 48, 52] also focus on visualising
+highly abstract concepts with metaphor, which is highly
+subjective and does not focus on generating abstract rep-
+resentations of concrete objects. These works treat the lan-
+guage or image input as soft constraints, and many are very
+successful. However, neither of them had the hard geomet-
+rical constraints for their generation tasks.
+Constrained Generation.Constrained generation is in-
+creasingly important for outputs that must satisfy geomet-
+ric or physical rules. Methods incorporate constraints dur-
+ing training or inference, including geometric-loss GANs
+[57] and factor-graph layouts [14]. In CAD and mechani-
+cal design, models such as SketchGen [39] emit primitives
+plus constraints for downstream solvers; dual-discriminator
+GANs [1] and parameter-efficient models [38] target me-
+chanical and geometric validity. Together, these works inte-
+grate domain constraints into generative pipelines, improv-
+ing reliability.
+Diffusion models show promise but struggle to enforce
+hard geometric rules: denoising approximates constraints
+without guarantees. Post-hoc projections (mirror mapping
+[33], optimisation-based sampling [8]) remain approximate
+and can fail under novel configurations; training-free fixes
+[56] add heuristics without verification. Without explicit
+geometric representations, constraints become negotiable
+preferences—unacceptable in precision domains (e.g., me-
+chanical design). Recent MCTS-guided diffusion planning
+[55] uses rewards, but its action space still depends on dif-
+fusion via two meta actions (GUIDE/NO GUIDE), keeping
+hard constraints implicit and unenforced.
+2
+3. Abstract Visual Composition
+We formulate abstract visual composition under constraints
+using planning terminology. LetSbe the state space rep-
+resenting all possible configurations of compositions (e.g.,
+images, text, code) andAbe the action space consisting of
+composition operations. Each states∈Smust satisfy a
+set of hard constraintsC(s), which could include structural
+constraints (e.g., geometric constraints in tangram assem-
+bly), syntactic constraints (e.g., grammar rules in text gen-
+eration), or logical constraints (e.g., type checking in code
+generation). Given a specificationy∈Y, the constrained
+composition problem can be formulated as:
+finds∈S(1)
+s.t.C(s) =True (2)
+G(s, y) =True (3)
+whereC(s)represents the domain-specific constraints that
+must be satisfied, and the goal functionG(s, y)determines
+whether statesfulfils the requirements specified byy. The
+transition functionT(s, a)captures how composition ac-
+tionsa∈Atransform the states.
+This formulation encompasses various constrained com-
+position tasks. In tangram assembly, seven fixed pieces
+must be arranged to match a text-specified concept un-
+der geometric constraints:Sis the space of layouts using
+two small triangles, one medium triangle, two large trian-
+gles, one square, and one parallelogram;Yis the space of
+natural-language descriptions of shapes; and the constraints
+C(x)require(1) each piece connects to at least one other,
+(2) no overlaps, (3) all seven pieces are used. In constrained
+text generation,Scould be sequences of tokens with syntac-
+tic or semantic constraints; in program synthesis,Smight
+be programs that must satisfy both syntactic and semantic
+requirements.
+(a) (b)
+Figure 2. The demo of the actions in Tangram assembly. (a) The
+pieces can only be placed when their anchor points align; (b) rota-
+tions are restricted to multiples of 45 degrees.
+For each assembly step, one piece can be placed adja-
+cent to an already placed piece. To make the action space
+tractable, we discretise the possible placements:1) each
+piece has anchor points defined as its vertices and edge
+midpoints; 2) pieces can only be placed when their an-
+chor points align; 3) rotations are restricted to multiples
+of 45 degrees.Example actions are demonstrated in Fig-
+ure 2. Under these discretisation rules, the total valid action
+space contains approximately 3000 unique actions. The re-
+quirement functionR(x, y)evaluates whether the assem-
+bled configurationxmatches the given text descriptiony.
+4. Generative Adversarial Gumbel MCTS
+The core idea of our approach is based on the assumption
+that abstract visual composition is computationally hard to
+solve, but easy to verify if the solution is correct. We fine-
+tune the pre-trained vision language model as the reward
+model for verifying if the generated tangram configurations
+match the descriptions. The verification is computationally
+more efficient than finding such a tangram configuration.
+MCTS Policy-Value 
+Network
+Reward 
+Network
+<latexit sha1_base64="zKzGJjkYTPC4Ik89sGjQSj+NShY=">AAAB6nicbVA9SwNBEJ3zM8avqKXNYhBsDHciahnQwsIiovmA5Ah7m71kyd7esTsnhCM/wcZCEVt/kZ3/xk1yhSY+GHi8N8PMvCCRwqDrfjtLyyura+uFjeLm1vbObmlvv2HiVDNeZ7GMdSughkuheB0FSt5KNKdRIHkzGF5P/OYT10bE6hFHCfcj2lciFIyilR5uuqfdUtmtuFOQReLlpAw5at3SV6cXszTiCpmkxrQ9N0E/oxoFk3xc7KSGJ5QNaZ+3LVU04sbPpqeOybFVeiSMtS2FZKr+nshoZMwoCmxnRHFg5r2J+J/XTjG88jOhkhS5YrNFYSoJxmTyN+kJzRnKkSWUaWFvJWxANWVo0ynaELz5lxdJ46ziXVS8+/Ny9S6PowCHcAQn4MElVOEWalAHBn14hld4c6Tz4rw7H7PWJSefOYA/cD5/ALtTjXg=</latexit>
+D
+ 
+<latexit sha1_base64="esqw8RrAtR4xfcZvZMLuxLyimpk=">AAAB6nicbVBNS8NAEJ34WetX1aOXxSIIQklE1GNBDx48VLQf0Iay2W7apZtN2J0IJfQnePGgiFd/kTf/jds2B219MPB4b4aZeUEihUHX/XaWlldW19YLG8XNre2d3dLefsPEqWa8zmIZ61ZADZdC8ToKlLyVaE6jQPJmMLye+M0nro2I1SOOEu5HtK9EKBhFKz3cdE+7pbJbcacgi8TLSRly1Lqlr04vZmnEFTJJjWl7boJ+RjUKJvm42EkNTygb0j5vW6poxI2fTU8dk2Or9EgYa1sKyVT9PZHRyJhRFNjOiOLAzHsT8T+vnWJ45WdCJSlyxWaLwlQSjMnkb9ITmjOUI0so08LeStiAasrQplO0IXjzLy+SxlnFu6h49+fl6l0eRwEO4QhOwINLqMIt1KAODPrwDK/w5kjnxXl3PmatS04+cwB/4Hz+ALhLjXY=</latexit>
+D
++
+MCTS
+Reward 
+Network
+<latexit sha1_base64="zKzGJjkYTPC4Ik89sGjQSj+NShY=">AAAB6nicbVA9SwNBEJ3zM8avqKXNYhBsDHciahnQwsIiovmA5Ah7m71kyd7esTsnhCM/wcZCEVt/kZ3/xk1yhSY+GHi8N8PMvCCRwqDrfjtLyyura+uFjeLm1vbObmlvv2HiVDNeZ7GMdSughkuheB0FSt5KNKdRIHkzGF5P/OYT10bE6hFHCfcj2lciFIyilR5uuqfdUtmtuFOQReLlpAw5at3SV6cXszTiCpmkxrQ9N0E/oxoFk3xc7KSGJ5QNaZ+3LVU04sbPpqeOybFVeiSMtS2FZKr+nshoZMwoCmxnRHFg5r2J+J/XTjG88jOhkhS5YrNFYSoJxmTyN+kJzRnKkSWUaWFvJWxANWVo0ynaELz5lxdJ46ziXVS8+/Ny9S6PowCHcAQn4MElVOEWalAHBn14hld4c6Tz4rw7H7PWJSefOYA/cD5/ALtTjXg=</latexit>
+D
+ 
+<latexit sha1_base64="esqw8RrAtR4xfcZvZMLuxLyimpk=">AAAB6nicbVBNS8NAEJ34WetX1aOXxSIIQklE1GNBDx48VLQf0Iay2W7apZtN2J0IJfQnePGgiFd/kTf/jds2B219MPB4b4aZeUEihUHX/XaWlldW19YLG8XNre2d3dLefsPEqWa8zmIZ61ZADZdC8ToKlLyVaE6jQPJmMLye+M0nro2I1SOOEu5HtK9EKBhFKz3cdE+7pbJbcacgi8TLSRly1Lqlr04vZmnEFTJJjWl7boJ+RjUKJvm42EkNTygb0j5vW6poxI2fTU8dk2Or9EgYa1sKyVT9PZHRyJhRFNjOiOLAzHsT8T+vnWJ45WdCJSlyxWaLwlQSjMnkb9ITmjOUI0so08LeStiAasrQplO0IXjzLy+SxlnFu6h49+fl6l0eRwEO4QhOwINLqMIt1KAODPrwDK/w5kjnxXl3PmatS04+cwB/4Hz+ALhLjXY=</latexit>
+D
++
+Real dataset Real dataset
+MCTS Policy-Value 
+Network
+Real dataset
+(1) Data collection (2) Policy Imitation (3) Reward Adversarial Training
+Gumbel Muzero Gumbel Muzero Gumbel Muzero
+<latexit sha1_base64="Jci4C9wLRqQPWeIuis36YB/+POE=">AAAB+HicbVDLSgMxFL3js9ZHR126CRbBVZkRUZcFXbhwUcE+oB2GTJq2oUlmSDJCHfolblwo4tZPceffmGlnoa0HAodz7uWenCjhTBvP+3ZWVtfWNzZLW+Xtnd29irt/0NJxqghtkpjHqhNhTTmTtGmY4bSTKIpFxGk7Gl/nfvuRKs1i+WAmCQ0EHko2YAQbK4Vu5SbsCWxGSmQJx3IaulWv5s2AlolfkCoUaITuV68fk1RQaQjHWnd9LzFBhpVhhNNpuZdqmmAyxkPatVRiQXWQzYJP0YlV+mgQK/ukQTP190aGhdYTEdnJPKRe9HLxP6+bmsFVkDGZpIZKMj80SDkyMcpbQH2mKDF8YgkmitmsiIywwsTYrsq2BH/xy8ukdVbzL2r+/Xm1flfUUYIjOIZT8OES6nALDWgCgRSe4RXenCfnxXl3PuajK06xcwh/4Hz+ADUFk3w=</latexit>
+D
+plan
+<latexit sha1_base64="Jci4C9wLRqQPWeIuis36YB/+POE=">AAAB+HicbVDLSgMxFL3js9ZHR126CRbBVZkRUZcFXbhwUcE+oB2GTJq2oUlmSDJCHfolblwo4tZPceffmGlnoa0HAodz7uWenCjhTBvP+3ZWVtfWNzZLW+Xtnd29irt/0NJxqghtkpjHqhNhTTmTtGmY4bSTKIpFxGk7Gl/nfvuRKs1i+WAmCQ0EHko2YAQbK4Vu5SbsCWxGSmQJx3IaulWv5s2AlolfkCoUaITuV68fk1RQaQjHWnd9LzFBhpVhhNNpuZdqmmAyxkPatVRiQXWQzYJP0YlV+mgQK/ukQTP190aGhdYTEdnJPKRe9HLxP6+bmsFVkDGZpIZKMj80SDkyMcpbQH2mKDF8YgkmitmsiIywwsTYrsq2BH/xy8ukdVbzL2r+/Xm1flfUUYIjOIZT8OES6nALDWgCgRSe4RXenCfnxXl3PuajK06xcwh/4Hz+ADUFk3w=</latexit>
+D
+plan
+Policy-Value 
+Network
+<latexit sha1_base64="Jci4C9wLRqQPWeIuis36YB/+POE=">AAAB+HicbVDLSgMxFL3js9ZHR126CRbBVZkRUZcFXbhwUcE+oB2GTJq2oUlmSDJCHfolblwo4tZPceffmGlnoa0HAodz7uWenCjhTBvP+3ZWVtfWNzZLW+Xtnd29irt/0NJxqghtkpjHqhNhTTmTtGmY4bSTKIpFxGk7Gl/nfvuRKs1i+WAmCQ0EHko2YAQbK4Vu5SbsCWxGSmQJx3IaulWv5s2AlolfkCoUaITuV68fk1RQaQjHWnd9LzFBhpVhhNNpuZdqmmAyxkPatVRiQXWQzYJP0YlV+mgQK/ukQTP190aGhdYTEdnJPKRe9HLxP6+bmsFVkDGZpIZKMj80SDkyMcpbQH2mKDF8YgkmitmsiIywwsTYrsq2BH/xy8ukdVbzL2r+/Xm1flfUUYIjOIZT8OES6nALDWgCgRSe4RXenCfnxXl3PuajK06xcwh/4Hz+ADUFk3w=</latexit>
+D
+plan
+Reward 
+Network
+<latexit sha1_base64="zKzGJjkYTPC4Ik89sGjQSj+NShY=">AAAB6nicbVA9SwNBEJ3zM8avqKXNYhBsDHciahnQwsIiovmA5Ah7m71kyd7esTsnhCM/wcZCEVt/kZ3/xk1yhSY+GHi8N8PMvCCRwqDrfjtLyyura+uFjeLm1vbObmlvv2HiVDNeZ7GMdSughkuheB0FSt5KNKdRIHkzGF5P/OYT10bE6hFHCfcj2lciFIyilR5uuqfdUtmtuFOQReLlpAw5at3SV6cXszTiCpmkxrQ9N0E/oxoFk3xc7KSGJ5QNaZ+3LVU04sbPpqeOybFVeiSMtS2FZKr+nshoZMwoCmxnRHFg5r2J+J/XTjG88jOhkhS5YrNFYSoJxmTyN+kJzRnKkSWUaWFvJWxANWVo0ynaELz5lxdJ46ziXVS8+/Ny9S6PowCHcAQn4MElVOEWalAHBn14hld4c6Tz4rw7H7PWJSefOYA/cD5/ALtTjXg=</latexit>
+D
+ 
+<latexit sha1_base64="esqw8RrAtR4xfcZvZMLuxLyimpk=">AAAB6nicbVBNS8NAEJ34WetX1aOXxSIIQklE1GNBDx48VLQf0Iay2W7apZtN2J0IJfQnePGgiFd/kTf/jds2B219MPB4b4aZeUEihUHX/XaWlldW19YLG8XNre2d3dLefsPEqWa8zmIZ61ZADZdC8ToKlLyVaE6jQPJmMLye+M0nro2I1SOOEu5HtK9EKBhFKz3cdE+7pbJbcacgi8TLSRly1Lqlr04vZmnEFTJJjWl7boJ+RjUKJvm42EkNTygb0j5vW6poxI2fTU8dk2Or9EgYa1sKyVT9PZHRyJhRFNjOiOLAzHsT8T+vnWJ45WdCJSlyxWaLwlQSjMnkb9ITmjOUI0so08LeStiAasrQplO0IXjzLy+SxlnFu6h49+fl6l0eRwEO4QhOwINLqMIt1KAODPrwDK/w5kjnxXl3PmatS04+cwB/4Hz+ALhLjXY=</latexit>
+D
++
+Figure 3. Demonstration of the proposed Generative Adversarial
+Gumbel MCTS. The black arrows indicate output data from the
+modules, and the purple arrows indicate gradient descent training.
+As such, we leverage Monte-Carlo Tree Search to search
+and generate the configurations under geometrical con-
+straints and use the reward model to provide reward signals
+that guide the MCTS process. The method is demonstrated
+in Figure 3. We use the MCTS in Gumbel Muzero, the lat-
+est variant of the AlphaZero algorithm, in our implementa-
+tion. It learns a policy network as a search heuristic and a
+value network for the rollout of MCTS. We first fine-tune
+the reward network on the training dataset using contrastive
+learning. Then, during the Gumbel Muzero algorithm, we
+collect the preference dataset by using the generated config-
+urations by MCTS as the negative instanceD− and the con-
+figurations in the training data as the positive instanceD +.
+We then conduct adversarial training further to fine-tune the
+reward network for generative adversarial training, making
+it more robust and pushing the distribution of the generated
+configurations closer to that of the training dataset. See Ap-
+pendix A for the details of Gumbel Muzero.
+The actual implementation and network design are deter-
+mined by the actual task setting and its characteristics. We
+introduce our network choices and loss function for our two
+experiments below.
+3
+4.1. Policy-value network
+Inspired by the vision-language-action network (VLA) in
+robotics, we use a similar structure for our policy and value
+network. The overall structure of the network is shown in
+Fig 4.
+Transformer
+ViT Bert (Frozen)
+… …
+MLP MLP
+<latexit sha1_base64="Xaw9aRiDAaivqq5hXfEI3+p0TKc=">AAAB63icbVBNSwMxEJ2tX7V+VT16CRahXsquFPVY9OKxgv2AdinZNNuGJtklyRbK0r/gxYMiXv1D3vw3Zts9aOuDgcd7M8zMC2LOtHHdb6ewsbm1vVPcLe3tHxwelY9P2jpKFKEtEvFIdQOsKWeStgwznHZjRbEIOO0Ek/vM70yp0iyST2YWU1/gkWQhI9hk0rSqLwfliltzF0DrxMtJBXI0B+Wv/jAiiaDSEI617nlubPwUK8MIp/NSP9E0xmSCR7RnqcSCaj9d3DpHF1YZojBStqRBC/X3RIqF1jMR2E6BzVivepn4n9dLTHjrp0zGiaGSLBeFCUcmQtnjaMgUJYbPLMFEMXsrImOsMDE2npINwVt9eZ20r2redc17rFcad3kcRTiDc6iCBzfQgAdoQgsIjOEZXuHNEc6L8+58LFsLTj5zCn/gfP4Afy6N4g==</latexit>
+v ( s )
+<latexit sha1_base64="dTupxKdri2DVdmQ/PR0w9lgSGG4=">AAAB6HicbVBNS8NAEJ3Ur1q/qh69LBbBU0lE1GPRi8cW7Ae0oWy2k3btZhN2N0IJ/QVePCji1Z/kzX/jts1BWx8MPN6bYWZekAiujet+O4W19Y3NreJ2aWd3b/+gfHjU0nGqGDZZLGLVCahGwSU2DTcCO4lCGgUC28H4bua3n1BpHssHM0nQj+hQ8pAzaqzUoP1yxa26c5BV4uWkAjnq/fJXbxCzNEJpmKBadz03MX5GleFM4LTUSzUmlI3pELuWShqh9rP5oVNyZpUBCWNlSxoyV39PZDTSehIFtjOiZqSXvZn4n9dNTXjjZ1wmqUHJFovCVBATk9nXZMAVMiMmllCmuL2VsBFVlBmbTcmG4C2/vEpaF1Xvquo1Liu12zyOIpzAKZyDB9dQg3uoQxMYIDzDK7w5j86L8+58LFoLTj5zDH/gfP4AxVWM6w==</latexit>
+a
+“Please assemble a bird.”
+Current state
+<latexit sha1_base64="RDWS1H4S3OtDSFCSFaCa3oYzFMs=">AAAB6nicbVBNS8NAEJ3Ur1q/qh69LBbBU0lEqseCIB4r2g9oQ9lsN+3SzSbsToQS+hO8eFDEq7/Im//GbZuDtj4YeLw3w8y8IJHCoOt+O4W19Y3NreJ2aWd3b/+gfHjUMnGqGW+yWMa6E1DDpVC8iQIl7ySa0yiQvB2Mb2Z++4lrI2L1iJOE+xEdKhEKRtFKD6aP/XLFrbpzkFXi5aQCORr98ldvELM04gqZpMZ0PTdBP6MaBZN8WuqlhieUjemQdy1VNOLGz+anTsmZVQYkjLUthWSu/p7IaGTMJApsZ0RxZJa9mfif100xvPYzoZIUuWKLRWEqCcZk9jcZCM0ZyokllGlhbyVsRDVlaNMp2RC85ZdXSeui6tWq3v1lpX6bx1GEEziFc/DgCupwBw1oAoMhPMMrvDnSeXHenY9Fa8HJZ47hD5zPH2zKjeg=</latexit>
+s
+t
+Next state
+<latexit sha1_base64="KARNhJfX4Mldy93hcUQYsS1NXPs=">AAAB7nicbVBNS8NAEJ3Ur1q/qh69LBZBEEoiRT0WBPFYwX5AG8pmu2mXbjZhdyKU0B/hxYMiXv093vw3btsctPXBwOO9GWbmBYkUBl332ymsrW9sbhW3Szu7e/sH5cOjlolTzXiTxTLWnYAaLoXiTRQoeSfRnEaB5O1gfDvz209cGxGrR5wk3I/oUIlQMIpWapt+hhfetF+uuFV3DrJKvJxUIEejX/7qDWKWRlwhk9SYrucm6GdUo2CST0u91PCEsjEd8q6likbc+Nn83Ck5s8qAhLG2pZDM1d8TGY2MmUSB7YwojsyyNxP/87ophjd+JlSSIldssShMJcGYzH4nA6E5QzmxhDIt7K2EjaimDG1CJRuCt/zyKmldVr2rqvdQq9Tv8jiKcAKncA4eXEMd7qEBTWAwhmd4hTcncV6cd+dj0Vpw8plj+APn8wcLCo9k</latexit>
+s t +1
+MCTS
+Figure 4. The policy value network. We use a pre-trained Vision
+Transformer (ViT) and Bert, together with a transformer that fuses
+the vision and language features, to form the main body of the
+network. We use a single network to predict the value and next
+action, as suggested by the AlphaZero paper. The last two tokens
+are decoded as a value and action logits after a linear layer.
+In this network, we use a pre-trained Vision Transformer
+(ViT) and Bert, together with another transformer, to fuse
+the vision and language features and then decode the value
+prediction and action prediction. This network is used to
+imitate the planning trajectories generated from MCTS, and
+also learn the resulting value of the trajectories. After learn-
+ing, the network can be used as a search heuristic and rollout
+function in MCTS for further improvement.
+We design the structure of the network for a few reasons.
+First, our problem does not have a massive dataset, such
+as language modelling, for large-scale training. Thus, we
+do not need a large pre-trained transformer model such as
+Llama, and a model like Bert and regular-sized ViT would
+be enough. The structure is inspired by OpenVLA, which
+also utilises ViT as the image encoder and fine-tunes it dur-
+ing training. The difference is that we are not directly using
+the language model to fuse the text and image features, but
+we use a fixed Bert model to produce semantic features in
+text and fuse the embedding features of the text with the im-
+age features. The reason is still due to the limited data, and
+we wish to have a stable text feature representation that does
+not overfit the small training dataset. When combined with
+the search algorithm, the policy network acts as a search
+heuristic that prunes the Monte Carlo Tree Search, such as
+avoiding unlikely actions during the tree search and focus-
+ing more on the more promising choices based on its previ-
+ous search experience.
+4.2. Reward network
+We use the pre-trained vision language model, CLIP, as the
+reward network. The reward network takes the tangram
+configuration and text description as inputs and outputs a
+scalar value to evaluate the inputs’ matching.
+First, we use the training data in the Tangram dataset
+to fine-tune the pre-trained CLIP model using contrastive
+learning. It can achieve near-human accuracy when tested
+in the validation and testing datasets, as reported in the
+original paper. However, when we conducted the Gumbel
+Muzero training, we found that the generated tangram con-
+figurations can get a very high reward, but the shape of the
+tangram does not actually match the text description. Thus,
+the fine-tuned reward model is not very robust and can be
+easily fooled by false-positive instances.
+To tackle the issue, we use generative adversarial train-
+ing to push the reward model to give high rewards to in-
+stances that are similar enough to the distribution of the
+training dataset. We treat the generated tangram configura-
+tion as the negative instance and the labelled configuration
+as the positive instance, and conduct binary cross-entropy
+learning:
+Lpref =− 1
+N
+X
+(ℓi,s+
+i )∈D+
+log(sigmoid(rϕ(ℓi, s+
+i ))
+− 1
+N
+X
+(ℓi,s−
+i )∈D−
+log(1−sigmoid(r ϕ(ℓi, s−
+i ))
+(4)
+rϕ denotes the CLIP andϕdenotes the parameter of the
+CLIP model.s i denotes the tangram image andℓ i denotes
+the corresponding text description. TheD + denotes the
+original dataset for image-text pairs, andD − denotes the
+generated images given the text description.Nis the batch
+size. To avoid catastrophic forgetting, we combine the loss
+with the contrastive loss of the training dataset.
+Lcont =− 1
+N
+X
+i
+log exp(vi ·w i/T)P
+j exp(vi ·w j/T)
+− 1
+N
+X
+j
+log exp(vi ·w j/T)P
+i exp(vi ·w i/T) (5)
+The contrastive loss samples image-text pairs fromD + and
+extracts the image featuresv i and text featuresw i using
+CLIP.Nis the batch size. Thus, the total loss for reward
+network training is controlled byL pref +λL cont, whereλ
+is a hyperparameter.
+4
+4.3. Gumbel MCTS with Adversarial Reward Re-
+finement
+We found that training a reward network with limited data
+is insufficient to produce stable and reliable reward signals;
+in many cases, the generated instances are invalid while the
+network still assigns high reward scores. To improve its
+reliability, we apply adversarial refinement that encourages
+the reward network to better discriminate between valid and
+near-miss samples, making its outputs more consistent with
+the training data distribution. With the refined reward net-
+work and the policy-value network, we perform the Gen-
+erative Adversarial Training (Alg. 1). The framework it-
+eratively generates planning trajectories and final tangram
+configurations using the current networks, then fine-tunes
+the policy-value network for improvement. We can use ei-
+ther PPO or MuZero as the improvement operator, though
+PPO tends to train faster in practice. The generated tan-
+gram configurations serve as negative instances for adver-
+sarial fine-tuning of the reward network, enabling mutual
+improvement between policy learning and reward refine-
+ment.
+Algorithm 1Generative Adversarial Training for Policy
+and Reward Network
+1:Require:dataset for positive instancesD +, policy-
+value networkπ θ, reward networkπ r
+2:Fine-tune the reward modelπ r usingD + by optimising
+Lcont
+3:whilenot convergedo
+4:Randomly generate initial states fromD +
+5:UseMCTS(π θ)to generate negative instancesD −
+and planning trajectoriesD plan
+6:UseD plan to finetuneπ θ
+7:Sample fromD + andD − to finetuner ϕ by opti-
+misingL pref +λL cont
+8:end while
+9:returnπ θ andr ϕ
+Generative Adversarial training has difficulty converg-
+ing as it is sensitive to hyperparameter choices. Thus, we
+choose to use a small gradient descent step for fine-tuning
+the reward model. This is also the reason why we chose
+the Gumbel Muzero, as it has better policy improvement in
+practice. Thus, we suggest using a relatively lower learn-
+ing rate for reward fine-tuning and increasing the number
+of simulation steps for running MCTS.
+5. Experiment: Tangram Assembly
+This experiment aims to test the effectiveness of different
+methods in the constrained generation tasks that require the
+help of the foundation model. The task is to generate the
+configurations of tangram pieces, where the semantic con-
+straints are encoded in the text description. The text descrip-
+tion is a combination of the shape of the tangram pieces
+and the geometrical constraints. The goal is to generate
+the configurations of tangram pieces that are semantically
+accurate to the text description. This experiment aims to
+verify our hypothesis that the foundation model’s common-
+sense knowledge can help the search algorithm to generate
+the configurations of tangram pieces that are semantically
+accurate to the text description.
+5.1. Experiment setup
+Dataset.We use the KiloGram dataset for the experiment.
+The KiloGram dataset contains thousands of tangram pieces
+with tens of thousands of text annotations. The dataset is
+initially designed for abstract visual concept comprehen-
+sion, i.e., tangram classification. In our study, we modify
+the dataset for constrained generation, which is empirically
+much harder than recognition/classification, even with dis-
+cretisation in the action space. Some example images with
+annotations in the dataset are shown in Fig 5.
+Baseline.We validate our assumption that for constrained
+generation, search coupled with a verifier (i.e., reward net-
+work) outperforms an auto-regressive policy. Addition-
+ally, we tested the impact of generative adversarial training.
+Thus, for the experiment, we compare the performance with
+baselines below:
+•Random. This baseline randomly generates the configu-
+rations of tangram pieces.
+•Auto-regressive transformer. This baseline is to use the
+auto-regressive transformer to generate the configurations
+of the tangram pieces. We use the same architecture as the
+Gumbel-Muzero, but we replace the MCTS with the auto-
+regressive transformer. We also applied the same action
+masks as the GAG Muzero during inference to avoid ob-
+vious overlapping issues. However, the action masks only
+mask out part of the invalid actions, as the validity of ac-
+tions is determined dynamically by the real state. See the
+appendix for more details. As such, the mask cannot fully
+avoid the overlapping of pieces.
+•Classifier-Guided Diffusion model. This baseline is to
+use the classifier-guided diffusion model [12] to generate
+the configurations of the tangram pieces. We use the same
+neural network architecture as our method, but we replace
+the MCTS with the diffusion model. To make the com-
+parison fair, we also design a differentiable classifier that
+encodes the geometrical constraints to guide the diffusion
+model to generate the configurations of tangram pieces.
+For more details, please refer to the Appendix D. We pro-
+vide the results with different classifier guidance scalesβ:
+stronger scalesβmean greater classifier guidance.
+•PPO + Mask (+ Adv). This baseline follows the re-
+inforcement learning (RL) post-training recipe for LLM
+reasoning. It first SFTs a policy network and uses RL to
+5
+finetune the policy. We add the same action mask in the
+transition function as the MCTS for fair comparison. We
+also add adversarial reward refinement to ablate the effect
+of MCTS.
+•Gumbel Muzero without Generative Adversarial
+Training (w\o GA). This baseline utilises the initial re-
+ward network. For the Rectangle Composition task, the
+reward network is trained purely by the training dataset.
+For the Tangram Assembly task, it is a pretrained CLIP
+model fine-tuned by the KiloGram dataset and employs
+standard Gumbel Muzero for training.
+•Gumble Muzero Generative Adversarial Training
+without Pretrained CLIP (GA w\o pretrain). This
+baseline utilises Generative Adversarial Training for the
+Gumbel-Muzero, but the reward network is trained from
+scratch, rather than fine-tuned based on the pre-trained
+CLIP model.
+Metric.For Tangram assembly, we use the original
+dataset’s data splits for training, validation, and testing, en-
+suring consistency in our experimental setup. To guaran-
+tee a fair comparison, we evaluate the performance using
+an equal number of samples from the testing set. Our pri-
+mary focus is on measuring the likelihood, similarity, and
+diversity of the generated image. We use the Fr´echet Incep-
+tion Distance (FID score) to evaluate the likelihood. Ad-
+ditionally, we employ a precision-recall evaluation metric
+commonly used in image generation research to assess the
+diversity and similarity of generated images. The precision-
+recall metric evaluates generative model quality by mea-
+suring coverage of the real data manifold in feature space.
+Images are processed through an Inception network to ex-
+tract feature representationsf r ∈R d for real samples and
+fg ∈R d for generated samples. For each real samplei,
+a neighbourhood radiusτ i is computed as the distance to
+itsk-th nearest neighbour among other real samples. Pre-
+cision measures the fraction of generated samples that fall
+within at least one real sample’s neighborhood: Precision=
+1
+M
+PM
+j=1 I
+
+∃i:dist(f j
+g , fi
+r)≤τ i
+
+. Recall measures the
+fraction of real samples covered by at least one gener-
+ated sample: Recall= 1
+N
+PN
+i=1 I
+
+∃j:dist(f j
+g , fi
+r)≤τ i
+
+,
+whereNandMare the number of real and generated sam-
+ples respectively, andI[·]is the indicator function. This
+approach ensures generated samples remain close to real
+data regions while providing comprehensive coverage of
+the target distribution. We also measure the percentage of
+valid states to determine how well the generated images sat-
+isfy the hard geometrical constraints, i.e., no pieces over-
+lap. Consistent with common practices in generative AI
+research, we extract image features using a pre-trained In-
+ceptionV3 model to compute both the FID score and the
+precision-recall metric. For comparison purposes, we also
+evaluate the model using a CLIP model fine-tuned on the
+KiloGram dataset. Since InceptionV3 was pre-trained on
+a realistic dataset, its feature extraction may not be as ef-
+fective on images with a significantly different distribution
+found in the KiloGram dataset. Therefore, we present re-
+sults from both evaluation methods.
+Implementation details.We use Jax to create and vec-
+torise the Tangram assembly task. The MCTS is adapted
+from the MCTX package, which uses JAX to conduct par-
+allelised batch training. For more details, please refer to
+Appendix D.
+5.2. Main Result
+We report the experimental results for the Tangram assem-
+bly task in Table 1. For this task, we evaluate the FID scores
+to evaluate the likelihood of the generated images and also
+compare the reward gain of different versions of the policy.
+We also quantitatively evaluate the diversity of the gener-
+ated images via the precision-recall metric in image gener-
+ation evaluation. Furthermore, in our method (GA Gumbel
+Muzero), we also compared different versions with various
+levels of Gumbel noise. We summarise the experimental
+findings in the following paragraphs.
+Table 1. Results on Tangram Assembly.tmeans the temperature
+of sampling,βis the classifier scale, andgmeans the Gumbel
+scale in Gumbel Muzero.
+FID↓FID clip↓Pre↑Rec↑Val(%)↑
+Random 35.8 0.71 0.380 0.231 0.3
+Auto-reg (t= 1.0) 28.6 0.59 0.580 0.410 54.2
+Auto-reg (t= 0.5) 24.5 0.52 0.571 0.427 59.3
+Auto-reg (Greedy) 23.2 0.48 0.564 0.424 61.1
+Auto-reg+mask (t= 1.0) 25.0 0.57 0.553 0.409 87.9
+Auto-reg+mask (t= 0.5) 23.1 0.50 0.575 0.430 88.1
+Auto-reg+mask (Greedy) 22.0 0.48 0.568 0.423 86.4
+PPO+mask (Greedy) 19.7 0.45 0.553 0.311 99.3
+PPO+adv+mask (Greedy) 18.6 0.42 0.587 0.402 99.3
+Diffusion (β= 0.1) 34.4 0.54 0.347 0.211 0.0
+Diffusion (β= 1.0) 34.0 0.53 0.368 0.239 1.6
+Diffusion (β= 10.0) 33.2 0.59 0.370 0.248 4.3
+Gumbel Muzero w\o GA 22.9 0.46 0.569 0.412 98.5
+GA w\o pretrain 32.3 0.53 0.503 0.491 98.5
+GAG MCTS (g= 1.0) 18.2 0.41 0.576 0.459 99.3
+GAG MCTS (g= 0.5) 17.6 0.40 0.585 0.451 98.5
+GAG MCTS (Greedy) 16.8 0.39 0.591 0.444 99.3
+Auto-regressive policies underperform; PPO im-
+proves validity but still underperforms search.In Tan-
+gram assembly, auto-regressive samples often overlap and
+do not match the text, with higher FID and lower preci-
+sion/recall. Using the same partial action mask that filters
+roughly 80% of invalid actions, PPO post-training markedly
+increases non-overlap validity compared to the SFT auto-
+regressive policy (from≈86–88% to 99.3%) and matches
+the search baseline on validity (99.3%). Adversarial re-
+6
+ward refinement further improves precision modestly, but
+FID and precision/recall remain worse than search.
+Diffusion performs badly with data scarcity.In our
+experiments, the diffusion baseline faces data scarcity is-
+sues, as there is only a limited training dataset for the text
+descriptions and final shapes. The diffusion tends to over-
+fit the limited data, making it hard to generalise to novel
+descriptions. In addition, we found that even after massive
+training and strong gradient guidance, it still cannot satisfy
+the geometrical constraints. This might partially due to the
+small number of training data, but still shows the inherent
+limitation of diffusion model in constrained generation.
+Search significantly helps the constrained generation.
+With the search algorithm, our method has a high FID score
+in tangram assembly, and the configuration has very low
+chances of violating the geometrical constraints.
+The reward network is not robust without Generative
+Adversarial training.The Gumbel Muzero without Gen-
+erative Adversarial Training has low reward gains and also
+relatively higher FID and lower precision and recall. All
+of the evidence suggests that the distribution of generated
+images is low in the labelled dataset.
+The reward model suffers from overfitting without
+pretraining.In our Tangram assembly tasks, the Gumbel
+Muzero with Generative Adversarial Training, but without
+pre-trained CLIP, has a low FID score. Without the pre-
+training, the CLIP model exhibits significant overfitting is-
+sues. The CLIP can only correctly recognise about 30%
+of the tangram shapes in the validation and testing dataset.
+In addition, it has a significantly lower precision, meaning
+that the generated instances are also not generalisable to the
+unseen cases. The pre-trained CLIP model provides prior
+knowledge to the reward network, which is crucial for gen-
+eralisation, especially in cases of data scarcity.
+With adversarial training, the generated images have
+a statistically more similar distribution to the labelled
+dataset.After forcing the Generative Adversarial Training,
+in Tangram Assembly, our method suggests a higher likeli-
+hood of the generative dataset (higher precision and lower
+FID), and it is also relatively more diverse (higher recall)
+than the baseline. We also show some pictures generated by
+GAG Muzero in Fig 5.
+Gumbel noise improves the diversity of the genera-
+tion.Gumbel Muzero can control the scale of Gumbel
+Noise to control the randomness. We found that a rea-
+sonable level of randomness is helpful to get higher di-
+versity (higher recall). However, the recall is still signifi-
+cantly lower than precision, meaning that we have themode
+collapseissue, a common issue for Generative Adversarial
+Networks with a limited dataset.
+A boat Perched bird Person  
+sitting down
+A large  
+dinosaur A dog A snake
+Labelled Image
+GAG Muzero
+Auto-regressive 
+Transformer
+Diffusion Model
+Goose 
+about to ﬂy
+Labelled Image
+GAG Muzero
+Auto-regressive 
+Transformer
+Diffusion Model
+Standing  
+man Steam boat Swan Sea serpent Question 
+mark Person sitting Thumb up
+Figure 5. The demonstration of the dataset and the generated tan-
+gram configuration. We compare the configuration generated by
+GAG Muzero with the main baseline methods.
+5.3. Human study
+To evaluate the generation qualitatively, we conducted a
+small human study to know how good the generated Tan-
+gram configuration is when comparing with ground-truth
+configurations. We randomly sampled 50 pairs of gener-
+ated and ground-truth tangram images with text description,
+and let 5 participants choose which one matches the text de-
+scription better. For each pair of images, we show both of
+them on the screen and ask the participants: “Which im-
+age better matches the description below?” The results are
+shown in Table 2. Additional Details are in Appendix E.
+Table 2. Result of human study.gis the Gumbel Scale, andtis
+the sampling temperature.
+Preference v.s. GT (%)
+GAG Muzero(g= 0.5)39.6±3.9
+Auto-Regressive(t= 0.5)5.2±2.7
+Our small scale human study shows that participants
+choose substantially more Tangram shapes generated by
+GAG Muzero than the best baseline, showing that GAG
+Muzero generates reasonably well Tangram shapes to match
+the text description, even though it cannot make it perfect as
+some of the ground-truth images are really hard to beat.
+7
+6. Experiment: Rectangle Composition
+In our Tangram experiments, it is difficult to disentan-
+gle the effects of hard constraints from goal ambiguity.
+We therefore study a relaxed abstract visual composition
+derived from Tangram: arrange a fixed set of rectangles
+within a text-specified rectangular region (abstract con-
+straint learned from text) while satisfying a provided non-
+overlap constraint. Difficulty is controlled by the num-
+ber/size of rectangles and the container dimensions. This
+experiment examines whether conclusions from Tangram
+persist here and how they vary with problem difficulty,
+and tests three hypotheses: (1) Generative models (auto-
+regressive transformers and diffusion models) handle weak
+or loosely defined constraints well but falter on complex
+geometric requirements; (2) search algorithms can explic-
+itly encode hard geometric constraints in their action space;
+and (3) search-based methods will outperform generative
+approaches that must implicitly learn those constraints.
+6.1. Experiment setup
+Dataset.We generate synthetic rectangle packing prob-
+lems using three piece types (1×2,2×3,1×5) with zero or
+90-degree rotations. For each problem, we randomly sam-
+ple target region dimensions (3×3to12×12) and use a ran-
+domised backtracking algorithm to find a complete tiling.
+We then randomly select 30-100% of the placed pieces to
+create packing problems of varying difficulty, ensuring each
+has at least one valid solution. The dataset contains 2,000
+training, 100 validation, and 400 test configurations with
+different inventory distributions (training: five1×2, eleven
+2×3, two1×5pieces; validation/test: eight2×1, four2×3,
+six1×5pieces). Each configuration is centred at the origin
+and includes precise piece coordinates. We create easy and
+hard splits for the tasks. The easy tasks have fewer pieces
+to pack and the target region is larger, while the harder one
+has more pieces to pack in tighter spaces. We use the ratio
+ofr= total area of pieces
+total area of target region to determine the difficulty: easy
+tasks haver <0.3while hard tasks haver≥0.7. For more
+details on data generation, please refer to Appendix C.
+Metric.For rectangle composition, we mainly calculate
+the success rate of composition. A successful composi-
+tion requires that the pieces have no overlap and that all
+the pieces are inside the target region.
+6.2. Result
+We report the results for the Rectangle composition in Ta-
+ble 3. We evaluate the success rate, where a successful in-
+stance should have all the pieces in the target region without
+overlapping, and the validity rate for the non-overlapping
+constraints. Overall, the conclusions largely mirror the Tan-
+gram Assembly results; the notable difference is that several
+methods perform reasonably well on easy rectangle tasks
+due to the relaxed setting.
+Table 3. Results on Rectangle Packing (Success Rate % on the first
+three rows, valid rate % on the last row).tmeans the temperature
+of sampling,βis the classifier scale, andgmeans the Gumbel
+scale in Gumbel MCTS.
+Easy Hard Average Valid
+Auto-reg+Mask (t= 1.0) 55.50 2.00 28.75 84.25
+Auto-reg+Mask (t= 0.5) 59.00 1.00 30.00 85.50
+Auto-reg+Mask (Greedy) 51.50 1.50 26.50 88.50
+PPO+Mask (Greedy) 89.50 13.00 51.25 94.50
+PPO+Adv+Mask (Greedy) 94.00 30.00 62.00 95.50
+Diffusion (β= 0.1) 89.00 21.50 55.25 70.50
+Diffusion (β= 1.0) 93.50 19.50 56.50 75.50
+Diffusion (β= 10.0) 97.00 15.50 56.25 82.75
+GAG MCTS (g= 1.0) 95.50 50.50 73.00 98.50
+GAG MCTS (g= 0.5) 95.00 53.50 74.25 97.75
+GAG MCTS (Greedy) 96.00 51.00 73.50 95.25
+Auto-regressive policies underperform on hard tasks;
+PPO helps but remains insufficient.Auto-regressive
+baselines are reasonably strong on easy cases but degrade
+sharply on hard ones, consistent with the findings of Tan-
+gram. PPO post-training increases validity on hard tasks,
+and adversarial refinement improves reward discrimination;
+yet, the policy still struggles to reliably satisfy goal con-
+straints without search.
+Diffusion is adequate on easy cases but fails under
+tight constraints.Diffusion performs well on easy rect-
+angle compositions and generally stays within the target
+region, but breaks down when space is tight, even with
+strong guidance, which matches the Tangram conclusion,
+with only better performance on the easy split here.
+Search substantially improves composition.Search
+achieves higher success rates by directly enforcing con-
+straints and pruning invalid branches during planning, echo-
+ing the Tangram findings.
+7. Conclusion
+We focus on the abstract visual composition: compos-
+ing fixed geometric pieces into target silhouettes or lay-
+outs from weak language cues. We show that combin-
+ing constraint-aware search with a vision-language reward
+yields reliable compositions under strict geometric con-
+straints. Our GAG MCTS employs a foundation model as
+a learned reward to guide MCTS: search enforces discrete
+feasibility, while the reward captures language-driven se-
+mantics. Across Tangram assembly and a relaxed rectangle-
+composition variant with adjustable difficulty, our method
+outperforms diffusion, PPO, and autoregressive baselines,
+with larger gains as constraints become tighter. Limitations
+include the overfitting of the reward model to the training
+data and a potential mode collapse issue, which is typical
+8
+in GAN-style methods, as well as the computational cost of
+search at high difficulty. Future work includes stronger veri-
+fiers (hybrid learned and formal checks), richer composition
+spaces (continuous placements and 3D CAD), and human-
+in-the-loop preference refinement to mitigate reward mis-
+specification.
+References
+[1] Waad Almasri, Dimitri Bettebghor, Fakhreddine Ababsa,
+and Florence Danglade. Shape related constraints aware gen-
+eration of mechanical designs through deep convolutional
+gan.arXiv preprint arXiv:2010.11833, 2020. 2
+[2] Adrian Bangerter, Eric Mayor, and Dominique Knutsen.
+Lexical entrainment without conceptual pacts? revisiting
+the matching task.Journal of Memory and Language, 114:
+104129, 2020. 2
+[3] Irving Biederman. Recognition-by-components: A theory of
+human image understanding.Psychological Review, 94(2):
+115–147, 1987. 1
+[4] Anna M Borghi, Samuel Shaki, and Martin H Fischer. Ab-
+stract concepts: External influences, internal constraints,
+and methodological issues.Psychological Research, 86(8):
+2370–2388, 2022. 2
+[5] Luc ´ıa Castillo, Kenny Smith, and Holly P Branigan. Interac-
+tion promotes the adaptation of referential conventions to the
+communicative context.Cognitive science, 43(8):e12780,
+2019. 2
+[6] Lili Chen, Kevin Lu, Aravind Rajeswaran, Kimin Lee,
+Aditya Grover, Misha Laskin, Pieter Abbeel, Aravind Srini-
+vas, and Igor Mordatch. Decision transformer: Reinforce-
+ment learning via sequence modeling.Advances in neural
+information processing systems, 34:15084–15097, 2021. 13
+[7] Zhenfang Chen, Peng Wang, Lin Ma, Kwan-Yee K Wong,
+and Qi Wu. Cops-ref: A new dataset and task on composi-
+tional referring expression comprehension. InProceedings
+of the IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition, pages 10086–10095, 2020. 2
+[8] Jacob K Christopher, Stephen Baek, and Nando Fioretto.
+Constrained synthesis with projected diffusion models.Ad-
+vances in Neural Information Processing Systems, 37:
+89307–89333, 2024. 2
+[9] Herbert H Clark and Deanna Wilkes-Gibbs. Referring as a
+collaborative process.Cognition, 22(1):1–39, 1986. 2
+[10] Jo ˜ao M Cunha, Nuno Lourenc ¸o, Pedro Martins, and Pe-
+nousal Machado. Visual blending for concept representation:
+A case study on emoji generation.New Generation Comput-
+ing, 38(4):739–771, 2020. 2
+[11] Ivo Danihelka, Arthur Guez, Julian Schrittwieser, and David
+Silver. Policy improvement by planning with gumbel. InIn-
+ternational Conference on Learning Representations, 2022.
+12
+[12] Prafulla Dhariwal and Alexander Nichol. Diffusion models
+beat gans on image synthesis.Advances in neural informa-
+tion processing systems, 34:8780–8794, 2021. 5
+[13] Melissa C Duff, Julie Hengst, Daniel Tranel, and Neal J Co-
+hen. Development of shared information in communication
+despite hippocampal amnesia.Nature neuroscience, 9(1):
+140–146, 2006. 2
+[14] Mohammed Haroon Dupty, Yanfei Dong, Sicong Leng,
+Guoji Fu, Yong Liang Goh, Wei Lu, and Wee Sun Lee. Con-
+strained layout generation with factor graphs. InProceedings
+of the IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition, pages 12851–12860, 2024. 2
+[15] Kevin Frans, Lisa Soros, and Olaf Witkowski. Clipdraw:
+Exploring text-to-drawing synthesis through language-image
+encoders.Advances in Neural Information Processing Sys-
+tems, 35:5207–5218, 2022. 2
+[16] Michael R. Garey and David S. Johnson.Computers and
+Intractability: A Guide to the Theory of NP-Completeness.
+W. H. Freeman & Co., San Francisco, CA, 1979. 1
+[17] Songwei Ge and Devi Parikh. Visual conceptual blending
+with large-scale language and vision models.arXiv preprint
+arXiv:2106.14127, 2021. 2
+[18] Emil Julius Gumbel. Statistical theory of extreme valuse and
+some practical applications.Nat. Bur. Standards Appl. Math.
+Ser. 33, 1954. 12
+[19] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising dif-
+fusion probabilistic models. InAdvances in Neural Infor-
+mation Processing Systems (NeurIPS 33), pages 6840–6851,
+2020. 1
+[20] Judith Holler and Katie Wilkin. Co-speech gesture mimicry
+in the process of collaborative referring during face-to-face
+dialogue.Journal of nonverbal behavior, 35:133–153, 2011.
+2
+[21] William S Horton and Richard J Gerrig. Speakers’ expe-
+riences and audience design: Knowing when and knowing
+how to adjust utterances to addressees.Journal of Memory
+and Language, 47(4):589–606, 2002. 2
+[22] Manuel Iori, Vin ´ıcius L. de Lima, Silvano Martello,
+Fl´avio K. Miyazawa, and Michele Monaci. Exact solution
+techniques for two-dimensional cutting and packing.Eu-
+ropean Journal of Operational Research, 289(2):399–415,
+2021. 1, 2
+[23] Ajay Jain, Amber Xie, and Pieter Abbeel. Vectorfusion:
+Text-to-svg by abstracting pixel-based diffusion models. In
+Proceedings of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition, pages 1911–1920, 2023. 2
+[24] Eric Jang, Shixiang Gu, and Ben Poole. Categorical
+reparameterization with gumbel-softmax.arXiv preprint
+arXiv:1611.01144, 2016. 12
+[25] Anya Ji, Noriyuki Kojima, Noah Rush, Alane Suhr,
+Wai Keen V ong, Robert Hawkins, and Yoav Artzi. Abstract
+visual reasoning with tangram shapes. InProceedings of
+the 2022 Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 582–601, 2022. 2
+[26] Chao Jia, Yinfei Yang, Ye Xia, Yi-Ting Chen, Zarana Parekh,
+Hieu Pham, Quoc Le, Yun-Hsuan Sung, Zhen Li, and Tom
+Duerig. Scaling up visual and vision-language representa-
+tion learning with noisy text supervision. InInternational
+conference on machine learning, pages 4904–4916. PMLR,
+2021. 2
+[27] Zohar Karnin, Tomer Koren, and Oren Somekh. Almost op-
+timal exploration in multi-armed bandits. InInternational
+9
+conference on machine learning, pages 1238–1246. PMLR,
+2013. 12
+[28] Wonjae Kim, Bokyung Son, and Ildoo Kim. Vilt: Vision-
+and-language transformer without convolution or region su-
+pervision. InInternational conference on machine learning,
+pages 5583–5594. PMLR, 2021. 2
+[29] Wouter Kool, Herke Van Hoof, and Max Welling. Stochastic
+beams and where to find them: The gumbel-top-k trick for
+sampling sequences without replacement. InInternational
+Conference on Machine Learning, pages 3499–3508. PMLR,
+2019. 12
+[30] Robert M Krauss and Sidney Weinheimer. Changes in ref-
+erence phrases as a function of frequency of usage in social
+interaction: A preliminary study.Psychonomic Science, 1:
+113–114, 1964. 2
+[31] Tzu-Mao Li, Michal Luk ´aˇc, Micha ¨el Gharbi, and Jonathan
+Ragan-Kelley. Differentiable vector graphics rasterization
+for editing and learning.ACM Transactions on Graphics
+(TOG), 39(6):1–15, 2020. 2
+[32] Jiayi Liao, Xu Chen, Qiang Fu, Lun Du, Xiangnan He, Xiang
+Wang, Shi Han, and Dongmei Zhang. Text-to-image genera-
+tion for abstract concepts. InProceedings of the AAAI Con-
+ference on Artificial Intelligence, pages 3360–3368, 2024. 2
+[33] Guan-Horng Liu, Tianrong Chen, Evangelos Theodorou, and
+Molei Tao. Mirror diffusion models for constrained and wa-
+termarked generation. InThirty-seventh Conference on Neu-
+ral Information Processing Systems, 2023. 2
+[34] Vivian Liu, Han Qiao, and Lydia Chilton. Opal: Multimodal
+image generation for news illustration. InProceedings of the
+35th Annual ACM Symposium on User Interface Software
+and Technology, pages 1–17, 2022. 2
+[35] Francesco Locatello, Dirk Weissenborn, Thomas Un-
+terthiner, Aravindh Mahendran, Georg Heigold, Jakob
+Uszkoreit, Alexey Dosovitskiy, and Thomas Kipf. Object-
+centric learning with slot attention. InAdvances in Neural In-
+formation Processing Systems (NeurIPS 33), pages 11525–
+11538, 2020. 2
+[36] Jiasen Lu, Dhruv Batra, Devi Parikh, and Stefan Lee. Vilbert:
+Pretraining task-agnostic visiolinguistic representations for
+vision-and-language tasks.Advances in neural information
+processing systems, 32, 2019. 2
+[37] Xu Ma, Yuqian Zhou, Xingqian Xu, Bin Sun, Valerii Filev,
+Nikita Orlov, Yun Fu, and Humphrey Shi. Towards layer-
+wise image vectorization. InProceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition,
+pages 16314–16323, 2022. 2
+[38] Guglielmo Padula, Francesco Romor, Giovanni Stabile, and
+Gianluigi Rozza. Generative models for the deformation of
+industrial shapes with linear geometric constraints: Model
+order and parameter space reductions.Computer Methods in
+Applied Mechanics and Engineering, 423:116823, 2024. 2
+[39] Wamiq Para, Shariq Bhat, Paul Guerrero, Tom Kelly, Niloy
+Mitra, Leonidas J Guibas, and Peter Wonka. Sketchgen:
+Generating constrained cad sketches.Advances in Neural
+Information Processing Systems, 34:5077–5088, 2021. 2
+[40] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen
+Krueger, and Ilya Sutskever. Learning transferable visual
+models from natural language supervision. InProceedings
+of the 38th International Conference on Machine Learning
+(ICML) 2021, pages 8748–8763, 2021. 2
+[41] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learn-
+ing transferable visual models from natural language super-
+vision. InInternational Conference on Machine Learning,
+pages 8748–8763. PMLR, 2021. 2, 13
+[42] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Bj ¨orn Ommer. High-resolution image
+synthesis with latent diffusion models. InProceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition (CVPR) 2022, page †, 2022. † Fill in actual page
+numbers. 1
+[43] Peter Schaldenbrand, Zhixuan Liu, and Jean Oh. Styleclip-
+draw: Coupling content and style in text-to-drawing transla-
+tion.arXiv preprint arXiv:2202.12362, 2022. 2
+[44] Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert,
+Karen Simonyan, Laurent Sifre, Simon Schmitt, Arthur
+Guez, Edward Lockhart, Demis Hassabis, Thore Graepel,
+et al. Mastering atari, go, chess and shogi by planning with
+a learned model.Nature, 588(7839):604–609, 2020. 13
+[45] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Rad-
+ford, and Oleg Klimov. Proximal policy optimization algo-
+rithms.arXiv preprint arXiv:1707.06347, 2017. 2
+[46] David Silver, Julian Schrittwieser, Karen Simonyan, Ioannis
+Antonoglou, Aja Huang, Arthur Guez, Thomas Hubert, Lu-
+cas Baker, Matthew Lai, Adrian Bolton, et al. Mastering the
+game of go without human knowledge.nature, 550(7676):
+354–359, 2017. 12
+[47] David Silver, Thomas Hubert, Julian Schrittwieser, Ioannis
+Antonoglou, Matthew Lai, Arthur Guez, Marc Lanctot, Lau-
+rent Sifre, Dharshan Kumaran, Thore Graepel, Timothy Lill-
+icrap, Karen Simonyan, and Demis Hassabis. A general rein-
+forcement learning algorithm that masters chess, shogi, and
+go through self-play.Science, 362(6419):1140–1144, 2018.
+2
+[48] Zhida Sun, Zhenyao Zhang, Yue Zhang, Min Lu, Dani
+Lischinski, Daniel Cohen-Or, and Hui Huang. Creative
+blends of visual concepts.arXiv preprint arXiv:2502.16062,
+2025. 2
+[49] David Tolpin and Solomon Shimony. Mcts based on simple
+regret. InProceedings of the AAAI Conference on Artificial
+Intelligence, pages 570–576, 2012. 12
+[50] Max Wertheimer. Untersuchungen zur lehre von der gestalt.
+ii.Psychologische Forschung, 4:301–350, 1923. In German.
+1
+[51] Ronghuan Wu, Wanchao Su, Kede Ma, and Jing Liao. Icon-
+shop: Text-guided vector icon synthesis with autoregressive
+transformers.ACM Transactions on Graphics (TOG), 42(6):
+1–14, 2023. 2
+[52] Ping Xiao and Simo Matias Linkola. Vismantic: Meaning-
+making with images. InInternational Conference on Com-
+putational Creativity, pages 158–165. Brigham Young Uni-
+versity, 2015. 2
+10
+[53] Ximing Xing, Chuang Wang, Haitao Zhou, Jing Zhang, Qian
+Yu, and Dong Xu. Diffsketcher: Text guided vector sketch
+synthesis through latent diffusion models.Advances in Neu-
+ral Information Processing Systems, 36:15869–15889, 2023.
+2
+[54] John I Yellott Jr. The relationship between luce’s choice ax-
+iom, thurstone’s theory of comparative judgment, and the
+double exponential distribution.Journal of Mathematical
+Psychology, 15(2):109–144, 1977. 12
+[55] Jaesik Yoon, Hyeonseo Cho, Doojin Baek, Yoshua Bengio,
+and Sungjin Ahn. Monte carlo tree diffusion for system 2
+planning.arXiv preprint arXiv:2502.07202, 2025. 2
+[56] Stefano Zampini, Jacob Christopher, Luca Oneto, Davide
+Anguita, and Ferdinando Fioretto. Training-free constrained
+generation with stable diffusion models.arXiv preprint
+arXiv:2502.05625, 2025. 2
+[57] Yang Zeng, Jin-Long Wu, and Heng Xiao. Enforcing impre-
+cise constraints on generative adversarial networks for emu-
+lating physical systems.Communications in Computational
+Physics, 30(3):635–665, 2021. 2
+11
+A. Preliminary: Gumbel Muzero
+Gumbel Muzero [11] is a variant of the AlphaZero [46]
+algorithm with a major modification in the MCTS algo-
+rithm. Instead of using the upper confidence bound, Gum-
+bel Muzero uses sequential halving, which minimises sim-
+ple regrets, for the root action selection. As such, it is guar-
+anteed to have policy improvement even with the minimal
+number of simulations in MCTS during the training.
+Gumbel-Top-k trick.Gumbel Muzero uses the Gumbel-
+Max trick [18, 24, 29, 54] to samplenactions without re-
+placement:
+(g∈R k)∼Gumbel(0)(6)
+A1 = arg max
+a
+(g(a) + logits(a))(7)
+···
+An = arg max
+a/∈{A1,···,A n−1}
+(g(a) + logits(a)).(8)
+Here, we useargtop(g+ logits, n) ={A 1, A2,···, A n}
+for the Gumbel-Top-k samples.
+Sequential Halving with Gumbel.Sequential Halving
+[27] is a bandit algorithm for simple regret minimisation.
+It aims at maximising theQ-value of the last or the finally
+selected action in simulations, which differs from the cu-
+mulative regrets that maximise theQfrom allnsimulations
+[49].
+Algorithm 2Sequential Halving with Gumbel
+1:procedureSEQHALGUMBEL(s, N, K, g, πθ, f, σ)▷ s:
+current state;N: simulation budget;K: num of sam-
+pled moves;g: samples of Gumbel variable;π θ: policy
+network;f: simulation function, take the state, action,
+and simulation budget and output the average return;σ:
+monotonically increasing transformation.
+2:Seq←argtop(g+π θ, K)
+3:while|Seq|>1do
+4:fora∈Seqdo
+5:q(s, a)←f(s, a,⌊ N
+|Seq|×log2(K) ⌋)
+6:end for
+7:Seq←set of⌈ |Seq|
+2 ⌉actions inSeqwith the
+largest(g(a) +π θ(s, a) +σ(q(s, a)))
+8:end while
+9:returnthe remaining action inSeq
+10:end procedure
+The algorithm of Sequential Halving with Gumbel is
+shown in the Alg 2. The original Sequential Halving sam-
+ples possible moves/actions from action space uniformly
+at random, while the author modified it to sample from a
+learned policy networkπ θ without replacement. The policy
+networkπ θ can be viewed as a parameterized distribution
+over the action space, andθis its parameter. It then simu-
+lates those sampled actions for⌊ N
+|Seq|×log2(K) ⌋number of
+times each, selecting half of the actions with the highest av-
+erage return, and repeats the process, until there is only one
+action remains.
+Gumbel Muzero MCTSUsing the Sequential Halving
+with Gumbel algorithm, the authors modified the action se-
+lection procedure in Monte Carlo Tree Search. The pseu-
+docode is shown in Alg 3.
+Algorithm 3MCTS in Gumbel Muzero
+1:procedureSEARCH(s, N, k, g, πθ, σ, τ)▷ s: node for
+the current state;τ: tree;N: num of simulation.
+2:f←SIMULATE(s, a, τ,False, depth=0)
+3:returnSEQHALGUMBEL(s, N, K, g, π θ, f, σ)
+4:end procedure
+5:procedureSIMULATE(s, a, τ,done,depth)
+6:ifγ depth < ϵordone=Truethen
+7:return0
+8:end if
+9:ifsis a leaf nodethen
+10:Updateτby adding the new state node
+11:∀a∈A, N(s, a)←0, q(s, a)←0
+12:returnv θ(s)
+13:end if
+14:π ′ ←softmax(π θ +σ(q))
+15:a ∗ ←arg max a∈A(π′(a)− N(a)
+1+P
+b N(b) )▷Action
+selection at non-root nodes
+16:Simulate actiona ∗ from nodesto get next state
+nodes ′, rewardr, anddone.
+17:R←r+γ·SIMULATE(s ′, a∗, τ,done,depth + 1)
+18:N(s, a ∗)←N(s, a ∗) + 1,N(s)←N(s) + 1
+19:q(s, a ∗)←q(s, a∗) + R−q(s,a∗)
+N(s,a∗)
+20:returnR
+21:end procedure
+Gumbel Muzero uses the new MCTS algorithm to per-
+form the self-play with a policy network and value network
+and uses the generated planning data to train the policy net-
+work and value network for improvement. This variant of
+the MCTS algorithm has a better guarantee that the policy
+produced by MCTS is better than the policy network, i.e.,
+q(s,arg max
+a∈argtop(g,π,k)
+(g(a) +π(s, a) +σ(¯q(s, a)))≥
+q(s,arg max
+a∈argtop(g,π,k)
+(g(a) +π(s, a))).(9)
+Where the¯qis estimated by the MCTS algorithm andσis a
+12
+transform function, such as the formula we used below:
+σ(q(a)) = (cvisit + max
+b
+N(b))cscaleq(a).(10)
+The equation is equivalent toE a∼MCTS[q(s, a)]≥
+Ea∼π[q(s, a)]according to the Gumbel-Max trick. Thus,
+Gumbel Muzero can improve the policy with even a mini-
+mal number of simulations in MCTS.
+B. Action masks for Tangram assembly
+The system employs a two-stage approach for handling
+valid actions in tangram puzzle solving. In the precomputa-
+tion stage, valid actions are exhaustively generated by iter-
+ating through all possible piece combinations, transforma-
+tions, and anchor point alignments. For each pair of pieces
+(moved and reference), the algorithm considers eight rota-
+tion states (0 to 315 degrees in 45-degree increments), up
+to 2 flip states (depending on piece symmetry), and anchor
+points derived from vertices and edge midpoints. The sys-
+tem validates each potential action by checking for geomet-
+ric overlaps using polygon intersection tests. It removes du-
+plicate actions based on relative configuration hashing that
+encodes piece positions, transformations, and anchor align-
+ments. The resulting precomputed valid action list is stored
+as a JSON file and loaded at runtime.
+During gameplay, action masks are dynamically com-
+puted, which apply contextual validity checks to the pre-
+computed action list. These checks ensure that: (1) the
+moved piece is unplaced (all pose values are zero) while
+the reference piece is placed (at least one pose value is non-
+zero), (2) flip and rotation IDs are within valid ranges for
+each piece type, (3) anchor point indices are appropriate for
+the piece geometry (6 anchors for triangles, 8 for quadri-
+laterals), and (4) the reference piece’s flip state matches
+the current environment state. This hybrid approach bal-
+ances computational efficiency by precomputing geometric
+constraints while maintaining runtime flexibility for state-
+dependent action filtering.
+In order to apply the geometrical constraints, when over-
+laps happen, there will be a negative penalty to the search
+algorithm, such that it knows to avoid overlaps naturally.
+C. Rectangle Packing Dataset Generation
+Piece DefinitionsThree types of rectangular pieces are
+used:1x2,2x3, and1x5, each with allowed0 ◦ and90 ◦
+rotations. The pieces are defined by their grid cell coverage.
+Inventory and Region SamplingFor each dataset split
+(train, validation, test), a fixed inventory of pieces is speci-
+fied. The target region is a rectangle with width and height
+sampled uniformly from a specified range, subject to the
+constraints that the area is even and does not exceed the to-
+tal available piece area.
+Tiling and Packing GenerationA recursive backtrack-
+ing search is used to find a complete tiling of the target
+region using the available inventory. To create a packing
+problem, a random subset of the pieces from the full tiling is
+selected, with the fraction to keep sampled uniformly from
+[0.3,1.0].
+Configuration ConstructionFor each configuration, the
+target region dimensions, the set of pieces to pack, and the
+solution placements (including piece type, rotation, anchor
+position, and computed vertices) are recorded. All piece
+placements are centred by applying a global offset so that
+the region is centred at(0,0).
+Uniqueness and OutputEach configuration is assigned a
+unique signature based on the region and piece set to ensure
+dataset diversity. Configurations are saved in JSON format
+for training, validation, and test splits. Example images are
+also generated for visualisation.
+D. Implementation details
+D.1. GAG Muzero
+Framework:The Tangram Assembly GAG MuZero
+agent is implemented in JAX/Flax, leveraging distributed
+training across multiple devices. The environment simu-
+lates the sequential assembly of tangram pieces, with each
+state represented as an image and associated instruction to-
+kens.
+Model Architecture:
+•Policy/Value Network:A Decision Transformer [6] back-
+bone is used, with BERT-based text encoding and a vi-
+sion transformer (ViT) for image processing. The net-
+work outputs action logits and value estimates.
+•Reward Model:A CLIP-based [41] reward model com-
+putes the alignment between the assembled image and
+the instruction, using contrastive and pairwise preference
+losses.
+Self-Play and Search:
+•Self-Play:The agent generates training data via self-
+play, using a Gumbel MuZero Monte Carlo Tree Search
+(MCTS) [44] for action selection. The search incorpo-
+rates a recurrent function that simulates environment tran-
+sitions and model predictions.
+•Batching:Self-play and training are parallelised across
+devices, with large batch sizes (e.g., 2048 for self-play).
+Training:
+•Policy/Value Training:The policy and value networks
+are trained using cross-entropy and mean squared error
+13
+losses, respectively, with targets computed from self-play
+trajectories.
+•Reward Model Training:The reward model is updated
+using both contrastive and pairwise preference losses, en-
+couraging correct alignment between images and instruc-
+tions.
+•Optimisation :Adam optimisers are used for both net-
+works, with learning rates5×10 −5 (policy/value) and
+1×10 −8 (reward).
+•Checkpointing:Models and optimizers are periodically
+checkpointed for recovery and evaluation.
+D.2. Diffusion model: Rectangle Packing
+Architecture:We employ a Transformer-based diffusion
+model for rectangle assembly. Each rectangle is represented
+by its state(x, y, θ)and shape(w, h), with a global tar-
+get shape as an additional condition. States and shapes are
+embedded via linear layers and combined, while the target
+shape is provided to the Transformer decoder as a separate
+memory token. The model predicts denoising updates for
+all rectangles in parallel.
+Classifier Guidance:The sampling process incorporates
+differentiable guidance losses:
+•Angle Loss:Encouragesθto be close to multiples of90 ◦.
+•Overlap Loss:Penalises overlapping rectangles using a
+softplus function on pairwise distances.
+•Region Loss:Penalises rectangles placed outside a speci-
+fied bounding region.
+Sampling:Diffusion sampling iteratively updates rectan-
+gle states using the model’s prediction and the gradient of
+the guidance loss. Typical parameters include100steps, a
+step size of0.05, and a guidance scale of1.0.
+D.3. Diffusion model: Tangram Assembly
+Architecture:For tangram assembly, we utilise a Trans-
+former encoder-based diffusion model. Each piece is rep-
+resented by(x, y,rotation,flip,index). CLIP text embed-
+dings of the target description are projected and concate-
+nated with piece embeddings before being processed by the
+Transformer. The model predicts noise for(x, y,rotation)
+only; flip and index are fixed.
+Dataset:The dataset consists of tangram configurations
+paired with natural language descriptions. Each sample in-
+cludes piece positions, types, and a binary target mask.
+Guidance:The guidance loss combines:
+•Overlap Loss:Penalises overlapping polygons using
+signed distance functions.
+•Angle Loss:Encourages rotations to be multiples of45 ◦.
+Diffusion Process:We use a Denoising Diffusion Prob-
+abilistic Model (DDPM) scheduler with1000timesteps.
+During training, the model is optimised to predict the added
+noise. During sampling, classifier guidance is optionally
+applied by backpropagating the guidance loss.
+Training Details:Optimisation is performed using
+AdamW with a learning rate of1×10 −4 and cosine an-
+nealing. The batch size is512. Validation is conducted pe-
+riodically with visualisation and checkpointing.
+D.4. Classifier Guidance Function
+The classifier guidance function is designed to provide
+smooth, differentiable constraints during diffusion-based
+shape assembly. It combines multiple loss terms, such as
+angle alignment, overlap penalty, and region constraints,
+into a single scalar objective. The general form is:
+fguidance(s,p,R) =λ angle Langle(θ)(11)
++λ overlap Loverlap(s,p)(12)
++λ region Lregion(s,R)(13)
+wheref guidance(s,p,R)≈0for valid configurations and in-
+creases as constraints are violated. This function is used for
+gradient-based guidance during diffusion, rather than as a
+binary classifier. Thesare the current states (e.g., positions
+and angles of pieces),pare the piece shapes,Ris the target
+region,λ angle, λoverlap, λregion are weighting coefficients.
+Angle Loss (Soft-Min to Target Angles)
+Langle(θ) =
+NX
+i=1
+ 
+− 1
+β log
+X
+k
+exp
+
+−β(θi −θ ∗
+k)2
+!
+(14)
+whereθ k are the target angles (e.g.,0◦,90 ◦, . . .), andβcon-
+trols the sharpness.
+Overlap Loss (Softplus Penalty)
+Loverlap(s,p) = 1
+2
+X
+i̸=j
+softplus(r i +r j −d ij)(15)
+whered ij is the distance between centers,r i is the effective
+radius of piecei.
+Region Loss (Softplus Boundary):
+Lregion(s,R)
+=
+NX
+i=1
+[softplus(xmin −x i) +softplus(x i −x max)
++softplus(y min −y i) +softplus(y i −y max)](16)
+where(x i, yi)is the position of piecei, and
+(xmin, xmax, ymin, ymax)define the region.
+14
+Table 4. The detailed human study results (per-participant choice counts). The numbers are the choice counts for the generated image and
+the ground-truth image.
+Participant 1 Participant 2 Participant 3 Participant 4 Participant 5
+GAG Muzero (chosen) 19.0 21.0 16.0 21.0 21.0
+Auto-Regressive (chosen) 3.0 1.0 4.0 1.0 2.0
+E. Human Study Details
+Our human study is conducted with 5 participants. We ran-
+domly sampled 50 pairs of generated and ground-truth tan-
+gram images with text description, and let 5 participants
+choose which one matches the text description better. For
+each pair of images, we show both of them on the screen
+and ask the participants: “Which image better matches the
+description below?”
+One example question of the questionnaire is shown in
+Fig 6.
+Figure 6. One example question in the questionnaire. We ran-
+domly sampled 50 pairs of generated and ground-truth tangram
+images with text description, and let 5 participants choose which
+one matches the text description better. For each pair of images,
+we show both of them on the screen and ask the participants:
+“Which image better matches the description below?” The place-
+ment of the image are random, i.e., the generated image can be
+placed on the left side or the right side.
+The detailed result are shown in Table 4, including the
+choice counts for the generated image and the ground-truth
+image. For each participant, we randomly shuffle the pairs
+of images and let them choose the better one. The results
+are shown in the table.
+15

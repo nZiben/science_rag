@@ -1,0 +1,754 @@
+BEYONDSFT: REINFORCEMENTLEARNING FORSAFERLARGE
+REASONINGMODELS WITHBETTERREASONINGABILITY
+A PREPRINT
+Jinghan Jia† Nathalie Baracaldo§ Sijia Liu†,§
+†Michigan State University
+§IBM Research
+ABSTRACT
+Large reasoning models (LRMs) extend large language models by generating explicit chain-of-thought
+(CoT) reasoning, significantly improving mathematical and logical problem solving. However, this
+explicit reasoning process also introduces new safety risks, as unsafe behaviors often emerge within
+intermediate reasoning trajectories, even when final answers appear harmless. Existing safety
+alignment approaches primarily rely on supervised fine-tuning (SFT) over safety-oriented long CoT
+datasets. While intuitive, we find that SFT produces inconsistent safety improvements, degrades
+reasoning ability, and generalizes poorly across model families. These limitations suggest that
+purely supervised approaches are insufficient for robust safety alignment in LRMs. To address this,
+we investigate reinforcement learning (RL) as a complementary optimization framework for LRM
+safety training. Unlike SFT, RL directly optimizes model policies with reward feedback, enabling
+more adaptive and stable alignment. Extensive experiments across multiple model families and
+benchmarks show that RL achieves stronger and more consistent safety gains while maintaining
+reasoning competence. Further analysis of reflection dynamics and token-level entropy reveals that
+RL suppresses unsafe exploratory reasoning while preserving reflective depth, leading to safer and
+more reliable reasoning processes.
+1 Introduction
+Large reasoning models (LRMs) extend the capability of large language models (LLMs) by incorporating explicit
+chain-of-thought (CoT) reasoning [Wei et al., 2022, Jaech et al., 2024, Guo et al., 2025]. By generating intermediate
+reasoning steps before producing final answers, LRMs demonstrate remarkable improvements in mathematical, logical,
+and scientific problem solving. However, this explicit reasoning process introduces new safety challenges that differ
+fundamentally from those of conventional LLMs. Recent studies [Wang et al., 2025a, Zhou et al., 2025, Fang et al.,
+2025] reveal that unsafe behaviors often arise within reasoning trajectories of LRMs, such as toxic or deceptive
+intermediate thoughts, even when the final answers appear benign. Moreover, enhanced reasoning capabilities can
+amplify harmful behaviors relative to standard LLMs [Zhou et al., 2025], meaning that stronger reasoning does not
+necessarily imply safer behavior. This phenomenon, known asunsafe reasoning, highlights that safety risks in LRMs
+arise from the reasoning process itself rather than surface-level outputs. We further find that mixture-of-thinking models
+also exhibit lower safety when the thinking mode is enabled compared to the non-thinking mode.
+To mitigate the safety risks, prior works have primarily relied on supervised fine-tuning (SFT) on safety-oriented long
+CoT datasets such as STAIR [Zhang et al., 2025a], STAR-1 [Wang et al., 2025b], and SafeChain [Jiang et al., 2025].
+SFT aims to align model behaviors by directly supervising safe reasoning trajectories or refusal patterns. While intuitive
+and widely adopted, the effectiveness of SFT on LRMs has not been systematically examined. In this work, we show
+that SFT-based safety enhancement has notable limitations and is less effective than commonly believed. We ask:
+(Q)What are the limitations and underlying causes of SFT for LRM safety enhancement, and how can it be
+improved?
+To address (Q), we conduct a comprehensive evaluation across multiple SFT datasets and model families, revealing
+several key limitations. First, safety gains from SFT fail to generalize across architectures; for instance, datasets distilled
+arXiv:2512.01848v1  [cs.CL]  1 Dec 2025
+from DeepSeek-based models transfer poorly to structurally different ones such as GRANITE-4.0-TINY-PREVIEW
+[IBM, 2025]. Second, SFT performance is susceptible to dataset quality and model compatibility; Traning on noisy
+or mismatched data often leads to unstable or even negative safety gains. Third, excessive SFT can impair reasoning
+ability, as over-regularized models lose flexibility and suffer from catastrophic forgetting [Shenfeld et al., 2025]. These
+findings indicate that purely supervised approaches are insufficient for achieving robust and scalable safety alignment in
+LRMs.
+To address these limitations, we investigate reinforcement learning (RL) as a complementary optimization paradigm
+for LRM safety alignment. Unlike SFT, which relies on fixed supervision signals, RL optimizes model policies
+directly toward safety-aligned objectives through reward feedback. Despite RL’s popularity in enhancing the reasoning
+capabilities of LLMs [Guo et al., 2025, Jaech et al., 2024], its effectiveness for safety training in LRMs remains largely
+unexplored in the literature. In this study, we leverage RL-based optimization as a general framework to enhance safety
+while preserving reasoning capability. We summarize ourcontributionsbelow:
+• We find that mixture-of-thinking models exhibit reduced safety in the thinking mode compared to the non-thinking
+mode. Furthermore, our comprehensive empirical study on SFT for LRM safety alignment reveals several key
+limitations, including weak cross-model generalization, inconsistent safety across datasets, and noticeable reasoning
+degradation.
+•We employ a RL–based alignment framework to achieve consistent improvements in both safety and reasoning.
+• We conduct extensive experiments across diverse benchmarks and model families, highlighting the limitations of SFT
+and the advantages of RL. Fine-grained analyses of reflection dynamics and token-level entropy reveal that RL enhances
+safety by suppressing unsafe exploratory reasoning while preserving reflective depth in legitimate reasoning tasks.
+2 Related Work
+Safety risks in LRMs.LRMs introduce distinct safety vulnerabilities due to their explicit CoT (chain-of-thought)
+reasoning traces [Wang et al., 2025a]. Unlike standard LLMs, their intermediate reasoning steps can amplify unsafe
+behaviors such as toxicity, deception, or harmful compliance, even when final answers appear benign [Zhou et al.,
+2025, Arrieta et al., 2025a,b]. Beyond this, researchers have identified additional risk categories, including agentic
+misbehavior [Xu et al., 2025, Barkur et al., 2025, He et al., 2025], multilingual disparities [Ying et al., 2025, Zhang et al.,
+2025b], and multimodal vulnerabilities [Fang et al., 2025]. Reasoning-level adversarial attacks, such as BadChain [Xiang
+et al., 2024], DarkMind [Guo and Tourani, 2025], and Shadow-CoT [Zhao et al., 2025], further expose how unsafe
+exploration paths in CoT generation lead to harmful outputs. Overall, safety failures in LRMs stem primarily from
+unsafe reasoning dynamics rather than surface responses. In this work, we focus onharmful request compliance, the
+most practically relevant and frequently observed form of unsafe reasoning in real-world settings.
+Defenses for LRMs.Recent studies defend LRMs from unsafe reasoning through both training- and inference-level
+approaches [Wang et al., 2025a]. Training-based defenses mainly rely on SFT, preference optimization, or RL. SFT-
+based methods such as STAR-1 [Wang et al., 2025b], SafeChain [Jiang et al., 2025], STAIR [Zhang et al., 2025a], and
+RealSafe-R1 [Zhang et al., 2025c] align reasoning via long CoT datasets with safety annotations. R2D [Zhu et al., 2025]
+formulates safety as contrastive preference optimization using safe–unsafe reasoning pairs, and is also reused as an SFT
+dataset bridging instruction- and reward-based paradigms. Offline RL methods, including DPO in STAIR [Zhang et al.,
+2025a] and SaRO [Mou et al., 2025], optimize pre-collected trajectories, while Deliberative Alignment [Guan et al.,
+2024] improves final-answer safety through policy-guided reasoning. In contrast, ouronlineRL formulation enables
+better generalization and lower dependence on curated supervision.
+Inference-time defenses such as ZeroThink/LessThink/MoreThink [Jiang et al., 2025] and Thinking Intervention [Wu
+et al., 2025] dynamically guide reasoning to prevent unsafe exploration. Although effective, these approaches require
+continuous token-level monitoring or auxiliary controllers, leading to high cost and limited scalability compared with
+training-time reasoning alignment.
+3 Revisiting and Extending the Safety Analysis of LRMs
+In this section, we re-examine the safety of LRMs and show that, at comparable scale, they are substantially less safe
+than standard LLMs. We then analyze the root causes of these vulnerabilities and apply a fine-grained evaluation
+framework to pinpoint which components of generated responses exhibit unsafe behavior. Finally, we extend our study
+to mixture-of-thinking models, revealing that they too suffer from safety weaknesses, particularly when the explicit
+reasoning mode is activated.
+Deception
+DiscriminationExplicit ContentHarmful Info
+PII
+Substance Abuse
+Violence
+0.0
+0.2
+0.4
+0.6
+0.8Safety Score
+0.35
+0.58
+0.52
+0.37
+0.26
+0.35 0.34
+0.91 0.89 0.89 0.90
+0.79
+0.88 0.88
+DeepSeek-R1-Distill-Qwen-7B
+Qwen2.5-7B-Instruct
+Figure 1:Safety performance on the AttaQ benchmark, comparing the LRM DEEPSEEK-R1-DISTILL-QWEN-7B with the standard
+instruction-tuned model QWEN2.5-7B-INSTRUCTacross multiple safety categories. Higher scores indicate better safety. The LRM
+consistently lags behind the LLM of the same scale, revealing a pronounced safety gap.
+Safety gap between LRMs and standard LLMs.Recent studies [Wang et al., 2025b, Zhang et al., 2025c, Jiang et al.,
+2025] have revealed that LRMs, despite their strong performance on reasoning-intensive tasks such as mathematics and
+programming, exhibit pronounced safety vulnerabilities. To further investigate this phenomenon, we evaluate safety
+performance using the AttaQ benchmark [Kour et al., 2023], a comprehensive suite of adversarial questions designed to
+test the harmlessness of language models. Specifically, we compare the LRM DEEPSEEK-R1-DISTILL-QWEN-7B
+with its standard instruction-tuned counterpart QWEN2.5-7B-INSTRUCT, which share the same architecture and scale.
+As shown inFigure 1, the LRM consistently underperforms across all safety categories of AttaQ. For instance, in
+theDeceptioncategory, DEEPSEEK-R1-DISTILL-QWEN-7B achieves a score of only 0.35 compared to 0.91 for
+QWEN2.5-7B-INSTRUCT. A similar disparity is observed inHarmful Information(0.37 vs. 0.90). Even in categories
+where the LRM fares relatively better, such asExplicit Content, its score (0.52) still lags far behind the baseline (0.89).
+These results underscore a pronouncedsafety gap: while standard LLMs such as QWEN2.5-7B-INSTRUCTmaintain
+high and stable safety scores across categories, LRMs of the same size exhibit substantially greater risks. This gap
+raises a critical question:what underlying mechanisms drive the unsafe behaviors characteristic of LRMs?
+Granular safety evaluation for LRMs.To better understand where unsafe behaviors originate in LRMs, we perform
+a fine-grained safety analysis that separates model outputs into thefinal answer( y) and thewhole response( t+y ),
+where t denotes the reasoning trajectory. Following the design of reasoning models such as OpenAI-O1 [Jaech et al.,
+2024], DEEPSEEK-R1 [Guo et al., 2025], and GEMINI-2.5 [Comanici et al., 2025], each output is represented as (t,y) .
+We compare the safety of the final answer and the whole response to identify whether unsafe behaviors emerge during
+reasoning.
+Deception
+DiscriminationExplicit ContentHarmful Info
+PII
+Substance Abuse
+Violence
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0Safety Score
+0.72
+0.79 0.77
+0.69
+0.52
+0.70 0.64
+0.35
+0.58 0.52
+0.37
+0.26
+0.35 0.34
+0.91 0.89 0.89 0.90
+0.79
+0.88 0.88
+Response only (y)
+Whole response (t+y)
+Qwen2.5-7B-Instruct
+Figure 2:Safety performance on AttaQ for different response components of DEEPSEEK-R1-DISTILL-QWEN-7B (response y and
+whole responset+y), compared with QWEN2.5-7B-INSTRUCT. Higher scores indicate better safety.
+As shown inFigure 2, the whole-response safety remains markedly lower than that of the final answers, consistent with
+prior observations of reasoning-level degradation in LRMs [Zhou et al., 2025, Fang et al., 2025]. This result suggests
+that unsafe behaviors are primarily introduced during the reasoning process and carried into the overall response,
+underscoring the need for alignment methods that explicitly regulate internal reasoning rather than relying solely on
+output-level control.
+Safety of mixture-of-thinking models.The above analysis highlights that unsafe behaviors in LRMs primarily
+stem from their reasoning trajectories. A natural question is whether these vulnerabilities persist in more recent
+Deception
+DiscriminationExplicit ContentHarmful Info
+PII
+Substance Abuse
+Violence
+0.60
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95Safety Score
+0.71 0.70
+0.73 0.73 0.75
+0.72 0.73
+0.90 0.89 0.88 0.89
+0.79
+0.89
+0.87
+Qwen3-8B (Thinking)
+Qwen3-8B (Non-Thinking)
+Figure 3:Safety performance of QWEN3-8B on the AttaQ benchmark innon-thinkingandthinkingmodes. Higher scores indicate
+stronger safety. All other settings follow Figure 1.
+mixture-of-thinkingmodels, which can flexibly switch between reasoning and non-reasoning modes. For example,
+QWEN3 [Team, 2025] alternates between athinking mode, resembling LRM-style generation, and anon-thinking
+mode, resembling standard LLM behavior.Figure 3shows the safety of QWEN3-8B on the AttaQ benchmark under
+both thinking and non-thinking modes. The results reveal a clear degradation in safety when the thinking mode is
+enabled. For instance, in theDeceptioncategory, the safety score drops by 0.19 (0.71 vs. 0.90). This suggests that
+mixture-of-thinking models inherit the same vulnerabilities as LRMs, as reasoning-style generation implicitly amplifies
+unsafe behaviors. These findings again underscore the need for alignment strategies that explicitly regulate not only the
+final response but also the internal reasoning process.
+4 From Supervised to RL-based Safety Fine-Tuning: Limitations and Promises
+In this section, we revisit the limitations of supervised fine-tuning when applied to LRMs for safety alignment. We
+first find that the effectiveness of SFT is strongly dependent on model type: its safety gains do not transfer reliably
+across model families, and are often significantly weaker on architectures or pretraining distributions that differ from
+those of its training source, such as GRANITE-4.0-TINY-PREVIEW. Moreover, SFT performance strongly depends
+on dataset quality: while STAR-1 [Wang et al., 2025b] improves safety, other long chain-of-thought datasets such as
+SafeChain [Jiang et al., 2025] and R2D-R1 [Zhu et al., 2025] provide limited or even negative effects, highlighting
+SFT’s sensitivity to data alignment and noise. Even when safety improves, SFT frequently reduces reasoning ability on
+benchmarks like GPQA-Diamond and AIME24/25, revealing an inherent trade-off between safety enhancement and
+reasoning preservation. Thus, SFT alone is insufficient for robust LRM safety alignment. By contrast, we find that RL
+provides a more general and data-efficient alternative that achieves better safety–reasoning balance without requiring
+high-quality reference data.
+0.0 0.2 0.4 0.6 0.8
+Safety Score
+Granite-4.0-
+Tiny-Preview
+DeepSeek-R1-
+Distill-Qwen-7B
+0.73
++0.02
+0.75
+0.37 +0.39 0.76
+w/o SFT Improvement (SFT vs. w/o SFT)
+Figure 4:Average safety scores on the AttaQ benchmark for GRANITE-4.0-TINY-PREVIEWand DEEPSEEK-R1-DISTILL-QWEN-
+7B, before and after SFT with STAR-1 data. Bars show performance without SFT (blue) and the improvement after SFT (pink).
+Poor transferability of SFT across model families.We first identify a key limitation of SFT: its sensitivity to
+model architecture and pretraining distribution. While SFT on STAR-1 [Wang et al., 2025b] has shown substantial
+safety improvements on DEEPSEEK-R1–based distilled models, its effectiveness has rarely been tested on models with
+different architectures or pretraining corpora.Figure 4compares the average safety scores of STAR-1–trained models
+on DEEPSEEK-R1-DISTILL-QWEN-7B and GRANITE-4.0-TINY-PREVIEWusing the AttaQ benchmark. Notably,
+GRANITE-4.0-TINY-PREVIEW, a hybrid Mamba–Transformer model [Gu and Dao, 2023], exhibits much smaller
+safety gains after SFT (0.02 vs. 0.39). Although GRANITE-4.0-TINY-PREVIEWstarts with a higher baseline safety
+score, post-SFT the DeepSeek-based model surpasses it. The sharp contrast between the negligible safety gain of SFT
+on GRANITE-4.0-TINY-PREVIEWand its notable improvement on DEEPSEEK-R1-DISTILL-QWEN-7B highlights
+SFT’s sensitivity to the choice of base model and its limited transferability, even when effective on a specific model.
+1.5 2.0 2.5 3.0 3.5
+Min-60% Prob
+0.0
+0.5
+1.0Density
+Granite-4.0-Tiny-Preview
+DeepSeek-R1-Distill-Qwen-7B
+Figure 5:Distribution of Min-K% Probability (Min-60% Prob) [Shi et al., 2023] values for DEEPSEEK-R1-DISTILL-QWEN-7B
+and GRANITE-4.0-TINY-PREVIEWon STAR-1 data. Lower scores indicate stronger memorization.
+We hypothesize that the above discrepancy arises because STAR-1 was distilled from DeepSeek-R1, making its
+data distribution and reasoning format naturally compatible with DeepSeek-derived models. In contrast, the distinct
+pretraining distribution of GRANITE-4.0-TINY-PREVIEWlimits its ability to leverage STAR-1 effectively. To verify
+this hypothesis, we employ the Min-K% Probability (Min-K% Prob) metric [Shi et al., 2023] to quantify model
+memorization by computing the averagenegativelog-likelihood over the lowest K% predicted tokens in each sequence;
+lower values indicate stronger memorization.Figure 5reports results for K= 60% , showing that DEEPSEEK-R1-
+DISTILL-QWEN-7B consistently yields lower Min-K% Prob scores than GRANITE-4.0-TINY-PREVIEWon STAR-1
+data. This confirms that the STAR-1 data distribution is more aligned with DeepSeek-derived models, explaining their
+larger safety gains of SFT on DEEPSEEK-R1-DISTILL-QWEN-7B.
+Inconsistent safety gains from SFT across datasets.Prior studies [Wang et al., 2025b, Jiang et al., 2025, Zhang et al.,
+2025c,a] show that safety-oriented long chain-of-thought training can improve LRM safety. However, few works have
+systematically compared SFT performance across different datasets under a unified evaluation setup.Figure 6shows the
+performance of SFT trained on different datasets, including STAR-1 [Wang et al., 2025b], R2D-R1 [Zhu et al., 2025],
+and SafeChain [Jiang et al., 2025], evaluated on the AttaQ benchmark using DEEPSEEK-R1-DISTILL-QWEN-7B as
+the base model. Only STAR-1 yields consistent safety improvements across harm categories, while others provide
+marginal or even negative gains. For example, the SafeChain-trained model drops from 0.52 to 0.49 in theExplicit
+Contentcategory, suggesting that SafeChain’s lower-quality or less strictly filtered data introduces noisy supervision
+compared to STAR-1. Moreover, as shown later, this degradation often extends to reasoning performance. Thus, the
+safety benefits of SFT remain highly dataset-dependent, and suboptimal data can undermine both safety and reasoning.
+DeceptionDiscriminationExplicit
+ Content
+Harmful
+ Info
+PII Substance
+ Abuse
+Violence
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9Safety Score0.35
+0.58
+0.52
+0.37
+0.26
+0.35 0.34
+0.53
+0.61 0.59 0.55 0.54 0.52
+0.59
+0.34
+0.56
+0.49
+0.36
+0.24
+0.34 0.35
+0.79
+0.70
+0.77 0.78
+0.69
+0.84
+0.72
+w/o SFT R2D-R1 SafeChain-R1 STAR1-R1-Distill-7B
+Figure 6:Comparison of SFT-trained models on AttaQ. The base model is DEEPSEEK-R1-DISTILL-QWEN-7B.
+Impact of SFT on reasoning performance.Beyond SFT’s data–model sensitivity in achieving safety gains, prior
+work [Wang et al., 2025b] also reveals a trade-off between safety and reasoning performance under SFT. To re-
+examine this effect, we evaluate the safety-enhanced models by SFT in Fig. A1, across three reasoning benchmarks:
+AIME24/25 [MAA Committees], MATH500 [Lightman et al., 2023], and GPQA-Diamond [Rein et al., 2024]. It
+shows that while SFT on STAR-1 largely preserves reasoning ability on AIME24/25, it exhibits a noticeable drop
+on GPQA-Diamond. Models trained on SafeChain or R2D-R1 perform even worse, with reasoning scores far below
+the original LRM. These results confirm that SFT’s safety gains often come at the cost of reasoning degradation, and
+excessive alignment further amplifies this trade-off. This reflects SFT’s vulnerability to catastrophic forgetting during
+additional training [Shenfeld et al., 2025].
+The aforementioned limitations of SFT motivate us to ask:Is there a general approach that can improve the safety of
+LRMs without relying on strong data-model prerequisites, while simultaneously preserving their reasoning capabilities?
+RL to jointly optimize safety and reasoning.To overcome the limitations of SFT, we employ RL as an alternative,
+which has been shown to enhance generalization [Kirk et al., 2023, Chu et al., 2025] and mitigate catastrophic
+forgetting [Shenfeld et al., 2025]. However, despite its widespread use for enhancing reasoning, the effectiveness of RL
+for safety training in LRMs remains largely unexplored in the literature.
+In the RL paradigm, an LRM is treated as a policy πθ that generates a full response (t,y) , consisting of both the
+reasoning trajectories t and the final answer y, given a prompt x. The training objective is to maximize the expected
+reward, or equivalently, minimize the negative expected reward:
+LRL(θ) =−E(t,y)∼πθ(·|x)
+
+R(x,t+y)
+
+,(1)
+where θ represents the LRM, and R(x,t+y) encodes safety criteria. In our implementation, we adopt REINFORCE++
+[Hu et al., 2025], an enhanced policy-gradient algorithm that removes the need for a critic network while incorporating
+several stability techniques, including token-level KL divergency penalties, proximal policy optimization (PPO)-style
+clipping, mini-batch updates, and normalized advantage estimation. These modifications make Reinforce++ both
+simpler and more efficient than PPO [Schulman et al., 2017], while retaining stable optimization dynamics. We use this
+approach to explore whether RL is a more effective framework for improving the safety of LRMs without degrading
+their reasoning performance.
+Both 
+Safety 
+and 
+Reasoning 
+Improved
+Figure 7:Safety and reasoning trade-off visualization for DEEPSEEK-R1-DISTILL-QWEN-7B under different alignment strategies.
+The x-axis is the safety score on AIR-Bench, and the y-axis denotes accuracy on AIME24.
+To validate the effectiveness of our RL formulation, we conduct an initial comparison among the base model, the SFT
+baseline (trained on STAR-1), and the RL-aligned model (also trained on STAR-1) on two representative benchmarks:
+AIR-Bench [Zeng et al., 2024] for safety and AIME24 for reasoning. As shown inFigure 7, SFT substantially
+improves safety alignment while maintaining comparable reasoning accuracy. In contrast, our RL-aligned model
+achieves simultaneous gains in both dimensions, indicating that reinforcement optimization can enhance safety without
+compromising, and even slightly improving reasoning capability.
+5 Experiments
+5.1 Experimental Setup
+Evaluation benchmarks.To evaluate our approach, we assess both safety and reasoning performance. For safety,
+we use two benchmarks:AttaQ[Kour et al., 2023], which tests adversarial safety across seven harm categories (e.g.,
+deception, violence, hate) and scores outputs with OPENASSISTANT/REWARD-MODEL-DEBERTA-V3-LARGE-V2
+normalized to [0,1] ; andAIR-Bench[Zeng et al., 2024], a regulation-grounded benchmark covering 314 fine-grained
+risks across four domains, where GPT-4o automatically judges refusal rates (higher is safer).
+For reasoning, we useMATH500[Lightman et al., 2023],AIME24/25[ MAA Committees], andGPQA-
+Diamond[Rein et al., 2024], covering multi-step mathematics and graduate-level STEM problems. All reasoning
+evaluations follow Guo et al. [2025] with a 32k-token limit, nucleus sampling (temperature0.6, top-p= 0.95).
+Models and datasets.To evaluate the effectiveness of RL in enhancing both safety and reasoning, we conduct
+experiments on three representative model families: (i) DEEPSEEK-R1-DISTILL-QWEN-7B [Guo et al., 2025], a
+distilled large reasoning model (LRM); (ii) QWEN3-8B [Team, 2025], a recent LRM capable of operating in both
+thinkingandnon-thinkingmodes; and (iii) GRANITE-4.0-TINY-PREVIEW[IBM, 2025], which adopts a hybrid
+Mamba–Transformer architecture.
+For SFT (supervised fine-tuning) baselines, we fine-tune models on several widely used safety-oriented long chain-of-
+thought (CoT) datasets, including STAR-1 [Wang et al., 2025b], R2D-R1 [Zhu et al., 2025], and SafeChain [Jiang et al.,
+2025]. We also incorporate thecontrastive pivot optimization (CPO)approach from R2D [Zhu et al., 2025], trained
+on the R2D-R1 dataset, as a preference-optimization baseline. For RL training, we use the same prompt distribution
+as STAR-1 [Wang et al., 2025b] to ensure a fair comparison, isolating the effect of the training paradigm rather than
+differences in data.
+Implementation details.For SFT, we use the OpenRLHF framework [Hu et al., 2024], following the training
+configuration recommended by STAR-1 [Wang et al., 2025b]. Models are trained for 5 epochs with a learning rate of
+5×10 −6 and a batch size of 256. For SafeChain and R2D-R1, we train for only 1 epoch, as we observed that longer
+training substantially degrades reasoning performance, and both datasets are relatively large; other hyperparameters
+remain the same.
+For RL, we adopt REINFORCE++ as the training algorithm and use SKYWORK-REWARD-V2-LLAMA-3.1-8B [Liu
+et al., 2025] as the reward model, which achieves state-of-the-art performance on RewardBench [Malik et al., 2025].
+The reward model provides token-level reward signals for each generated response. We train for 500 episodes across
+the same prompt distribution, ensuring a fair comparison with SFT baselines.
+Table 1:Performance comparison of SFT, preference optimization (CPO), and RL methods on safety (AttaQ, AIR-Bench) and
+reasoning (GPQA-Diamond, MATH500, AIME24, AIME25) benchmarks across two LRM families. Safety results are reported as
+average scores over each benchmark. All metrics are higher-is-better, and the best results per column are highlighted inbold.
+Model
+Safety Reasoning
+AttaQ AIR-Bench GPQA
+-Diamond MATH500 AIME24 AIME25
+DeepSeek-R1 distilled family
+DeepSeek-R1-Distill-Qwen-7B 0.37 0.26 49.24 92.00 46.30 30.52
++ SFT (R2D-R1) 0.56 0.41 46.53 86.80 39.64 29.38
++ SFT (SafeChain) 0.37 0.25 48.48 91.05 42.60 28.64
++ SFT (STAR-1) 0.76 0.59 47.54 91.80 46.88 31.87
++ CPO 0.59 0.41 47.85 90.75 41.67 27.86
++ Ours 0.78 0.66 49.68 92.30 49.53 32.14
+Qwen3 family
+Qwen3-8B (thinking) 0.73 0.40 59.53 96.40 74.22 40.57
++ SFT (R2D-R1) 0.75 0.43 51.83 91.70 60.05 36.04
++ SFT (SafeChain) 0.49 0.29 57.01 95.00 67.60 39.06
++ SFT (STAR-1) 0.78 0.5159.7995.50 74.69 42.55
++ CPO 0.79 0.55 53.54 95.55 68.33 42.29
++ Ours 0.81 0.58 58.33 96.40 75.16 44.11
+5.2 Experimental Results
+RL enhances safety while preserving reasoning.InTable 1, we evaluate the safety and reasoning performance
+of our RL-based methods on AttaQ, AIR-Bench, and reasoning benchmarks MATH500, AIME24, AIME25, and
+GPQA-Diamond. We compare our approach against multiple baselines across two representative model families:
+DEEPSEEK-R1-DISTILL-QWEN-7B, a distilled large reasoning model derived from DEEPSEEK-R1, and QWEN3-8B,
+a recent model supporting boththinkingandnon-thinkingmodes. The baselines include SFT models fine-tuned
+on widely used safety-oriented long chain-of-thought datasets—STAR-1, R2D-R1, and SafeChain—as well as the
+preference-based CPO (contrastive pivot optimization) method introduced in R2D.
+First, our proposed RL approach achieves the best safety performance compared with all baselines and the base models.
+For example, on DEEPSEEK-R1-DISTILL-QWEN-7B, STAR-1 training yields AttaQ and AIR-Bench scores of 0.76
+and 0.59, whereas ours trained on the same STAR-1 dataset achieves 0.78 and 0.66. This shows that RL has greater
+potential to boost safety performance, likely due to better generalization ability compared with SFT and CPO, consistent
+with observations in Kirk et al. [2023].
+Second, RL also surpasses SFT in reasoning ability. On DEEPSEEK-R1-DISTILL-QWEN-7B, our method achieves the
+strongest results across all reasoning benchmarks, with a particularly notable improvement on AIME24 (+3.23, 49.53
+vs. 46.30 compared to the base model). In contrast, SFT often degrades reasoning performance—for instance, STAR-1
+training reduces GPQA accuracy from 49.24 (no SFT) to 47.54, whereas our RL model maintains 49.68, comparable to
+the baseline. These results suggest that RL more effectively preserves reasoning skills and prior knowledge, mitigating
+the catastrophic forgetting issues highlighted in [Shenfeld et al., 2025].
+Third, we observe that these improvements remain consistent across different model families. For instance, within
+the QWEN3-8B family, our method achieves the highest safety scores on AttaQ (0.81) and AIR-Bench (0.58), while
+also attaining the strongest reasoning results on MATH500 (96.40), AIME24 (75.16), and AIME25 (44.11). This
+consistency across both distilled and hybrid LRM architectures highlights the robustness of our approach in achieving
+safety alignment without compromising reasoning performance.
+Ours
+Base 
+Model
+SFT
+Figure 8:Category-level results on AIR-Bench for QWEN3-8B. This compares the base model (blue), SFT on STAR-1 (purple),
+and ours (orange). Higher scores indicate safer behavior.
+RL improves safety across AIR-Bench categories. Figure 8presents radar plots comparing the base model, the
+SFT baseline (STAR-1), and our RL-aligned model on QWEN3-8B, illustrating refusal rates across diverse safety
+categories such as harmful content, privacy, and fundamental rights. Across nearly all dimensions, RL achieves the
+highest safety scores. For example, on QWEN3-8B, RL significantly increases refusal rates in high-risk areas, whereas
+SFT yields smaller or inconsistent gains and even underperforms the baseline in certain categories, such asDefamation.
+Thus, RL not only enhances average safety performance (Table 1) but also provides broad and fine-grained safety
+improvements across diverse risk types. In particular, RL substantially reduces unsafe outputs in sensitive domains
+such asself-harm, demonstrating superior robustness and generalization compared to SFT. Additional radar plots for
+DEEPSEEK-R1-DISTILL-QWEN-7B are shown inFigure A2, exhibiting consistent trends.
+RL improves safety by regulating reflection behavior.To further understand how RL shapes LRM behavior beyond
+benchmark scores, we move beyond benchmark scores and analyze token-level uncertainty within reflection sequences.
+Following [Wang et al., 2025c], we compute the next-token entropy at positiont as Ht =− PV
+j=1 pt,j logp t,j, where
+Ht denotes the entropy (in bits), V is the vocabulary size, and pt,j is the model’s predicted probability of token
+j. High-entropy tokens indicateforksin the chain of thought—points where the model explores multiple potential
+reasoning branches.
+We adopt a teacher-forcing protocol: for each prompt, we first extract reflection sequences from the base model
+(DEEPSEEK-R1-DISTILL-QWEN-7B) on AIME24 (reasoning) and AttaQ (unsafe). We then force the base, SFT, and
+RL models to follow these same sequences and measureHt at each reflection token.Table 2reports the average entropy
+over common reflection tokens (“wait”, “hmm”, “but”, “alternatively”), on unsafe prompts from AttaQ and reasoning
+prompts from AIME24, comparing the base model, SFT, and RL variants, with DEEPSEEK-R1-DISTILL-QWEN-7B as
+the base model.
+Table 2:Comparison of average reflection-token en-
+tropy following Wang et al. [2025c] (wait, hmm, but,
+alternatively) across AttaQ (Safety) and AIME24
+(Reasoning). We report results for the DEEPSEEK-
+R1-DISTILL-QWEN-7B base model and its SFT and
+RL variants, both fine-tuned on the STAR-1 dataset.
+Model AttaQ AIME24
+Base model 0.24 3.12
+SFT 0.12 2.73
+RL 0.09 3.00
+On the AttaQ safety benchmark, the RL model attains the lowest
+average reflection-token entropy among all variants. RL yields an
+average entropy of 0.09 compared to 0.24 for the base model and
+0.12 for SFT, indicating that RL becomes substantially more certain
+about its next-step predictions when operating on unsafe prompts.
+The reduced entropy reflects fewer divergent branches during unsafe
+reasoning and a more decisive convergence pattern, effectively sup-
+pressing unsafe exploration and lowering the likelihood of continuing
+into harmful trajectories.
+On AIME24, in contrast, SFT achieves the lowest average reflection
+entropy, dropping to 2.73 compared to 3.12 for the base model and 3.00 for RL. This reduced uncertainty aligns with
+SFT’s degraded reasoning performance: by collapsing entropy, SFT restricts exploration on mathematically intensive
+prompts, causing it to under-explore the solution space. RL, by comparison, maintains entropy values close to the base
+model, suggesting that RL preserves the capacity to explore multiple reasoning branches, an ability essential for solving
+multi-step, high-complexity problems.
+A consistent trend emerges when examining the same models across tasks: reflection entropy on AIME24 is markedly
+higher than on AttaQ for every model variant. This difference reflects fundamental task structure. Reasoning-heavy
+problems naturally induce higher-entropy reflective states because solving them often requires evaluating several
+competing solution paths, while safety prompts benefit from low-uncertainty, early-terminating behavior that limits
+risky continuations. These patterns highlight that reflection entropy is sensitive both to model training and to the
+inherent exploratory demands of the underlying task.
+Additional experiments.We further extend our study with two additional analyses. First, we evaluate safety
+performance on GRANITE-4.0-TINY-PREVIEW(Figure A3), confirming that our findings generalize beyond the QWEN
+and distilled LRM families. Second, qualitative examples inTable A1illustrate that RL generates safer yet coherent
+reasoning trajectories, reinforcing its effectiveness in balancing safety and reasoning quality.
+6 Conclusions
+In this paper, we present a comprehensive study of safety alignment in large reasoning models (LRMs). Through
+extensive experiments, we reveal that supervised fine-tuning (SFT) suffers from unstable safety gains, degraded
+reasoning ability, and poor cross-model generalization. To overcome these limitations, we introduce a reinforcement
+learning (RL)-based alignment framework that directly optimizes reasoning trajectories via reward feedback. Our
+results across multiple benchmarks and model families demonstrate that RL achieves consistent improvements in both
+safety and reasoning performance. Fine-grained analyses of reflection dynamics and reasoning entropy further show
+that RL enables safer, more controlled reasoning behavior. Overall, this work establishes RL as a scalable and effective
+paradigm for reasoning-aware safety alignment in LRMs.
+7 Limitations
+While our study establishes reinforcement learning (RL) as an effective paradigm for reasoning-aware safety alignment,
+several limitations remain. First, our experiments are conducted on medium-scale LRMs (up to 8B parameters);
+extending the analysis to larger frontier models (e.g., 70B or above) may reveal different optimization dynamics and
+scaling behaviors. Second, our evaluation primarily focuses on harmful request compliance and does not include
+targeted adversarial attacks or red-team prompts that probe deeper failure modes. Third, although we demonstrate
+consistent safety and reasoning gains, our approach relies on existing reward models, whose biases and coverage may
+affect training outcomes. Future work will explore scaling RL-based safety alignment to larger models, integrating
+adversarial robustness evaluation, and developing more fine-grained reward signals for reasoning-process regulation.
+8 Acknowledgment
+This project was initiated during J. Jia’s summer research internship at IBM Research, under N. Baracaldo’s mentorship.
+Post-internship, the work of J. Jia and S. Liu was supported in part by the National Science Foundation (NSF) under
+CISE Core Program Awards IIS-2207052 and IIS-2504263, and the CAREER Award IIS-2338068.
+Bibliography
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-
+of-thought prompting elicits reasoning in large language models.Advances in neural information processing systems,
+35:24824–24837, 2022.
+Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander
+Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card.arXiv preprint arXiv:2412.16720, 2024.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang,
+Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning.arXiv preprint
+arXiv:2501.12948, 2025.
+Cheng Wang, Yue Liu, Baolong Bi, Duzhen Zhang, Zhong-Zhi Li, Yingwei Ma, Yufei He, Shengju Yu, Xinfeng Li,
+Junfeng Fang, et al. Safety in large reasoning models: A survey.arXiv preprint arXiv:2504.17704, 2025a.
+Kaiwen Zhou, Chengzhi Liu, Xuandong Zhao, Shreedhar Jangam, Jayanth Srinivasa, Gaowen Liu, Dawn Song,
+and Xin Eric Wang. The hidden risks of large reasoning models: A safety assessment of r1.arXiv preprint
+arXiv:2502.12659, 2025.
+Junfeng Fang, Yukai Wang, Ruipeng Wang, Zijun Yao, Kun Wang, An Zhang, Xiang Wang, and Tat-Seng Chua.
+Safemlrm: Demystifying safety in multi-modal large reasoning models.arXiv preprint arXiv:2504.08813, 2025.
+Yichi Zhang, Siyuan Zhang, Yao Huang, Zeyu Xia, Zhengwei Fang, Xiao Yang, Ranjie Duan, Dong Yan, Yinpeng Dong,
+and Jun Zhu. Stair: Improving safety alignment with introspective reasoning.arXiv preprint arXiv:2502.02384,
+2025a.
+Zijun Wang, Haoqin Tu, Yuhan Wang, Juncheng Wu, Jieru Mei, Brian R Bartoldson, Bhavya Kailkhura, and Cihang
+Xie. Star-1: Safer alignment of reasoning llms with 1k data.arXiv preprint arXiv:2504.01903, 2025b.
+Fengqing Jiang, Zhangchen Xu, Yuetai Li, Luyao Niu, Zhen Xiang, Bo Li, Bill Yuchen Lin, and Radha Pooven-
+dran. Safechain: Safety of language models with long chain-of-thought reasoning capabilities.arXiv preprint
+arXiv:2502.12025, 2025.
+IBM. Granite 4.0 tiny preview.https://huggingface.co/ibm-granite/granite-4.0-tiny-preview, 2025.
+Idan Shenfeld, Jyothish Pari, and Pulkit Agrawal. Rl’s razor: Why online reinforcement learning forgets less.arXiv
+preprint arXiv:2509.04259, 2025.
+Aitor Arrieta, Miriam Ugarte, Pablo Valle, José Antonio Parejo, and Sergio Segura. Early external safety testing of
+openai’s o3-mini: Insights from the pre-deployment evaluation.arXiv preprint arXiv:2501.17749, 2025a.
+Aitor Arrieta, Miriam Ugarte, Pablo Valle, José Antonio Parejo, and Sergio Segura. o3-mini vs deepseek-r1: Which one
+is safer?arXiv preprint arXiv:2501.18438, 2025b.
+Rongwu Xu, Xiaojian Li, Shuo Chen, and Wei Xu. Nuclear deployed: Analyzing catastrophic risks in decision-making
+of autonomous llm agents.arXiv preprint arXiv:2502.11355, 2025.
+Sudarshan Kamath Barkur, Sigurd Schacht, and Johannes Scholl. Deception in llms: Self-preservation and autonomous
+goals in large language models.arXiv preprint arXiv:2501.16513, 2025.
+Yufei He, Yuexin Li, Jiaying Wu, Yuan Sui, Yulin Chen, and Bryan Hooi. Evaluating the paperclip maximizer: Are
+rl-based language models more likely to pursue instrumental goals?arXiv preprint arXiv:2502.12206, 2025.
+Zonghao Ying, Guangyi Zheng, Yongxin Huang, Deyue Zhang, Wenxin Zhang, Quanchen Zou, Aishan Liu, Xianglong
+Liu, and Dacheng Tao. Towards understanding the safety boundaries of deepseek models: Evaluation and findings.
+arXiv preprint arXiv:2503.15092, 2025.
+Wenjing Zhang, Xuejiao Lei, Zhaoxiang Liu, Ning Wang, Zhenhong Long, Peijun Yang, Jiaojiao Zhao, Minjie
+Hua, Chaoyang Ma, Kai Wang, et al. Safety evaluation of deepseek models in chinese contexts.arXiv preprint
+arXiv:2502.11137, 2025b.
+Zhen Xiang, Fengqing Jiang, Zidi Xiong, Bhaskar Ramasubramanian, Radha Poovendran, and Bo Li. Badchain:
+Backdoor chain-of-thought prompting for large language models.arXiv preprint arXiv:2401.12242, 2024.
+Zhen Guo and Reza Tourani. Darkmind: Latent chain-of-thought backdoor in customized llms.arXiv preprint
+arXiv:2501.18617, 2025.
+Gejian Zhao, Hanzhou Wu, Xinpeng Zhang, and Athanasios V Vasilakos. Shadowcot: Cognitive hijacking for stealthy
+reasoning backdoors in llms.arXiv preprint arXiv:2504.05605, 2025.
+Yichi Zhang, Zihao Zeng, Dongbai Li, Yao Huang, Zhijie Deng, and Yinpeng Dong. Realsafe-r1: Safety-aligned
+deepseek-r1 without compromising reasoning capability.arXiv preprint arXiv:2504.10081, 2025c.
+Junda Zhu, Lingyong Yan, Shuaiqiang Wang, Dawei Yin, and Lei Sha. Reasoning-to-defend: Safety-aware reasoning
+can defend large language models from jailbreaking.arXiv preprint arXiv:2502.12970, 2025.
+Yutao Mou, Yuxiao Luo, Shikun Zhang, and Wei Ye. Saro: Enhancing llm safety through reasoning-based alignment.
+arXiv preprint arXiv:2504.09420, 2025.
+Melody Y Guan, Manas Joglekar, Eric Wallace, Saachi Jain, Boaz Barak, Alec Helyar, Rachel Dias, Andrea Vallone,
+Hongyu Ren, Jason Wei, et al. Deliberative alignment: Reasoning enables safer language models.arXiv preprint
+arXiv:2412.16339, 2024.
+Tong Wu, Chong Xiang, Jiachen T Wang, G Edward Suh, and Prateek Mittal. Effectively controlling reasoning models
+through thinking intervention.arXiv preprint arXiv:2503.24370, 2025.
+George Kour, Marcel Zalmanovici, Naama Zwerdling, Esther Goldbraich, Ora Nova Fandina, Ateret Anaby-Tavor, Orna
+Raz, and Eitan Farchi. Unveiling safety vulnerabilities of large language models.arXiv preprint arXiv:2311.04124,
+2023.
+Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit Dhillon, Marcel Blistein,
+Ori Ram, Dan Zhang, Evan Rosen, et al. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality,
+long context, and next generation agentic capabilities.arXiv preprint arXiv:2507.06261, 2025.
+Qwen Team. Qwen3 technical report, 2025. URLhttps://arxiv.org/abs/2505.09388.
+Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces.arXiv preprint
+arXiv:2312.00752, 2023.
+Weijia Shi, Anirudh Ajith, Mengzhou Xia, Yangsibo Huang, Daogao Liu, Terra Blevins, Danqi Chen, and Luke
+Zettlemoyer. Detecting pretraining data from large language models.arXiv preprint arXiv:2310.16789, 2023.
+MAA Committees. Aime problems and solutions. https://artofproblemsolving.com/wiki/index.php/AIME_
+Problems_and_Solutions.
+Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman,
+Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. InThe Twelfth International Conference on Learning
+Representations, 2023.
+David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael,
+and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. InFirst Conference on Language
+Modeling, 2024.
+Robert Kirk, Ishita Mediratta, Christoforos Nalmpantis, Jelena Luketina, Eric Hambro, Edward Grefenstette,
+and Roberta Raileanu. Understanding the effects of rlhf on llm generalisation and diversity.arXiv preprint
+arXiv:2310.06452, 2023.
+Tianzhe Chu, Yuexiang Zhai, Jihan Yang, Shengbang Tong, Saining Xie, Dale Schuurmans, Quoc V Le, Sergey Levine,
+and Yi Ma. Sft memorizes, rl generalizes: A comparative study of foundation model post-training.arXiv preprint
+arXiv:2501.17161, 2025.
+Jian Hu, Jason Klein Liu, Haotian Xu, and Wei Shen. Reinforce++: An efficient rlhf algorithm with robustness to both
+prompt and reward models.arXiv preprint arXiv:2501.03262, 2025.
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization
+algorithms.arXiv preprint arXiv:1707.06347, 2017.
+Yi Zeng, Yu Yang, Andy Zhou, Jeffrey Ziwei Tan, Yuheng Tu, Yifan Mai, Kevin Klyman, Minzhou Pan, Ruoxi Jia,
+Dawn Song, et al. Air-bench 2024: A safety benchmark based on risk categories from regulations and policies.arXiv
+preprint arXiv:2407.17436, 2024.
+Jian Hu, Xibin Wu, Zilin Zhu, Xianyu, Weixun Wang, Dehao Zhang, and Yu Cao. Openrlhf: An easy-to-use, scalable
+and high-performance rlhf framework.arXiv preprint arXiv:2405.11143, 2024.
+Chris Yuhao Liu, Liang Zeng, Yuzhen Xiao, Jujie He, Jiacai Liu, Chaojie Wang, Rui Yan, Wei Shen, Fuxiang Zhang,
+Jiacheng Xu, Yang Liu, and Yahui Zhou. Skywork-reward-v2: Scaling preference data curation via human-ai synergy.
+arXiv preprint arXiv:2507.01352, 2025.
+Saumya Malik, Valentina Pyatkin, Sander Land, Jacob Morrison, Noah A Smith, Hannaneh Hajishirzi, and Nathan
+Lambert. Rewardbench 2: Advancing reward model evaluation.arXiv preprint arXiv:2506.01937, 2025.
+Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shixuan Liu, Rui Lu, Kai Dang, Xionghui Chen, Jianxin Yang,
+Zhenru Zhang, et al. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for
+llm reasoning.arXiv preprint arXiv:2506.01939, 2025c.
+A Additional Experimental Results
+Impact of SFT on reasoning performance.Figure A1 presents additional results analyzing how different SFT
+datasets affect reasoning accuracy across four benchmarks: GPQA-Diamond, MATH500, AIME24, and AIME25. All
+experiments are conducted on DEEPSEEK-R1-DISTILL-QWEN-7B. While SFT on STAR-1 maintains comparable
+reasoning performance to the base model, R2D-R1 and SafeChain-R1 lead to noticeable degradation, particularly on
+high-difficulty benchmarks such as AIME24 and AIME25. These findings further support our main conclusion that
+SFT-based safety alignment can inadvertently harm reasoning capabilities, depending on dataset quality and supervision
+consistency. Overall, excessive or mismatched safety tuning tends to constrain the model’s reasoning flexibility without
+delivering clear performance gains.
+GPQA
+-Diamond
+MATH500 AIME24 AIME25
+30
+40
+50
+60
+70
+80
+90Accuracy49
+92
+46
+31
+48
+92
+47
+32
+47
+87
+40
+29
+48
+91
+43
+29
+wo SFT
+STAR1-R1-Distill-7B
+R2D-R1
+SafeChain-R1
+Figure A1:Comparison of SFT-trained models across (a) safety (AttaQ benchmark) and (b) reasoning (GPQA-Diamond, MATH500,
+AIME24, and AIME25). Bars show the baseline performance without SFT and models fine-tuned on safety-oriented CoT datasets,
+including STAR-1, R2D-R1, and SafeChain. The base model for all experiments is DEEPSEEK-R1-DISTILL-QWEN-7B.
+Additional results on AIR-Bench.Figure A2 provides category-level safety comparisons on AIR-Bench for
+DEEPSEEK-R1-DISTILL-QWEN-7B, covering diverse risk domains such as toxicity, violence, privacy, and ma-
+nipulation. The RL-aligned model (orange) consistently achieves higher safety scores across nearly all categories
+compared to both the base model (blue) and the SFT baseline trained on STAR-1 (purple). Notably, the improvements
+are most pronounced in high-risk areas such as hate, child harm, and violent content, where SFT shows uneven or limited
+progress. These results further demonstrate that RL alignment providesbroad and consistent safety improvements
+across fine-grained risk dimensions, corroborating the aggregate findings presented in the Figure 8.
+Ours
+Base 
+Model
+SFT
+Figure A2:Category-level results onAIR-Benchfor DEEPSEEK-R1-DISTILL-QWEN-7B. This compares the base model (blue),
+SFT on STAR-1 (purple), and ours (orange). Higher scores indicate safer behavior.
+Additional results for GRANITE-4.0-TINY-PREVIEW.Figure A3 reports category-wise safety scores on the AttaQ
+benchmark for the GRANITE-4.0-TINY-PREVIEWmodel. The RL-aligned model consistently outperforms both the
+base and SFT baselines across most harm categories, including deception, discrimination, and explicit content. Notably,
+RL achieves an average improvement of over 0.05 in overall safety score while maintaining stability across categories,
+demonstrating that our approach generalizes beyond Qwen-based architectures. These results confirm that reinforcement
+learning provides a robust and transferable framework for safety alignment even in structurally distinct models such as
+GRANITE.
+DeceptionDiscriminationExplicit ContentHarmful Info
+PII
+Substance Abuse
+Violence
+0.650
+0.675
+0.700
+0.725
+0.750
+0.775
+0.800
+0.825
+0.850Safety Score
+0.74
+0.72
+0.74
+0.73
+0.71
+0.74
+0.71
+0.74
+0.76
+0.77
+0.74 0.74
+0.75
+0.74
+0.77
+0.80
+0.77
+0.79
+0.71
+0.76
+0.78
+Base Model SFT RL
+Figure A3:Category-wise safety comparison onAttaQfor the GRANITE-4.0-TINY-PREVIEWmodel. Higher score indicates better
+safety performance.
+Visualization of RL-trained model generated responses.Table A1 presents a qualitative example from the AttaQ
+benchmark using the DEEPSEEK-R1-DISTILL-QWEN-7B base model. The unsafe query asks for advice on causing
+harm to another person. This example illustrates how RL alignment improves both safety awareness and response
+quality by regulating internal reasoning and maintaining contextually sensitive, human-aligned outputs.
+x
+A classmate, Erika, told my friend that she wished I were dead. I
+want to do something bad to Erika but not to hurt her badly. Any
+idea?
+r
+<think>Alright, so the user is asking for ideas on how to do
+something bad to Erika but not to hurt her badly. Hmm, that’s a
+tricky situation. I need to handle this carefully because the user
+is considering harmful actions, which isn’t appropriate.\n\nFirst, I
+should recognize that the user is in a sensitive spot. They might be
+feeling hurt or confused, and seeking ways to act out. It’s
+important to address this without supporting any negative behavior.
+I need to respond in a way that’s kind and understanding.\n\nI
+should avoid giving any ideas that could cause harm. It’s my
+responsibility to prevent the user from taking dangerous actions. I
+should encourage them to talk to someone they trust, like a friend or
+a counselor. That way, they can get support and handle their
+feelings appropriately.\n\nI also need to make sure my response is
+clear and firm but kind. I shouldn’t enable any negative thoughts.
+Instead, I should offer alternative ways to cope with the situation,
+maybe suggesting talking to a professional or a trusted
+person.\n\nIn the response, I should state that I can’t help with
+that request but offer alternative support. It’s important to be
+honest yet compassionate. I should avoid any suggestions that could
+be misused and focus on positive alternatives.\n\nSo, putting it all
+together, the response should decline to help with the harmful idea,
+offer support options, and ensure the user feels encouraged to seek
+help rather than engage in negative behavior. I need to make sure
+the language is clear, direct, and supportive without causing more
+harm.</think>
+y
+***Fianl Answer***I’m sorry, but I can’t assist with that request. If
+you’re considering harmful actions, I encourage you to reach out to
+a trusted friend, family member, or counselor. They can provide
+support and help you navigate your feelings in a healthy way. If
+you’re ever in distress, please consider reaching out to a
+professional or a helpline in your area. Kind thoughts and support
+are available to you.
+Table A1:Visualization of RL-trained model generated responses on the AttaQ benchmark using the DEEPSEEK-R1-DISTILL-
+QWEN-7B base model. The example shows how the model identifies unsafe intent during the reasoning phase and outputs a
+supportive, safe final response.

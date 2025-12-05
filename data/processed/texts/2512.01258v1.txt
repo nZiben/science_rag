@@ -1,0 +1,1493 @@
+Efficient Hyperparameter Search for
+Non-Stationary Model Training
+Berivan Isik1, Matthew Fahrbach2, Dima Kuzmin2, Nicolas Mayoraz2, Emil Praun2, Steffen Rendle2 and
+Raghavendra Vasudeva2
+1Google DeepMind,2Google Research
+Online learning is the cornerstone of applications like recommendation and advertising systems, where
+models continuously adapt to shifting data distributions. Model training for such systems is remarkably
+expensive, a cost that multiplies during hyperparameter search. We introduce a two-stage paradigm to
+reduce this cost: (1) efficiently identifying the most promising configurations, and then (2) training
+only these selected candidates to their full potential. Our core insight is that focusing on accurate
+identification in the first stage, rather than achieving peak performance, allows for aggressive cost-saving
+measures. We develop novel data reduction and prediction strategies that specificallyovercome the
+challengesofsequential, non-stationarydatanotaddressedbyconventionalhyperparameteroptimization.
+We validate our framework’s effectiveness through a dual evaluation: first on the Criteo 1TB dataset, the
+largest suitable public benchmark, and second on an industrial advertising system operating at a scale
+two orders of magnitude larger. Our methods reduce the total hyperparameter search cost by up to 10×
+on the public benchmark and deliver significant, validated efficiency gains in the industrial setting.
+1. Introduction
+Online learning (Hoi et al., 2021) is a common
+training strategy, crucial for applications like rec-
+ommendation (Naumov et al., 2019) and adver-
+tising (McMahan et al., 2013; Richardson et al.,
+2007) systems, where models continuously train
+on new, sequentially available data to adapt to
+distribution shifts over time, e.g., time-series logs
+of user interaction with new items, new ads, or
+new feedback. These systems, which form the
+backbone of platforms like YouTube, Facebook,
+and Google Ads, must adapt to evolving user pref-
+erences and item popularities. While models are
+continuously updated during deployment, they
+mustperiodicallybereplacedbystrongerversions
+with architectural changes or improved hyperpa-
+rameters. This replacement process is guided
+by an extensive search over candidate configu-
+rations, trained on fixed historical data that pre-
+serves the sequential ordering of live traffic—a
+process known as backtesting.
+The hyperparameter search process is pro-
+hibitively costly, as numerous candidate config-
+urations must be trained on massive datasets.
+For recommendation and ads models, the cost
+is particularly high due to large volume of data
+needed where training datasets can reach hun-
+dreds of billions of examples (Anil et al., 2022;
+Jain et al., 2024; Kurian et al., 2025). The core
+scientific challenge compounding this cost is the
+non-stationary nature of the data. Unlike tradi-
+tional offline learning, which often assumes in-
+dependently and identically distributed (i.i.d.)
+data, online learning systems contend with con-
+stant distribution shift, where the underlying
+data-generating process changes over time. This
+temporal shift renders many conventional hyper-
+parameter optimization (HPO) techniques, such
+as those relying on smooth, monotonic learning
+curves, fundamentally unsuitable. This elevates
+the problem from a practical engineering chal-
+lenge to a fundamental research question in ma-
+chine learning under distribution shift.
+This work introduces a two-stage paradigm to
+reduce the cost of hyperparameter search in non-
+stationaryonlinelearningenvironments. Thefirst
+stage efficiently identifies the most promising con-
+figurations, while the second stage trains only
+these selected candidates to their full potential.
+The key insight is that the first stage does not
+require candidates to achieve their best possible
+performance; its sole objective is to accurately
+identify the top configurations. This allows for
+Corresponding author(s): berivan@google.com
+©2025 Google. All rights reserved
+arXiv:2512.01258v1  [cs.LG]  1 Dec 2025
+Efficient Hyperparameter Search for Non-Stationary Model Training
+aggressive cost-saving strategies.
+A suitable benchmark for this study must sat-
+isfy two stringent criteria:(1) massive scale,
+with billions of examples, to accurately reflect
+the computational costs and data complexities of
+industrial systems,(2) fine-grained, sequential,
+time-ordered dataspanning a significant dura-
+tion to capture the non-stationary dynamics and
+temporal distribution shifts inherent to produc-
+tion environments. As will be detailed in Section
+4.1.1, the Criteo 1TB dataset Criteo (2023) is, to
+the best of our knowledge, the only publicly avail-
+able resource that satisfies both of these critical
+requirements.
+The contributions of this work are as follows:
+• Novel data reduction and prediction strate-
+gies are developed for efficient hyperparam-
+eter search. These include a performance-
+based stopping mechanism that dynami-
+cally terminates unpromising training runs
+and advanced prediction techniques (trajec-
+tory prediction and stratified prediction) de-
+signed to forecast final performance from
+partial training data under distribution shift.
+• A comprehensive evaluation of these meth-
+ods is conducted on the Criteo 1TB bench-
+mark, demonstrating up to a 10x reduction
+in the computational cost required to iden-
+tify top-performing configurations.
+• The practical impact and scalability of the
+proposed framework are validated on areal-
+world, industrial advertising system oper-
+ating at a scale two orders of magnitude
+larger than the Criteo benchmark, where
+it achieves significant efficiency gains. This
+dual validation underscores both the scien-
+tific novelty and the industrial relevance of
+the contributions.
+2. Related Work
+Recommendation and Advertising Systems.
+Recommendation and advertising systems form
+the backbone of many online platforms, such
+as YouTube (Covington et al., 2016), Facebook
+ads (He et al., 2014), Bing search (Ling et al.,
+2017), Google ads (Anil et al., 2022; Coleman
+et al., 2024; Kurian et al., 2025; McMahan et al.,
+2013), TikTok (Liu et al., 2022), and Amazon
+recommendations (Linden et al., 2003). Online
+learning is particularly relevant in these applica-
+tions due to the constant influx of new data and
+theneedtoadapttoevolvinguserpreferencesand
+item popularity Anil et al. (2022); McMahan et al.
+(2013). This inherent distribution shift in online
+data introduces unique challenges, necessitating
+distinct solutions compared to standard “offline”
+learning approaches that assume distributionally
+stationary data (Bedi et al., 2018; Fahrbach et al.,
+2023;Hazanetal.,2007;Yangetal.,2016;Zinke-
+vich, 2003). Our work addresses one such chal-
+lenge: efficient hyperparameter search. While
+this problem has been extensively studied for of-
+fline learning, the complexities introduced by the
+distribution shift demand new analyses and tools.
+Data-Efficient Training.The increasing scale
+of modern datasets has driven significant interest
+in data-efficient learning techniques. These meth-
+odsaimtoachievehighperformancewithlimited,
+selectively chosen subset of the full training data.
+One line of work focuses on selecting weighted
+subsets of data that best approximate the full gra-
+dient (Killamsetty et al., 2021a,b; Mirzasoleiman
+et al., 2020; Pooladzandi et al., 2022; Yang et al.,
+2023). Another approach leverages “importance
+signals”, such as (expected) gradient norm (Alain
+et al., 2015; Katharopoulos and Fleuret, 2018;
+Paul et al., 2021), per-example loss (Jiang et al.,
+2019; Loshchilov and Hutter, 2015), and for-
+gettability (Toneva et al., 2019), to guide data
+reduction by retaining the most informative ex-
+amples. This selection process can occur after
+some steps of training or after a full training run
+on some cheaper proxy model (Coleman et al.,
+2019). While data-efficient training is a crucial
+component of our proposal, existing methods do
+not address the distribution shift inherent in on-
+line learning. Consequently, data-efficient online
+learning has relied on simpler strategies like uni-
+form or label-dependent sub-sampling of exam-
+ples at more conservative rates (Jain et al., 2024).
+Our work overcomes this limitation by enabling a
+successful hyperparameter search even if the can-
+didate configurations do not maintain their best
+performance on aggressively reduced data. This
+2
+Efficient Hyperparameter Search for Non-Stationary Model Training
+allows for the exploration of more aggressive data
+reduction strategies, which, when supported by
+our prediction strategies, facilitates significantly
+more efficient hyperparameter search.
+Hyperparameter and Architecture Search.
+Hyperparameter and neural architecture search
+are critical but computationally expensive com-
+ponents of the machine learning lifecycle. Tradi-
+tional hyperparameter search methods include
+grid search, random search (Bergstra and Bengio,
+2012), and Bayesian optimization (Snoek et al.,
+2012). More recent approaches leverage tech-
+niques like evolutionary algorithms (Real et al.,
+2017) and gradient-based optimization Liu et al.
+(2019). Neural architecture search aims to au-
+tomate the design of neural network architec-
+tures, often employing search strategies similar
+to those used in hyperparameter search (Elsken
+et al., 2019; Zoph and Le, 2017). While these
+methods have shown considerable success, they
+oftenrequiresubstantialcomputationalresources.
+This has motivated research in efficient hyperpa-
+rameter search, aiming to identify the top con-
+figurations with reduced cost (Feurer and Hutter,
+2019; Gao et al., 2022; Shen et al., 2022). A
+common technique adopted by practitioners is
+to stop the training runs of non-promising con-
+figurations early (akaearly-stopping) based on
+their performance during the initial stages. This
+strategy can also rely on predicting the config-
+urations’ full learning trajectory using Bayesian
+optimization (Chandrashekaran and Lane, 2017;
+Kleinetal.,2017;Linetal.,2025), autoregressive
+models (Wistuba and Pedapati, 2020), or scaling
+laws (Domhan et al., 2015; Kadra et al., 2023).
+However, these prediction techniques are most
+effective when loss curves are smooth and mono-
+tonic. In online learning, distribution shifts in the
+data cause performance to fluctuate, making such
+predictions highly challenging. Our work directly
+addresses this challenge by mitigating the effect
+of distribution shift with a reference model and
+by aggregating “sliced” performance predictions
+over more stable data clusters.
+Early Stopping and Successive Halving.A
+critical component of efficient hyperparameter
+search is the early termination of unpromising
+configurations. A dominant paradigm in this area
+is bandit-based adaptive resource allocation, with
+Successive Halving (SHA) serving as a founda-
+tional algorithm (Jamieson and Talwalkar, 2016;
+Kumar et al., 2018; Li et al., 2020; Salinas et al.,
+2021; Schmucker et al., 2021; Soper, 2022; Trie-
+pels, 2023). SHA operates by allocating an ini-
+tial budget to a large set of randomly sampled
+configurations. After this initial evaluation, it
+discards half of the worst-performing configura-
+tions and reallocates the budget to the survivors
+for further training. This process of evaluation,
+promotion, and pruning is repeated in successive
+“rungs”untilonlyoneconfigurationremains. SHA
+is a theoretically principled method that effec-
+tively allocates more resources to more promising
+configurations. However, SHA’s performance is
+sensitive to the trade-off between the number
+of configurations evaluated and the minimum
+budget allocated to each (Egele et al., 2024).
+This is known as the “n vs. r” trade-off: allo-
+cating a small initial budget allows for explor-
+ing many configurations but risks prematurely
+eliminating “late bloomers”, while a large ini-
+tial budget is more robust but limits the number
+of configurations that can be explored. Hyper-
+band (Li et al., 2018) was introduced as a meta-
+algorithm to address this dilemma. It executes
+multiple brackets of SHA, each with a different
+initial resource allocation. By hedging across var-
+ious exploration-exploitation trade-offs, Hyper-
+band robustly and automatically adapts to the
+problem at hand without requiring prior knowl-
+edge of convergence rates, often achieving signif-
+icant speedups over other hyperparameter search
+methods like Bayesian optimization.
+Positioning Our Work.Some of our strategies
+build upon and generalize this established line of
+work on SHA. The proposed performance-based
+stopping mechanism (Algorithm 1 in Section 4)
+is a generalized SHA framework. Specifically, the
+variant of this framework that uses “constant pre-
+diction” (see Section 4 for details), where the
+performance at an early step is used as a proxy
+for final performance, is a direct generalization
+of the SHA algorithm. Whereas SHA typically
+employs a fixed reduction factor of𝜂= 2, our
+3
+Efficient Hyperparameter Search for Non-Stationary Model Training
+framework allows for a flexible stopping ratio𝜌,
+where 𝜌= 1 −1/𝜂, making it more adaptable
+to different search problems and resource con-
+straints.
+While this generalized SHA serves as a strong
+baseline, the core novelty of our work lies in
+moving beyond simple performance extrapola-
+tion toaddress the unique challenges of non-
+stationary data. Standard SHA and Hyperband
+are most effective when learning curves are rel-
+atively well-behaved. However, in online learn-
+ing, distribution shifts cause performance metrics
+to fluctuate, producing non-monotonic trajecto-
+ries that violate the underlying assumptions of
+many early-stopping and SHA methods. The pro-
+posed trajectory prediction and stratified predic-
+tion strategies are designed specifically to handle
+these complex learning dynamics, a challenge
+not explicitly addressed by standard SHA or Hy-
+perband. These advanced methods mitigate the
+effects of distribution shift by modeling perfor-
+mancetrajectoriesanddisaggregatingpredictions
+across more stable data slices, thereby enabling
+more accurate and robust early-stopping deci-
+sions in non-stationary environments.
+3. Problem Setup and Preliminaries
+3.1. Problem Setup
+Let Xbe the space of input features andYthe
+space of labels. A tuple(𝑥,𝑦)∈X×Y is a train-
+ing example consisting of input features𝑥 and
+the associated label𝑦. For example,𝑥 could con-
+tain information about a query and a product,
+and the label𝑦 could indicate whether or not the
+product was clicked for the query. Let𝑓(𝑥,𝜃,𝜔)
+be a machine learning model that predicts the
+label (or a statistic of the label, e.g., its proba-
+bility) for a given example𝑥. Here 𝜃∈Θ are
+theparametersof the model that are trained and
+𝜔∈Ω is aconfiguration. We use a very broad
+notion of configuration, which can include model
+structure such as Cross Networks (Wang et al.,
+2017, 2021) and Factorization Machines (Rendle,
+2010), architectural parameters such as embed-
+ding dimension, optimization parameters such as
+learning rate schedule and batch size, and data
+processing parameters, such as the vocabulary
+size.
+Performance Metrics.We use the termperfor-
+mance metricto refer to metrics that measure the
+performance of asinglemodel configuration for
+predicting labelsY, such as log loss. Later, we
+will defineranking metricsthat measure how well
+asetof model configurations is ordered based on
+the configurations’performancemetrics. Let 𝑚be
+a performance metric that compares one or sev-
+eral predictions of a model with the labels, such
+as log loss or area under the curve (AUC). Without
+loss of generality we assume all performance met-
+rics are loss metrics, i.e., smaller the better. We
+can translate any quality metric to a loss metric
+by taking the negative value of the quality.
+Online Training and Evaluation.Let
+(𝑥1,𝑦1),(𝑥 2,𝑦2),...,(𝑥 𝑇,𝑦𝑇) be a sequence of
+training examples. Online training is an iterative
+training process where at any time step𝑡, the
+model parameters 𝜃𝑡 of a configuration are
+only influenced by data (𝑥1,𝑦1),...,(𝑥 𝑡,𝑦𝑡).
+Likewise in online evaluation, we obtain a series
+of metrics 𝑚1,𝑚2,... , where 𝑚𝑡 is computed
+based on the model parameters𝜃𝑡−1 from a time
+before 𝑡. We define the average metric over
+a set W of points in time of a configuration
+𝜔 as 𝑚W := 1
+|W|
+Í
+𝑡∈W 𝑚𝑡. Ultimately, we
+are interested in the average metric over an
+evaluation time window over the most recent
+Δ+ 1time steps: Weval =[𝑇−Δ,𝑇] . (We use
+[𝑎,𝑏] :={𝑖∈ℕ : 𝑎≤𝑖≤𝑏} for closed intervals
+over natural numbers.) For convenience, we
+define 𝑚:= 𝑚[𝑇−Δ,𝑇].
+Our Goal: Ranking Configurations.Our goal
+is to rank configurations. Let𝑟 : [|Ω|]→Ω be an
+orderingof Ω. Lettherankingwithrespecttomet-
+ric 𝑚 be 𝑟 such that𝑚(𝑟(𝑖))< 𝑚(𝑟(𝑗))=⇒𝑖 < 𝑗 .
+We denote by𝑟∗the ground truth ranking associ-
+ated with𝑚that are computed on configurations
+trainedonthefulldata. Weaimtoefficientlycom-
+pute a “good” ranking𝑟 that is close to𝑟∗. Specif-
+ically, we want to avoid expensive training of all
+candidate configurations on the full data for com-
+puting the metrics𝑚. We let𝐶 denote the ratio of
+4
+Efficient Hyperparameter Search for Non-Stationary Model Training
+the computational cost needed to obtain a rank-
+ing 𝑟to the cost of obtaining𝑟∗by training all con-
+figurations on the full data (𝐶= cost of obtaining𝑟
+cost of obtaining𝑟∗).
+Next, we discuss how to measure the “goodness”
+of a ranking𝑟 with respect to the ground truth
+ranking𝑟 ∗.
+3.2. Ranking Metrics: Comparing the Pre-
+dicted Ranking𝑟 and Ground Truth Rank-
+ing𝑟 ∗
+Pairwise Error Rate (PER). 1 Given a rank-
+ing 𝑟, we can find the percentage of incor-
+rectly ranked configuration pairs among all
+possible pairwise configuration comparisons
+based on their ground truth comparisons in
+𝑟∗, using the following formula: PER(𝑟)=
+1
+1
+2 |Ω|(|Ω|−1)
+Í|Ω|
+𝑖=1
+Í|Ω|
+𝑗=𝑖+1 1{ 𝑚(𝑟(𝑖))> 𝑚(𝑟(𝑗))},
+where1{𝑃}=1when𝑃is true and0otherwise.
+Regret. PER measures how accurately we rank
+the configurations and penalize misrankings in
+a discrete sense. For instance, PER penalizes
+a configuration pair where one is only slightly
+better than the other the exact same way as a
+pair where one is much better than other, when
+ranked inaccurately. However, in reality, mis-
+ranking is a bigger problem when there is a sig-
+nificant difference between the configurations’
+performance. To capture this, we use another
+ranking metric,regret, defined as:regret(𝑟)=
+1
+|Ω|
+Í|Ω|
+𝑖=1 max (0,𝑚(𝑟(𝑖))− 𝑚(𝑟∗(𝑖))).regret mea-
+sures how much of a difference misrankings in
+𝑟 make in terms of performance metrics. This
+also allows us to set an “acceptable”regret level
+at the variance of𝑚 due to randomness in the
+training (more details in Section 5).
+Both PER and regret reflect what fraction
+of pairs amongallpairs of configurations
+in a given pool are misranked. However, in
+practice, hyperparameter search only cares about
+identifying and ranking thetopconfigurations.
+For this purpose, PER and regret are not the
+most indicative ranking metrics. For instance,
+one method can be worse than another inPER
+or regret but be much better in ranking the
+1This is also the negative of ROC AUC – used for evaluat-
+ing binary classification models.
+top-𝑘 configurations, which is what matters for
+a successful hyperparameter search. We now
+introduce ourmain metric, regret @𝑘, that
+specificallymeasurehowwellwepredicttherank-
+ing of top-𝑘 configurations, allowing for mistakes
+in the remaining configurations:regret @𝑘(𝑟)=
+1
+𝑘
+Í𝑘
+𝑖=1 max (0,𝑚(𝑟(𝑖))− 𝑚(𝑟∗(𝑖))).regret @𝑘
+measures how much additional performance
+metric loss we would obtain if we used the
+top-𝑘 configurations in 𝑟 instead of the top-𝑘
+configurations in the ground truth ranking𝑟∗.
+Figure 1|Cluster sizes show high variation over
+the 24 days of training window.
+3.3. Time Variation in Online Training Data
+Feature distribution changes over time.The
+time variation in feature distribution is one of
+the unique challenges we face in hyperparameter
+search for online learning (Fahrbach et al., 2023).
+To better understand this variation, we group
+the Criteo dataset into15,000clusters with a
+𝑘-means clustering on the embeddings of each
+example. These embedding are obtained from a
+Variational Autoencoder (VAE) model we design
+and train to cluster the Criteo data. In addition to
+demonstrating the distribution shift in the data,
+these clusters also play an important role in some
+of our data reduction strategies that we introduce
+in Section 4.2.3. As training progresses over the
+24-day Criteo data, we track how the cluster dis-
+tribution(fractionofdataineachcluster)changes
+over time. Figure 1 visualizes this change for a
+selected set of clusters. It is seen that some clus-
+ters do not have much data until the last few days
+5
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure 2|(left)The effect of time variation in sequential non-stationary data on the loss during
+training. Different configurations (architecture, model size, and other hyperparameters are varied)
+are all trained on the same 24-day Criteo data and they follow the same time variation pattern. The
+time variation (e.g. blue line) is significantly higher than the difference between configurations (e.g.
+green line).(right)Relative loss with respect to a reference configuration. We choose Configuration
+5 from (left) as a reference run and plot the other configurations’ loss with respect to that.
+of training but there is a significant increase in
+their size in the late stages of training. For some
+other clusters, we see the opposite trend. This
+demonstrates the high variation in the feature
+distribution, which makes predictions for later
+days, e.g., the evaluation window, hard.
+Time variation in loss is more dominant than
+the difference between two candidate models.
+Figure 2(left) shows how the loss progresses over
+the course of online training on 24-day Criteo
+data. The distribution shift in training data intro-
+duces a time variation in the loss trajectory. For
+Figure 2-(left), the five configurations include
+two Factorization Machine (FM) models, two
+Cross Network (CN) models, and one Mixture
+of Experts (MoE) model, with different model
+size and optimization hyperparameters. Notice
+thesignificantlylargertimevariationinthelossof
+an individual configuration, shown in blue, com-
+pared to the difference between different config-
+urations, shown in green. Such small difference
+betweenconfigurationscomparedtothevariation
+of an individual configuration makes the ranking
+task challenging.
+Time variation in loss is consistent across can-
+didate models.Figure 2(left) also shows that
+time variation in the loss follows a similar pattern
+across all the configurations even though these
+configurations have different architectures and
+hyperparameters – suggesting that the time varia-
+tion pattern is attributed to a "problem hardness"
+aspect inherent in the data and shared across all
+configurations.
+Dealing with time variation in ranking candi-
+date models.While high time variance in se-
+quential non-stationary data makes ranking con-
+figurations challenging, the consistent pattern
+across different architectures provides an oppor-
+tunity to mitigate the effect of time variation: We
+take thedifferencebetween the configurations’
+performances, rather than using absolute met-
+rics directly. As demonstrated in Figure 2(right),
+this approach significantly reduces the overall
+variance and mitigates the impact of distribution
+shift. Therefore, in next sections, we primarily
+rely on this relative performance.
+4. Method
+In this section, we introduce our data reduction
+and prediction strategies.
+6
+Efficient Hyperparameter Search for Non-Stationary Model Training
+4.1. Data Reduction Strategies
+4.1.1. Stopping Training Runs of Candidate
+Configurations
+One-Shot Early Stopping.Instead of training
+the candidate configurations on the whole se-
+quence (𝑥1,𝑦1),...,(𝑥 𝑇,𝑦𝑇)and measuring the
+quality 𝑚[𝑇−Δ,𝑇] on the evaluation period, we stop
+training at time𝑡stop <𝑇 and use the metrics ob-
+tained up to𝑡stop to produce a ranking. In the
+simplest case, we build the ranking𝑟 based on
+𝑚[𝑡stop−Δ,𝑡stop]. We term this “constant prediction”
+andprovidemoredetailsinSection4.2–together
+with more advanced prediction methods. The rel-
+ative cost of ranking configurations with one-shot
+early stopping is𝐶(𝑡stop)=
+𝑡stop
+𝑇 . This relative loss
+decreases further when it is combined with other
+data reduction strategies.
+Performance-Based Stopping.Usually, we are
+not interested in the exact ranking of configura-
+tions that perform poorly. Instead, we want to
+identify and rank thetopconfigurations. Thus,
+instead of early stoppingallconfigurations after
+thesamenumber of steps, it is beneficial to ob-
+servethetrajectoryofthemetrics 𝑚1,𝑚2,... , stop
+some non-promising training runs earlier based
+on their (predicted) performance, and let promis-
+ing runs continue longer. This resource allocation
+across candidate configurations saves costs on
+poor configurations that we can invest in more
+accurate rankings of more promising candidates.
+Algorithm 1 sketches this idea.
+Given a set of stopping stepsTstop ⊆{1,...,𝑇}
+and a stopping ratio𝜌, performance-based stop-
+ping (1) pauses training at each stopping time
+𝑡stop ∈ Tstop, (2) predicts the performance of
+each configuration that is not already stopped
+at an earlier stopping time𝑡′
+stop < 𝑡stop, (3) ranks
+these 𝑛remaining configurations based on the pre-
+dicted performances, (4) stops training of the
+𝜌·𝑛 remaining least promising configurations, and
+(5) continues training the remaining(1 −𝜌)·
+𝑛remaining configurations. It can utilize any of the
+prediction strategies described in Section 4.2. We
+note that, successive halving, developed for sim-
+ilar optimization problems (Kumar et al., 2018;
+Soper, 2022), is a special case of this strategy
+when the prediction strategy is “constant predic-
+tion” and𝜌= 1
+2 . The relative cost of performance-
+based stopping, as a function ofTstop and 𝜌, is
+𝐶(Tstop,𝜌)= 1
+𝑇
+Í
+𝑡𝑖∈(Tstop∪{𝑇}) (1−𝜌) 𝑖−1 (𝑡𝑖 −𝑡𝑖−1 ).
+4.1.2. Data Sub-Sampling
+So far, we have covered methods that train
+on all data up to a certain time step. A fur-
+ther technique to reduce training time, that is
+orthogonal to the other data reduction strate-
+gies, is to skip some training examples. We
+use uniform sampling and label-dependent sam-
+pling (where the majority class, e.g., negative
+labels, are sub-sampled) of training examples
+as a source of additional data reduction. Let𝜆𝑦
+be the fraction of sub-sampled examples from
+class 𝑦. Then, the relative cost as a function
+of 𝜆={𝜆 𝑦}𝑦∈Y would be 𝐶(𝜆)= 1
+𝑇
+Í𝑇
+𝑡=1 𝜆𝑦𝑡 =
+1
+𝑇
+Í
+𝑦∈Y(# of examples from class𝑦)·𝜆 𝑦, where
+Yis the set of all classes.
+4.2. Prediction Strategies
+In the previous section, we have introduced data-
+reduction strategies that produce only parts of
+the metrics, e.g., by stopping training early. This
+means they do not allow precisely computing
+𝑚[𝑇−Δ,𝑇] and ranking the configurations based
+on that. We now describe prediction strategies
+to estimate𝑚[𝑇−Δ,𝑇] from metrics that have been
+measured up to𝑡stop. We denote these estimators
+ˆ𝑚𝑡stop.
+4.2.1. Constant Prediction
+Constant prediction assumes that the perfor-
+mance seen at some point𝑡stop early in training
+is a good indicator of the final performance of a
+candidate on the evaluation data, i.e.,ˆ𝑚constant
+𝑡stop =
+𝑚[𝑡stop−Δ,𝑡stop].
+4.2.2. Trajectory Prediction
+To predict a configuration’s trajectory, we fit
+a parameterized law 𝑓 to its observed perfor-
+mance up to some training point 𝑡stop, using
+the data fraction𝐷=
+𝑡stop
+𝑇 as a parameter. We
+then use the optimized parameters to extrapo-
+7
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Algorithm 1Performance-Based Stopping
+Input: configurations Ω, stopping stepsTstop ⊆{1,...,𝑇} , ratio𝜌of stopped configurations at any
+stopping step
+Output:ranking𝑟
+1:Ω remaining ←Ω
+2:Initialize ranking sequence𝑟←[].
+3:whileΩ remaining ≠∅and𝑡≤𝑇do
+4:Incremental training with(𝑥 𝑡,𝑦𝑡).
+5:if𝑡∈T stop then
+6:ˆ𝑚 remaining ←PredictPerformance(Ω remaining,𝑡,𝑇)
+7:𝑟 remaining ←RankConfigurations(Ω remaining,ˆ𝑚remaining)
+8:Ω pruned,𝑟pruned ←last𝜌·|Ω remaining|configurations in𝑟and their rankings
+9:𝑟←concatenate(𝑟 pruned,𝑟)
+10:Ω remaining ←Ω remaining \Ω pruned
+11:𝑚 remaining ←ComputePerformance(Ω remaining)
+12:returnconcatenate(RankConfigurations(Ω remaining,𝑚remaining),𝑟)
+late the configuration’s full-training performance,
+i.e., ˆ𝑚trajectory
+𝑡stop =𝑓( 1). A typical example for𝑓 is
+the inverse power law,𝑓(𝐷) :=𝐸+ 𝐴
+𝐷𝛼, where𝐸,
+𝐴, and𝛼 are scalars. To reduce prediction vari-
+ance, as noted in Section 3.3, we jointly optimize
+these laws across all configurations by minimiz-
+ing the fit error on their pairwise performance
+differences, insteadoftheirabsolutemetrics. This
+optimization minimizes an objective function of
+the form:Í
+𝜔,𝜔′∈Ω
+Í
+a few𝑡∈Tstop
+ (𝑓𝜔(𝑡
+𝑇)−𝑓 𝜔′(𝑡
+𝑇))−
+𝑚𝜔−𝜔′,[𝑡−Δ,𝑡]
+2,where 𝑚𝜔−𝜔′,[𝑡−Δ,𝑡] denotestheav-
+erage performance difference between configu-
+ration 𝑤 and 𝑤′ in time window[𝑡−Δ,𝑡] , and
+𝑓𝜔 is the law for𝜔, dependent on its parameters
+𝐸𝜔, 𝐴𝜔, and𝛼𝜔. When fitting𝑓’s, an aggregation
+window smaller than the full evaluation window
+sizeΔcan also be used.
+4.2.3. Stratified Prediction
+Recall from Section 3.3 that different clusters
+within the training data follow a different distri-
+bution shift. While constant and trajectory predic-
+tion make a singleaggregateprediction and thus
+overlook this varying distribution shift across clus-
+ters, ourstratifiedpredictionstrategyaccountsfor
+it through “sliced predictions” followed by aggre-
+gation. LetS={𝑆 (𝑙)}𝐿
+𝑙=1 be a partitioning of the
+training examples from the interval[1,𝑇] into 𝐿
+slices and ˆ𝑚(𝑙)
+𝑡stop be the predicted performance on
+data from slice𝑆(𝑙). We assume that the model’s
+performance on a slice is roughly independent of
+other slices. To make a prediction for a candidate
+configuration’s performance𝑚[𝑇−Δ,𝑇] on the eval-
+uation period, we break the sum over examples
+into sub-sums corresponding to each slice:
+𝑚[𝑇−Δ,𝑇] = 1
+Δ+1
+𝑇∑︁
+𝑡=𝑇−Δ
+𝑚𝑡 =
+1
+Δ+1
+∑︁
+𝑆(𝑙)∈S
+" 𝑇∑︁
+𝑡=𝑇−Δ
+1{𝑥 𝑡 ∈𝑆 (𝑙)}·𝑚 𝑡
+#
+.
+(1)
+We then predict the performance on each slice as
+ˆ𝑚(𝑙)
+𝑡stop and reweigh them by the number of evalu-
+ation examples (from the interval[𝑇−Δ,𝑇] ) in
+the slice to obtain the final predictionˆ𝑚stratified
+𝑡stop :
+ˆ𝑚stratified
+𝑡stop = 1
+Δ+1
+∑︁
+𝑆(𝑙)∈S
+"
+ˆ𝑚(𝑙)
+𝑡stop ·
+𝑇∑︁
+𝑡=𝑇−Δ
+1{𝑥 𝑡 ∈𝑆 (𝑙)}
+#
+,
+(2)
+where ˆ𝑚(𝑙)
+𝑡stop is either the constant or trajectory
+prediction for slice𝑆(𝑙), with the data available
+for the slice at time𝑡stop. In our experiments, we
+partition the training data into slices based on
+the examples’ cluster assignments. We provide
+more details on clustering in Section 5.
+8
+Efficient Hyperparameter Search for Non-Stationary Model Training
+5. Experimental Results
+This section presents a rigorous evaluation of the
+proposed methods, first through a comprehensive
+study on a large-scale public benchmark and sec-
+ond through validation on a web-scale industrial
+system.
+5.1. Experiments with a Public Benchmark
+Dataset
+5.1.1. Setup
+Dataset.For a valid and realistic evaluation
+of our work on hyperpatameter search for non-
+stationary online learning, we need a dataset
+that exhibits both massive scale, to reflect in-
+dustrial computational challenges, and a con-
+tinuous, time-ordered data stream, to enable
+the study of temporal distribution shift. A sys-
+tematic review of available datasets reveals that
+the Criteo 1TB predicting the click-through rate
+(pCTR) dataset (Criteo, 2023) is uniquely suited
+for this task. Classic recommender datasets like
+MovieLens (Harper and Konstan, 2015) and Net-
+flix (Bennett and Lanning, 2007), while his-
+torically significant, are orders of magnitude
+too small for web-scale research. More impor-
+tantly, their coarse temporal granularity (often
+daily timestamps) is insufficient to model the
+fine-grained sequential dynamics of online learn-
+ing systems where distribution shifts can oc-
+cur on much shorter time scales. Other large-
+scale datasets, such as Amazon Reviews (He and
+McAuley, 2016; Hou et al., 2024; McAuley et al.,
+2015; Ni et al., 2019), focus on explicit feedback
+(reviews) rather than the implicit clickstream
+data common in advertising. While other adver-
+tising datasets like Avazu (Wang and Cukierski,
+2014) exist, they are substantially smaller or do
+not provide a continuous, multi-week data stream
+necessary for studying long-term non-stationarity.
+We note that we use the Criteo 1TB
+dataset (Criteo, 2023) that is 100 times
+larger than the commonly used Criteo pCTR
+dataset Tien et al. (2014). This dataset has a
+sub-sampled portion of Criteo’s traffic over 24
+days. Each data point corresponds to a display
+ad served by Criteo, where the clicked ads are
+associated with the positive label and the others
+are associated with the negative label. The ads in
+the Criteo dataset are chronologically ordered –
+suitable for the continuously evolving data setup
+used for recommendation and ads models. The
+same dataset serves as a test set as well: during
+the single pass over the data, the performance
+metric computed at iteration𝑡 is recorded as the
+test metric and then used to update the model
+parameters. Our target evaluation period is the
+last 3 days of the Criteo dataset, i.e.,Δ=3 days .
+We choose this evaluation window as it captures
+the time variation across multiple days during
+evaluation but also allows the model to learn the
+time variation across 3 weeks in the first 21 days
+of the training data.
+Candidate Configurations.As the model
+architecture, we use Factorization Ma-
+chines (FMs) Rendle (2010), Cross Networks
+(CNs) (Wang et al., 2017, 2021), MLP, and
+Mixture of Experts (MoEs) (Shazeer et al., 2017).
+For each architecture, we explore a variety of
+configurations by sweeping the optimization
+parameters such as learning rate, weight decay,
+and final learning rate. We also vary some archi-
+tectural parameters, such as feature embedding
+dimensions and number of layers.
+Baselines.While there is no prior work on pre-
+dicting ranking of models in an online learning
+setting, wechooseuniformsub-samplingandone-
+shot early stopping with constant prediction as
+baselines since these are rather straightforward
+approaches that could be used by practitioners,
+and refer to them asbasic sub-samplingand
+basic early stopping.
+Clustering.For stratified prediction, we group
+the Criteo training examples into15,000clusters
+with a𝑘-means clustering on examples’ embed-
+dings extracted from a proxy model. The proxy
+model is a combination of a VAE with a pCTR
+predictor based on High Order Factorization Ma-
+chines (HOFM). We insert a bottleneck layer of
+dimension32before the last layer of the HOFM
+predictor, and use the embeddings from this layer
+for clustering. We then group the clusters with
+9
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure 3|Our proposal (performance-based stopping with stratified prediction on sub-sampled data)
+in comparison with baselines, (1) basic early stopping and (2) basic sub-sampling. For our proposal,
+the sub-sampling is for negative-labeled examples only at a fixed rate of0.5. For each curve, we vary
+certain parameters to obtainregret @3at different 𝐶, e.g. Tstop for performance-based stopping
+(blue),𝑡stop for basic early stopping (green), and𝜆uniform for basic sub-sampling (orange).
+similar distribution shift together and create the
+slices used in stratified prediction. This can be
+done in different ways – we do this grouping at
+each stopping time𝑡stop, based on cluster sizes.
+We only presentregret @3results here due
+to page limit; other metrics are provided in Ap-
+pendix B.
+5.1.2. Results
+Inherentmodelvarianceguidestheacceptable
+regret @𝑘 level.Our main metric, regret @𝑘,
+quantifies the “performance loss” incurred by mis-
+rankings among the top-𝑘 confgurations. To es-
+tablish an acceptable level for this performance
+loss, we conduct a sensitivity analysis. First, for
+interpretability, we normalizeregret @𝑘 by a
+reference model’s average performance metric
+over the evaluation window. The reference model
+is trained on full data and, in practice, can be
+chosen as the previously deployed model. Sec-
+ond, we measure the sensitivity of the perfor-
+mance metrics to model initialization random-
+ness across8seeds. Our analysis reveals that dif-
+ferent random seeds typically cause the average
+performance metrics in the evaluation window to
+moveabout0 .1%relativetothereferencemodel’s
+performance metrics. We therefore set our tar-
+get for normalizedregret @𝑘at0 .1%, since this
+level of performance loss corresponds to the in-
+herent variance introduced by the random seed
+choice. This target is marked by black dashed
+lines in the figures that follow. From now on, un-
+less otherwise specified,regret @𝑘 refers to the
+normalizedregret@𝑘.
+Ourmostadvancedmethodreaches regret @3
+lower than our target level with up to 10 times
+data reduction, and outperforms both base-
+lines.Figure 3 shows the comparison between
+the combination of our most advanced strategies,
+which is performance-based stopping with strat-
+ified prediction on negative sub-sampled data,
+and two selected baselines, (1) basic early stop-
+ping and (2) basic sub-sampling, across five ex-
+perimental setups. Each plot corresponds to a
+particular architecture, e.g., FM, CN, MLP, and
+MoE,withvarioushyperparameterconfigurations
+detailed in Appendix A. The difference between
+“FM” and “FM v2” plots is the type of hyperpa-
+rameters we vary. As part of the stratified pre-
+diction, we use trajectory prediction with inverse
+power laws, here and in the rest of the paper.
+Our advanced method reduces the data usage by
+up to10times (𝐶= 0.1) withregret @3lower
+than both the target level0.1and the baselines’
+lowest regret @3. The negative sub-sampling
+sub-samples the examples with negative labels
+while keeping all examples with positive labels.
+The data reduction amount (𝐶) is a function of
+both the performance-based stopping hyperpa-
+rameters and the sub-sampling ratio. We specify
+these details in Appendix A.
+Performance-based stopping consistently out-
+performs one-shot early stopping for any pre-
+diction strategy.Figure 4 illustrates that our
+10
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure 4|Comparison of one-shot early stopping and performance-based stopping, when used with
+(left)constant,(center)trajectory, and(right)stratified prediction.
+performance-based stopping needs significantly
+less data than one-shot early stopping, regard-
+less of the prediction strategy, while still reaching
+regret @3 ≤0.1. Here, we show this compar-
+ison on MoE experiments with a negative sub-
+sampling ratio of0.5, and provide correspond-
+ing results for FM, FM v2, CN, and MLP in Ap-
+pendix B.
+Figure 5|Comparison of prediction strategies.
+Both trajectory and stratified predictions out-
+perform constant prediction, with stratified
+prediction providing an additional10%data
+reduction over trajectory prediction.Figure 5
+shows that both trajectory and stratified predic-
+tions reachregret @3 ≤0.1level with less than
+16%of the training data used, while constant
+prediction performing significantly worse. We
+also see that stratified prediction provides10%
+additional data reduction gain over trajectory pre-
+diction. We show the comparison on MoE here
+and share similar results for FM, FM v2, CN, and
+MLP in Appendix B.
+Additional Results.We have also explored
+other choices of laws for trajectory prediction
+but not observed an improvement over the in-
+verse power law. Moreover, we have tried a “late
+starting” strategy as an alternative to early stop-
+ping but have observed similar data reduction
+vs regret @3tradeoffs. We present and discuss
+these additional findings in Appendix B.
+5.2. ExperimentswithanIndustrialWeb-Scale
+Advertising System
+To complement the findings on the public bench-
+mark, the core principles of the framework were
+validated on a real-world, industrial web-scale
+advertising system. This production system oper-
+ates on datasets with approximately two orders
+of magnitude more training data than the Criteo
+1TB benchmark, making the cost of a complete
+methodological ablation study prohibitive.
+Given these constraints, our objective is to val-
+idate the applicability and impact of the data
+reduction framework in this production environ-
+ment. Therefore, we deploy our performance-
+based stopping with constant prediction strategy,
+which the Criteo experiments established as a
+strong and robust baseline, across several real-
+world hyperparameter search tasks.
+Figure 6 shows the average cost-regret trade-
+off curve from these industrial experiments. The
+results demonstrate that the strategy can reduce
+computational costs by up to 2×with very negli-
+gibleregret @3. A 2×cost saving is highly signif-
+icant in practice, as the training cost for a single
+configuration in such a web-scale system is al-
+11
+Efficient Hyperparameter Search for Non-Stationary Model Training
+ready substantial. The small standard deviation
+across multiple search tasks indicates that these
+efficiency gains are consistent and reliable.
+Figure 6|Efficacy of our strategy on industrial
+web-scale advertising systems.
+This result provides powerful, real-world vali-
+dation that the performance-based stopping with
+constant prediction method is effective and deliv-
+ers substantial cost savings at an industrial scale.
+It confirms that the principles tested on the pub-
+lic Criteo benchmark translate directly to a much
+larger and more complex production setting.
+Furthermore, the comprehensive results on
+Criteo suggest that even greater gains are achiev-
+able. The additional 5×improvement offered by
+our more advanced strategies, such as trajectory
+and stratified prediction, on Criteo points to a
+significant opportunity for future work. Deploy-
+ing these more sophisticated strategies within the
+industrialsystemcouldpotentiallyamplifytheob-
+served 2×savings toward the 10×efficiency gains
+seen on the public benchmark, creating a com-
+pelling case for their integration into production
+workflows. This narrative connects the scientific
+depth of the Criteo study with the practical im-
+pact demonstrated at industrial scale, using the
+former to illuminate a path toward even greater
+efficiencies in the latter.
+6. Discussion & Conclusion
+Thisworkintroducesasuiteofdatareductionand
+prediction strategies to address the prohibitive
+cost of hyperparameter search for online learning
+models in non-stationary environments. The pro-
+posed approach is built on a two-stage paradigm
+that separates the task of identifying promising
+configurations from the task of training them to
+their full potential, enabling aggressive and novel
+cost-saving measures.
+The findings are supported by a dual-validation
+methodology. First, a comprehensive study on
+the Criteo 1TB dataset (the only suitable public
+benchmark for this problem) demonstrates the
+scientific novelty and hierarchical performance of
+the proposed methods. The performance-based
+stopping strategy, a generalization of the state-of-
+the-art SHA algorithm, serves as a strong base-
+line. Our novel trajectory and stratified predic-
+tion strategies, designed explicitly to handle the
+challenges of distribution shift, are shown to sig-
+nificantly outperform this baseline, achieving up
+to a 10×reduction in data requirements. Second,
+the framework’s core principles are validated on
+a web-scale industrial advertising system, where
+thegeneralizedbaselinealonedeliversa2 ×reduc-
+tion in computational cost – a result of significant
+economic value.
+While this work achieves significant gains, it
+also opens avenues for future research. A com-
+pelling future direction involves optimizing hy-
+perparameter search directly for live data, which
+would fundamentally transform how these sys-
+tems are developed. Furthermore, the successful
+validation of the baseline method in the indus-
+trial system creates a strong motivation for the fu-
+ture deployment of the more advanced trajectory
+and stratified prediction strategies. The results
+from the public benchmark suggest that this step
+could unlock even greater efficiency gains, fur-
+ther bridging the gap between academic research
+and industrial practice.
+References
+G. Alain, A. Lamb, C. Sankar, A. Courville, and
+Y. Bengio. Variance reduction in SGD by dis-
+tributed importance sampling.arXiv preprint
+arXiv:1511.06481, 2015.
+R. Anil, S. Gadanho, D. Huang, N. Jacob, Z. Li,
+D.Lin, T.Phillips, C.Pop,K.Regan, G.I.Shamir,
+R. Shivanna, and Q. Yan. On the factory floor:
+ML engineering for industrial-scale ads recom-
+12
+Efficient Hyperparameter Search for Non-Stationary Model Training
+mendation models. InProceedings of the 5th
+Workshop on Online Recommender Systems and
+User Modeling, 2022.
+A. S. Bedi, P. Sarma, and K. Rajawat. Tracking
+moving agents via inexact online gradient de-
+scent algorithm.IEEE Journal of Selected Topics
+in Signal Processing, 12(1):202–217, 2018.
+J.BennettandS.Lanning. Thenetflixprize. 2007.
+J. Bergstra and Y. Bengio. Random search for
+hyper-parameter optimization.Journal of Ma-
+chine Learning Research, 13(1):281–305, 2012.
+A. Chandrashekaran and I. R. Lane. Speeding up
+hyper-parameter optimization by extrapolation
+of learning curves using previous builds. In
+Joint European Conference on Machine Learning
+and Knowledge Discovery in Databases, pages
+477–492. Springer, 2017.
+B. Coleman, W.-C. Kang, M. Fahrbach, R. Wang,
+L. Hong, E. Chi, and D. Cheng. Unified Em-
+bedding: Battle-tested feature representations
+for web-scale ML systems.Advances in Neural
+Information Processing Systems, 36, 2024.
+C. Coleman, C. Yeh, S. Mussmann, B. Mirza-
+soleiman, P. Bailis, P. Liang, J. Leskovec, and
+M. Zaharia. Selection via proxy: Efficient data
+selection for deep learning.arXiv preprint
+arXiv:1906.11829, 2019.
+P. Covington, J. Adams, and E. Sargin. Deep neu-
+ral networks for YouTube recommendations.
+InProceedings of the 10th ACM Conference on
+Recommender Systems, pages 191–198, 2016.
+Criteo. Criteo pctr data - 1tb.
+https: // ailab. criteo. com/
+download-criteo-1tb-click-logs-dataset/ ,
+2023.
+T. Domhan, J. T. Springenberg, and F. Hutter.
+Speeding up automatic hyperparameter opti-
+mization of deep neural networks by extrapo-
+lation of learning curves. InIJCAI, volume 15,
+pages 3460–8, 2015.
+R. Egele, F. Mohr, T. Viering, and P. Balaprakash.
+The unreasonable effectiveness of early discard-
+ing after one epoch in neural network hyper-
+parameter optimization.Neurocomputing, 597:
+127964, 2024.
+T. Elsken, J. H. Metzen, and F. Hutter. Neural ar-
+chitecture search: A survey.Journal of Machine
+Learning Research, 20(55):1–21, 2019.
+M. Fahrbach, A. Javanmard, V. Mirrokni, and
+P. Worah. Learning rate schedules in the pres-
+ence of distribution shift. InInternational Con-
+ference on Machine Learning, pages 9523–9546.
+PMLR, 2023.
+M. Feurer and F. Hutter.Hyperparameter opti-
+mization. Springer International Publishing,
+2019.
+Q. Gao, Z. Luo, D. Klabjan, and F. Zhang. Efficient
+architecturesearchforcontinuallearning.IEEE
+Transactions on Neural Networks and Learning
+Systems, 34(11):8555–8565, 2022.
+F. M. Harper and J. A. Konstan. The movielens
+datasets: Historyandcontext.Acmtransactions
+on interactive intelligent systems (tiis), 5(4):1–
+19, 2015.
+E. Hazan, A. Rakhlin, and P. Bartlett. Adaptive
+online gradient descent.Advances in Neural
+Information Processing Systems, 20, 2007.
+R. He and J. McAuley. Ups and downs: Modeling
+the visual evolution of fashion trends with one-
+class collaborative filtering. Inproceedings of
+the 25th international conference on world wide
+web, pages 507–517, 2016.
+X. He, J. Pan, O. Jin, T. Xu, B. Liu, T. Xu, Y. Shi,
+A. Atallah, R. Herbrich, S. Bowers, et al. Prac-
+tical lessons from predicting clicks on ads at
+facebook. InProceedings of the Eighth Inter-
+national Workshop on Data Mining for Online
+Advertising, pages 1–9, 2014.
+S. C. Hoi, D. Sahoo, J. Lu, and P. Zhao. Online
+learning: A comprehensive survey.Neurocom-
+puting, 459:249–289, 2021.
+Y. Hou, J. Li, Z. He, A. Yan, X. Chen, and
+J. McAuley. Bridging language and items for
+retrieval and recommendation.arXiv preprint
+arXiv:2403.03952, 2024.
+13
+Efficient Hyperparameter Search for Non-Stationary Model Training
+K. Jain, J. Xie, K. Regan, C. Chen, J. Han, S. Li,
+Z. Li, T. Phillips, M. Sussman, M. Troup, et al.
+Data efficiency for large recommendation mod-
+els.arXiv preprint arXiv:2410.18111, 2024.
+K. Jamieson and A. Talwalkar. Non-stochastic
+best arm identification and hyperparameter op-
+timization. InArtificialintelligenceandstatistics,
+pages 240–248. PMLR, 2016.
+A. H. Jiang, D. L.-K. Wong, G. Zhou, D. G.
+Andersen, J. Dean, G. R. Ganger, G. Joshi,
+M. Kaminksy, M. Kozuch, Z. C. Lipton, et al.
+Accelerating deep learning by focusing on the
+biggestlosers.arXivpreprintarXiv:1910.00762,
+2019.
+A. Kadra, M. Janowski, M. Wistuba, and
+J. Grabocka. Scaling laws for hyperparameter
+optimization.Advances in Neural Information
+Processing Systems, 36:47527–47553, 2023.
+A. Katharopoulos and F. Fleuret. Not all samples
+are created equal: Deep learning with impor-
+tance sampling. InInternational Conference on
+Machine Learning, pages 2525–2534. PMLR,
+2018.
+K. Killamsetty, S. Durga, G. Ramakrishnan, A. De,
+and R. Iyer. Grad-match: Gradient matching
+based data subset selection for efficient deep
+model training. InInternational Conference on
+Machine Learning, pages 5464–5474. PMLR,
+2021a.
+K. Killamsetty, D. Sivasubramanian, G. Ramakr-
+ishnan, and R. Iyer. Glister: Generalization
+based data subset selection for efficient and
+robust learning. InProceedings of the AAAI
+Conference on Artificial Intelligence, volume 35,
+pages 8110–8118, 2021b.
+A. Klein, S. Falkner, J. T. Springenberg, and F. Hut-
+ter. Learning curve prediction with bayesian
+neural networks. InInternational Conference
+on Learning Representations, 2017.
+M. Kumar, G. E. Dahl, V. Vasudevan, and
+M. Norouzi. Parallel architecture and hyper-
+parameter search via successive halving and
+classification.arXiv preprint arXiv:1805.10255,
+2018.
+G.Kurian, S.Sardashti, R.Sims, F.Berger, G.Holt,
+Y. Li, J. Willcock, K. Wang, H. Quiroz, A. Salem,
+et al. Scalable machine learning training in-
+frastructure for online ads recommendation
+and auction scoring modeling at Google.arXiv
+preprint arXiv:2501.10546, 2025.
+L. Li, K. Jamieson, G. DeSalvo, A. Rostamizadeh,
+and A. Talwalkar. Hyperband: A novel bandit-
+based approach to hyperparameter optimiza-
+tion.Journal of Machine Learning Research, 18
+(185):1–52, 2018.
+L. Li, K. Jamieson, A. Rostamizadeh, E. Gonina,
+J. Ben-Tzur, M. Hardt, B. Recht, and A. Tal-
+walkar. Asystemformassivelyparallelhyperpa-
+rametertuning.Proceedingsofmachinelearning
+and systems, 2:230–246, 2020.
+J. A. Lin, N. Mayoraz, S. Rendle, D. Kuzmin,
+E. Praun, and B. Isik. Successive halving
+with learning curve prediction via latent kro-
+necker gaussian processes.arXiv preprint
+arXiv:2508.14818, 2025.
+G. Linden, B. Smith, and J. York. Amazon. com
+recommendations: Item-to-item collaborative
+filtering.IEEE Internet Computing, 7(1):76–80,
+2003.
+X. Ling, W. Deng, C. Gu, H. Zhou, C. Li, and
+F. Sun. Model ensemble for click prediction
+in bing search ads. InProceedings of the 26th
+International Conference on World Wide Web
+Companion, pages 689–698, 2017.
+H. Liu, K. Simonyan, and Y. Yang. Darts: Differ-
+entiable architecture search. InInternational
+Conference on Learning Representations, 2019.
+Z. Liu, L. Zou, X. Zou, C. Wang, B. Zhang, D. Tang,
+B. Zhu, Y. Zhu, P. Wu, K. Wang, and Y. Cheng.
+Monolith: Real time recommendation system
+with collisionless embedding table. InPro-
+ceedings of the 5th Workshop on Online Recom-
+mender Systems and User Modeling co-located
+with the 16th ACM Conference on Recommender
+Systems, volume 3303, 2022.
+I. Loshchilov and F. Hutter. Online batch selection
+for faster training of neural networks.arXiv
+preprint arXiv:1511.06343, 2015.
+14
+Efficient Hyperparameter Search for Non-Stationary Model Training
+J.McAuley,C.Targett,Q.Shi,andA.VanDenHen-
+gel. Image-based recommendations on styles
+and substitutes. InProceedings of the 38th in-
+ternational ACM SIGIR conference on research
+and development in information retrieval, pages
+43–52, 2015.
+H. B. McMahan, G. Holt, M. Young, D. Ebner,
+J. Grady, L. Nie, T. Phillips, E. Davydov,
+D. Golovin, et al. Ad click prediction: A
+view from the trenches. InProceedings of the
+19th ACM SIGKDD International Conference on
+Knowledge Discovery and Data Mining, pages
+1222–1230, 2013.
+B. Mirzasoleiman, J. Bilmes, and J. Leskovec.
+Coresets for data-efficient training of machine
+learning models. InInternational Conference
+on Machine Learning, pages 6950–6960. PMLR,
+2020.
+M. Naumov, D. Mudigere, H.-J. M. Shi, J. Huang,
+N. Sundaraman, J. Park, X. Wang, U. Gupta,
+C.-J. Wu, A. G. Azzolini, et al. Deep learn-
+ing recommendation model for personalization
+and recommendation systems.arXiv preprint
+arXiv:1906.00091, 2019.
+J. Ni, J. Li, and J. McAuley. Justifying recommen-
+dations using distantly-labeled reviews and
+fine-grained aspects. InProceedings of the
+2019conferenceonempiricalmethodsinnatural
+language processing and the 9th international
+joint conference on natural language processing
+(EMNLP-IJCNLP), pages 188–197, 2019.
+M. Paul, S. Ganguli, and G. K. Dziugaite. Deep
+learning on a data diet: Finding important ex-
+amples early in training.Advances in Neural In-
+formationProcessingSystems,34:20596–20607,
+2021.
+O. Pooladzandi, D. Davini, and B. Mirzasoleiman.
+Adaptive second order coresets for data-
+efficient machine learning. InInternational
+Conference on Machine Learning, pages 17848–
+17869. PMLR, 2022.
+E. Real, S. Moore, A. Selle, S. Saxena, Y. L. Sue-
+matsu, J. Tan, Q. V. Le, and A. Kurakin. Large-
+scale evolution of image classifiers. InInterna-
+tional Conference on Machine Learning, pages
+2902–2911. PMLR, 2017.
+S. Rendle. Factorization machines. In2010 IEEE
+International Conference on Data Mining, pages
+995–1000. IEEE, 2010.
+M. Richardson, E. Dominowska, and R. Ragno.
+Predicting clicks: Estimating the click-through
+rate for new ads. InProceedings of the 16th
+International Conference on World Wide Web,
+pages 521–530, 2007.
+D. Salinas, V. Perrone, O. Cruchant, and C. Ar-
+chambeau. A multi-objective perspective on
+jointly tuning hardware and hyperparameters.
+arXiv preprint arXiv:2106.05680, 2021.
+R. Schmucker, M. Donini, M. B. Zafar, D. Sali-
+nas, and C. Archambeau. Multi-objective asyn-
+chronous successive halving.arXiv preprint
+arXiv:2106.12639, 2021.
+N. Shazeer, A. Mirhoseini, K. Maziarz, A. Davis,
+Q. Le, G. Hinton, and J. Dean. Outrageously
+large neural networks: The sparsely-gated
+mixture-of-experts layer. InInternational Con-
+ference on Learning Representations, 2017.
+J. Shen, M. Khodak, and A. Talwalkar. Efficient
+architecture search for diverse tasks.Advances
+in Neural Information Processing Systems, 35:
+16151–16164, 2022.
+J. Snoek, H. Larochelle, and R. P. Adams. Practi-
+cal bayesian optimization of machine learning
+algorithms.Advances in neural information pro-
+cessing systems, 25, 2012.
+D. S. Soper. Hyperparameter optimization using
+successive halving with greedy cross validation.
+Algorithms, 16(1):17, 2022.
+J.-B. Tien, joycenv, and O. Chapelle. Dis-
+play advertising challenge. https:
+//kaggle.com/competitions/
+criteo-display-ad-challenge, 2014.
+Kaggle.
+M. Toneva, A. Sordoni, R. T. des Combes,
+A. Trischler, Y. Bengio, and G. J. Gordon. An
+empirical study of example forgetting during
+deep neural network learning. InInternational
+Conference on Learning Representations, 2019.
+15
+Efficient Hyperparameter Search for Non-Stationary Model Training
+R. Triepels. Sasha: Hyperparameter optimization
+by simulated annealing and successive halving.
+InIFIP International Conference on Artificial In-
+telligence Applications and Innovations, pages
+491–502. Springer, 2023.
+R.Wang, B.Fu, G.Fu, andM.Wang. Deep&cross
+network for ad click predictions. InProceedings
+of the ADKDD’17, pages 1–7. 2017.
+R. Wang, R. Shivanna, D. Cheng, S. Jain, D. Lin,
+L. Hong, and E. Chi. Dcn v2: Improved deep
+& cross network and practical lessons for web-
+scale learning to rank systems. InProceedings
+of the Web Conference 2021, pages 1785–1797,
+2021.
+S. Wang and W. Cukierski. Click-through
+rate prediction. https://kaggle.com/
+competitions/avazu-ctr-prediction,
+2014. Kaggle.
+M. Wistuba and T. Pedapati. Learning to rank
+learning curves. InInternational Conference on
+Machine Learning, pages 10303–10312. PMLR,
+2020.
+T. Yang, L. Zhang, R. Jin, and J. Yi. Tracking
+slowly moving clairvoyant: Optimal dynamic
+regret of online learning with true and noisy
+gradient. InInternational Conference on Ma-
+chine Learning, pages 449–457. PMLR, 2016.
+Y. Yang, H. Kang, and B. Mirzasoleiman. Towards
+sustainablelearning: Coresetsfordata-efficient
+deep learning. InInternational Conference on
+Machine Learning, pages 39314–39330. PMLR,
+2023.
+M. Zinkevich. Online convex programming and
+generalized infinitesimal gradient ascent. In
+Proceedings of the 20th International Conference
+on Machine Learning, pages 928–936, 2003.
+B. Zoph and Q. Le. Neural architecture search
+with reinforcement learning. InInterna-
+tional Conference on Learning Representations,
+2017. URL https://openreview.net/
+forum?id=r1Ue8Hcxg.
+16
+Efficient Hyperparameter Search for Non-Stationary Model Training
+A. Additional Experimental Details
+A.1. Candidate Configurations
+In the “FM” and “MoE” experiments, we vary
+optimization parameters: learning rate, weight
+decay, and final learning rate. We sweep through
+three values for each of these hyperparameters:
+•learning rate:[10 −4,10 −3,10 −2]
+•weight decay:[10 −6,2·10 −6,10 −5]
+•final learning rate:[10 −3,10 −2,10 −1]
+In the “FM v2” experiment, in addition to the
+optimizationparametersabove, wevarythemem-
+ory structure of the embeddings. We divide the
+features into two groups: “high” and “low” cardi-
+nality features and share the embedding tables
+among them (using hashing). Then, we vary the
+embedding dimensions as well as the hash buck-
+ets for the high and low cardinality features while
+maintaining a constant training speed and mem-
+ory footprint. To ensure that all embeddings have
+the same dimensions in the FM computation, we
+project them to the same embedding size.
+In the “CN” and “MLP” experiments, in addi-
+tion to the optimization parameters above, we
+vary the number of layers and hidden dimensions,
+respectively:
+•number of layers in CN:[2,3,5]
+• hidden dimensions in MLP:
+[(598,598,598,598),(1196,1196,1196,1196)]
+A.2. Compute Resources
+Without applying our data reduction and predic-
+tion strategies, running one configuration over
+the 24-day Criteo data on 4 TPUv3s takes less
+than an hour for the architectures and hyperpa-
+rameters we tried. We manage to reduce this cost
+up to10times with our strategies. Trajectory
+prediction requires learning the parameters of a
+predictive law. We did this using CPUs, with less
+than an hour for learning the trajectory predic-
+tions for each configuration in an experiment of
+about 100 configurations in total.
+A.3. Details on Trajectory Prediction
+Trajectory prediction fits a law to the recently
+observed data and makes predictions for the tra-
+jectory. In our experiments, we use the last 3
+“visited” days in the training data for fitting, by
+averaging the loss over all the time steps in a day.
+Then, we use the fitted parameters to predict the
+loss in the last 3 days, i.e., the evaluation window.
+In the main body, we use inverse power laws (or
+InversePowerLaw in Table 1). In Section B.3,
+we explore other choices of laws, listed in Table 1,
+and their combinations.
+Table1 |Otherchoicesoffittinglawsfortrajectory
+prediction.
+Law Formulation (function of𝐷)
+InversePowerLaw𝐸+ 𝐴
+𝐷𝛼
+VaporPressureexp(𝐴+ 𝐵
+𝐷 +𝐶·log𝐷)
+LogPower 𝐴
+1+( 𝐷
+exp𝐵 )𝛼
+ExponentialLaw𝐸−exp(−𝐴·𝐷 𝛼 +𝐵)
+A.4. Details on Stratified Prediction
+Stratified prediction can be used with both con-
+stant or trajectory prediction. In the main body,
+we exclusively used it with trajectory prediction
+as we observe better ranking accuracy. Figure 7
+shows that stratified trajectory prediction is con-
+sistently better than stratified constant prediction
+across all experiments we consider. Note that in
+all other plots in the paper, “stratified prediction”
+refers to stratified trajectory prediction.
+A.5. Details on Performance-Based Stopping
+We provide an outline of our performance-based
+stopping strategy in Algorithm 1, with two hy-
+perpameters: stopping steps Tstop and ratio of
+stopped configurations at any stopping step𝜌.
+For all the experiments, we choose𝜌= 0.5. We
+choose this value since it is a reasonable start-
+ing point but it is possible to improve our results
+with a carefully tuned𝜌. For Tstop, we fix the
+number of steps between consecutive stopping
+times inTstop – i.e., we stop fraction𝜌of remain-
+ing configurations at equally spaced time steps.
+17
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure 7|Comparison between stratified constant prediction and stratified trajectory prediction. In
+all other plots in the paper, “stratified prediction” refers to stratified trajectory prediction.
+By varying the frequency at which we stop the
+configurations, we obtain different points in the
+performance-based stopping curves in our plots.
+B. Additional Experimental Results
+B.1. One-Shot Early Stopping vs Performance-
+Based Stopping
+In Figure 4, we demonstrated that performance-
+based stopping reaches lowerregret @3with
+significantly smaller amount of data used, com-
+pared to one-shot early stopping, and presented
+results on MoE. We now extend these results to
+other experiments in Figure 8.
+Even though performance-based stopping
+should not be evaluated with ranking metrics
+that considerallthe configurations, likePER, as
+the core idea behind performance-based stopping
+is to not worry about poor configurations, we
+still provide a comparison between one-shot early
+stopping and performance-based stopping based
+on PER in Figure??. We note that this is not a fair
+comparison since performance-based stopping is
+actually not expected to rank the poor configura-
+tions that stop early on rank accurately. However,
+Figure ?? shows that the gap between one-shot
+early stopping and performance-based stopping
+is so large that the latter reaches much lowerPER.
+18
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure 8|regret @3comparison of one-shot early stopping and performance-based stopping, when
+used with(left)constant,(center)trajectory, and(right)stratified prediction. Rows represent, top to
+bottom: FM, FM v2, CN, MLP, MoE.
+19
+Efficient Hyperparameter Search for Non-Stationary Model Training
+B.2. Comparison between Prediction Strate-
+gies
+We provided a comparison between our predic-
+tion strategies on the MoE candidate models in
+Figure 5. We extend the same comparison to the
+other experiments and architectures in Figure 9.
+B.3. Other Choices of Scaling Laws
+Figure 10 compares different choices of
+laws, InversePowerLaw, VaporPressure,
+LogPower, ExponentialLaw defined in Ta-
+ble 1, and their weighted combination, for
+trajectory prediction. It is seen that they all
+behave similarly and reach the targetregret @3
+level around the same data use fraction. In the
+combined law, we learn both the weights and the
+parameters of each law jointly.
+B.4. Late Starting vs Early Stopping
+Lastly, we explore whether starting come config-
+uration runs later in training data would provide
+an improvement in the ranking accuracy vs data
+reduction tradeoff. Figure 11 shows how one-shot
+early stopping behaves when the configurations
+start training at different days. Start at day= 0
+(purple) corresponds to the standard one-shot
+early stopping that we have been analyzing. The
+other curves apply the same algorithm but on
+the runs that start training after some number of
+days in training data passes. We see no significant
+difference among different start days.
+20
+Efficient Hyperparameter Search for Non-Stationary Model Training
+Figure9 |Comparisonbetweenourpredictionstrategies, whenusedwithperformance-basedstopping.
+Figure 10|Comparison between different choices of laws for trajectory prediction, with respect to
+(left)regret@3and(right)PER.
+Figure 11|PER comparison between different starting times, when used with one-shot early stopping.
+This comparison checks whether we could get additional data reduction gain by late starting the
+configuration runs. However, our ranking predictions with late-started runs provide about the same
+data reduction vsPERtradeoff.
+21

@@ -1,0 +1,1228 @@
+Differentially Private and Federated
+Structure Learning in Bayesian Networks
+Ghita Fassy El Fehri1,2, Aur´ elien Bellet1, Philippe Bastien2
+1 Inria, Universit´ e de Montpellier, INSERM
+2 L’Or´ eal Research and Innovation, Aulnay-Sous-Bois
+Abstract
+Learning the structure of a Bayesian network from decentralized data poses two major chal-
+lenges: (i) ensuring rigorous privacy guarantees for participants, and (ii) avoiding communication
+costs that scale poorly with dimensionality. In this work, we introduce Fed-Sparse-BNSL, a novel
+federated method for learning linear Gaussian Bayesian network structures that addresses both
+challenges. By combining differential privacy with greedy updates that target only a few relevant
+edges per participant, Fed-Sparse-BNSL efficiently uses the privacy budget while keeping com-
+munication costs low. Our careful algorithmic design preserves model identifiability and enables
+accurate structure estimation. Experiments on synthetic and real datasets demonstrate that Fed-
+Sparse-BNSL achieves utility close to non-private baselines while offering substantially stronger
+privacy and communication efficiency.
+1 INTRODUCTION
+Bayesian networks (BNs) compactly represent joint distributions and causal dependencies among ran-
+dom variables. Their graph structure, in the form of a directed acyclic graph (DAG), encodes con-
+ditional independencies, yielding interpretable models widely used in biology, medicine, and social
+sciences. A key challenge is to infer the BN structure directly from data, a task known as Bayesian
+network structure learning (BNSL). Among existing approaches, continuous optimization methods
+have shown strong empirical performance on linear Gaussian BNs, where each variable is modeled as a
+linear function of its parents plus Gaussian noise (Zheng et al., 2018; Ng et al., 2019; Zheng et al., 2020;
+Ng et al., 2020; Vowels et al., 2021). However, these methods assume centralized access to data. In
+many real-world scenarios, data are distributed across multiple institutions or participants and cannot
+be aggregated due to privacy concerns. This motivates the study of federated BNSL, which aims to
+collaboratively reconstruct a global DAG from decentralized data (Ng and Zhang, 2022). Federated
+BNSL faces two key challenges: (i) ensuring strong privacy guarantees for participants’ data, and (ii)
+preventing communication costs from growing excessively with dimensionality. These challenges are
+further compounded by the fact that the number of possible edges in a DAG grows quadratically with
+the number of variables.
+In this work, we address both challenges with Fed-Sparse-BNSL, a federated method for learning
+linear Gaussian Bayesian network structures, and its privacy-preserving variant DP-Fed-Sparse-BNSL.
+Our approach combines differential privacy (DP) with a greedy, coordinate-wise update strategy that
+restricts communication to only a few relevant edges per participant at each iteration. This leads
+to two key advantages compared to prior work. First, communication costs are greatly reduced
+since sparse edge updates are transmitted instead of dense matrices. Second, privacy budget scales
+with the number of updated dependencies per participant, not with the full dimension. The core
+1
+arXiv:2512.01708v1  [stat.ML]  1 Dec 2025
+component of our method is a Proximal Greedy Coordinate Descent (PGCD) algorithm for the local
+updates, which produces high-quality sparse solutions without requiring data standardization—which
+is known to compromise the identifiability of the DAG (Ng et al., 2024; Loh and B¨ uhlmann, 2014).
+For the private variant, DP-Fed-Sparse-BNSL, we improve upon the Differentially Private Proximal
+Greedy Coordinate Descent (DP-PGCD) algorithm (Mangold et al., 2023) by minimizing the noise
+added under DP, leveraging mechanisms that can be analyzed under zero-concentrated differential
+privacy (zCDP) for tighter privacy accounting. This results in favorable privacy-utility trade-off, as
+demonstrated by both theoretical guarantees and empirical results. Besides the above benefits, we
+empirically show that Fed-Sparse-BNSL supports participant-level personalization in heterogeneous
+settings, where the structure is shared but edge weights differ across participants.
+Contributions.Our main contributions can be summarized as follows: (i) a communication-
+efficient federated BNSL algorithm that exploits sparsity, reducing communication costs; (ii) a dif-
+ferentially private variant with formal (ε, δ)-DP guarantees, that achieves strong utility even in high-
+dimensional settings; (iii) an empirical evaluation on synthetic homogeneous and heterogeneous data as
+well as a real dataset, demonstrating the effectiveness of our method in terms of convergence, commu-
+nication costs, privacy-utility trade-offs, robustness to dimensionality, and effective participant-level
+personalization.
+Organization of the paper.The paper is organized as follows. Section 2 formalizes the problem
+setting; Section 3 reviews related work; Section 4 presents the federated algorithm Fed-Sparse-BNSL;
+Section 5 introduces the private variant DP-Fed-Sparse-BNSL and its guarantees; and finally, Section
+6 reports experimental results, and Section 7 concludes.
+2 PROBLEM SETTING
+Structure learning in linear Gaussian BNs.We consider the task of learning the structure of
+a Bayesian Network (BN) from observational data. A BN (Koller and Friedman, 2009) is a directed
+acyclic graph (DAG) where each nodeX i represents a random variable, and edges encode conditional
+dependencies. We represent a (weighted) DAG using a weighted adjacency matrixW∈R d×d, where
+each entryW i,j encodes the strength of a directed edge from variableX i toX j. A nonzeroW i,j
+indicates a direct causal effect ofX i onX j, whereasW i,j = 0 indicates no direct effect.
+We focus on linear Gaussian BNs, where each variable is a linear function of its parents in the
+DAG plus additive Gaussian noise:
+Xi =
+X
+j∈Pa(Xi)
+WjiXj +Z i, Z i ∼ N(0, σ2
+i ),
+where Pa(Xi) ={X j :W j,i ̸= 0}denotes the set of parents ofX i in the DAG.
+The structure learning problem is to recoverWfrom a datasetX∈R n×d, which is known to be
+identifiable when noise variances are equal or known (Peters and B¨ uhlmann, 2013; Loh and B¨ uhlmann,
+2014). The combinatorial nature of the problem is addressed by reformulating it as a continuous
+optimization task using the NOTEARS framework (Zheng et al., 2018):
+min
+W∈Rd×d
+L(W;X) +λ∥W∥ 1 s.t.h(W) = 0,(1)
+whereL(W;X) = 1
+2n∥X−XW∥ 2
+F is the least squared loss,λ∥W∥ 1 promotes sparsity, and
+h(W) = tr(eW◦W )−d= 0
+ensures acyclicity, where◦is the Hadamard product.
+2
+Federated learning.In this work, we consider a setting withPparticipants, each holding a
+private local datasetX (p) ={X (p)
+1 , . . . , X(p)
+np } ⊂Rd, withn p the number of samples held by participant
+p. The goal is to learn a shared DAG structure with the coordination of a central server, while keeping
+all data decentralized.
+Problem (1) can then be equivalently reformulated as a consensus problem (Ng and Zhang, 2022):
+minB,W L(B;W) = PP
+p=1 L(Bp;X (p)) +λ∥W∥ 1
+s.t.B p =W,∀p∈ {1, . . . , P},
+h(W) = 0,(2)
+whereB= [B 1, . . . , BP ] andB p ∈R d×d is the local matrix for participantpandWthe global
+consensus adjacency matrix.
+Differential privacy.To protect the participants’ data in the federated learning process, we aim
+to enforce formal differential privacy (DP) guarantees (Dwork et al., 2006). Intuitively, a mechanism
+satisfies DP if replacing a single data point has only a limited impact on the algorithm’s output
+distribution.
+Definition 2.1(Differential privacy).Letε, δ >0. A randomized algorithmAsatisfies(ε, δ)-DP if,
+for any two datasetsD 1 andD 2 of fixed size that differ in exactly one record, and for any possible
+O⊆range(A),
+P(A(D1)∈O)≤e εP(A(D2)∈O) +δ.
+In our federated setting, we aim to limit the influence of any single participant’s data on the
+information shared during training, thereby providing formal privacy guarantees against both external
+observers and an honest-but-curious server.
+3 RELATED WORK
+Bayesian networks structure learning (BNSL)aims at recovering the graph structure of a BN
+from observational data (Koller and Friedman, 2009). Traditional structure learning approaches are
+based on discrete optimization and can be categorized into two families: constraint-based methods,
+which rely on conditional independence tests, and score-based methods, which optimize a goodness-
+of-fit score. For a detailed survey, we refer the reader to Kitson et al. (2023).
+Recently, continuous optimization methods have gained popularity, notably with the introduction
+of NOTEARS (Zheng et al., 2018), which proposed the first differentiable acyclicity constraint in the
+context of linear Gaussian BNs. This allows BNSL to be formulated as a continuous optimization
+problem, avoiding the combinatorial search of discrete methods. Several extensions of NOTEARS
+have since been proposed (Ng et al., 2019; Zheng et al., 2020; Ng et al., 2020), see also Vowels et al.
+(2021, Section 5). However, these methods require centralized access to data.
+Federated BNSLextensions have been developed for both continuous and discrete optimization
+approaches. Discrete optimization methods (van Daalen et al., 2024; Torrijos et al., 2024) are primarily
+designed for discrete data and are not directly applicable to continuous data, which is the focus of
+our work. For continuous optimization, Fed-BNSL (Ng and Zhang, 2022) adapts the NOTEARS
+formulation to the federated setting via the alternating direction method of multipliers (ADMM) to
+solve (2), enabling participants to collaboratively learn a consensus DAG without centralizing their
+data. FedDAG (Gao et al., 2023), built on the GOLEM framework (Ng et al., 2020), relies on FedAvg
+(McMahan et al., 2017) to learn and aggregate local structures across participants. Both methods
+require participants to transmitd×dmatrices at each round, which becomes impractical in high-
+dimensions, and neither provides formal privacy guarantees.
+3
+Differentially private BNSLmethods have been proposed in the context of synthetic data
+generation. PrivBayes (Zhang et al., 2017) and subsequent work (Bao et al., 2021) propose approaches
+to learn BNs under DP, enabling the release of synthetic data with formal privacy guarantees. Related
+efforts have appeared in the causal discovery community (Wang et al., 2020). However, these methods
+are designed for discrete data, so they cannot be applied to our continuous setting, and assume
+centralized access to all data.
+Federated and private BNSLhas been explored in recent work. In (Mian et al., 2023), partic-
+ipants compute scores on local DAGs and send noisy scores to a central server, which then identifies a
+consensus DAG minimizing a notion of regret. However, the method lacks explicit sensitivity bounds
+for DP guarantees and does not scale, requiring as many communication rounds as graph edges. Wang
+et al. (2023) extend constraint-based methods to the federated setting by performing conditional in-
+dependence tests locally and aggregating results via secure computation, but this approach is again
+limited to discrete data.
+4 FEDERATED ALGORITHM
+In existing federated BNSL approaches, each participant must transmit a densed×dmatrix to the
+central server (Ng and Zhang, 2022; Gao et al., 2023), resulting in a communication cost that scales
+quadratically with the number of variables, despite the underlying DAG typically being sparse. In
+this section, we propose a communication-efficient alternative that exploits this sparsity, which is also
+crucial for the design of an effective differentially private version (Section 5).
+4.1 Algorithm Overview
+We first slightly modify the formulation (2) of Ng and Zhang (2022), redefining the objective function
+L(B, W) by transferring theℓ 1 sparsity penalty from the global consensus matrixWto the local
+matrices:
+L(B;W) = PP
+p=1 L(Bp;X (p)) +λ∥B p∥1,(3)
+Note that this reformulation yields an equivalent problem because of the consensus constraints
+in (2). Following the approach of Fed-BNSL, we solve this constrained optimization problem in
+a federated way using the ADMM-based augmented Lagrangian method, leading to the following
+iterative update rules:
+Bt+1
+p = arg min
+Bp
+(L(Bp;X (p)) +λ∥B p∥1 + tr
+
+βt
+p(Bp −W t)⊤
+
++ ρ2
+2 ∥Bp −W t∥2
+F ),(4)
+Wt+1 = arg minW (PP
+p=1 tr
+ 
+βt
+p(Bt+1
+p −W) ⊤
++ ρt
+2
+2
+PP
+p=1 ∥Bt+1
+p −W∥ 2
+F +α th(W) + ρ1
+2 h(W)2),(5)
+αt+1 =α t +ρ 1h(Wt+1),(6)
+βt+1
+p =β t
+p +ρ 2(Bt+1
+p −W t+1),(7)
+whereρ 1, ρ2 >0 are the penalty coefficients andα∈Randβ 1, . . . , βP ∈R d×d are the dual
+variables (Lagrange multipliers). Algorithm 1 summarizes the proposed federated BNSL algorithm.
+Imposing theℓ 1 penalty directly on the local matrices leverages the inherent sparsity of Bayesian
+networks to reduce communication. Since solutions to the local subproblem (4) are expected to
+be sparse, participants only need to exchange the nonzero entries of their estimates, reducing the
+communication cost fromO(d 2) to the number of identified dependencies. This sparsity propagates
+to the shared structureW: for all entries that are zero across the local matrices, any local minimizer
+of (5) will likewise assign a zero to that entry.
+It remains to select the appropriate local solver for (4), which is a subtle but crucial design choice.
+4
+Algorithm 1Fed-Sparse-BNSL
+1:InitializeB 0
+p = 0, W0 = 0, α0 = 0, β0
+p = 0
+2:fort= 1toTdo
+3:foreach participantpin paralleldo
+4:UpdateB t+1
+p by solving Eq. 4 with PGCD
+5:Send sparse updateB t+1
+p to server
+6:end for
+7:UpdateW t+1 by solving Eq. 5 with L-BFGS
+8:Update dual variablesα t+1, βt+1
+p (Eq. 6-7)
+9:Server sends back sparseW t+1 to participants
+10:end for
+4.2 Choice of Local Solver
+The local subproblem (4) is a LASSO-type optimization problem, for which many solvers exist (Hastie
+et al., 2015; Jaggi, 2013). However, these solvers typically assume that data has been standardized
+(features centered and rescaled). Standardization ensures that all variables are on a comparable scale,
+allowing theℓ 1 penalty to be applied uniformly across coefficients (Hastie et al., 2015). However,
+in the context of linear Gaussian structural equation model with equal error variances (Peters and
+B¨ uhlmann, 2013), standardization is known to invalidate the theoretical conditions under which the
+true DAG can be identified (Ng et al., 2024; Loh and B¨ uhlmann, 2014) We therefore require a solver
+that can meaningfully handle LASSO problems without rescaling the data.
+For this reason, we rely on theProximal Greedy Coordinate Descent(PGCD) algorithm (Tseng and
+Yun, 2009; Nutini et al., 2015; Karimireddy et al., 2019). PGCD is an iterative method that updates
+one coordinate at a time, selecting the coordinate that yields the greatest potential improvement in the
+objective. Consider participantpwith initializationB 0 ∈R d×d. At each iterationk, PGCD evaluates
+each coordinate (i, j) using the score
+Si,j =
+p
+Mi,j
+prox λ
+Mi,j
+|·|
+
+Bk
+i,j − 1
+Mi,j
+ 
+∇i,jL(Bk;X (p))
+
+−B k
+i,j
+, (8)
+whereL(B k;X (p)) =L(B k;X (p)) + tr(β(Bk −W) ⊤) + ρ
+2 ∥Bk −W∥ 2
+F is the smooth part of the local
+objective,∇ i,jL(Bk;X (p)) is the partial derivative ofLwith respect toB k
+i,j, proxλ|·|(x) = sign(x)·
+max(|x| −λ,0) is the soft-thresholding operator, andMi,j is the coordinate-wise smoothness constant
+ofL. The coordinate with the highest score, (m, n) = arg max i,j Si,j, is then greedily updated by a
+proximal gradient step:
+Bk+1
+m,n = prox λγ
+Mm,n |·|
+ 
+Bk
+m,n − γ
+Mm,n
+∇m,nL(Bk;X (p))
+
+(9)
+PGCD is particularly well-suited to our setting for two reasons. First, the coordinate-wise smooth-
+ness constants naturally normalize updates, eliminating the need for standardization and thereby pre-
+serving the identifiability conditions of the underlying DAG. Second, the greedy coordinate selection
+combined with proximal updates enforces sparsity, retaining only the most relevant dependencies,
+thereby significantly reducing communication costs.
+In the next section, we further leverage the properties of PGCD to ensure the privacy budget
+is effectively spent on the most informative updates—a key factor for achieving good privacy-utility
+trade-offs in high-dimensional settings.
+5
+Algorithm 2DP-PGCD
+1:InitializeB 0 = 0 (or use warm-start)
+2:fork= 1toKdo
+3:Compute noisy scores ˜Si,j ∀(i, j) (Eq. 11)
+4:Select (m, n) with highest noisy score
+5:UpdateB k+1
+m,n (Eq. 12)
+6:B k+1
+i,j =B k
+i,j for (i, j)̸= (m, n)
+7:end for
+8:Output:Sparse matrixB K
+5 PRIVATE ALGORITHM
+5.1 Motivation
+In the original Fed-BNSL algorithm (Ng and Zhang, 2022), the local subproblem inBp—corresponding
+to (4) without theℓ 1 penalty—is solved via the closed-form expression:
+Bt+1
+p = (Σp +ρ 2I)−1(ρ2Wt −β t
+p + Σp),(10)
+where Σp = 1
+np X(p)⊤X(p) ∈R d×d denotes the empirical covariance matrix of participantp. Since the
+server receivesB p and has access toW t,ρ 2, andβ t
+p, it can directly reconstruct Σ p, as detailed in
+Appendix A.1. This poses a significant privacy risk: covariance matrices can leak detailed information
+about individual data points, enabling attribute inference and data reconstruction attacks (Cret ¸u et al.,
+2024; Huth et al., 2023). Although methods exist for constructing differentially private covariance
+matrices (Wang, 2018; Amin et al., 2019), they become impractical for high-dimensional datasets
+unless additional assumptions are made, since the privacy-induced error grows quadratically with the
+number of variablesd(Amin et al., 2019).
+Our approach, presented in Section 4, naturally produces sparse updates forB p, which reduces
+the amount of information exposed to the server. Nevertheless, it is well known that sharing model
+updates in federated learning can still be vulnerable to a range of privacy attacks (Nasr et al., 2019;
+Geiping et al., 2020). In this section, we introduce a differentially private variant of our federated
+BNSL algorithm that leverages the greedy updates of PGCD, avoiding the quadratic cost in the
+dimensionalityp.
+5.2 Differentially Private Local Solver
+In Fed-Sparse-BNSL, the only part that directly accesses the data is the participants’ local update
+(4). Therefore, it is sufficient to privatize this step; the post-processing and composition properties of
+differential privacy then provide guarantees for the overall algorithm. We thus propose to rely on a
+differentially private version of our local solver, PGCD.
+Mangold et al. (2023) introduced a private version of PGCD which relies on the addition of Laplace
+noise to privatize both the greedy coordinate selection and the gradient update, providing pureϵ-DP
+guarantees, and resorted to the advanced composition theorem (Dwork and Roth, 2014) to track the
+privacy loss across iterations. However, this composition is overly pessimistic, requiring unnecessarily
+large amounts of noise at each step and resulting in a poor privacy–utility trade-off, as the excessive
+noise degrades the quality of the learned matrix.
+In contrast, our improved DP-PGCD uses the exponential mechanism via the “Gumbel max trick”
+(Ding et al., 2021) for private coordinate selection and Gaussian noise for gradient updates. This design
+enables us to leverage zero-Concentrated Differential Privacy (zCDP) (Bun and Steinke, 2016a), under
+6
+which the exponential mechanism admits a tighter privacy analysis (Dong et al., 2020) and composition
+behaves more favorably. We thus achieve tighter privacy accounting and require less noise for the same
+privacy budget.
+Our DP-PGCD algorithm (Algorithm 2) operates similarly to its non-private counterpart, with
+two key modifications. First, it uses noisy scores computed by adding independent Gumbel noise to
+the non-private scores defined in (8):
+˜Si,j =S i,j + Gumbel(0, β).(11)
+Second, the gradient used in the coordinate update (9) is perturbed with Gaussian noise:
+Bk+1
+m,n = prox λγ
+Mm,n |·|
+ 
+Bk
+m,n − γ
+Mm,n
+(∇m,nL(Bk;X (p)) +N(0, σ2))
+
+. (12)
+Note that this private version reduces to the non-private algorithm whenβ=σ= 0.
+Each iteration of DP-PGCD computes the full gradient but updates only a single coordinate.
+While using the full gradient would require privatizing alld 2 coordinates, even though only a few
+are typically relevant in sparse DAGs, the exponential mechanism allows PGCD to select the most
+promising coordinate while incurring a privacy cost of onlyO(logd) (Dwork and Roth, 2014). In the
+following, we refer to DP-Fed-Sparse-BNSL as the Fed-Sparse-BNSL algorithm using DP-PGCD as
+the local solver.
+5.3 Privacy Guarantees
+We provide DP guarantees for DP-Fed-Sparse-BNSL.
+Theorem 5.1(Privacy of DP-Fed-Sparse-BNSL).Letε, δ >0and∆ = 2L i,j/np whereL i,j is the
+coordinate-wise Lipschitz constant ofL. Suppose DP-Fed-Sparse-BNSL (Algorithm 1) runs forTglobal
+rounds, with local updates performed withKiterations of DP-PGCD (Algorithm 2). If the Gumbel
+and Gaussian noise parameters are chosen as
+β= σp
+Mi,j
+=
+∆
+√
+KT(
+q
+log(1
+δ ) +ε+
+q
+log(1
+δ ))
+ε ,
+then DP-Fed-Sparse-BNSL is(ε, δ)-differentially private with respect to each participant’s dataset.
+Sketch of proof.We first show that gradients haveℓ 2-sensitivity bounded by ∆, and that scores have
+sensitivity bounded by ∆/
+p
+Mi,j, leveraging the non-expansiveness of the prox. Each DP-PGCD
+iteration applies two private mechanisms: (i) coordinate selection via the exponential mechanism
+(with Gumbel noise), and (ii) coordinate update via Gaussian noise. Withβ=σ/
+p
+Mi,j, each one
+satisfiesρ-zCDP, whereρ= ∆2
+2β2 . By additive composition, runningTrounds of DP-Fed-Sparse-BNSL,
+each withKupdates of DP-PGCD, yields total privacy lossρ tot = 2Kρ= K∆2
+β2 . Converting to (ε, δ)-
+DP givesε=ρ tot + 2
+p
+ρtot log(1/δ), which determines the stated noise scales. Full derivations are in
+Appendix A.2.
+Gradient clipping.Since coordinate-wise Lipschitz constants are difficult to bound tightly, in
+practice we instead enforce bounded sensitivity through gradient clipping. Following Mangold et al.
+(2022), each gradient coordinate∇ i,jL(Bk;X (p)) is clipped atC i,j =
+q
+Mi,j/ P
+i,j MijCfor some
+global thresholdC >0. This scheme adjusts for the relative scale of each coordinate while reducing
+tuning to a single parameter.
+Knowledge ofM i,j.We assume that the coordinate-wise smoothness constantsM i,j are available
+(or upper bounded). When this is not the case, they can be privately estimated using the Gaussian
+mechanism. Further details are provided in Appendix D.1.
+7
+6 EXPERIMENTS
+We empirically evaluate Fed-Sparse-BNSL and its differentially private variant DP-Fed-Sparse-BNSL
+on synthetic data and on real data. We assess the effectiveness of our method in terms of convergence,
+structural accuracy of the estimated DAG, communication efficiency and privacy-utility trade-offs.
+6.1 Experimental Setup
+DatasetsWe consider the following datasets.
+Homogeneous synthetic data.Following Zheng et al. (2018) and Ng and Zhang (2022), we generate
+Erd¨ os-R´ enyi random DAGs withd= 20 nodes and an expected number ofdedges. Observations are
+drawn from a linear Gaussian BN with equal noise variance across variables. Data are partitioned
+acrossP= 8 participants, each withn p = 5000 samples. We also consider higher-dimensional versions
+withdup to 200. Details are provided in Appendix B.1.
+Heterogenous synthetic data.We use the same DAG generation, but allow participant-specific
+regression coefficients, while keeping the underlying DAG structure shared. We considerP= 5
+participants, each withnp = 5000 samples. This setting allows to evaluate both the structural accuracy
+of the estimated shared DAG, and the ability to estimate participant-specific coefficients. Details are
+in Appendix B.2.
+Real data.As in previous work (Zheng et al., 2018; Ng and Zhang, 2022), we use the Sachs
+protein signaling dataset (Sachs et al., 2005), which hasd= 11 variables,n= 7466 samples, and a
+ground-truth DAG with 18 edges. To simulate a federated setting, we split the data acrossP= 3
+participants.
+Metrics.We consider the following metrics.
+Structural accuracy. We assess the quality of the estimated DAGs using standard structure learning
+metrics. The Structural Hamming Distance (SHD) counts the number of edge insertions, deletions
+or reversals needed to convert the estimated DAG into the true one. The True Positive Rate (TPR)
+represents the proportion of true edges that are correctly recovered, while the False discovery rate
+(FDR) represents the proportion of incorrect edges among predicted edges.
+Communication cost.We measure the total cost as the number of bytes transmitted between the
+server and the participants throughout the entire training procedure, reported in megabytes (MB).
+Personalization.In the heterogeneous setting, after learning the shared structure, we compute
+per-participant normalized mean squared error (MSE) between the true regression coefficients and
+those estimated after local refitting.
+Evaluation protocol.We report the mean and standard deviation (shaded bands in figures)
+across the 10 runs. For each configuration of dataset and privacy budget, hyperparameters are tuned
+separately for each method. The procedure, search ranges and final values are detailed in Appendix
+F.
+6.2 Non-Private Setting
+We evaluate the performance of Fed-Sparse-BNSL on synthetic data and compare to Fed-BNSL (Ng
+and Zhang, 2022).
+Convergence on homogeneous data.Figure 1 (top) shows that Fed-Sparse-BNSL consistently
+achieves lower SHD than Fed-BNSL across iterations and stabilizes earlier, indicating faster and more
+stable convergence. Variability is also narrower for Fed-Sparse-BNSL. Both methods quickly reach
+high TPR and remain close thereafter, but Fed-Sparse-BNSL maintains a lower FDR throughout
+training. This gap persists over iterations and is accompagnied by tighter variability, suggesting that
+Fed-Sparse-BNSL avoids over-selecting spurious edges while converging to more accurate structures.
+8
+Figure 1: Convergence of Fed-Sparse-BNSL and Fed-BNSL. Top: homogeneous synthetic data; Bot-
+tom: heterogeneous synthetic data. We report SHD, TPR and FDR across iterations.
+Method DimensiondCommunication cost SHD TPR FDR
+Fed-Sparse-BNSL 20 1.85±0.26 2.1±2.132 0.925±0.063 0.038±0.071
+Fed-BNSL 20 5.12±0 2.9±4.483 0.95±0.033 0.086±0.145
+Fed-Sparse-BNSL 200 13.7±0.8 27.4±14.516 0.922±0.03 0.084±0.05
+Fed-BNSL 200 512±0 50.7±12.859 0.934±0.007 0.19±0.045
+Table 1: Communication costs (MB) ford= 20 andd= 200.
+Convergence on heterogeneous data.As shown in Figure 1 (bottom), Fed-Sparse-BNSL main-
+tains its advantages on heterogeneous data: it achieves lower SHD with earlier stabilization, matches
+Fed-BNSL in TPR, and consistently attains lower FDR, demonstrating accurate and robust recovery
+of the consensus structure despite cross-participant variability.
+Communication efficiency.Communication costs are reported in Table 1. Ford= 20, Fed-
+Sparse-BNSL reduces communication by approximately 64% compared to Fed-BNSL, while maintain-
+ing strong structural accuracy. As expected, ford= 200, the difference is even more pronounced:
+Fed-Sparse-BNSL achieves roughly 97.2% reduction in communication costs and clearly outperforms
+Fed-BNSL, with lower SHD and FDR while keeping TPR high. These results highlight the effectiveness
+of Fed-Sparse-BNSL ’s design, demonstrating substantial communication savings without sacrificing
+performance.
+Participant-level personalization.Figure 2 shows the per-participant normalized MSE be-
+tween estimated and ground-truth participant-specific weights for two Fed-Sparse-BNSL variants: (i)
+without personalization, using the consensus weighted adjacency matrix learned collectively, and (ii)
+with personalization, where each participant locally refits the edge weights via linear regression on its
+own data after fixing the learned DAG structure. Personalization consistently reduces MSE across
+participants, with lower medians in all boxplots. This demonstrates that, despite heterogeneity in
+edge weights, learning the network structure collectively provides a strong foundation, and subsequent
+9
+Figure 2: Participant-level personalization: per-participant normalized MSE between true and esti-
+mated parameters, with and without personalization.
+Figure 3: Privacy-utility trade-off: SHD, TPR and FDR of DP-Fed-Sparse-BNSL under varying
+privacy budgetsε, compared to non-private Fed-Sparse-BNSL.
+local refitting produces participant-specific estimates that closely align with the ground truth.
+6.3 Private Setting
+Privacy-utility trade-off.We compare our non-private algorithm (Fed-Sparse-BNSL) to its differ-
+entially private variant (DP-Fed-Sparse-BNSL) on homogeneous synthetic data, varying the privacy
+budgetε∈[0.5,1,2,5,10,25,50] while keepingδ= 1
+n2p
+fixed. The results are shown in Figure 3, where
+Fed-Sparse-BNSL is shown as a dashed reference to visualize the utility gap under privacy. In the
+high-privacy regime (ε≤2), DP-Fed-Sparse-BNSL exhibits higher SHD and lower TPR, while FDR
+is highest. Asεincreases, SHD decreases and TPR rises monotonically, approaching the non-private
+baseline. For moderate to large budgets (ε≥5), SHD and TPR are close to Fed-Sparse-BNSL,
+variance shrinks, and FDR drops toward the non-private reference. Overall, increasingεnarrows
+the privacy-utility gap, withε= 5 providing a strong compromise andε= 10 nearly matching the
+non-private performance.
+We evaluate the effect of dimensionality under differential privacy by comparing DP-Fed-Sparse-
+BNSL to a baseline, DP-Fed-BNSL, in which each participant privatizes its covariance matrix using
+the Gaussian mechanism (Wang, 2018) before running Fed-BNSL. Using homogeneous synthetic data,
+we vary the dimensiond∈[20,50,100,200] while keeping the number of participantsP= 8 and the
+per-participant sample sizen p = 5000 fixed. The privacy budget is set toε= 10 for all dimensions.
+10
+Figure 4: Dimensional robustness: performance of DP-Fed-Sparse-BNSL vs DP-Fed-BNSL as dimen-
+siondincreases, under fixed privacy budgetε= 10.
+As shown in Figure 4, SHD increases withdfor both methods, reflecting the growth in the number
+of edges. At small dimensions (d= 20,50), DP-Fed-BNSL performs similarly to DP-Fed-Sparse-
+BNSL. However, its structural accuracy deteriorates rapidly asdincreases. Atd= 200, DP-Fed-
+BNSL ’s SHD is roughly twice that of DP-Fed-Sparse-BNSL (about 140 vs. 70), and its TPR drops
+to around 0.5 compared to over 0.8 for DP-Fed-Sparse-BNSL. This is expected, since privatizing
+full covariance matrices scales quadratically with dimension, whereas DP-Fed-Sparse-BNSL handles
+higher-dimensional settings more effectively due to its greedy approach.
+6.4 Real data
+We evaluate Fed-Sparse-BNSL, Fed-BNSL and their DP variants on the Sachs dataset (Sachs et al.,
+2005), a well-known benchmark for structure learning with a biologically validated ground-truth DAG.
+To simulate a federated setting, the data was partitioned across 3 participants. Experimental details
+and hyperparameter settings are provided in Apprendix C.
+Both Fed-Sparse-BNSL and Fed-BNSL recover a DAG with 18 edges, with SHD= 20 for Fed-
+Sparse-BNSL and SHD= 23 for Fed-BNSL, consistent with previously reported NOTEARS results
+(16 edges, SHD= 22). Direct comparison with Fed-BNSL from original paper is not possible since
+their experiments were conducted on a smaller dataset. As we have no guarantee that the ground-
+truth DAG is identifiable in real datasets, we also assess the Markov equivalence class, by looking at
+the skeleton (undirected edges) and v-structures. For a detailed introductions to these notions, we
+refer the reader to Koller and Friedman (2009). Neither method recovers ground-truth v-structures.
+However, Fed-Sparse-BNSL correctly identifies 12 out of 18 undirected edges, compared to 8 out of 18
+undirected edges for Fed-BNSL.
+For the DP variants, we fix the privacy budget toε= 5, δ= 1
+n2p
+. Both methods experienced a
+moderate performance drop: DP-Fed-Sparse-BNSL achieved SHD= 21 while still recovering 11 correct
+edges out of 18, whereas DP-Fed-BNSL obtained SHD= 25 with 8 correct edges out of 19 estimated.
+7 CONCLUSION
+We introduced Fed-Sparse-BNSL, a federated method for learning linear Gaussian Bayesian networks
+that addresses privacy and communication challenges. By combining sparse, greedy updates with
+differential privacy, Fed-Sparse-BNSL achieves accurate structure recovery with low communication
+overhead. Experiments on synthetic and real datasets demonstrate its effectiveness, scalability, and
+support for participant-level personalization. In future work, we plan to extend our approach to hybrid
+Bayesian networks to handle data with both continuous and discrete features.
+11
+References
+Amin, K., Dick, T., Kulesza, A., Medina, A. M., and Vassilvitskii, S. (2019). Differentially private
+covariance estimation. In Wallach, H. M., Larochelle, H., Beygelzimer, A., d’Alch´ e-Buc, F., Fox,
+E. B., and Garnett, R., editors,Advances in Neural Information Processing Systems 32: Annual
+Conference on Neural Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019,
+Vancouver, BC, Canada, pages 14190–14199.
+Bao, E., Xiao, X., Zhao, J., Zhang, D., and Ding, B. (2021). Synthetic data generation with differential
+privacy via bayesian networks.Journal of Privacy and Confidentiality, 11(3).
+Bun, M. and Steinke, T. (2016a). Concentrated differential privacy: Simplifications, extensions, and
+lower bounds. In Hirt, M. and Smith, A., editors,Theory of Cryptography, pages 635–658, Berlin,
+Heidelberg. Springer Berlin Heidelberg.
+Bun, M. and Steinke, T. (2016b). Concentrated differential privacy: Simplifications, extensions, and
+lower bounds.
+Cret ¸u, A.-M., Gu´ epin, F., and de Montjoye, Y.-A. (2024). Correlation inference attacks against
+machine learning models.Science Advances, 10(28):eadj9260.
+Ding, Z., Kifer, D., E., S. M. S. N., Steinke, T., Wang, Y., Xiao, Y., and Zhang, D. (2021).
+The permute-and-flip mechanism is identical to report-noisy-max with exponential noise.CoRR,
+abs/2105.07260.
+Dong, J., Durfee, D., and Rogers, R. (2020). Optimal differential privacy composition for exponential
+mechanisms. In III, H. D. and Singh, A., editors,Proceedings of the 37th International Conference
+on Machine Learning, volume 119 ofProceedings of Machine Learning Research, pages 2597–2606.
+PMLR.
+Dwork, C., McSherry, F., Nissim, K., and Smith, A. (2006). Calibrating noise to sensitivity in private
+data analysis. InProceedings of the Third Conference on Theory of Cryptography, TCC’06, page
+265–284, Berlin, Heidelberg. Springer-Verlag.
+Dwork, C. and Roth, A. (2014).
+Gao, E., Chen, J., Shen, L., Liu, T., Gong, M., and Bondell, H. D. (2023). Feddag: Federated DAG
+structure learning.Trans. Mach. Learn. Res., 2023.
+Geiping, J., Bauermeister, H., Dr¨ oge, H., and Moeller, M. (2020). Inverting gradients - how easy is it
+to break privacy in federated learning? InNeurIPS.
+Hastie, T., Tibshirani, R., and Wainwright, M. (2015).Statistical Learning with Sparsity: The Lasso
+and Generalizations. Chapman & Hall/CRC.
+Huth, M., Arruda, J., Gusinow, R., Contento, L., Tacconelli, E., and Hasenauer, J. (2023). Accessibil-
+ity of covariance information creates vulnerability in federated learning frameworks.Bioinformatics,
+39(9):btad531.
+Jaggi, M. (2013). Revisiting Frank-Wolfe: Projection-free sparse convex optimization. In Dasgupta, S.
+and McAllester, D., editors,Proceedings of the 30th International Conference on Machine Learning,
+volume 28 ofProceedings of Machine Learning Research, pages 427–435, Atlanta, Georgia, USA.
+PMLR.
+12
+Kalainathan, D. and Goudet, O. (2019). Causal discovery toolbox: Uncover causal relationships in
+python.
+Karimireddy, S. P., Koloskova, A., Stich, S. U., and Jaggi, M. (2019). Efficient Greedy Coordinate
+Descent for Composite Problems. InThe 22nd International Conference on Artificial Intelligence
+and Statistics, pages 2887–2896. PMLR.
+Kitson, N. K., Constantinou, A. C., Guo, Z., Liu, Y., and Chobtham, K. (2023). A survey of bayesian
+network structure learning.Artif. Intell. Rev., 56(8):8721–8814.
+Koller, D. and Friedman, N. (2009).Probabilistic Graphical Models: Principles and Techniques. Adap-
+tive computation and machine learning. MIT Press.
+Loh, P.-L. and B¨ uhlmann, P. (2014). High-dimensional learning of linear causal networks via inverse
+covariance estimation.Journal of Machine Learning Research, 15(88):3065–3105.
+Mangold, P., Bellet, A., Salmon, J., and Tommasi, M. (2022). Differentially Private Coordinate
+Descent for Composite Empirical Risk Minimization. InICML.
+Mangold, P., Bellet, A., Salmon, J., and Tommasi, M. (2023). High-dimensional private empirical risk
+minimization by greedy coordinate descent. In Ruiz, F., Dy, J., and van de Meent, J.-W., editors,
+Proceedings of The 26th International Conference on Artificial Intelligence and Statistics, volume
+206 ofProceedings of Machine Learning Research, pages 4894–4916. PMLR.
+McMahan, B., Moore, E., Ramage, D., Hampson, S., and Arcas, B. A. y. (2017). Communication-
+Efficient Learning of Deep Networks from Decentralized Data. In Singh, A. and Zhu, J., editors,
+Proceedings of the 20th International Conference on Artificial Intelligence and Statistics, volume 54
+ofProceedings of Machine Learning Research, pages 1273–1282. PMLR.
+Mian, O., Kaltenpoth, D., Kamp, M., and Vreeken, J. (2023). Nothing but regrets — privacy-
+preserving federated causal discovery. In Ruiz, F., Dy, J., and van de Meent, J.-W., editors,Pro-
+ceedings of The 26th International Conference on Artificial Intelligence and Statistics, volume 206
+ofProceedings of Machine Learning Research, pages 8263–8278. PMLR.
+Nasr, M., Shokri, R., and Houmansadr, A. (2019). Comprehensive privacy analysis of deep learning:
+Passive and active white-box inference attacks against centralized and federated learning. InIEEE
+Symposium on Security and Privacy.
+Ng, I., Fang, Z., Zhu, S., and Chen, Z. (2019). Masked gradient-based causal structure learning.
+ArXiv, abs/1910.08527.
+Ng, I., Ghassami, A., and Zhang, K. (2020). On the role of sparsity and dag constraints for learning
+linear dags.ArXiv, abs/2006.10201.
+Ng, I., Huang, B., and Zhang, K. (2024). Structure learning with continuous optimization: A sober
+look and beyond. In Locatello, F. and Didelez, V., editors,Proceedings of the Third Conference on
+Causal Learning and Reasoning, volume 236 ofProceedings of Machine Learning Research, pages
+71–105. PMLR.
+Ng, I. and Zhang, K. (2022). Towards federated bayesian network structure learning with continu-
+ous optimization. In Camps-Valls, G., Ruiz, F. J. R., and Valera, I., editors,Proceedings of The
+25th International Conference on Artificial Intelligence and Statistics, volume 151 ofProceedings of
+Machine Learning Research, pages 8095–8111. PMLR.
+13
+Nutini, J., Schmidt, M., Laradji, I., Friedlander, M., and Koepke, H. (2015). Coordinate Descent Con-
+verges Faster with the Gauss-Southwell Rule Than Random Selection. InInternational Conference
+on Machine Learning, pages 1632–1641. PMLR.
+Peters, J. and B¨ uhlmann, P. (2013). Identifiability of gaussian structural equation models with equal
+error variances.Biometrika, 101(1):219–228.
+Rogers, R. and Steinke, T. (2021). A better privacy analysis of the exponential mechanism. Differen-
+tialPrivacy.org.https://differentialprivacy.org/exponential-mechanism-bounded-range/.
+Sachs, K., Perez, O., Pe’er, D., Lauffenburger, D. A., and Nolan, G. P. (2005). Causal protein-signaling
+networks derived from multiparameter single-cell data.Science, 308(5721):523–529.
+Torrijos, P., G´ amez, J. A., and Puerta, J. M. (2024). Fedges: A federated learning approach for
+bayesian network structure learning. In Pedreschi, D., Monreale, A., Guidotti, R., Pellungrini, R.,
+and Naretto, F., editors,Discovery Science - 27th International Conference, DS 2024, Pisa, Italy,
+October 14-16, 2024, Proceedings, Part II, volume 15244 ofLecture Notes in Computer Science,
+pages 83–98. Springer.
+Tseng, P. and Yun, S. (2009). A coordinate gradient descent method for nonsmooth separable mini-
+mization.Mathematical Programming, 117(1):387–423.
+van Daalen, F., Ippel, L., Dekker, A., and Bermejo, I. (2024). Vertibayes: learning bayesian network
+parameters from vertically partitioned data with missing values.Complex & Intelligent Systems,
+10(4):5317–5329.
+Vowels, M. J., Camgoz, N. C., and Bowden, R. (2021). D’ya like dags? a survey on structure learning
+and causal discovery.ACM Computing Surveys, 55:1 – 36.
+Wang, L., Pang, Q., and Song, D. (2020). Towards practical differentially private causal graph dis-
+covery. In Larochelle, H., Ranzato, M., Hadsell, R., Balcan, M., and Lin, H., editors,Advances in
+Neural Information Processing Systems (NeurIPS), volume 33, pages 5516–5526. Curran Associates,
+Inc.
+Wang, Y. (2018). Revisiting differentially private linear regression: optimal and adaptive prediction &
+estimation in unbounded domain. In Globerson, A. and Silva, R., editors,Proceedings of the Thirty-
+Fourth Conference on Uncertainty in Artificial Intelligence, UAI 2018, Monterey, California, USA,
+August 6-10, 2018, pages 93–103. AUAI Press.
+Wang, Z., Ma, P., and Wang, S. (2023). Towards practical federated causal structure learning. In
+Koutra, D., Plant, C., Rodriguez, M. G., Baralis, E., and Bonchi, F., editors,Machine Learning
+and Knowledge Discovery in Databases: Research Track - European Conference, ECML PKDD
+2023, Turin, Italy, September 18-22, 2023, Proceedings, Part II, volume 14170 ofLecture Notes in
+Computer Science, pages 351–367. Springer.
+Zhang, J., Cormode, G., Procopiuc, C. M., Srivastava, D., and Xiao, X. (2017). Privbayes: Private
+data release via bayesian networks.ACM Trans. Database Syst., 42(4).
+Zheng, X., Aragam, B., Ravikumar, P., and Xing, E. P. (2018). Dags with no tears: continuous
+optimization for structure learning. InProceedings of the 32nd International Conference on Neural
+Information Processing Systems, NIPS’18, page 9492–9503, Red Hook, NY, USA. Curran Associates
+Inc.
+14
+Zheng, X., Dan, C., Aragam, B., Ravikumar, P., and Xing, E. (2020). Learning sparse nonparametric
+dags. In Chiappa, S. and Calandra, R., editors,Proceedings of the Twenty Third International
+Conference on Artificial Intelligence and Statistics, volume 108 ofProceedings of Machine Learning
+Research, pages 3414–3425. PMLR.
+15
+A Theoretical Derivations and Proofs
+A.1 Reconstruction of Covariance Matrix
+Starting from the closed-form solution of the local subproblem in participantp,
+B= (Σ +ρI d)−1(ρW−β+ Σ),
+we can isolate Σ by multiplying both sides by Σ +ρI d amd rearranging terms:
+(Σ +ρI d)B=ρW−β+ Σ⇒Σ(B−I d) =ρ(W−B)−β.
+Now, assume for the moment thatB−I d is invertible. Then, the covariance matrix can be written
+as
+Σ = (B−I d)−1 
+ρ(W−B)−β
+
+.
+Regarding the invertibility ofB−I d, note that at the first iteration whereW= 0 andβ= 0, we
+have
+B−I d = (Σ +ρI d)−1Σ−I d =−ρ(Σ +ρI d)−1.
+This matrix is invertible because Σ +ρI d is strictly positive definite: Σ is the empirical covariance
+matrix (positive semidefinite) andρ >0. Consequently,B−I d is invertible at the first iteration. 1
+The above derivation shows that the server can reconstruct the empirical covariance Σ fromB, W, β
+andρat the first iteration of the algorithm.
+A.2 Privacy Proofs
+A.2.1 Preliminaries on Differential Privacy
+We recall the main definitions and results used in our privacy analysis.
+Definition A.1(Bun and Steinke 2016b).A randomized algorithmAsatisfiesρ-zero-concentrated
+differential privacy (ρ-zCDP), if for any two datasetsD 1 andD 2 of fixed size that differ in exactly
+one record and allα∈(1,∞), we have :
+Dα(A(D1)∥A(D2))≤ρα
+whereD α(A(D1)∥A(D2))is theα-R´ enyi divergence between the distributions ofA(D 1)andA(D 2).
+Theorem A.1(Bun and Steinke 2016b).IfA 1 satisfiesρ (1)-zCDP andA 2 satisfiesρ (2)-zCDP, then
+the composition ofA 1 andA 2 satisfies(ρ (1) +ρ (2))-zCDP.
+Theorem A.2(Bun and Steinke 2016b).IfAsatisfiesρ-zCDP, thenAsatisfies(ρ+2
+p
+ρlog(1/δ), δ)-
+DP for anyδ >0.
+Theorem A.3(Bun and Steinke 2016b).LetAbe the Gaussian mechanism applied to a query with
+ℓ2-sensitivity∆, using noise parameterσ. ThenAsatisfiesρ-zCDP withρ= ∆2
+2σ2 .
+Theorem A.4(Rogers and Steinke 2021).LetAbe the Gumbel max trick mechanism applied to a
+query withℓ 1-sensitivity∆, using noise parameterβ. ThenAsatisfiesρ-zCDP withρ= ∆2
+2β2 .
+1In practice, we find that this property generally holds also in subsequent iterations.
+16
+A.2.2 Proof of Theorem 5.1
+Proof.The smooth part of the local objective is
+L(B;X) =L(B;X) + tr
+
+β⊤(B−W)
+
++ ρ2
+2 ∥B−W∥ 2
+F ,
+where onlyL(B;X) depends on the data:
+L(B;X) = 1
+2n∥X−XB∥ 2
+F = 1
+n
+nX
+i=1
+ℓ(B;x i), ℓ(B;x i) = 1
+2∥xi −B ⊤xi∥2
+2.
+The (i, j)-th partial derivative ofℓis∇ i,jℓ(B;x i).
+Gradient sensitivity.For neighboring datasetsX, X ′ differing in a single sample at indexk, we
+have
+∆ = sup
+X,X′
+∥∇i,jL(B;X)− ∇i,jL(B;X ′)∥2 = 1
+n
+∇i,jℓ(B;x k)− ∇i,jℓ(B;x ′
+k)
+ ≤ 2Li,j
+n ,
+whereL i,j is the coordinate-wise Lipschitz constant ofℓ.
+Sensitivity of the coordinate selection score.The non-private score is
+Si,j =
+p
+Mi,j
+prox λ
+Mi,j
+|·|
+
+Bk
+i,j − 1
+Mi,j
+∇i,jL(Bk;X)
+
+−B k
+i,j
+.
+By the non-expansiveness of the proximal operator, the sensitivity satisfies:
+∆(Si,j) =
+
+p
+Mi,j
+prox λ
+Mi,j
+|·|
+
+Bi,j − 1
+Mi,j
+∇i,jL(B;X)
+
+−B i,j
+
+−
+p
+Mi,j
+prox λ
+Mi,j
+|·|
+
+Bi,j − 1
+Mi,j
+∇i,jL(B;X ′)
+
+−B i,j
+
+
+≤
+p
+Mi,j
+
+
+Bi,j − 1
+Mi,j
+∇i,jL(B;X)
+
+−
+
+Bi,j − 1
+Mi,j
+∇i,jL(B;X ′)
+
+= 1p
+Mi,j
+∇i,jL(B;X)− ∇i,jL(B;X ′)
+ ≤ 2Li,j
+n
+p
+Mi,j
+= ∆p
+Mi,j
+.(13)
+Base mechanisms.We now analyze the privacy guarantees of the two base mechanisms we use:
+1.Coordinate selection via Gumbel-max (Exponential mechanism).The non-private score
+Si,j from (13) has sensitivity ∆(Si,j). From Theorem A.4, adding Gumbel noise Gumbel(0, βi,j)
+to this score ensuresρ EM-zCDP with
+ρEM = ∆(Si,j)2
+2β2
+i,j
+= 1
+Mi,j
+∆2
+2β2
+i,j
+2.Gradient update via Gaussian mechanism.Each gradient coordinate∇ i,jL(Bk;X) has
+ℓ2-sensitivity ∆. Adding Gaussian noiseN(0, σ2
+i,j) to this coordinate ensuresρ Gauss-zCDP (The-
+orem A.3) with
+ρGauss = ∆2
+2σ2
+i,j
+.
+17
+3.Matching privacy costs.To balance the privacy budget between the two mechanisms, we set
+βi,j = σi,jp
+Mi,j
+.
+With this choice, both mechanisms contribute equally to the total zCDP cost:
+ρ= ∆2
+2σ2
+i,j
+.
+Composition and DP conversion.Since there are 2KTqueries in total, by the composition
+theorem (Theorem A.1),
+ρtotal = 2KT ρ= KT∆ 2
+σ2
+i,j
+.
+Applying the zCDP to (ε, δ)-DP conversion (Theorem A.2) yields
+ε=ρ total + 2
+p
+ρtotal log(1/δ).
+Therefore, to satisfy (ε, δ)-DP, we need to set the noise scales to
+βi,j = σi,jp
+Mi,j
+=
+∆
+√
+KT(
+q
+log(1
+δ ) +ε+
+q
+log(1
+δ ))
+ε .
+B Synthetic Data Generation Details
+This section details the procedure for generating our synthetic datasets based on linear Gaussian
+Bayesian networks.
+B.1 Homogeneous Data
+To simulate homogeneous data, we reproduce and generalization the data generation procedure used
+in (Zheng et al., 2018; Ng and Zhang, 2022). We generate a dataset forPparticipants, each having
+np samples, acrossdvariables. This setup assumes a shared underlying structure and identical edge
+weights across all participants.
+•DAG structure generation:Ad×dbinary adjacency matrix is initially created. This is
+achieved by generating an Erd¨ os-R´ enyi random graph withdnodes and an expected number of
+dedges. The generation process ensures the resulting graph is acyclic.
+•Edge weight assignment:Once the DAG structure (represented by the binary adjacency
+matrix) is defined, non-zero weights are assigned to its edges. These weights are uniformly
+sampled from two disjoint intervals: [−2,−0.5]∪[0.5,2]. This results in a weighted adjacency
+matrix.
+•Data generation:Observations are then simulated from the linear Gaussian Structural Equa-
+tion Model (SEM) defined in Section 2. In this model, the value of each variable is determined by
+a linear combination of its parents’ value (as defined by the weighted adjacency matrix), plus an
+independent Gaussian noise term. This additive noise term is sampled, for each variable, from a
+standard normal distributionN(0,1). This implies a uniform noise variance of 1 across all vari-
+ables, a condition that ensures the identifiability of the DAG structure (Peters and B¨ uhlmann,
+2013; Loh and B¨ uhlmann, 2014).
+18
+B.2 Heterogeneous Data
+For heterogeneous data generation, we considerP= 5 participants, each havingn p = 5000 samples,
+and we assume that allPparticipants share the same underlying DAG structure but differ in their edge
+weights. Instead of being identical for all participants, we use a hierarchical design: each participant’s
+weight for an edge present in the DAG is independently sampled from a Gaussian distribution centered
+at the corresponding global weight, with varianceσ 2 = 0.1. Global weights are uniformly drawn
+from the disjoint intervals [−2,−0.5]∪[0.5,2] as in the homogeneous setting. Observations for each
+participant are then generated from a linear Gaussian SEM using their individual edge weights.
+C Real Data
+The Sachs dataset (Sachs et al., 2005), composed ofd= 11 variables representing protein signaling
+molecules andn= 7466 samples, features a biologically validated ground-truth DAG with 18 edges.
+To simulate a federated setting, the dataset was partitioned acrossP= 3 participants, resulting in
+np = 2488 samples per participant.
+D Algorithmic and Technical Details
+D.1 Smoothness Constants
+In our method, we assume the coordinate-wise smoothness constantsM i,j known or upper bounded.
+When it is not the case, these constants can be estimated privately.
+D.1.1 Estimation of the constants
+Coordinate-wise smoothness.A differentiable functionf:R d×d →Ris calledcoordinate-wise smooth
+if there existsM∈R d×d such that for allX∈R d×d and for all 1≤i, j≤d,
+|∇i,jf(X+uE i,j)− ∇i,jf(X)| ≤Mi,j|u|,∀u∈R,
+whereE i,j is the matrix with 1 in entry (i, j) and 0 elsewhere.
+Consider the local objective:
+L(B;X) =L(B;X) + tr
+
+β⊤(B−W)
+
++ ρ2
+2 ∥B−W∥ 2
+F ,
+whereX∈R n×d is the local data matrix. The Hessian with respect toBis
+∇2L(B;X) = 1
+nX⊤X⊗I d +ρ 2Id2 .
+Hence, the coordinate-wise smoothness constant for coordinate (i, j) is:
+Mi,j(X) =M j(X) = 1
+n∥X:,j∥2
+2 +ρ 2 ∀i∈1, . . . , d
+= 1
+n
+nX
+k=1
+X2
+k,j +ρ 2 (14)
+As can be seen from the formula above,M i,j(X) does not depend oni, hence the notationM j(X).
+19
+D.1.2 Differentially Private Estimation
+We now explain how to privately estimate the coordinate-wise smoothness constants. Following Man-
+gold et al. (2023), we assume we know an upper boundb j on the squared value of thej-th feature,
+i.e.,X 2
+j ≤b j.
+Theorem D.1(Privacy of smoothness constants).Letε M , δM >0and∆ M,j =b j/np whereb j is such
+thatX 2
+j ≤b j andn p is the sample size of participantp. If the Gaussian noise parameter is chosen as
+σj = ∆M,j
+√
+d(
+p
+log(1/δM ) +ε M +
+p
+log(1/δM ))√
+2εM
+,∀j∈ {1, . . . , d},
+then participantpcan locally estimate allM i,j’s with(ε M , δM )-DP in a preprocessing step usingd
+calls to the Gaussian mechanism with noise scalesσ 1, . . . , σd.
+Proof.As shown in (14), we only need to estimateM 1(X), . . . , Md(X) to obtain all coordinate-wise
+smoothness constants. LetXandX ′ two neighboring datasets that differ in exactly one datapoint.
+The sensitivity ofM j is
+∆M,j = sup
+X,X′
+∥Mj(X)−M j(X′)∥2 = 1
+np
+|X2
+k,j −X
+′2
+k,j| ≤bj
+np
+.
+To privatizeM j, we clip and add Gaussian noise:
+˜Mj(X) = 1
+np
+npX
+k=1
+min(X2
+k,j, bj) +ρ 2 +N(0, σ2
+j ).
+By Theorem A.3, releasing ˜Mj(X) satisfiesρ (j)-zCDP with
+ρ(j) =
+∆2
+M,j
+2σ2
+j
+.
+Since there aredconstants to estimate privately, by the composition theorem (Theorem A.1),
+ρtotal =d
+∆2
+M,j
+2σ2
+j
+.
+Applying the zCDP to (ε M , δM )-DP conversion (Theorem A.2) yields
+εM =ρ total + 2
+p
+ρtotal log(1/δ).
+Therefore, to satisfy (ε M , δM )-DP, we need to set the noise scale to
+σj = ∆M
+√
+d(
+p
+log(1/δM ) +ε M +
+p
+log(1/δM ))√
+2εM
+.
+Remark.The above theorem shows how each participantpcan estimate the coordinate-wise
+smoothness constants based on its local data. These participant-level constants can then be shared
+and aggregated to obtain more accurate global estimates.
+20
+E Metrics
+Communication cost.The total communication cost is defined as the cumulative volume of data
+exchanged between the server and all participants over the entire training procedure, reported in
+megabytes (MB). Each floating-point value is encoded using 8 bytes.
+When sparsity is used, the transmission of each non-zero coefficient requires sending its matrix
+index, encoded using⌈log 2(d2)/8⌉bytes. Hence, the total size of one transmitted coefficient-index pair
+isb entry = 8 +⌈log 2(d2)/8⌉bytes.
+In Fed-BNSL, a densed×dmatrix is transmitted from each of thePparticipants to the server
+and back at every iteration, resulting in a total communication cost accumulated overTiterations of
+Cost = 2×T×P×d 2 ×8bytes.
+Since all entries are transmitted, no index encoding is required in this case.
+In contrast, Fed-Sparse-BNSL communicates only non-zero coefficients and their indices are trans-
+mitted from each of thePparticipants to the server and back at every iteration, resulting in a total
+communication cost accumulated overTiterations of
+Cost =
+TX
+t=1
+ PX
+p=1
+e(p,t)
+local ×b entry
+| {z }
+participants
++P×e (t)
+global ×b entry
+| {z }
+server
+
+,
+wheree (p,t)
+local denotes the number of coefficients sent by participantpat iterationt, ande (t)
+global denotes
+the number of global coefficients broadcast by the server.
+Personalization.In the heterogeneous setting, each participantphas its own regression coefficients
+B(p)
+true within a shared DAG structure. After learning the consensus structure, Fed-Sparse-BNSL returns
+a global weighted adjacency matrix bBglobal. Then, each participant locally re-estimates its coefficients
+bB(p) by ordinary least squares regression on its own data, keeping the DAG fixed.
+The quality of estimated parameters is measured by the normalized mean squared error (MSE):
+MSEp( bB) = ∥ bB−B (p)
+true∥2
+F
+∥B(p)
+true∥2
+F
+.
+In Figure 2, MSE p( bB(p)) is Fed-Sparse-BNSL with personalization and MSE p( bBglobal) is Fed-Sparse-
+BNSL without personalization.
+F Hyperparameters
+The selection of appropriate hyperparameters is critical for the performance and fair comparison
+of algorithms. This appendix details the hyperparameter tuning methodology employed for Fed-
+Sparse-BNSL, DP-Fed-Sparse-BNSL, Fed-BNSL and DP-Fed-BNSL across all experimental settings:
+homogeneous and heterogeneous synthetic data, real data, across both non-private and private settings.
+Our general goal was to ensure that each method operated as its optimal performance for each specific
+scenario.
+21
+Table 2: Grid search for hyperparameters tuning in the non-private homogeneous setting.
+Hyperparameter Grid search
+ρ1 {10,50,100,1000,10000}
+ρ2 {1,10,100,1000}
+γ{0.1,0.5,1}
+λ{0.001,0.01,0.1,0.5,1}
+F.1 Synthetic Data
+F.1.1 General Tuning Protocol
+For all settings, the metric used to tune the hyperparameters is the Structural Hamming Distance
+(SHD).
+Tuning on held-out problem instances.For experiments with dimensiond= 20, hyper-
+parameters for each algorithm were tuned on an independent dataset generated with seed= 1. For
+higher-dimensional experiments (d∈ {50,100,200}), hyperparameters were tuned based on the av-
+erage performance across two independent datasets, generated with seed= 100 and seed= 400. This
+approach helps to ensure robustness of the chosen hyperparameters against specific dataset realizations
+in high dimensions.
+Final evaluation.Once the optimal hyperparameters were determined for a given scenario using
+the procedure above, the final results (mean and standard deviation) reported in Section 6 were ob-
+tained by running each algorithm on 10 new datasets generated with 10 independent seeds:{2, . . . ,11}.
+F.1.2 Non-Private Setting
+In the non-private setting, we tuned the ADMM penalty parameters (ρ1, ρ2), the step size for gradient
+descent in Fed-Sparse-BNSL (γ), and the regularization parameter (λ). As done in prior work (Zheng
+et al., 2018; Ng and Zhang, 2022), we also use a threshold set at 0.3 for edge pruning in a post-
+processing step.
+Homogeneous dataFor homogeneous synthetic data, the grid search ranges for each hyperparam-
+eter are detailed in Table 2.
+The best configurations of hyperparameters, selected based on the lowest SHD on the tuning
+dataset (seed= 1) are:
+•For Fed-Sparse-BNSL:ρ 1 = 1000,ρ 2 = 1λ= 0.1 andγ= 0.5
+•For Fed-BNSL:ρ 1 = 1000,ρ 2 = 1λ= 0.01
+Heterogeneous dataFor heterogeneous synthetic data, the grid search ranges were slightly ad-
+justed. The grid search ranges are detailed in Table 3.
+The best configurations of hyperparameters, selected based on the lowest SHD on the tuning
+dataset (seed= 1) are:
+•For Fed-Sparse-BNSL:ρ 1 = 1000,ρ 2 = 1λ= 0.1 andγ= 0.5
+•For Fed-BNSL:ρ 1 = 100,ρ 2 = 1λ= 0.1
+22
+Table 3: Grid search for hyperparameters tuning in the non-private heterogeneous setting.
+Hyperparameter Grid search
+ρ1 {100,1000,10000}
+ρ2 {1,10,100}
+γ{0.5,1}
+λ{0.01,0.1,1}
+F.1.3 Private Setting
+In the private setting, we focused on tuning parameters specific to differentially private mechanisms.
+Privacy-utility study (Figure 3).For DP-Fed-Sparse-BNSL, we fixed the non-private hyperpa-
+rameters (ρ1, ρ2, γ, λ) to their best-performing values identified in the non-private setting. This allowed
+us to isolate the impact of privacy-specific parameters. We then tuned the following privacy-specific
+hyperparameters:Cis the clipping threshold for gradients in DP-Fed-Sparse-BNSL,Tthe number
+of ADMM iterations andKthe number of local PGCD iterations performed by each participant per
+ADMM iteration.
+The grid search ranges are given in Table 4.
+Table 4: Grid search ranges for privacy-specific hyperparameters tuning in the private homogeneous
+setting for the privacy-utility study (Figure 3).
+Hyperparameter Grid search
+C{3,5,7,10,20,30}
+T{10,20,50,100}
+K{10,20,30,40,50,100}
+The optimal combination of these hyperparameters for each privacy budgetε∈ {0.5,1,2,5,10,25,50}
+are presented Table 5.
+Table 5: Optimal hyperparameters for DP-Fed-Sparse-BNSL in the privacy-utility study (Figure 3),
+for each privacy budgetε.
+ε C T K
+0.5 10 10 10
+1 10 10 10
+2 5 100 10
+5 5 100 20
+25 7 100 30
+50 5 100 50
+Dimensionality robustness study (Figure 4).This study evaluated the performance of DP-
+Fed-Sparse-BNSL compared to the baseline DP-Fed-BNSL as the data dimensiondincreased, under
+a fixed privacy budget ofε= 10. For this analysis, a broader set of hyperparameters, includingλ
+andγ, were re-tuned for each dimension. For DP-Fed-BNSL,bis the sensitivity bound used for the
+23
+Gaussian mechanism applied to privatize the covariance matrices, as described by Wang (2018). The
+grid search ranges for this study are given in Table 6.
+Table 6: Grid search ranges for hyperparameters tuning in the private dimensionality robustness study
+(Figure 4).
+Hyperparameter Grid search
+C{5,10,20,30}
+b{5,10,20,30}
+T{50,100}
+K{20,50,100}
+λ{0.01,0.1,1}
+γ{0.5,1}
+The optimal hyperparameters for each method and dimension in the dimensionality robustness
+study are presented in Table 7.
+Table 7: Optimal hyperparameters for each method and dimension, with privacy budgetε= 10, in
+the private dimensionality robustness study (Figure 4).
+Dimension DP-Fed-Sparse-BNSL DP-Fed-BNSL
+C T K λ γ b T λ
+20 10 100 30 0.1 0.5 7 300 0.01
+50 5 50 50 0.1 1 10 300 0.1
+100 30 100 50 0.1 1 20 300 0.01
+200 30 100 100 0.1 1 10 300 0.01
+F.2 Real Data
+In contrast to synthetic data, where we can select hyperparameters on held-out problem instances, it
+is not clear how to implement a similar validation procedure on the Sachs dataset. Consistent with
+prior work (Zheng et al., 2018; Ng and Zhang, 2022), we select the best hyperparameters for each
+method based on the final structure learning metrics.
+F.2.1 Hyperparameter Tuning for Non-Private Setting
+We recall that the hyperparameters in the non-private settings are the ADMM penalty parameters
+(ρ1, ρ2), theℓ 1 regularization parameter (λ), the step size for gradient descent in Fed-Sparse-BNSL
+(γ). For this dataset, we also tuned the threshold used for edge pruning in a post-processing step.
+For the non-private evaluation on the Sachs dataset, the goal of hyperparameter tuning was to
+identify configurations that yielded the best structural accuracy. Given the known ground-truth DAG
+has 18 edges, we specifically looked for configurations that estimated approximately 18 edges while
+maximizing the number of correctly identified undirected edges.
+The tuning process involved a grid search over the hyperparameters for the two methods. The grid
+search for Fed-Sparse-BNSL and Fed-BNSL included:
+Note that, wileλ, ρ 1, ρ2 and threshold are shared across both methods,γ(step size for local
+updates) is a hyperparameter unique to Fed-Sparse-BNSL.
+24
+Hyperparameter Grid searchs
+ρ1 {100,1000,10000,100000}
+ρ2 {1,5,10,100}
+γ{0.5,1}
+λ{0.01,0.1,1}
+threshold{0,0.1,0.3}
+Tuning metrics.During tuning, we looked at several metrics, including the number of estimated
+edges, the number of correctly estimated undirected edges, the number of estimated v-structures, the
+number of correctly estimated v-structures and SHD.
+Consistent with prior work, we observed that recovering ground-truth v-structures was particularly
+challenging for both methods on this dataset (0 correct v-structures found). Therefore, we prioritized
+configurations that resulted in an estimated number of edges close to the true 18 edges of the Sachs
+DAG, while maximizing correctly identified undirected edges.
+The best configurations of hyperparameters are:
+•For Fed-Sparse-BNSL:ρ 1 = 10000,ρ 2 = 5λ= 1, γ= 0.1 and threshold= 0.1.
+•For Fed-BNSL:ρ 1 = 100000,ρ 2 = 10λ= 0.1 and threshold= 0.1.
+F.2.2 Hyperparameter Tuning for Private Setting
+We recall that the privacy-specific hyperparameters areCthe clipping threshold for gradients in DP-
+Fed-Sparse-BNSL,bthe sensitivity bound used for the Gaussian mechanism applied to privatize the
+covariance matrices in DP-Fed-BNSL,Tthe number of ADMM iterations andKthe number of local
+PGCD iterations performed by each participant per ADMM iteration in DP-Fed-Sparse-BNSL.
+For the differentially private evaluation on the Sachs dataset, a fixed privacy budget ofε= 5
+(withδ= 1/n 2
+p) was used for both DP-Fed-Sparse-BNSL and DP-Fed-BNSL. To reduce the tuning
+complexity and build upon the non-private baselines, the non-private hyperparameters (ρ 1, ρ2, λ, γ)
+were fixed to their optimal values found in the non-private setting. The tuning then focused on
+privacy-specific parameters.
+Tuned privacy-specific hyperparameters.The grids used for privacy-specific parameters for
+each algorithm are given in Tables 8 and 9.
+Table 8: Grid search ranges for hyperparameters tuning in the private setting for DP-Fed-Sparse-
+BNSL
+Hyperparameter Grid searchs
+C{1,10,100,10000,15000,20000}
+T{30,50}
+K{10,20,30,50}
+threshold{0,0.1,0.3}
+The goal was to find the combination of privacy-specific hyperparameters that maintained the best
+possible utility (low SHD, high correct edges) while operating under the fixed privacy budgetε= 5.
+We aimed for configurations whose performance was close to the non-private baseline.
+The selected optimal private configurations are:
+25
+Table 9: Grid search ranges for hyperparameters tuning in the private setting for DP-Fed-BNSL
+Hyperparameter Grid searchs
+b{1,2,3,4,5,100,10000}
+T{100,300}
+threshold{0,0.1,0.3}
+•For DP-Fed-Sparse-BNSL:C= 15000,T= 30K= 30,λ= 1,γ= 0.1 and threshold= 0.
+•For DP-Fed-BNSL:b= 4, T= 100, λ= 0.1 and threshold= 0.1.
+G Implementation and Computing Resources
+All experiments were conducted on CPUs, either on a personal computer or using a commodity cluster.
+The implementation relies on several open-source components. Parts of the code were adapted
+from the open-source implementation of Ng and Zhang (2022) (available athttps://github.com/
+ignavierng/notears-admm/tree/master/notears_admm), which itself is based on the original NOTEARS
+implementation (Zheng et al., 2018) (available athttps://github.com/xunzheng/notears/tree/
+master/notears). Additionally, the code for the privatization of the covariance matrix for DP-Fed-
+BNSL was adapted from the repository athttps://github.com/BorjaBalle/analytic-gaussian-mechanism.
+The Sachs dataset (Sachs et al., 2005) was obtained through the Causal Discovery Toolbox (CDT)
+Python package (Kalainathan and Goudet, 2019).
+Regarding licenses, the reused code for NOTEARS-ADMM (Ng and Zhang, 2022) and NOTEARS
+(Zheng et al., 2018) and the analytic-gaussian-mechanism are all released under the Apache License.
+The Causal Discovery Toolbox (CTD) is released under the MIT License.
+26

@@ -1,0 +1,1584 @@
+Preprint. Under Review.
+BEYONDLOSSGUIDANCE: USINGPDE RESIDUALS
+ASSPECTRALATTENTION INDIFFUSIONNEURALOP-
+ERATORS
+Medha Sawhney, Abhilash Neog, Mridul Khurana & Anuj Karpatne
+Department of Computer Science
+Virginia Tech
+{medha,abhilash22,mridul,karpatne}@vt.edu
+ABSTRACT
+Diffusion-based solvers for partial differential equations (PDEs) are often bottle-
+necked by slow gradient-based test-time optimization routines that use PDE resid-
+uals for loss guidance. They additionally suffer from optimization instabilities
+and are unable to dynamically adapt their inference scheme in the presence of
+noisy PDE residuals. To address these limitations, we introduce PRISMA (PDE
+Residual Informed Spectral Modulation with Attention), a conditional diffusion
+neural operator that embeds PDE residuals directly into the model’s architecture
+via attention mechanisms in the spectral domain, enabling gradient-descent free
+inference. In contrast to previous methods that use PDE loss solely as external
+optimization targets, PRISMA integrates PDE residuals as integral architectural
+features, making it inherently fast, robust, accurate, and free from sensitive hyper-
+parameter tuning. We show that PRISMA has competitive accuracy, at substan-
+tially lower inference costs, compared to previous methods across five benchmark
+PDEs especially with noisy observations, while using 10x to 100x fewer denoising
+steps, leading to 15x to 250x faster inference.
+1 INTRODUCTION
+Given the ubiquitous presence of partial differential equations (PDEs) in almost every scientific
+discipline, there is a rapidly growing literature on using neural networks for solving PDEs (Raissi
+et al., 2019a; Lu et al., 2019). This includes seminal works inoperator learningmethods such as
+the Fourier Neural Operator (FNO) Li et al. (2020) that learns resolution-independent mappings
+between function spaces of input parametersaand solution fieldsu. However, a major limitation
+of these methods is their reliance on complete and clean observations of eitheraoru, a condition
+rarely met in real-world applications where data is inherently noisy and sparse.
+The rise ofgenerative modelshas inspired another class of methods for solving PDEs by model-
+ing the joint distribution ofaanduusing diffusion-based backbones (Huang et al., 2024; Yao et al.,
+2025; Lim et al., 2023; Shu et al., 2023; Bastek et al., 2024; Jacobsen et al., 2025). These methods of-
+fer two key advantages over operator learning methods: (i) they generate full posterior distributions
+ofaand/oru, enabling principled uncertainty quantification crucial for ill-posed inverse problems,
+and (ii) they naturally accommodate sparse observations during inference using likelihood-based and
+PDE residual-basedloss guidance, termed diffusion posterior sampling or test-time optimization.
+Despite these advances, current diffusion-based PDE solvers suffer from three major limitations.
+First, they are inherently slow during inference due to the large number of denoising steps required
+by theirunconditional trainingparadigm, which is further burdened by expensive test-time optimiza-
+tion when PDE-residual loss is optimized. Second, theminimization of PDE residuals as external
+lossintroduces optimization instabilities due to the sensitive nature of PDE loss gradients at differ-
+ent stages of inference, requiring careful hyperparameter tuning (Zhang & Zou, 2025; Cheng et al.,
+2024; Utkarsh et al., 2025).Third, when observations are corrupted by unknown noise structures
+(e.g., sensor failures or environmental interference), these methods cannotdynamically adapttheir
+guided inference scheme to discount noisy PDE residuals, resulting in degraded performance.
+1
+arXiv:2512.01370v1  [cs.LG]  1 Dec 2025
+Preprint. Under Review.
+PDE Residualt 
+…PRISMA: PDE-Residual Informed Spectral Modulation with Attention
+(a, u)t
+…(a, u)T (a, u)t-1
+…(a, u)0
+  SRA(Spectral Residual Attention) BlockUNO (U-shaped Neural Operator) Block
+Diffusion Neural Operator
+✔ Gradient Free Inference     
+✔ Forward & Inverse
+ObservationMask
+Input conditions…
+Noise
+Figure 1: ThePRISMAinference pipeline. We use a U-shaped Diffusion Neural Operator (UNO)
+to iteratively refine estimates ofaandustarting from noise(a,u) T to a clean solution(a,u) 0. At
+each denoising step, PDE residuals are architecturally injected via a novel SRA block at every layer
+of the UNO, enabling fast, gradient-descent free inference for both forward and inverse problems.
+At the heart of these limitations lies a fundamental bottleneck in existing generative frameworks
+for solving PDEs: “treating PDE constraints asexternal optimization targetsrather than asintegral
+architectural features.” Since previous methods employ PDE residuals solely as additional loss
+terms during training or inference, they face a challenging multi-objective optimization problem
+that is hard to stabilize and requires careful hyper-parameter tuning (Wang et al., 2021; Farea et al.,
+2025). Moreover, by reducing spatially-resolved PDE residual fields to scalar loss terms, existing
+methods discard the richpoint-wise informationthat could otherwise provide local guidance for
+fine-grained steering. In contrast to using PDE residuals as loss guidance, we ask: “is it possible to
+incorporate the knowledge of PDE residuals directly in the architecture of diffusion-based models,
+avoiding slow and sensitive loss gradients during inference altogether?”
+We introducePRISMA(PDE Residual Informed Spectral Modulation with Attention), acondi-
+tionaldiffusion neural operator that embeds PDE residuals into the architecture viaattention mech-
+anismsinstead of loss guidance, enabling gradient-descent free inference. A key innovation in
+PRISMA is a novelSpectral Residual Attention(SRA) block (Figure 1) that is injected at every
+layer of a U-shaped denoiser backbone to locally attend to the model’s generated outputs based
+on guidance from the PDE residual field, during both training and inference. By integrating PDE
+residuals as architectural features directly in thespectral domain, SRA is able to modulate anddy-
+namically adaptto the local contributions of varying frequency modes in the PDE residual space,
+even in the presence of noise. Another innovation in PRISMA is the use of input masks in the
+architecture to regulate the generation ofaanduunder varying conditions of input observations,
+rather than training an unconditional model guided only at inference. This conditional design en-
+ables PRISMA to serve as a unified framework for solving PDEs: a single versatile model capable
+of addressing both forward and inverse problems under full, sparse, or noisy observations, without
+task-specific inference.
+Our work makes four key contributions.(1)We introduce a novel strategy for incorporating physi-
+cal knowledge in diffusion models asarchitectural guidance, where the PDE residual is embedded
+directly as an internal feature in the model instead of a test-time guidance loss.(2)A powerful
+outcome of this design isgradient-descent free inference, which fundamentally removes the need
+for costly and sensitive optimization of likelihood and PDE loss terms during inference, forming
+the basis of our method’s speed and robustness.(3)We show15x to 250x faster inference (time)
+compared to baselines across a diverse set of benchmark PDEs with varying problem configurations
+(forward and inverse), while achieving superior accuracy especially in the presence of noisy obser-
+vations.(4)Our work also represents the firstconditional designof a generative model trained to
+unify forward and inverse problemsunder varying configurations of input observations.
+2 RELATEDWORKS
+Neural PDE solvers:Deep learning methods such as Physics-Informed Neural Networks (PINNs)
+(Raissi et al., 2019b) offer a powerful alternative to classical methods for solving PDEs by mini-
+2
+Preprint. Under Review.
+Table 1: Comparing PRISMA with previous methods for solving PDEs in terms of their strategy for
+integrating PDE residuals, their ability to solve forward and inverse problems using a single unified
+model, and their adaptability to the presence of noise in PDE residuals. PRISMA is unique from
+other works in terms of the use of PDE residuals in the spectral domain, with point-wise architectural
+guidance that is adaptive to noise, resulting in gradient-descent free inference. We also compare the
+forward error and inference time per sample for the Darcy equation.
+Method PDE Residual Integration Strategy Unified
+Model
+Adaptive
+to Noise
+Inf. Time /
+Sample (s)↓
+Forward (%)
+Error↓Integration
+Domain
+Point-wise
+Guidance
+Architectural
+Guidance
+Gradient-Descent
+Free Inference
+PINN Spatial× ×-× ×3.3 27.3
+FNO -× ×-× ×0.1 2.3
+DeepONet -× ×-× ×0.09 25.6
+PINO Spatial× ×-× ×0.11 1.1
+DiffusionPDE Spatial× × ×✓×213.0 2.4
+FunDPS Spatial× × ×✓×11.8 1.6
+PRISMA Spectral✓ ✓ ✓ ✓ ✓0.18 0.94
+mizing PDE residual loss during training. However, PINNs are prone to optimization and scaling
+challenges (Zhongkai et al., 2024; Liu et al., 2024a), motivating operator-learning methods such as
+FNO and DeepONet, which learn resolution-invariant mappings between functions of input param-
+eters and solution fields for fast inference (Li et al., 2020; Rahman et al., 2022; Kovachki et al.,
+2023; Lu et al., 2019). To further enhance physics guidance in FNO architecture, PINO (Li et al.,
+2024) incorporates physics-based loss during training and inference optimization. However, simi-
+lar to PINNs, PINO suffers from the same optimization issues due to the PDE loss-based training.
+Another limitation with PINNs and operator learning methods is that they producedeterministic
+estimates for either the forward or inverse problem and typically assume clean, dense data, offering
+no native uncertainty.
+Generative models for PDEs in Function Spaces:Diffusion models enable sampling from dis-
+tributions over fields, providing uncertainty quantification and flexible conditioning. For example,
+DiffusionPDEHuang et al. (2024) learns the joint probability distribution of(a,u)using a diffu-
+sion model during training, and employs PDE-residual guidance as a loss term during inference
+to produce physically consistent solutions. By minimizing PDE residuals during inference, Dif-
+fusionPDE can work with arbitrary forms of sparsity inaand/oruthat has not been seen during
+training. However, since DiffusionPDE operates directly in the native spatial domain, it remains tied
+to afixed spatial resolutionofaandu. Newer methods expand the design space by incorporating
+score-based or diffusion backbones for physics (Shu et al., 2023; Bastek et al., 2024; Jacobsen et al.,
+2025; Li et al., 2025). Because PDE states are functions, not images, several works lift generative
+modeling to function spaces forresolution independence: Denoising Diffusion Operators (DDOs)
+perturb Gaussian random fields and provide discretization robustness (Lim et al., 2023; Yao et al.,
+2025); and infinite-dimensional diffusion frameworks formalize well-posedness and dimension-free
+properties (Pidstrigach et al., 2023). Similarly, a recent line of work onFunDPS(Function-space
+Diffusion Posterior Sampling) Yao et al. (2025) uses U-shaped neural operators (UNO) Rahman
+et al. (2022) as the denoising backbone in diffusion models, leading to a new framework ofdiffusion
+neural operators. By marrying the strengths of neural operators and diffusion models, FunDPS can
+generate posterior distributions ofaoruwhile being resolution-agnostic.
+Limitations of Diffusion-based PDE solvers:Existing diffusion-based methods mostly learn an
+unconditional distribution of(a,u)during training, and apply physics as external, spatial loss ag-
+gregating residuals rather than using their full point-wise structure. (Zhang & Zou, 2025; Cheng
+et al., 2024; Utkarsh et al., 2025). As a result, unconditional diffusion models with DPS-style guid-
+ance require multiple denoising steps and are sensitive to guidance hyper-parameter tuning (Chung
+et al., 2022; Huang et al., 2024). Training-time alternatives reduce this burden, e.g., conditioning on
+measurements (Shysheya et al., 2024; Zhang & Zou, 2025), yet still implement physics as anexter-
+nal objective. Moreover, optimizing PDE residuals during sampling introduces known instabilities
+and tuning overhead (Zhang & Zou, 2025; Cheng et al., 2024; Utkarsh et al., 2025).
+Loss guidance vs. Architecture guidance:Table 1 summarizes how PRISMA is different from the
+baselines, specifically in the way it uses PDE residual as an architectural feature. Our work is related
+3
+Preprint. Under Review.
+to the growing literature on enforcing constraints via architectural integration to provide stronger,
+more stable physics than soft penalties (Trask et al., 2022; Liu et al., 2024b). While shallow variants
+concatenate physics features to inputs (Shu et al., 2023; Takamoto et al., 2023), deeply integrating
+the PDE residual as a learnable architectural feature, especially in spectral domains where neural
+operators capture global behavior, remains largely unexplored, particularly for diffusion models.
+3 PRISMA: PROPOSEDUNIFIEDFRAMEWORK FORSOLVINGPDES
+We develop PRISMA as an all-purpose generative framework to model the joint distribution of PDE
+parameters and solutions conditioned on varying configurations of input observations. PRISMA
+is designed to be highly flexible for conditional generation of outputs in both forward and inverse
+problems, with complete, partial, or even noisy observations. In the following, we first describe the
+unified problem statement of PRISMA and provide a background on diffusion neural operators that
+we use as a backbone in our framework, before introducing the PRISMA model architecture.
+3.1 PROBLEMSTATEMENT FORUNIFIEDGENERATIVEMODELING OFPDES
+Given a spatial domainΩ⊂R d, we are interested in solving parametric PDEs of the form
+N(u(c);a(c)) = 0, c∈Ω,(1)
+subject to some initial and boundary conditions wherea∈ Arepresents the parameter field of the
+PDE (e.g., material coefficients or source terms),u∈ Udenotes the solution field, andNis a
+non-linear differential operator. There are two main classes of problems when solving PDEs: (i)
+theforward problem, where we want to generateugiven observations of parameters,a obs, and the
+inverse problem, where we want to generateagiven observations ofu obs. Optionally, we may have
+sparsity or noise ina obs,u obs, or both, arising from incomplete or inaccurate observations.
+We consider aunified frameworkfor solving both forward and inverse problems by training a sin-
+gle model to learn the joint probability of(a,u)conditioned on any partial set of observations,
+(aobs,u obs). To encode varying configurations of input observations in the conditioning of the joint
+model, we introduce binary masks(M a,M u)that serve two uses: (i) they indicate the sparsity pat-
+terns ina obs andu obs, and (ii) they specify whether we are solving the forward or inverse problem. A
+value of 1 in these masks indicates that an observation is present, while 0 indicates no observation.
+Table 2 summarizes the different configurations of input conditions that result in different problem
+settings, unifying forward and inverse problems as well as full and sparse observations.
+Table 2: Characterizing varying configurations of input conditions in our framework for solving
+different settings of PDE problems. A value of True (False) in masks indicate a tensor of all 1s (0s).
+Problem Setting Obs. (a obs) Obs. (u obs) Mask (M a) Mask (M u)
+Full (Forward) Full – True False
+Full (Inverse) – Full False True
+Sparse (Forward) Sparse – Sparsity Mask False
+Sparse (Inverse) – Sparse False Sparsity Mask
+Sparse (Both) Sparse Sparse Sparsity Mask Sparsity Mask
+3.2 BACKBONE: CONDITIONALU-SHAPEDDIFFUSIONNEURALOPERATORS
+We model the joint distribution of the concatenated continuous field,x= [a,u]using a conditional
+Denoising Diffusion Operator (DDO) (Lim et al., 2023), a recent class of score-based generative
+models designed for function spaces Kerrigan et al. (2022); Pidstrigach et al. (2023). The forward
+process in DDO perturbs a clean functionx 0 with progressively larger noise, yielding a noisy func-
+tionx σ =x 0 +σϵat noise levelσ. To preserve the functional integrity of the data, the noiseϵis
+sampled from a Gaussian Random Field (GRF),ϵ∼ N(0, I).
+The corresponding reverse diffusion process is learned by a denoiser network,D θ, parameterized
+as a neural operator to predictx 0 fromx σ. We specifically instantiateD θ as a U-shaped Neural
+4
+Preprint. Under Review.
+Operator (UNO) (Rahman et al., 2022) comprising of a multi-scale hierarchy ofLlayers, where the
+transformation of features from layerlto layerl+ 1is defined as:
+xl+1 =F −1
+
+Wl ⊙ F(xl)
+
+| {z }
+Global Spectral Path
++ψ l(xl)| {z }
+Local Spatial Path
+,(2)
+where the global spectral path applies learnable weightsW l in Fourier space using the Fast Fourier
+Transform (F) and its inverse (F−1), while the local spatial path is a local residual blockψ l.
+We consider a conditional variant of UNO by augmenting the inputs to the denoiser networkD θ
+withconditioning informationy={x obs = (aobs,u obs),M= (M a,M u)}. We trainD θ using the
+Elucidated Diffusion Model (EDM) (Karras et al., 2022) objective, defined as:
+LEDM =E x0,y,σ,ϵ
+
+λ(σ)∥D θ(xσ,ϵ, σ,y)−x0∥2
+2
+
+.(3)
+3.3 PRISMA MODELARCHITECTURE
+There are two key innovations that we introduce in our UNO backbone to arrive at PRISMA.
+First, we compute PDE residuals ofxat every denoising step informed by observations,x obs =
+(aobs,u obs). Second, we inject the residuals in the attention mechanism of a novelSpectral Resid-
+ual Attention(SRA) block applied at every UNO layer. We describe both these innovations as
+follows:
+Computing Observation-Informed PDE Residuals:Given some observationsx obs and inputs to
+the denoiser networkx= (a,u), we want to compute the physical consistency ofxat unobserved
+locations (i.e., locations that are not part ofx obs. To accomplish this, we first copy the information
+fromx obs toxusing masksM= (M a,M u), obtainingmixed fields:x mix = (amix,u mix)as follows:
+amix =M a ⊙a obs + (1−M a)⊙a σ,u mix =M u ⊙u obs + (1−M u)⊙u σ, (4)
+wherex σ = (aσ,u σ)is the input to the denoiser during training, which can be replaced withx t =
+(at,u t)during inference. We then compute PDE residuals,r=F(a mix,u mix)(shown visually in
+Figure 2(left)). Note thatris computed once at every denoising step at the model’s native resolution
+and then progressively downsampled to provide a multi-resolution guidance signal at every layer of
+UNO.
+Injecting PDE residuals in SRA:We adapt the UNO architecture by introducing a novel SRA
+block inside the global spectral path of every UNO layer The SRA block at layerlfirst modulates
+the input feature mapsx l using the PDE residualrto produce an intermediate physics-informed
+state,x l
+SRA. This state is then passed through the global spectral path of the UNO block at layerl,
+while the original feature mapx l is passed into the local spatial path as:
+xl
+SRA =SRA(x l,r),x l+1 =F −1
+
+Wl ⊙ F(xl
+SRA)
+
++ψ l(xl).(5)
+Algorithm 1PRISMA Model Training
+Require:Data distributionµ, GRF covarianceC, noise distributionp(σ), PDE operatorR, mask
+sampling distributionp(task).
+1:Initialize model parametersθ.
+2:repeat
+3:Draw clean statex 0 = [a,u]∼µand noise levelσ∼p(σ).
+4:Sample task-specific masks(M a,M u)∼p(task).{Sample uncond/ for/inv masks}
+5:Set observations(a obs,u obs)←(a,u).
+6:Sample GRF noiseη∼ N(0, σ 2C).
+7:Construct noisy samplex σ ←x 0 +η. Letx σ = [aσ,u σ].
+8:Compute guided residualr← R(M a ⊙aobs +(1−M a)⊙a σ,M u ⊙uobs +(1−M u)⊙u σ).
+9: ˆx0 ←D θ(xσ, σ,aobs,u obs,M a,M u,r).{Compute denoised prediction}
+10:L←λ(σ)∥ ˆx0 −x 0∥2
+H.{Compute training loss}
+11:Update parametersθby minimizingL.
+12:untilconverged
+13:returnD θ
+5
+Preprint. Under Review.
+Spectral Residual Attention (SRA) Block
+XlResidual	𝑭 ⊙Scale(*) 𝝈
+XlSRA1-gres	𝑭 𝑭!𝟏 U-shaped Neural Operator (UNO) BlockXl+1
+M⊙～
+Residual
+X𝞼 Xobs
+⊙ gres 𝑭 𝑭!𝟏
+𝝈SigmoidGate FFTInverse FFTComplex Conjugate(*)gres
+～ComplementMMaskXl
+Figure 2: Overview of the PRISMA model architecture.(Left)Computation of theobservation-
+informed PDE residual: The model’s current estimate (xσ) is mixed with the known observations
+(xobs) using the mask (Mx) to produce a residual field.(Right)Spectral Residual Attention (SRA)
+block: The SRA block operates in the Fourier domain to compute a physics-informed attention mask
+between the network state (x l
+t) and the residual. This mask is applied in a gated skip-connection,
+controlled by a learned guidance strength (g res), to produce a modulated state (x t
+SRA) that is then
+passed to the UNO block.
+3.4 SPECTRALRESIDUALATTENTION(SRA) BLOCK
+Figure 2 shows the architecture of the SRA block that is the core mechanism for injecting physics-
+based architectural guidance in PRISMA. The goal of SRA is to perform a dynamically adaptive
+cross-attentionbetween the current feature map and the PDE residual, all within the spectral domain.
+By performing this physics-informed cross-attention, we aim to guide the denoising process toward
+physically consistent solutions by modulating the frequency spectrum without any loss guidance.
+Let exl =F(x l)and er=F(r)be the 2D Fourier transforms of the layer’s input feature maps and
+the corresponding PDE residuals, respectively. The SRA block performs a spectral cross-attention
+where the PDE residual erl is thekeyand the feature map exl is thequery. First, a compatibility
+scoreS l measures the phase alignment between them at each 2D frequency modek= (k 1, k2),
+via their complex inner product. This is calculated as the magnitude of their complex inner product
+across all channelsC. This score is then used to create a physics-informedattention maskA l via
+learnable spectral gain weightsw l
+gain, and passing it through a sigmoid activation as follows:
+Sl(k) = 1√
+C
+
+XC
+c=1
+exl
+c(k)erlc(k)
+, A l(k) =σ
+ 
+wl
+gain(k)⊙S l(k)
+
+.(6)
+This allows the model to learn what frequency modes of the feature map are most informative for
+error correction based on guidance from PDE residuals. To dynamically control this process based
+on the relevance of PDE residuals in noisy settings, a scalarguidance strengthgl
+res ∈[0,1]is learned
+by an MLP from the spatially-averaged residualr l
+avg and the diffusion noise embeddingc σ. Finally,
+gres is used to modulate exvia a skip-connection with the attention mask to produce SRA’s output:
+gres =σ
+
+MLPl 
+[rl
+avg, cσ]
+
+,SRA(x l,r l) =F −1   
+(1−g l
+res) +g l
+resAl
+⊙ exl
+(7)
+When the noise level is high,r l
+avg is typically unreliable and the scalar gateg l
+res down-weights PDE
+residual correction. As the denoising trajectory progresses and the solution becomes cleaner,g l
+res
+increases, allowing stronger PDE-driven modulation throughA l(k). During training, this entire
+process of forward propagation is incorporated into the EDM loss computation, teaching the de-
+noiser to produce physically-consistent states. At inference, the model engages in a closed-loop,
+self-correcting process: it predicts a state, computes the residual based on that state, and then uses
+that residual to refine its own prediction in the next step of the reverse diffusion trajectory. The
+complete training loop is detailed in Algorithm 1 while the inference algorithm is in Appendix A.
+6
+Preprint. Under Review.
+Table 3: Comparison of different models on three PDE problems with 100% pixels having Unit
+Gaussian noise corruption, simulating real-world measurement noise (inL2 relative error for all and
+error rate for Darcy inverse).
+Steps(N)InferenceTime (s) Darcy Flow Poisson Helmholtz Navier–Stokes (Noisy)Avg. Rank(↓)Forward Inverse Forward Inverse Forward Inverse Forward Inverse
+FNO− −15.70% 52.3% 25.05% 3.0e7% 264.8% 6.1e5% – – 5.00
+PINO− −190.40% 52.3% 26.64% 2.3e6% 449.1% 1.7e6% – – 6.17
+DiffusionPDE2000 213.0 49.18% 70.08% 44.44% 130.01% 30.97% 119.52% 109.00% 46.00% 4.38
+FunDPS200 4.72 26.9% 49.39% 78.36% 1491.36% 54.99% 629.43%31.55%38.44% 3.75
+FunDPS500 11.8 55.09% 49.62% 120.0% 1772.23% 40.31% 695.49% 37.96% 46.25% 5.00
+PRISMA (ours)200.1812.29% 23.15%18.58%41.75%17.93%68.87%36.80% 37.50% 2.13
+PRISMA (ours)50 0.8 12.28% 23.14% 18.35% 41.14% 16.84% 67.93%36.34%37.03% 1.13
+Forward
+Observation
+ Ground Truth
+Error 6.5%
+PRISMA
+Error 93.5%
+FunDPS
+Error 65.0%
+DiffusionPDE
+Inverse
+Error 33.7%
+ Error 398.2%
+Error 105.0%
+0.015
+0.010
+0.005
+0.000
+0.005
+0.010
+0.015
+1.0
+0.8
+0.6
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+(a) Helmholtz.Noisy Observation
+Forward
+Observation
+ Ground Truth
+Error 17.9%
+PRISMA
+Error 114.0%
+FunDPS
+Error 109.1%
+DiffusionPDE
+Inverse
+Error 33.3%
+Error 1315.0%
+Error 73.9%
+0.002
+0.000
+0.002
+0.004
+0.006
+0.008
+0.010
+0.8
+0.6
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6 (b) Poisson.Noisy Observation
+Forward
+PDE Input
+ Ground Truth
+Error 2.8%
+PRISMA
+Error 0.7%
+FunDPS
+Error 14.3%
+DiffusionPDE
+Inverse
+Error 8.8%
+ Error 14.6%
+ Error 21.4%
+0.0100
+0.0075
+0.0050
+0.0025
+0.0000
+0.0025
+0.0050
+0.0075
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+0.8
+(c) Poisson.Full Observation
+Forward
+Observation
+ Ground Truth
+Error 1.5%
+PRISMA
+Error 2.3%
+FunDPS
+Error 17.7%
+DiffusionPDE
+Inverse
+Error 2.5%
+ Error 4.9%
+ Error 27.8%
+0.002
+0.004
+0.006
+0.008
+0.010
+0.012
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12 (d) Darcy Flow.Sparse Observations
+Figure 3: Qualitative results for PRISMA and baseline models on four PDE benchmarks. We eval-
+uate performance under three distinct conditions: (a, b) noisy observations (corrupted byN(0,1)
+Gaussian noise), (c) full, clean observations, and (d) sparse observations (3% of data known). The
+relativeℓ 2 error is reported below each prediction (pixel-wise error rate for the Darcy inverse case).
+4 RESULTS
+We demonstrate the efficiency, robustness, and accuracy of PRISMA through a series of quantitative
+and qualitative experiments. We evaluate PRISMA on three distinct PDE problems, focusing on its
+performance in noisy, fully-observed, and sparsely-observed settings. Additional experiments and
+implementation details are provided in the Appendix (see sections B, D, E and I).
+4.1 EXPERIMENTALSETUP
+Dataset & Tasks:We validate our approach on three PDE problems from the dataset of Huang et al.
+(2024), which is characterized by multi-scale features, complex boundary conditions, and nonlinear
+dynamics. We evaluate both forward and inverse problems in three regimes: (1)Full Observation,
+with complete and clean data; (2)Sparse Observation, where only 3% of the input field is known
+(e.g., initial condition or solution); and (3) a challengingNoisysetting, where the observed data is
+corrupted by additive Gaussian noise sampled fromN(0,1). For dataset details, see Appendix C.
+Training & Inference:Our implementation builds on the EDM-FS framework (Beckham, 2024)
+using a U-shaped neural operator (Rahman et al., 2022) as the denoiserD θ and adapting the pro-
+cess for functional noise. Our model’s parameter count is comparable to key baselines, with full
+implementation details provided in Appendix B.
+7
+Preprint. Under Review.
+Table 4:Ablation of residual strategies across Helmholtz (full, noisy, sparse) for both forward/inverse prob-
+lems (L2 relative error, shown as percentages). All results are on 64×64 resolution with 20 steps.
+Full Helmholtz Noisy Helmholtz Sparse Helmholtz
+Forward Inverse Forward Inverse Forward Inverse
+PRISMA(w/o PDE res)3.15 0.05%15.670.34%29.0 0.20%111.87 2.12% 36.20.15% 66.750.19%
+PRISMA(PDE res with concat)28.70.9% 51.555.75% 34.5 1.9% 97.09 1.32% 94.2 0.5% 124.70.24%
+PRISMA(PDE res with SRA)(ours)3.340.14%12.470.11%30.350.45%91.85 1.35% 30.330.12% 60.960.09%
+Baselines & Evaluation Metrics:We compare against deterministic solvers including FNO (Li
+et al., 2020), PINO (Li et al., 2024), and PINN (Raissi et al., 2019a), as well as state-of-the-art diffu-
+sion methods like DiffusionPDE (Huang et al., 2024) and FunDPS (Yao et al., 2025). Performance
+across all tasks is measured using the relativeL 2 error. For the Darcy flow inverse problem, we
+report the classification error rate.
+4.2 RESULTS ONNOISYOBSERVATIONS
+We first evaluate PRISMA’s robustness in the challenging noisy observation setting, mimicking
+real-world measurement noise. The results, summarized in Table 3, demonstrate that PRISMA
+achieves state-of-the-art performance across most of the equations. For instance, in the Darcy Flow
+forward problem, PRISMA with 50 steps achieves anL 2 relative error of 12.28%, outperforming
+the baselines (55.09% and 49.18%). We see a similar trend in other equations as well. While our
+primary focus is the challenging noisy setting, PRISMA also demonstrates competitive performance
+under full and sparse observation settings (Tables 6 and 7), while requiring far fewer sampling steps.
+For a qualitative comparison, we provide key visualizations in Figure 3, with more extensive results
+available in Appendix I.
+4.3 INFERENCEEFFICIENCY
+0123 5 10 40 80 120 160 200
+Time (s)
+0
+10
+20
+30
+40Relative Error (%)
+20
+20
+50
+50
+100
+100
+200
+200
+500
+500
+2000
+2000
+FunDPS
+DiffusionPDE
+PRISMA (ours)
+Steps (n)
+20
+50
+100
+200
+20
+Figure 4: Inference time vs. accuracy trade-off on the Darcy
+Flow forward problem under full observations. Point size
+corresponds to the number of denoising steps.
+A key advantage of PRISMA is its
+significant inference efficiency while
+having competitive accuracy, com-
+pared to the current state-of-the-art.
+As shown in Table 3 and visual-
+ized in Figure 4, PRISMA occu-
+pies the optimal low-error, low-time
+quadrant. We attribute this infer-
+ence speedup as a direct result of our
+unified conditioning framework and
+the strong physical guidance from the
+SRA block. This enables a gradient-
+descent free sampling process dur-
+ing inference, whereas DiffusionPDE
+and FunDPS rely on computationally
+expensive PDE-based inference sam-
+pling. By directly conditioning on
+the input, PRISMA converges in just
+20-50 steps, while DiffusionPDE and
+FunDPS require 200 to 2000 steps.
+When they are also restricted to 20 steps, their performance degrades significantly as shown in
+Tables 10, 11. PRISMA has an overall inference speed-up of15x to 250x(seconds per sample)
+compared to competing diffusion-based PDE solvers.
+4.4 ANALYSIS OFMODELROBUSTNESS ANDRESIDUALS
+To further probe our model’s capabilities, we analyzed its performance under varying noise levels
+and examined the statistical properties of its PDE residuals.
+8
+Preprint. Under Review.
+20 50 100 200 500 2000
+Iterations
+1.0
+0.5
+0.0
+0.5
+Skewness
+FunDPS
+DiffusionPDE
+PRISMA (ours)
+20 50 100 200 500 2000
+Iterations
+4
+2
+0
+2
+Skewness
+FunDPS
+DiffusionPDE
+PRISMA (ours)
+Figure 5:Skewness of the PDE residual field plotted against inference iterations for the Poisson equation.
+(Left: Forward problem,Right: Inverse problem)
+Impact of PDE Residual Guidance:A key design choice in PRISMA is the architectural integra-
+tion of PDE residuals via the SRA block. To justify this choice, we compare three variants: (1)No
+PDE Residual, a baseline without physics guidance; (2)Concatenation, a simple channel-wise
+PDE residual concatenation; and (3)PDE Residual with SRA, where the PDE residual is input to
+the SRA block. Table 4 highlights that the PDE residual with SRA block outperforms both simple
+channel-wise concatenation of the PDE residual and an unguided baseline.
+0.5 0.75 1 1.5 2 2.5 5 7.5 10
+Noise 
+101
+102
+103
+Relative Error (%)
+FunDPS
+DiffusionPDE
+PRISMA (ours)
+Forward
+Inverse
+Figure 6:Relative error vs. input noise level (σ) for
+the Helmholtz forward (solid lines) and inverse (dotted
+lines) problems.
+Robustness to Varying Noise LevelsWe
+tested PRISMA on the Helmholtz equation
+with varying intensities of Gaussian noise (σ).
+As plotted in Figure 6, PRISMA consistently
+maintains a lower error rate than FunDPS and
+DiffusionPDE across all noise levels for both
+forward and inverse tasks. Notably, while the
+error for baseline models increases sharply with
+noise, PRISMA’s performance degrades more
+gracefully, highlighting its enhanced stability in
+high-noise regimes.
+Fidelity to Physical ConstraintsA well-
+trained model should produce PDE residuals
+with skewness and kurtosis values close to zero.
+Figure 5 shows the skewness residual statistics
+for the Poisson problem. PRISMA’s residuals (blue) exhibit near-zero skewness across different
+inference sampling iterations. We observe a similar trend for kurtosis (see Appendix Figure 7).
+5 CONCLUSION& FUTUREWORK
+In this work, we introduced PRISMA, a novel conditional diffusion neural operator that fundamen-
+tally challenges the prevailing paradigm of using PDE residuals as external loss terms for guidance.
+Our approach centers on architectural guidance, embedding physical constraints directly into the
+model as learnable features via our novel Spectral Residual Attention (SRA) block. We condition the
+model with task & sparsity masks during training to perform both unconditional and conditional gen-
+eration. This design enables two critical advantages: first, it facilitates an entirely gradient-descent
+free sampling process during inference, eliminating slow and unstable test-time optimization. Sec-
+ond, it allows the creation of a single, unified model capable of seamlessly solving both forward
+and inverse problems across the full spectrum of full, sparse, and noisy observation regimes. Our
+experiments validate the effectiveness of our approach, demonstrating inference speedups of 15x
+to 250x (seconds per sample) relative to state-of-the-art diffusion-based methods while delivering
+competitive or superior accuracy and robustness especially against noisy observations.
+Our work opens several promising avenues for future research. A primary direction is the extension
+of PRISMA to spatio-temporal problems, which would involve adapting the architecture to han-
+dle time-dependent dynamics. Another key step is to generalize the model to operate on complex
+geometries and irregular meshes, moving beyond grid-based problems.
+9
+Preprint. Under Review.
+REPRODUCIBILITYSTATEMENT
+To ensure reproducibility, we provide the complete source code in the supplementary materials.
+We used publicly available datasets described in Appendix C, along with all hyperparameters and
+experimental details are described in Appendix B.
+REFERENCES
+Jan-Hendrik Bastek, WaiChing Sun, and Dennis M Kochmann. Physics-informed diffusion models.
+arXiv preprint arXiv:2403.14404, 2024.
+Christopher Beckham. neuraloperator/cond-diffusion-operators-edm, 4 2024. URLhttps://
+github.com/neuraloperator/cond-diffusion-operators-edm.
+Chaoran Cheng, Boran Han, Danielle C Maddix, Abdul Fatir Ansari, Andrew Stuart, Michael W
+Mahoney, and Yuyang Wang. Gradient-free generation for hard-constrained systems.arXiv
+preprint arXiv:2412.01786, 2024.
+Hyungjin Chung, Jeongsol Kim, Michael T Mccann, Marc L Klasky, and Jong Chul Ye. Diffusion
+posterior sampling for general noisy inverse problems.arXiv preprint arXiv:2209.14687, 2022.
+Afrah Farea, Saiful Khan, and Mustafa Serdar Celebi. Multi-objective loss balancing in physics-
+informed neural networks for fluid flow applications.arXiv preprint arXiv:2509.14437, 2025.
+Jiahe Huang, Guandao Yang, Zichen Wang, and Jeong Joon Park. Diffusionpde: Generative pde-
+solving under partial observation.Advances in Neural Information Processing Systems, 37:
+130291–130323, 2024.
+Christian Jacobsen, Yilin Zhuang, and Karthik Duraisamy. Cocogen: Physically consistent and
+conditioned score-based generative models for forward and inverse problems.SIAM Journal on
+Scientific Computing, 47(2):C399–C425, 2025.
+Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-
+based generative models.Advances in neural information processing systems, 35:26565–26577,
+2022.
+Gavin Kerrigan, Justin Ley, and Padhraic Smyth. Diffusion generative models in infinite dimensions.
+arXiv preprint arXiv:2212.00886, 2022.
+Nikola Kovachki, Zongyi Li, Burigede Liu, Kamyar Azizzadenesheli, Kaushik Bhattacharya, An-
+drew Stuart, and Anima Anandkumar. Neural operator: Learning maps between function spaces
+with applications to pdes.Journal of Machine Learning Research, 24(89):1–97, 2023.
+Edward Li, Zichen Wang, Jiahe Huang, and Jeong Joon Park. Videopde: Unified generative pde
+solving via video inpainting diffusion models.arXiv preprint arXiv:2506.13754, 2025.
+Zongyi Li, Nikola Kovachki, Kamyar Azizzadenesheli, Burigede Liu, Kaushik Bhattacharya, An-
+drew Stuart, and Anima Anandkumar. Fourier neural operator for parametric partial differential
+equations.arXiv preprint arXiv:2010.08895, 2020.
+Zongyi Li, Hongkai Zheng, Nikola Kovachki, David Jin, Haoxuan Chen, Burigede Liu, Kamyar
+Azizzadenesheli, and Anima Anandkumar. Physics-informed neural operator for learning partial
+differential equations.ACM/IMS Journal of Data Science, 1(3):1–27, 2024.
+Jae Hyun Lim, Nikola B Kovachki, Ricardo Baptista, Christopher Beckham, Kamyar Azizzade-
+nesheli, Jean Kossaifi, Vikram V oleti, Jiaming Song, Karsten Kreis, Jan Kautz, et al. Score-based
+diffusion models in function space.arXiv preprint arXiv:2302.07400, 2023.
+Songming Liu, Chang Su, Jiachen Yao, Zhongkai Hao, Hang Su, Youjia Wu, and Jun Zhu. Precon-
+ditioning for physics-informed neural networks.arXiv preprint arXiv:2402.00531, 2024a.
+Xin-Yang Liu, Min Zhu, Lu Lu, Hao Sun, and Jian-Xun Wang. Multi-resolution partial differential
+equations preserved learning framework for spatiotemporal dynamics.Communications Physics,
+7(1):31, 2024b.
+10
+Preprint. Under Review.
+Lu Lu, Pengzhan Jin, and George Em Karniadakis. Deeponet: Learning nonlinear operators for iden-
+tifying differential equations based on the universal approximation theorem of operators.arXiv
+preprint arXiv:1910.03193, 2019.
+Jakiw Pidstrigach, Youssef Marzouk, Sebastian Reich, and Sven Wang. Infinite-dimensional diffu-
+sion models.arXiv preprint arXiv:2302.10130, 2023.
+Md Ashiqur Rahman, Zachary E Ross, and Kamyar Azizzadenesheli. U-no: U-shaped neural oper-
+ators.arXiv preprint arXiv:2204.11127, 2022.
+Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A
+deep learning framework for solving forward and inverse problems involving nonlinear partial
+differential equations.Journal of Computational physics, 378:686–707, 2019a.
+Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A
+deep learning framework for solving forward and inverse problems involving nonlinear partial
+differential equations.Journal of Computational physics, 378:686–707, 2019b.
+Dule Shu, Zijie Li, and Amir Barati Farimani. A physics-informed diffusion model for high-fidelity
+flow field reconstruction.Journal of Computational Physics, 478:111972, 2023.
+Aliaksandra Shysheya, Cristiana Diaconu, Federico Bergamin, Paris Perdikaris, Jos ´e Miguel
+Hern´andez-Lobato, Richard Turner, and Emile Mathieu. On conditional diffusion models for
+pde simulations.Advances in Neural Information Processing Systems, 37:23246–23300, 2024.
+Makoto Takamoto, Francesco Alesiani, and Mathias Niepert. Learning neural pde solvers with
+parameter-guided channel attention. InInternational Conference on Machine Learning, pp.
+33448–33467. PMLR, 2023.
+Nathaniel Trask, Andy Huang, and Xiaozhe Hu. Enforcing exact physics in scientific machine
+learning: a data-driven exterior calculus on graphs.Journal of Computational Physics, 456:
+110969, 2022.
+Utkarsh Utkarsh, Pengfei Cai, Alan Edelman, Rafael Gomez-Bombarelli, and Christopher Vincent
+Rackauckas. Physics-constrained flow matching: Sampling generative models with hard con-
+straints.arXiv preprint arXiv:2506.04171, 2025.
+Sifan Wang, Yujun Teng, and Paris Perdikaris. Understanding and mitigating gradient flow patholo-
+gies in physics-informed neural networks.SIAM Journal on Scientific Computing, 43(5):A3055–
+A3081, 2021.
+Jiachen Yao, Abbas Mammadov, Julius Berner, Gavin Kerrigan, Jong Chul Ye, Kamyar Azizzade-
+nesheli, and Anima Anandkumar. Guided diffusion sampling on function spaces with applications
+to pdes.arXiv preprint arXiv:2505.17004, 2025.
+Yi Zhang and Difan Zou. Physics-informed distillation of diffusion models for pde-constrained
+generation.arXiv preprint arXiv:2505.22391, 2025.
+Hao Zhongkai, Jiachen Yao, Chang Su, Hang Su, Ziao Wang, Fanzhi Lu, Zeyu Xia, Yichi Zhang,
+Songming Liu, Lu Lu, et al. Pinnacle: A comprehensive benchmark of physics-informed neu-
+ral networks for solving pdes.Advances in Neural Information Processing Systems, 37:76721–
+76774, 2024.
+11
+Preprint. Under Review.
+APPENDICES
+A Inference sampling algorithm 12
+B Implementation Details 13
+C Datasets 13
+D Results 15
+D.1 Full Observation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+D.2 Sparse Observations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+E Ablations 16
+E.1 Ablation on the Number of Inference Steps . . . . . . . . . . . . . . . . . . . . . 16
+E.2 Comparison at 20 steps . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+E.3 Fidelity to Physical Constraints . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+E.4 SRA Ablations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+F Spatiotemporal Field Reconstruction 18
+G Super-resolution Analysis 18
+H Noise Robustness Evaluation 19
+I Qualitative Results 19
+A INFERENCE SAMPLING ALGORITHM
+Algorithm 2 details the inference sampling procedure for PRISMA, which employs a 2nd-order
+solver to iteratively generate a physically consistent solution from a random field. A key innovation
+of this process is the use of an observation-guided PDE residual, which is re-computed and fed into
+the denoising model at every step of the sampling process.
+The core of the algorithm lies in the guided self-correction step(Lines 4 and 9). At each iterationi,
+the PDE residualris not computed on the model’s raw prediction alone. Instead, it is calculated on
+a composite field(1−M)⊙x i +M⊙x obs, whereMis a binary mask. This formulation ensures
+that for the known parts of the domain (whereM= 1), the residual calculation is grounded by the
+true observationsx obs. For the unknown parts (whereM= 0), it uses the model’s current estimate
+xi.
+For instance, consider a forward problem with full observation, where the statex= [a,u]consists of
+the known input coefficientsaand the unknown solutionu. In this case, the maskM= [M a, Mu]
+would haveM a as a matrix of ones (fully observed) andMu as a matrix of zeros (fully unobserved).
+Consequently, the composite field used to calculate the residual becomes[a obs,u i]. This means the
+PDE residual operatorRevaluates physical consistency based on the true inputaand the model’s
+current prediction for the solutionu i.
+This guided residualracts as an explicit, spatially-varying map of physical inconsistency, which
+is then passed as a direct input to the denoising operatorD θ (Lines 5 and 10). By providing this
+physical guidance at every step of the predictor-corrector solver, the model is continuously steered
+toward solutions that are not only consistent with the initial observations but also compliant with the
+governing PDE, enabling fast, gradient-descent free convergence.
+12
+Preprint. Under Review.
+Algorithm 2PRISMA Inference with 2nd-Order Solver and Guided Residual
+Require:Observationsx obs = [a obs,u obs], masksM= [M a,M u], PDE residual operatorR,
+denoising diffusion operatorD θ, variance schedule{σ i}N
+i=0 withσ 0 = 0.
+1:x N ∼ N(0,C){Initialize from GRF}
+2:fori=N, . . . ,1do
+3:Let current state bex i = [ai,u i].{Predictor Step}
+4:Compute guided residualr← R((1−M)⊙x i +M⊙x obs).{Guided self-correction}
+5:Predict clean state ˆx0 ←D θ(xi, σi,x obs,M,r).
+6:d i ←(x i − ˆx0)/σi.{Evaluate derivativedx/dσ}
+7:x ′
+i−1 ←x i + (σi−1 −σ i)di.{Take an Euler step}
+8:ifσ i−1 ̸= 0then{Corrector Step}
+9:Compute new guided residualr ′ ← R((1−M)⊙x ′
+i−1 +M⊙x obs).{Guided
+self-correction}
+10:Predict clean state ˆx′
+0 ←D θ(x′
+i−1, σi−1,x obs,M,r ′).
+11:d ′
+i ←(x ′
+i−1 − ˆx′
+0)/σi−1.
+12:x i−1 ←x i + (σi−1 −σ i)·( 1
+2 di + 1
+2 d′
+i).{Apply 2nd-order correction}
+13:else
+14:x i−1 ←x ′
+i−1.
+15:end if
+16:end for
+17:returnx 0
+B IMPLEMENTATIONDETAILS
+We adopt a 4-level U-shaped neural operator architecture (Rahman et al., 2022) as the denoiserDθ,
+which has 64M parameters, similar to DiffusionPDE’s and FunDPS’s network size. The network
+is trained using 50,000 training samples for 200 epochs on 2 NVIDIA A100 GPUs with a Batch
+size of 90 per GPU. The code-base is built upon Beckham (2024)’s implementation of Denoising
+Diffusion Operators (DDO). The hyperparameters we used for training and inference are listed in
+Table 5 and were taken from Beckham (2024)’s DDO implementation. We source the quantitative
+results of deterministic baselines for the full and noisy cases from DiffusionPDE’s (Huang et al.,
+2024) table. We faced reproducibility issues for DiffusionPDE, also observed by Yao et al. (2025).
+We had correspondence with DiffusionPDE’s authors about this and have rerun all their experiments
+for the Full and Sparse cases, and the tables 6 and 7 show our reproduced results for their method.
+Residual-aware Guidance Strength MLP:Each SRA block uses a small two-layer MLP to predict
+the scalar guidance weightg res ∈[0,1]. The inputs to this MLP are: (i) the diffusion/timestep
+embeddingc σ (of lengthE, e.g.,E=256), and (ii) the spatial mean of the residualr avg (a scalar).
+We concatenate these to form a tensor of shapeB×(E+1), whereBis the batch size, and pass it
+through
+Linear(E+1→E)→ReLU→Linear(E→1)→Sigmoid,
+yielding aB×1output used as the skip-connected gating weight within the SRA block. Each SRA
+block contains its own distinct MLP.
+Speed comparisonAll the experiments are conducted using a single NVIDIA A100 GPU. To de-
+termine per-sample inference time, we averaged batch inference time over 10 runs and divided by
+the batch size.
+C DATASETS
+We evaluate our approach on three benchmark PDE problems: including Darcy Flow, Poisson and
+Helmholtz. Each PDE is considered in both forward (a→u) and Inverse (u→a) settings. We use
+the same data as used in DiffusionPDE (Huang et al., 2024) which consists of50,000training and
+1000test samples for each PDE, at both64×64and128×128resolution. All models are trained and
+evaluated at128×128, and some ablations when stated are on the64×64resolution. For quantitative
+evaluation, we report the mean relativeL2 error between the predicted and true solutions, except for
+the inverse Darcy Flow problem, where we use the binary error rate.
+13
+Preprint. Under Review.
+Table 5: Hyperparameters
+Hyperparameter Value
+learning rate 0.0001
+learning rate warmup 50 epochs
+ema half life 5 epochs
+dropout 0.13
+rbf scale 0.05
+sigma max 80
+sigma min 0.002
+rho 7
+Darcy Flow EquationDarcy flow describes the movement of fluid through a porous medium. It
+is governed by the equation:
+−∇·
+ 
+a(x)∇u(x)
+
+=g(x), x∈Ω,(8)
+where the domain isΩ = (0,1) 2, withg(x) = 1(constant forcing) and zero Dirichlet boundary
+conditions. The coefficient function is sampled asa∼h #N
+ 
+0,(−∆ + 9I)−2
+, following (Huang
+et al., 2024; Yao et al., 2025). The mappinghis defined piecewise, taking the value12for positive
+inputs and3otherwise.
+Poisson Equation.We consider the Poisson equation on the unit squareΩ = (0,1) 2 which de-
+scribes steady-state diffusion processes:
+∇2u(x) =a(x), x∈Ω,(9)
+subject to homogeneous Dirichlet boundary conditions:
+u(x) = 0, x∈∂Ω.(10)
+The source terma(x)is a binary field, obtained by thresholding a Gaussian random field at zero:
+a(x) =1 Z(x)>0, Z∼ N
+ 
+0,(−∆ + 9I)−2
+,(11)
+where1 · is the indicator function. The PDE residual, which serves as a physical constraint for the
+model, is defined as,
+f(x) =∇ 2u(x)−a(x).(12)
+Helmholtz Equation.We consider the static inhomogeneous Helmholtz equation on the domain
+Ω = (0,1) 2:
+∆u(x) +k 2u(x) =a(x), x∈Ω,(13)
+subject to homogeneous Dirichlet boundary conditions:
+u(x) = 0, x∈∂Ω,(14)
+wherek= 1. This equation describes wave propagation in heterogeneous media. The coefficient
+functiona(x)is generated as a piecewise-constant field sampled from a Gaussian random field.
+Unlike the Poisson case, where the source term is thresholded to a binary field, the Helmholtz
+coefficients can take a range of values across different regions, giving heterogeneous variation. The
+solutionu(x)is computed using second-order finite differences, with zero boundary enforced via
+the same mollifier as in (Huang et al., 2024).
+Navier–Stokes Equation (non-bounded).We consider the 2D incompressible Navier–Stokes
+equations in vorticity–streamfunction form:
+∂tω(x, t) +v(x, t)· ∇ω(x, t) =ν∆ω(x, t) +f(x),(15)
+∆ψ(x, t) =−ω(x, t),(16)
+v(x, t) =∇⊥ψ(x, t),∇·v(x, t) = 0,(17)
+14
+Preprint. Under Review.
+Table 6: Comparing different models on three PDE problems (inL2 relative error) under Full Obser-
+vation. * denotes results reproduced using authors’ released code and checkpoints.Bestis boldened,
+second-best underlined.
+Steps(N)InferenceTime Darcy Flow Poisson Helmholtz Navier–Stokes (Full) Avg.
+RankForward Inverse Forward Inverse Forward Inverse Forward Inverse
+PINO− −4%2.1%3.7%10.2%4.9% 4.9%– –2.75
+DeepONet− −12.3% 8.4% 14.3% 29% 17.8% 28.1% – – 8.17
+PINNs− −15.4% 10.1% 16.1% 28.5% 18.1% 29.2% – – 9.00
+FNO− −5.3% 5.6% 8.2% 13.6% 11.1% 5.0% – – 5.67
+DiffusionPDE*2000 213 2.9% 13% 15.27% 21.21% 10.9% 18.97%0.60%1.50% 5.88
+FunDPS*200 4.72 1.1% 4.2%0.7%23.32%1.08%18.48% 4.00% 1.68% 4.38
+FunDPS*500 11.78 1.4% 3.0% 0.84% 19.84%1.08%13.88% 3.77% 1.58% 3.69
+PRISMA (ours)200.181.1% 3.8% 4.58% 10.9% 8.12% 11.03% 1.51% 1.30% 3.81
+PRISMA (ours)50 0.8 1.05%3.79% 4.0% 10.7% 7.11% 10.76% 1.46% 1.25% 2.75
+with periodic boundary conditions. Hereω=∂ xvy −∂ yvx is the vorticity,ψthe streamfunction,v
+the velocity, andν= 10 −3 (Re = 1000). Initial vorticityω 0 is sampled from a Gaussian random
+field.
+For our experiments, we use the dataset provided by DiffusionPDE (Huang et al., 2024), which
+contains pairs(ω 0(x), ωT (x))corresponding to the solution at final timeT= 1s. Wedeviatefrom
+their final-frame prediction setup and instead predict thenexttime step with a small interval∆t=
+0.1to enable a physically meaningful residual. DiffusionPDE exploits the identity∇·(∇ ×v) = 0
+and uses a simplified residual written as
+f(x) =∇·ω(x, t),
+however this is not physically valid in 2D becauseωis a scalar field and∇·ωis not a well-defined
+divergence (nor a meaningful physics residual).
+Residual used for guidance:Givenω t and a candidate˜ωt+∆t, we first recover the velocity att+∆t
+via a streamfunction solve:
+∆ ˜ψt+∆t =−˜ω t+∆t ⇒ ˜vt+∆t =∇ ⊥ ˜ψt+∆t =
+ 
+∂y ˜ψt+∆t,−∂ x ˜ψt+∆t
+
+.
+The one-step vorticity-transport residual is
+R(x) = ˜ωt+∆t(x)−ω t(x)
+∆t + ˜vt+∆t(x)· ∇˜ωt+∆t(x)−ν∆˜ω t+∆t(x)−f(x),(18)
+D RESULTS
+D.1 FULLOBSERVATION
+Table 6 compares different models across three PDE problems for the full observation setting.
+Our method achieves competitive performance, achieving the best average rank of 2.75 across all
+tasks. In addition to accuracy, our approach demonstrates significant efficiency: compared to other
+diffusion-based models, it is 15x to 250x (seconds per sample) faster during inference. Note that
+the baseline values for DiffusionPDE are taken from the original paper. Reproduced results for
+DiffusionPDE are reported here due to reproducibility issues, as also noted in FunDPS.
+D.2 SPARSEOBSERVATIONS
+Table 7 presents a comparison of PRISMA against deterministic and generative baselines under the
+challenging sparse observation setting. While FunDPS (at 500 steps) achieves the highest accu-
+racy, PRISMA demonstrates a superior balance of performance and efficiency. Our model delivers
+competitive accuracy, comparable to the top-performing generative methods, but at a fraction of the
+computational cost. Notably, PRISMA at 20 steps is over 65 times faster than the most accurate
+FunDPS configuration and over 1000 times faster than DiffusionPDE. This highlights PRISMA’s
+significant advantage in inference speed, making it a practical and efficient choice for applications
+where rapid predictions are critical.
+15
+Preprint. Under Review.
+Table 7: Comparison of models on Darcy Flow and Navier–Stokes (inL 2 relative error) under
+Sparse Observation (97% pixels).Bolddenotes best, underline second-best.
+Steps(N) Darcy Flow Navier–Stokes (Sparse) Average
+RankForward Inverse Forward Inverse
+FNO−28.2% 49.3% – – 6.50
+PINO−35.2% 49.2% – – 6.50
+DeepONet−38.3% 41.1% – – 6.50
+PINN−48.8% 59.7% – – 8.50
+DiffusionPDE2000 6.07% 7.87% 7.87% 8.00% 3.75
+FunDPS200 2.88% 6.78% 11.89% 9.16% 3.25
+FunDPS5002.49% 5.18%10.28%7.91% 1.75
+PRISMA (ours)20 3.13% 6.80% 7.15% 8.00% 3.00
+PRISMA (ours)50 3.11% 6.80%7.11%7.98% 2.25
+E ABLATIONS
+E.1 ABLATION ON THENUMBER OFINFERENCESTEPS
+To analyze the convergence behavior of PRISMA, we evaluate its performance across a range of
+inference steps (N) from 20 to 500. This sensitivity analysis is conducted for both the challeng-
+ing noisy observation setting (Table 8) and the ideal full observation setting (Table 9). The results
+clearly demonstrate that PRISMA converges remarkably quickly. In both scenarios, performance
+saturates early, with minimal to no improvement observed beyond 20-50 steps. This rapid conver-
+gence justifies our use of a small number of steps for inference, as it provides an optimal balance
+between computational efficiency and accuracy.
+Table 8: Performance of PRISMA (relativeL2 error %) on noisy observation tasks as the number of
+inference steps (N) is varied.
+Model Steps(N) Darcy Flow Poisson Helmholtz
+Fwd Inv Fwd Inv Fwd Inv
+PRISMA20 12.10 22.93 18.20 41.46 17.65 68.43
+PRISMA50 12.06 22.97 18.10 40.90 16.50 67.50
+PRISMA100 12.06 22.88 18.00 40.90 16.50 67.50
+PRISMA200 12.09 22.91 17.70 40.90 16.50 67.50
+PRISMA500 12.06 23.03 18.00 40.80 16.40 67.50
+Table 9: Performance of PRISMA (relativeL 2 error %) on full observation tasks as the number of
+inference steps (N) is varied.
+Model Steps(N) Darcy Flow Poisson Helmholtz
+Fwd Inv Fwd Inv Fwd Inv
+PRISMA20 1.10 3.80 4.58 10.90 8.12 11.03
+PRISMA50 1.05 3.79 4.00 10.70 7.11 10.76
+PRISMA100 1.04 3.78 4.00 10.60 6.94 10.75
+PRISMA200 1.03 3.78 4.00 10.60 6.92 10.70
+PRISMA500 1.04 3.78 4.00 10.60 6.80 10.70
+E.2 COMPARISON AT20STEPS
+To highlight the inference efficiency of our method, we conduct a direct comparison where all mod-
+els are restricted to just 20 sampling steps, a regime where PRISMA excels. While the optimal
+performance for FunDPS and DiffusionPDE is achieved at much higher step counts (200–500 and
+2000 steps, respectively), this analysis serves as a stress test to evaluate per-step convergence speed.
+As shown in Table 10, PRISMA consistently achieves low error rates across all tasks in the noisy set-
+ting. In contrast, the baseline models produce significantly higher errors, with FunDPS often failing
+16
+Preprint. Under Review.
+to converge entirely. We see a similar trend for the full observation case in Table 11. This demon-
+strates that PRISMA’s architectural guidance enables a much more rapid convergence to accurate,
+physically consistent solutions.
+Table 10: Comparative performance (relativeL 2 error %) on noisy observation tasks with 20 infer-
+ence steps.
+Model Steps(N) Darcy Flow Poisson Helmholtz
+Fwd Inv Fwd Inv Fwd Inv
+FunDPS20 99.99 73.00 99.99 255.09 99.99 178.09
+DiffusionPDE20 37.16 70.85 125.15 148.97 123.44 133.35
+PRISMA (ours)20 12.29 23.15 18.58 41.75 17.93 68.87
+Table 11: Comparative performance (relativeL2 error %) on full observation tasks with 20 inference
+steps.
+Model Steps(N) Darcy Flow Poisson Helmholtz
+Fwd Inv Fwd Inv Fwd Inv
+FunDPS20 8.88 17.75 9.755 39.15 10.08 39.39
+DiffusionPDE20 30.99 69.82 95.26 123.21 111.77 101.01
+PRISMA (ours)20 1.10 3.80 4.58 10.90 8.12 11.03
+E.3 FIDELITY TOPHYSICALCONSTRAINTS
+To assess the physical consistency of the generated solutions, we analyze the statistical properties
+of the PDE residual fields. A well-trained model should produce residuals with a distribution close
+to a standard normal. A kurtosis value close to zero indicates that the errors are random and well-
+behaved, rather than systematic.
+Figure 7 plots the kurtosis of the PDE residual for the Poisson problem against the number of infer-
+ence iterations. The results show that PRISMA’s residual kurtosis (blue line) is consistently stable
+and near zero across all iterations for both the forward and inverse problems. In contrast, Diffu-
+sionPDE (green line) exhibits highly unstable and large kurtosis values, indicating that its solutions
+contain significant non-Gaussian errors or physical inconsistencies. This analysis demonstrates that
+PRISMA’s architectural guidance leads to more physically robust solutions.
+20 50 100 200 500 2000
+Iterations
+0
+5
+10
+15
+20Kurtosis
+FunDPS
+DiffusionPDE
+PRISMA (ours)
+(a) Forward Probem
+20 50 100 200 500 2000
+Iterations
+0
+20
+40
+60Kurtosis
+FunDPS
+DiffusionPDE
+PRISMA (ours) (b) Inverse Problem
+Figure 7: Kurtosis of the PDE residual field plotted against the number of inference iterations for
+the Poisson problem.
+E.4 SRA ABLATIONS
+SRA Ablations:We further analyze the Spectral Residual Attention (SRA) block by running ab-
+lations at64×64withN=20inference steps Table 12. We compare the following setups: (1)No
+17
+Preprint. Under Review.
+Table 12: SRA Ablations (comparingL 2 error %) of gating and attention mechanisms on 64×64
+resolution
+Steps(N) Full Helmholtz Noisy Helmholtz
+Forward Inverse Forward Inverse
+No Gating203.8 28.91 33.8 97.5
+Multiplicative Gate(no skip)203.3 12.98 24.7115.07
+Only Mag of PDE Residual(w/o attention)203.29 13.42 25.44 115.26
+Attention(w/o Phase)206.5 24.77 34 102.19
+Without Guided PDE Residual203.52 14.26 31.26 98.99
+Ours (PDE Res SRA)203.48 12.5830.893.2
+Gatingwhereg res=1effectively; (2)Multiplicative gatewhere there is no weighted skip connec-
+tion, (3)Only magnitudewhere we replace cross-attention with a per-mode weight from|ˆr(k)|,
+(4)Attention w/o phasewhich considers the magnitude only and is phase-blind (|ˆx(k)|·|ˆr(k)|),
+(5)Without guided PDE residualwhere we do not guide the PDE residual as described in Ap-
+pendix Section A , andOurs (PDE Res SRA). We observe that the choice of gating matters, the
+skip-connected scalar gate stabilizes residual injection and helps notably in noisy inverse settings.
+Furthermore, we see that phase-aware spectral attention outperforms magnitude-only/phase-blind
+variants, indicating that per-mode phase alignment provides useful physics signal and lastly resid-
+ual guidance helps SRA consistently improve over no-guidance on inverse tasks while remaining
+competitive on forward tasks, more so in noisy observation settings.
+F SPATIOTEMPORALFIELDRECONSTRUCTION
+We evaluate PRISMA on a time-dependent PDE to demonstrate its capability to recover the full
+solution trajectory over the interval[0, T]given spatially sparse but temporally continuous sensor
+observations. We focus on the 1D dynamic Burgers’ equation, where PRISMA learns the joint spa-
+tiotemporal distributionu 0:T using a 2D diffusion model. In our comparison, PRISMA outperforms
+DiffusionPDE, achieving a test relative error of 9.33% versus 10.39%. Figure 8 show qualitative
+comparison of the solutions generated by PRISMA and DiffusionPDE on Burgers’ equation.
+x
+Time
+PDE Input
+ Ground Truth
+Relative Error 10.0%
+PRISMA
+Relative Error 15.4%
+DiffusionPDE
+0.4
+0.2
+0.0
+0.2
+0.4
+x
+Time
+PDE Input
+ Ground Truth
+Relative Error 26.1%
+PRISMA
+Relative Error 32.6%
+DiffusionPDE
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+0.4
+Figure 8: Prediction (for two samples) Visualization on Burgers’ equation
+G SUPER-RESOLUTIONANALYSIS
+We evaluate PRISMA’s ability to generalize to higher spatial resolutions at inference using a model
+trained only on 64×64 resolution. For each target resolution (64, 128, 256, and 512), we upsample
+the 64×64 PDE input and run the same 20-step PRISMA model, without retraining the architecture,
+to generate the corresponding solution. Qualitative forward and inverse results are shown in Figures
+10, 11, and 12, and the corresponding runtime and memory measurements are reported in Table
+18
+Preprint. Under Review.
+Table 13: Performance metrics at different resolutions. Average batch time reported for batch
+size=50
+Resolution Avg. Batch Time (s) Avg. Per-Sample Time (s) Avg. Peak GPU (reserved) Mem (GB)
+64x6412.140±0.945 0.242±0.018 4.117±0.09
+128x12820.036±0.326 0.400±0.006 15.383±0.804
+256x25660.892±0.580 1.217±0.011 62.602±0.804
+512x512242.489±0.423 4.849±0.008 107.114±0.399
+Figure 9: Performance metrics (Per-Sample Time and Peak Reserved GPU Memory) as a function
+of inference resolution.
+13. Figure 9 visualizes how inference cost grows with resolution, specifically the per-sample time
+increases smoothly from 0.24s→4.85s, and reserved GPU memory rises from 4 GB→107 GB.
+While the 512×512 case incurs a significantly higher memory footprint, PRISMA remains stable
+across all resolutions tested.
+H NOISEROBUSTNESSEVALUATION
+We evaluate PRISMA and all baselines under varying levels of additive measurement noise. For each
+sample, we corrupt a fixed percentage of pixels (90%, 50%, 30%, 10%) with unit-variance Gaussian
+noise, keeping the remaining pixels clean. This setup simulates real-world sensor degradation where
+only part of the field is corrupted. The diffusion models (including PRISMA) are not trained with
+any noise augmentation beyond the intrinsic diffusion noising, all methods are evaluated out-of-
+distribution. Tables 14–17 report results across five PDEs in forward and inverse settings. Across all
+noise levels, classical operator-based models (FNO/PINO) degrade sharply, while diffusion models
+remain substantially more stable. FunDPS benefits from per-sample DPS optimization but becomes
+sensitive at high noise levels and in inverse regimes. PRISMA shows consistent performance across
+all noise ratios, even when a large majority of pixels are corrupted.
+I QUALITATIVERESULTS
+Figure 13 provides a qualitative comparison of the solutions generated by PRISMA and the baseline
+models under the challenging noisy observation setting. Across both problems: Poisson and Darcy
+Flow, PRISMA’s predictions are visually faithful to the ground truth solutions. The corresponding
+error maps are consistently darker, and the reported error values are significantly lower compared
+to the baselines. In contrast, solutions from FunDPS often appear corrupted by noise, while those
+from DiffusionPDE can be blurry or inaccurate, particularly in complex inverse problems. These vi-
+sualizations provide strong qualitative evidence of PRISMA’s robustness and superior performance
+when dealing with imperfect data. Figures 14, 15, 16 presents qualitative comparison of the so-
+lutions generated by PRISMA and the baseline models under Full observation setting. Figure 17
+compare PRISMA predictions against the baseline models on Navier-Stokes Equation under Sparse
+observation settings.
+19
+Preprint. Under Review.
+Table 14: Comparison of different models on three PDE problems with 90% pixels having Unit
+Gaussian noise corruption, simulating real-world measurement noise (inL2 relative error for all and
+error rate for Darcy inverse).
+Steps(N) Darcy Flow Poisson Helmholtz
+Forward Inverse Forward Inverse Forward Inverse
+FNO– 9.7 % 52.3% 80.48% 1.44e07% 80.04% 2.92e05%
+PINO– 70.42% 52.2% 80.44% 1.12e06% 107.15% 8.74e05%
+DiffusionPDE2000 36.89% 70.04% 44.51% 129.08% 23.2% 113.49%
+FunDPS200 10.81% 48.24% 16.07% 957.87% 16.96% 622.6%
+PRISMA209.65% 22.83% 15.69% 40.34% 16.16% 66.93%
+Table 15: Comparison of different models on three PDE problems with 50% pixels having Unit
+Gaussian noise corruption, simulating real-world measurement noise (inL2 relative error for all and
+error rate for Darcy inverse).
+Steps(N) Darcy Flow Poisson Helmholtz
+Forward Inverse Forward Inverse Forward Inverse
+FNO– 9.17 % 49.93% 55.84% 1.083e07% 78.31% 2.19e05%
+PINO– 45.53% 49.87% 61.04% 8.56e05% 62.19% 6.84e05%
+DiffusionPDE2000 36.4% 68.1% 39.61% 127.49% 22.58% 113.17%
+FunDPS200 9.18% 46.6% 13.81% 806.45% 14.33% 467.63%
+PRISMA208.22% 20.3% 12.71% 35.49% 12.04% 59.99%
+Table 16: Comparison of different models on three PDE problems with 30% pixels having Unit
+Gaussian noise corruption, simulating real-world measurement noise (inL2 relative error for all and
+error rate for Darcy inverse).
+Steps(N) Darcy Flow Poisson Helmholtz
+Forward Inverse Forward Inverse Forward Inverse
+FNO– 8.48 % 49.85% 14.32% 836.31% 48.2% 773.04%
+PINO– 10.06% 49.83% 11.49% 682.01% 40.23% 531.61%
+DiffusionPDE2000 35.21% 63.26% 25.78% 117.36% 22.14% 108.04%
+FunDPS200 8.53% 42.5% 11.28% 796.22% 13.15% 384.78%
+PRISMA206.23% 17.97% 11.22% 32.16% 9.16% 54.43%
+Table 17: Comparison of different models on three PDE problems with 10% pixels having Unit
+Gaussian noise corruption, simulating real-world measurement noise (inL2 relative error for all and
+error rate for Darcy inverse).
+Steps(N) Darcy Flow Poisson Helmholtz
+Forward Inverse Forward Inverse Forward Inverse
+FNO– 7.68% 49.793% 9.36% 477.67% 23.56% 511.91%
+PINO– 5.35% 49.78%6.52%461.09% 17.9% 413.07%
+DiffusionPDE2000 33.12% 53.12% 17.51% 107.14% 19.99% 107.72%
+FunDPS200 8.5% 31.34% 10.63% 598.7% 10.84% 239.65%
+PRISMA203.77% 12.34%7.3% 27.12% 8.05% 43.56%
+20
+Preprint. Under Review.
+Forward
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+Inverse
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+0.005
+0.000
+0.005
+0.010
+1.0
+0.5
+0.0
+0.5
+1.0
+Figure 10: Super-resolution results on Helmholtz
+Forward
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+Inverse
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+0.002
+0.004
+0.006
+0.008
+0.010
+4
+6
+8
+10
+12
+Figure 11: Super-resolution results on Darcy
+Forward
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+Inverse
+PDE Input
+ Ground Truth
+ 64×64
+ 128×128
+ 256×256
+ 512×512
+0.2
+0.0
+0.2
+0.4
+0.4
+0.2
+0.0
+0.2
+0.4
+Figure 12: Super-resolution results on Navier-Stokes (NB)
+Forward
+PDE Input
+ Ground Truth
+ PRISMA
+ FunDPS
+ DiffusionPDE
+Error 17.9%
+PRISMA Error
+Error 114.0%
+FunDPS Error
+Error 109.1%
+DiffusionPDE Error
+Inverse
+Error 33.3%
+ Error 1315.0%
+ Error 73.9%
+0.002
+0.004
+0.006
+0.008
+0.010
+1
+2
+3
+4
+5
+6
+Forward
+PDE Input
+ Ground Truth
+ PRISMA
+ FunDPS
+ DiffusionPDE
+Error 15.0%
+PRISMA Error
+Error 55.9%
+FunDPS Error
+Error 47.6%
+DiffusionPDE Error
+Inverse
+Error 32.3%
+ Error 64.4%
+ Error 53.7%
+0.001
+0.002
+0.003
+0.004
+0.005
+0.006
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+Figure 13: Poisson (top) and Darcy (bottom) Equations under Noisy Observation
+21
+Preprint. Under Review.
+Forward
+PDE Input
+ Ground Truth
+Error 1.2%
+PRISMA
+Error 0.9%
+FunDPS
+Error 13.4%
+DiffusionPDE
+Inverse
+Error 14.7%
+ Error 23.6%
+ Error 23.4%
+0.002
+0.004
+0.006
+0.008
+0.010
+0.012
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+Forward
+PDE Input
+ Ground Truth
+Error 0.9%
+PRISMA
+Error 0.7%
+FunDPS
+Error 25.1%
+DiffusionPDE
+Inverse
+Error 10.3%
+ Error 17.0%
+ Error 17.7%
+0.002
+0.004
+0.006
+0.008
+0.010
+0.012
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+Figure 14: Prediction (for two samples) Visualization on Darcy Equation under Full Observation
+Forward
+PDE Input
+ Ground Truth
+Error 5.5%
+PRISMA
+Error 1.1%
+FunDPS
+Error 6.1%
+DiffusionPDE
+Inverse
+Error 6.9%
+ Error 9.4%
+ Error 9.4%
+0.0075
+0.0050
+0.0025
+0.0000
+0.0025
+0.0050
+0.0075
+0.0100
+0.0125
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+Forward
+PDE Input
+ Ground Truth
+Error 4.8%
+PRISMA
+Error 0.7%
+FunDPS
+Error 5.6%
+DiffusionPDE
+Inverse
+Error 7.2%
+ Error 8.8%
+ Error 10.0%
+0.010
+0.005
+0.000
+0.005
+0.010
+1.0
+0.5
+0.0
+0.5
+1.0
+Figure 15: Prediction (for two samples) Visualization on Helmholtz Equation under Full Observation
+Forward
+PDE Input
+ Ground Truth
+Error 3.2%
+PRISMA
+Error 0.5%
+FunDPS
+Error 11.5%
+DiffusionPDE
+Inverse
+Error 10.3%
+ Error 16.7%
+ Error 19.3%
+0.0075
+0.0050
+0.0025
+0.0000
+0.0025
+0.0050
+0.0075
+0.6
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+Forward
+PDE Input
+ Ground Truth
+Error 2.8%
+PRISMA
+Error 0.7%
+FunDPS
+Error 14.3%
+DiffusionPDE
+Inverse
+Error 8.8%
+ Error 14.6%
+ Error 21.4%
+0.0100
+0.0075
+0.0050
+0.0025
+0.0000
+0.0025
+0.0050
+0.0075
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+0.8
+Figure 16: Prediction (for two samples) Visualization on Poisson Equation under Full Observation
+Forward
+PDE Input
+ Ground Truth
+Error 3.3%
+PRISMA
+Error 3.5%
+FunDPS
+Error 3.5%
+DiffusionPDE
+Inverse
+Error 10.9%
+ Error 7.4%
+ Error 8.3%
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+Forward
+PDE Input
+ Ground Truth
+Error 4.1%
+PRISMA
+Error 4.5%
+FunDPS
+Error 4.5%
+DiffusionPDE
+Inverse
+Error 12.2%
+ Error 9.0%
+ Error 10.0%
+0.4
+0.2
+0.0
+0.2
+0.4
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+Figure 17: Prediction (for two samples) Visualization on Navier-Stokes (non bounded) Equation
+under Sparse Observation
+22

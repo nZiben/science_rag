@@ -1,0 +1,929 @@
+On the Unreasonable Effectiveness of Last-layer
+Retraining
+John C. Hill1∗ Tyler LaBonte2 Xinchen Zhang1 Vidya Muthukumar2,1
+1School of Electrical and Computer Engineering, Georgia Institute of Technology
+2H. Milton Stewart School of Industrial and Systems Engineering, Georgia Institute of Technology
+Abstract
+Last-layer retraining (LLR) methods — wherein the last layer of a neural network is reinitialized and
+retrained on a held-out set following ERM training — have garnered interest as an efficient approach to
+rectify dependence on spurious correlations and improve performance on minority groups. Surprisingly,
+LLR has been found to improve worst-group accuracy even when the held-out set is an imbalanced subset
+of the training set. We initially hypothesize that this “unreasonable effectiveness” of LLR is explained by
+its ability to mitigate neural collapse through the held-out set, resulting in the implicit bias of gradient
+descent benefiting robustness. Our empirical investigationdoes notsupport this hypothesis. Instead, we
+present strong evidence for an alternative hypothesis: that the success of LLR is primarily due to better
+group balance in the held-out set. We conclude by showing how the recent algorithms CB-LLR and AFR
+perform implicit group-balancing to elicit a robustness improvement.
+1 Introduction
+The standard neural network training procedure of empirical risk minimization (ERM) (Vapnik, 1998), which
+minimizes the average classification loss, is well-known to overfit to spurious correlations in the training
+set (Geirhos et al., 2020). The conjunction of target labels and spurious features formgroupswithin the
+dataset; the smallest groups in each class, termedminority groups, are often most difficult to correctly
+classify at test time (Oren et al., 2019). While ERM may exhibit high average accuracy on these datasets,
+performance on minority groups can be no better than random guessing (Shah et al., 2020). Therefore, when
+robust minority group performance is critical, worst-group accuracy (WGA) is often a more useful metric.
+Due to the prevalence of spurious features and minority groups (race, gender, age,etc.) in high consequence
+applications such as medicine (Zech et al., 2018) and criminal justice (Chouldechova, 2016), significant work
+has focused on algorithms which maximize WGA — also called group robustness (Sagawa et al., 2020a).
+A promising family of group robustness methods are based on last-layer retraining (LLR), wherein the last
+layer is reinitialized and retrained on a held-out set following ERM training. The original LLR method, called
+deep feature reweighting (DFR), requires the held-out set to comprise an equal amount of data from each
+group (Izmailov et al., 2022; Kirichenko et al., 2023). This limits its practical application, as the groups are
+often unknown ahead of time or difficult to annotate.1 While DFR still performs the best, group information
+(even on the validation set) was recently found to be unnecessary to observesomenon-trivial gain in WGA
+over ERM (S. Qiu et al., 2023; LaBonte et al., 2023). In particular, LaBonte et al., 2023 find that LLR on a
+held-outi.i.d.subset of the training set — suffering from the same group imbalance as the training set — is
+sufficient for improved WGA. This surprising observation led LaBonte et al., 2023 to term LLR a “free lunch”
+for group robustness, but why this “free lunch" arose in the first place remained unclear.
+Contributions.In this paper, we take a “scientific method” approach to investigate why LLR on an
+imbalanced held-out subset of the training set can perform so well. We make the following main contributions:
+∗ Corresponding author. Email:jhill326@gatech.edu.
+1 However, DFR compares favorably in this respect to methods which require group annotations for the entire training set,
+such as group distributionally robust optimization (DRO) (Sagawa et al., 2020a).
+1
+arXiv:2512.01766v1  [cs.LG]  1 Dec 2025
+• We propose an initial hypothesis, visualized in Figure 1, that neural collapse on the training set results
+in a biased ERM classifier since the class means are dominated by majority group data. Since features
+arenotcollapsed on the held-out set (Hui et al., 2022), this would lead to varying behavior on majority
+and minority group data. Our hypothesis is that the implicit bias of gradient descent during LLR then
+elicits amaximum-margin linear classifieron the features, which has been connected in some settings
+to better robustness guarantees (Chaudhuri et al., 2023).
+• We put forth evidence whichdoes notsupport our initial hypothesis. In particular, we show that
+neural collapse either does not occur or occurs after the standard number of epochs on four benchmark
+datasets. Moreover, we show that convergence of the LLR classifier to the maximum-margin solution
+is extremely slow. Since computation of the neural collapse metricNC1 was previously infeasible for
+large-scale models, we propose a memory-efficient algorithm to compute a stochastic estimate ofNC1
+via the Hutchinson trace estimator (Hutchinson, 1989).
+• We present strong evidence for an alternative hypothesis: that the success of LLR is primarily due
+tobetter group balancein the held-out set, often achieved implicitly through class balancing. Our
+experiments indicate that LLR does not improve over ERM when the held-out set has the same group
+balance as the training set. On the other hand, LLR with a better group balance enjoys drastically
+improved WGA, and vice versa. We show that the test WGA of LLR is highly correlated with the test
+WGA of ERM when both are trained with the same amount of data and the same group balance, with
+Pearson correlation coefficientr>0.9on Waterbirds and CivilComments.
+• Ultimately, we reevaluate the “free lunch” interpretation of LLR by showing that class balanced LLR
+(CB-LLR) (LaBonte et al., 2023) and automatic feature reweighting (AFR) (S. Qiu et al., 2023) owe
+their improved WGA primarily toimplicit group-balancingon the held-out set. On a positive note, we
+show that LLR can recover the WGA of an optimally class-balanced model even when ERM was not
+optimally class-balanced. More broadly, LLR remains an effective method to achieve group robustness
+using group annotations only on the held-out set (or even proxies thereof, such as in SELF (LaBonte
+et al., 2023) and AFR (S. Qiu et al., 2023)). When group annotations are expensive, LLR on a more
+group-balanced held-out set is therefore an attractive improvement over ERM.
+1.1 Related work
+Spurious correlations.Reliance on spurious correlations is a widely-studied phenomenon in machine
+learning which is known to exacerbate bias and hinder generalization (see,e.g.,Beery et al., 2018; Geirhos
+et al., 2020; Xiao et al., 2021). Much work has been devoted to mitigating the adverse affects from spurious
+correlations (Sagawa et al., 2020a). Methods which have been demonstrated to reduce the bias caused by
+spurious correlations without the need for large quantities of group labels, such as Just Train Twice (E. Z. Liu
+et al., 2021), Deep Feature Reweighting (Kirichenko et al., 2023), and class-balancing (Idrissi et al., 2022;
+Chaudhuri et al., 2023; Shwartz-Ziv et al., 2023; LaBonte et al., 2024), are of particular interest. While our
+understanding of how spurious features are learned and forgotten during training is incomplete (Izmailov et al.,
+2022), recent studies are beginning to unravel the joint dynamics of core and spurious feature learning (G. Qiu
+et al., 2024).
+Last-layer retraining (LLR).Proposed as Deep Feature Reweighting by Izmailov et al., 2022; Kirichenko
+et al., 2023, LLR has recently garnered interest as an efficient approach to improve group robustness in a
+variety of settings (S. Qiu et al., 2023; LaBonte et al., 2023; Stromberg et al., 2024; Park et al., 2025; Qiao
+et al., 2025). The success of LLR is predicated on ERM learning both core and spurious features during
+training, but relying too heavily on spurious features within the last layer (Kirichenko et al., 2023; Ye et al.,
+2023). Practically, LLR is appealing because of its ability to achieve much of the benefit of full fine-tuning at
+a fraction of the computational cost while only requiring limited use of group annotations.
+2
+(a) Collapsed Training Fea-
+tures with Biased Classifier (b) Uncollapsed Held-out Fea-
+tures with Biased Classifier (c)
+Uncollapsed Held-out Fea-
+tures with Max-Margin Clas-
+sifier
+Figure 1:Visualization of our initial hypothesis.In Figure 1(a), we represent training set features
+collapsing to their class means — dominated by majority group data — resulting in a biased ERM classifier.
+In Figure 1(b), we show a biased ERM classifier that performs poorly on the uncollapsed minority group
+features within the held-out set at the beginning of the second stage of training. In Figure 1(c), we present
+the final aspect of our hypothesis. During LLR, the features are not collapsed on the held-out set, and so
+the implicit bias of gradient descent elicits a maximum-margin classifier which is invariant to the spurious
+feature. Importantly, our empirical investigationdoes notsupport this hypothesis. Instead, we find that the
+success of LLR is primarily explained by better group balance in the held-out set.
+Neural collapse.We study how LLR interacts with the phenomenon ofneural collapse, first identified
+by Papyan et al., 2020; Han et al., 2022. Neural collapse describes the collapse offeature variabilityduring
+training — in other words, the features of each datapoint within a given class collapse to the mean feature
+vector inside that class. Recently, neural collapse has been studied in connection with fairness and spurious
+correlations in the context of ERM by Lu et al., 2024; Wang et al., 2024; Chen et al., 2024; Xu et al., 2025.
+Additionally, investigations of neural collapse in imbalanced data settings (though mostly focused on minority
+classes) (Fang et al., 2021; Thrampoulidis et al., 2022; Dang et al., 2023; Hong and Ling, 2023) provide
+motivation for studying the impact of minority group collapse. The role neural collapse plays in group robust
+ERM performance is still unclear. Neural collapse has been observed to produce less biased (Xu et al., 2025),
+but also less separable group representations (Lu et al., 2024). Importantly for our purposes, neural collapse
+has been classified as anoptimization phenomenon, meaning it occurs only on the training set and not on
+held-out data (Hui et al., 2022). Our initial hypothesis is that this difference in feature behavior between seen
+and unseen data can help explain why ERM underperforms LLR (due to the fact that LLR has additional
+access to the unseen held-out set as a result of its two-stage training protocol).
+Implicit bias and margin.The second stage of LLR is simply logistic regression performed on the learned
+ERM features (Kirichenko et al., 2023). Therefore, we expect implicit bias results for logistic regression to
+apply to our setting. We draw on the literature studying the implicit bias of gradient descent in logistic
+regression toward the maximumℓ2-margin classifier, studied in the separable case by Soudry et al., 2018 and in
+the non-separable case by Ji and Telgarsky, 2019. Large minimum margin over the training data (which is the
+default definition of margin) can imply good generalization upper bounds (Bartlett et al., 1998; Koltchinskii
+and Panchenko, 2002). Recent results suggest that, under certain conditions, the maximum-margin classifier
+coincides with the classifier achieving optimal worst-group accuracy (Chaudhuri et al., 2023), offering a
+possible bridge between implicit-bias theory and robust-optimization perspectives on group fairness.
+3
+2 Preliminaries
+Problem Setup.We study classification with input domain Xand label setYin the presence ofspurious
+features S, where each examplex∈X is associated with exactly one spurious features(x) ∈S. The training,
+validation, and test datasets are partitioned intogroupsG:= Y×S; letΩg ⊆{1,...,m} andΩ y ⊆{1,...,m}
+denote the indices of training points in groupg∈G and class y∈Y , respectively. We call groups with
+maximal |Ωg|in the training set themajoritygroups and the restminoritygroups; theworstgroup(s) are
+those with the lowest test accuracy. (In general, the majority and minority groups will not vary between the
+training and test sets.) Our objective is to learn models that perform uniformly well across groups despite
+imbalance, quantified byworst-group accuracy(WGA) — the minimum accuracy over all groups inG(Sagawa
+et al., 2020a).
+Class-balancing.We adopt the definition of a class-balanced dataset as one where the expected number of
+samples from every class in the label spaceYis identical. Adhering to the framework established by LaBonte
+et al., 2024, we evaluate three distinct balancing strategies:subsetting,upsampling, andupweighting.
+• Subsetting: This method enforces balance by strictly limiting the size of all classes to match that of the
+minority class. We achieve this by uniformly subsampling the majority classes without replacement. It
+is important to note that this subset is generated once prior to training and remains static throughout
+the optimization process.
+•Upsampling: This approach utilizes the full dataset but modifies the sampling distribution. To ensure
+that mini-batches are class-balanced in expectation, we adopt a two-step generative process for drawing
+a training example: first, we sample a labely∼Unif (Y), and subsequently sample an inputx from the
+class-conditional empirical distributionˆp(·|y).
+• Upweighting: Rather than altering the data distribution, this method modifies the objective function.
+We define the class-imbalance ratio,γ, as the ratio of the majority class size to the minority class size.
+We then scale the contribution of minority samples to the loss byγ. Formally, for a modelf, inputx,
+and labely, the modified loss function is defined as:
+Lbalanced(f(x),y) =w y ·ℓ(f(x),y)
+Here, wy = γ if y belongs to the minority class, andwy = 1otherwise. Upweighting is mathematically
+equivalent to upsampling in expectation over the sampling probabilities.
+Datasets.We evaluate our approach on four standard benchmarks: Waterbirds (Welinder et al., 2010; Wah
+et al., 2011; Sagawa et al., 2020a), CelebA (Z. Liu et al., 2015; Sagawa et al., 2020a), CivilComments (Borkan
+et al., 2019; Koh et al., 2021), and MultiNLI (Williams et al., 2018; Sagawa et al., 2020a). For each dataset,
+we define the inputx, the target labely, and the spurious attributea. Note that Waterbirds is the only
+dataset exhibiting a distribution shift between training and held-out sets, while MultiNLI is the only dataset
+that is class-balanceda priori.
+• Waterbirds(Welinder et al., 2010; Wah et al., 2011; Sagawa et al., 2020a):x consists of bird images
+classified by species intoy∈{landbird,waterbird} . The spurious featurea represents the background
+environment (land vs. water), where backgrounds are highly correlated with their corresponding species
+classification.2
+• CelebA(Z. Liu et al., 2015; Sagawa et al., 2020a):x consists of celebrity face images where the target
+y is hair color (blond vs. non-blond). The spurious attributea is gender; specifically, the training
+distribution is skewed such that the intersectional group of blond males is significantly underrepresented
+2 The Waterbirds dataset is known to contain incorrect labels (Taghanaki et al., 2022). We utilize the standard uncorrected
+labels for all of our results.
+4
+• CivilComments(Borkan et al., 2019; Koh et al., 2021):x comprises online comments where the target
+y is toxicity. The spurious featurea captures the presence of demographic identities (e.g., race, gender,
+religion). Following Sagawa et al., 2020a; Idrissi et al., 2022; Izmailov et al., 2022; Kirichenko et al.,
+2023; LaBonte et al., 2023, we aggregate these identity categories into a single featurea, which is
+correlated with the toxicity labely.3
+• MultiNLI(Williams et al., 2018; Sagawa et al., 2020a):xconsists of sentence pairs for natural language
+inference wherey∈{contradiction,entailment,neutral} . The spurious featureadenotes the presence of
+negation words in the second sentence; these negations are spuriously correlated with the contradiction
+class.
+For Waterbirds and CelebA we fine-tune ResNet-50 (He et al., 2016) pretrained on ImageNet-1K (Rus-
+sakovsky et al., 2015); for CivilComments and MultiNLI we use BERT-Base (Devlin et al., 2019) pretrained
+on BookCorpus and English Wikipedia (Zhu et al., 2015). Our last-layer retraining (LLR) implementation
+uses SGD without scheduling or explicit regularization. Following common practice, the held-out set is20%of
+the training data for Waterbirds and half of the validation set for the other datasets (Kirichenko et al., 2023;
+S. Qiu et al., 2023; LaBonte et al., 2023). Dataset specifics and training details appear in Appendices B.1
+and B.2.
+Methods.We adopt a unified terminology for the family of two-stage retraining methods studied in this
+paper:
+• Last-layer Retraining (LLR)refers to any procedure that(i)trains a feature extractor using standard
+ERM on the training set, and(ii)reinitializes and retrains only the final linear layer on a held-out
+dataset not seen during the first stage. Importantly, generic LLR makesno assumptionabout the
+distribution of this held-out data—it may be arbitrarily imbalanced across classes or groups.
+• Deep Feature Reweighting (DFR)(Izmailov et al., 2022; Kirichenko et al., 2023) is aspecific instanceof
+LLR in which the held-out dataset is explicitlygroup-balanced: each groupg∈G is equally represented.
+In practice, DFR freezes the ERM-trained feature extractor, constructs a subsampled group-balanced
+held-out set (requiring access to group annotations), and fits a new linear classifier on this held-out set.
+DFR can thus be viewed as an “idealized” variant of LLR designed to directly improve worst-group
+accuracy.
+• Class-balanced Last-layer Retraining (CB-LLR)(LaBonte et al., 2023) denotes another LLR variant
+where the held-out data are balanced acrossclassesrather than groups. While class proportions are
+equalized, group imbalance within each class often remains.
+• Automatic Feature Reweighting (AFR)(S. Qiu et al., 2023) refers to the LLR variant in which the
+held-out set is drawn from the same distribution as the training data, but the last layer is retrained using
+aweighted loss functionintended to implicitly encourage group balance. The weighted loss function in
+AFR prioritizes points upon which the ERM model performs poorly. In particular, AFR introduces a
+weightωi for each held-out exampleias follows:
+ωi = βyi exp(−γˆpi)∑M
+j βyj exp(−γˆpj)
+,(1)
+where βy is one divided by the number of examples belonging to classy in the held-out set,M is the
+total number of points in the held-out set,ˆpi is the probability for the correct classyi and γ≥ 0is a
+tunable inverse temperature parameter.
+3 There exists another version of CivilComments (used by E. Z. Liu et al., 2021; Zhang et al., 2022; S. Qiu et al., 2023) where
+identity categories are not merged into one spurious feature. Both versions of CivilComments use the WILDS split (Koh et al.,
+2021).
+5
+3 Neural collapse and implicit bias do not explain LLR
+The interpretation of LLR methods as logistic regression on convergent ERM features lends itself to a possible
+understanding combining a nonlinear model training phenomenon (neural collapse) and a logistic regression
+phenomenon (implicit bias). We focus on the weakest measure of the neural collapse phenomenon, namely
+that the penultimate layer features collapse to their class means over the course of ERM training (Papyan
+et al., 2020). Importantly, neural collapse has been described as anoptimization phenomenon, occurring only
+on the training set and not on held-out data (Hui et al., 2022). Therefore, while all group features collapse to
+their class means on the training set, groups will not be collapsed in the held-out set. On the other hand,
+implicit bias results state that linear classifiers trained via gradient descent with the unregularized logistic
+loss — like the LLR classifier on the held-out set — converge in direction to the maximum-margin SVM
+solution (Soudry et al., 2018; Ji and Telgarsky, 2019).
+Combining these two ideas, we developed the following initial hypothesis (visualized in Figure 1). We
+hypothesized that the model undergoes neural collapse during ERM training, causing the features to collapse
+to their class means. These class means, however, are dominated by the largest groups in each class —
+resulting in ERM learning a biased classifier. Nevertheless, during LLR, the features are not collapsed as the
+held-out set was not seen during ERM (Hui et al., 2022). Since LLR learns a linear classifier on the held-out
+set features, the implicit bias of gradient descent would then elicit a maximum-margin classifier that might
+enjoy better robustness guarantees (see, e.g. (Chaudhuri et al., 2023)).
+In this section, we present evidence whichdoes notsupport our initial hypothesis. Specifically, we find
+that neural collapse either does not occur or occurs after the standard number of epochs of ERM training.
+Moreover, convergence of the LLR classifier to the maximum-margin solution is extremely slow, and the
+minimumℓ2-margin over the training data is not well-correlated with group accuracy.
+3.1 Neural collapse may not occur during standard ERM training
+We will measure the collapse of variability among class representations via a metric calledNC1 (Han et al.,
+2022). For each classy∈Y and each training examplei∈ Ωy in that class, we denote the penultimate layer
+feature vector ofiasf y,i. Neural collapse posits that features collapse to their respective class means
+µy := 1
+|Ωy|
+∑
+i∈Ωy
+fy,i.
+Wecomputeanempiricalmetricofthiscollapseusingtheintra-classcovariancematrixΣ A := 1
+m
+∑
+y∈Y
+∑
+i∈Ωy (fi−
+µy)(fi −µy)⊤, the global feature meanµG := 1
+|Y|
+∑
+y∈Yµy, and the inter-class covariance matrixΣR :=
+1
+|Y|
+∑
+y∈Y(µy −µG)(µy −µG)⊤. We then define
+NC1 := 1
+|Y|tr(ΣAΣ†
+R),
+whereΣ †
+R denotes the pseudo-inverse ofΣR. Neural collapse is formalized byNC1 →0(Han et al., 2022;
+Kothapalli, 2023).4
+Algorithm Design.Computing the neural collapse metric NC1 exactly requires constructing and storing
+the matricesΣ A andΣ R, each of dimensionN×N , whereN is the feature dimension of the penultimate
+layer. For modern neural networks, storing these matrices explicitly is memory-prohibitive. For example, in
+the case of BERT-Base trained on CivilComments,N exceeds 150,000. To address this issue, we propose a
+memory-efficient approximation based on theHutchinson trace estimator(Hutchinson, 1989).
+4 A slightly less precise formulationΣA →0was studied by Papyan et al., 2020.
+6
+Algorithm 1 Memory efficient computation ofNC1 estimate.Our method combines the Hutchinson
+trace estimator (Hutchinson, 1989) with efficient matrix-vector products forΣA andΣ R to estimateNC1 in
+O(N)memory, instead of theO(N 2)memory required to computeNC1 exactly.
+Require:Number of samplesK, access to matrix–vector productsΣ AxandΣ Rx.
+Ensure:Approximation ˆNC1 ≈ 1
+|Y|tr(ΣAΣ†
+R).
+1:forj= 1,...,Kdo
+2:Sample random vectorz j ∼N(0,I N)▷Or Rademacher{±1} N
+3:SolveΣ Rxj =zj forx j using an iterative solver▷ x j ≈Σ †
+Rzj
+4:Computey j ←Σ Axj
+5:Compute scalar estimates j ←z⊤
+j yj
+6:end for
+7:return ˆNC1 ← 1
+K|Y|
+∑K
+j=1 sj
+Table 1:Computing a stochastic estimate ofNC1 using Algorithm 1 is drastically more memory
+efficient than computingNC1 exactly.We display the vectorized feature dimensionsN for ResNet-50 on
+the vision datasets and BERT-Base on the language datasets. Exact computationNC1 requires storing two
+N×N matrices of double-precision floating-point numbers, while our estimate ofNC1 only requires storing
+three N dimensional vectors of double-precision floating-point numbers. We see that our stochastic estimate
+ofNC 1 requires many orders of magnitude less memory.
+Dataset Waterbirds CelebA CivilComments MultiNLI
+Vectorized Feature DimensionN 100,352 100,352 168,960 98,304
+Memory Requirement of Exact
+NC1 Computation 150.06 GiB 150.06 GiB 425.4 GiB 144 GiB
+Memory Requirement of Algorithm 1 2.297 MiB 2.297 MiB 3.867 MiB 2.25 MiB
+The Hutchinson estimator provides a stochastic approximation for the trace of a matrix:
+tr(A) =E[z ⊤Az]≈ 1
+K
+K∑
+i=1
+z⊤
+i Azi,
+where A∈R N×N, each random vectorzi ∈R N satisfies E[ziz⊤
+i ] = I, and K is the number of random
+samples used to approximate the expectation. Typically,zi is drawn from a Rademacher or standard normal
+distribution, but any isotropic distribution suffices.
+In our setting, we wish to approximateNC1 without ever explicitly formingΣA orΣ R. Note that both
+matrices admit efficient matrix–vector products:
+ΣAx= 1
+m
+∑
+y∈Y
+∑
+i∈Ωy
+(fi −µy)
+(
+(fi −µy)⊤x
+)
+,
+ΣRx= 1
+|Y|
+∑
+y∈Y
+(µy −µG)
+(
+(µy −µG)⊤x
+)
+,
+where µy is the class mean andµG the global mean. These expressions can be computed by streaming over the
+data, requiring only a constant number ofN-dimensional vectors in memory. Combining these observations
+yields a stochastic algorithm (Algorithm 1) capable of estimatingNC1 with onlyO(N)memory, compared to
+the O(N2)memory required to computeNC1 exactly. We compare the precise memory requirements of both
+methods in Table 1.
+This procedure introduces two sources of error:
+7
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 2:Collapse of class feature variability occurs after standard ERM training, if at all.We
+plot a stochastic estimate of the empirical metric of neural collapseNC1 using Algorithm 1 throughout
+training a ResNet-50 on Waterbirds and CelebA and a BERT-Base on CivilComments and MultiNLI. For
+Waterbirds and CelebA,NC1 is computed usingm = 10random vectors, while for CivilComments and
+MultiNLI, NC1 is computed usingm= 3random vectors. Each plot displays the mean and standard deviation
+for NC1 computed across3experimental seeds. We also display the meanNC1 metric computed on the
+features of the held-out set at the end of training (EoT).
+1.Linear solve error: Each iterative solve ofΣRxj =zj is performed to finite precision.
+2.Monte Carlo error: The Hutchinson estimator uses finite samplesKto approximate an expectation.
+Both sources of error can be reduced arbitrarily by increasing computation time. Notably, the variance of the
+Hutchinson estimator decreases with the feature dimensionN (Hutchinson, 1989), so fewer samplesK are
+required for larger models, corresponding to our regime of primary interest.
+Results.If neural collapse plays a significant role in ERM learning a biased classifier prior to LLR, then a
+collapse in feature variability should be observed during a standard number of ERM training steps. We display
+NC1 for a ResNet-50 on Waterbirds and CelebA and for a BERT-Base for CivilComments and MultiNLI
+in Figure 2. We train on both datasets for much longer than normal and denote the standard number of
+training steps in the spurious correlations literature (Sagawa et al., 2020a; Kirichenko et al., 2023) as dotted
+vertical lines in Figure 2.
+In Figure 2, we see that complete neural collapse does not occur on any dataset during the standard
+number of training steps. In fact, even after training more than3×the standard number of steps we still
+do not seeNC1 →0. Beyond an initial decrease in the first few epochs of training,NC1 computed on the
+training set remains relatively constant and comparable toNC1 computed on the held-out. For all datasets,
+the gap betweenNC1 computed on the training and held-out sets are within an order of magnitude. Thus, it
+is unlikely that neural collapse significantly influences the behavior of the ERM classifier prior to LLR in
+standard group robustness benchmarks and training protocols.
+3.2 The minimum margin of LLR is not predictive of robust generalization
+In classical learning theory, maximizing minimumℓ2 training margin is well understood to provide good
+generalization upper bounds (Bartlett et al., 1998; Koltchinskii and Panchenko, 2002). Therefore, assuming
+that the features of the held-out set are similar in distribution to the features of the test set, we should expect
+that choosing a classifier which maximizes theℓ2 margin on the held-out set will lead to good generalization.
+Letf θ :X→{−1,1}be a binary linear classifier defined by
+fθ(x) =x⊤θ+b.
+8
+Table 2:Group test accuracy is not well-correlated with the minimumℓ2 margin on the held-
+out set.We compute the Pearson correlation coefficient between the test group accuracy of a ResNet-50
+(BERT-Base) trained on Waterbirds and CelebA (CivilComments and MultiNLI) and the minimum margin
+of each group in the held-out set across3experimental seeds. We see that held-out set minimumℓ2 margin is
+not well correlated with test accuracy. A complete breakdown of each dataset including distribution and
+group sizes is included in Table 5.
+Dataset Group 0 Group 1 Group 2 Group 3 Group 4 Group 5
+Waterbirds 0.279 0.285 0.288 0.266 — —
+CelebA 0.526 0.473 0.458 0.478 — —
+CivilComments -0.074 -0.143 -0.008 0.055 — —
+MultiNLI 0.303 0.497 0.279 0.210 0.221 0.431
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 3:Convergence of LLR to the maximum-margin SVM solution is extremely slow.We
+plot the mean and standard deviation over3experimental seeds of the directional errorˆErr between the
+last layer weights of a neural network model and an SVM (both trained on the features of the held-out set).
+We use a ResNet-50 for Waterbirds and CelebA and a BERT-Base for CivilComments and MultiNLI. Here,
+ˆErr := || θNN
+||θNN||2
+− θSVM
+||θSVM||2
+||2, whereθNN denotes the last layer weights andθSVM denotes the weights of an
+SVM trained on the held-out set features.
+Let D:= {(xi,yi)}n
+i=1 ⊆X×{− 1,1}be the training set andC:= {xi : yif(xi) > 0}be the set of points
+correctly classified byfθ. Then, we define the minimumℓ2-margin offθ to be
+min
+xi∈C
+yifθ(xi).
+The hard margin SVM is a binary linear classifier formulated through the following optimization problem:
+min
+θ,b
+1
+2||θ||2
+2 s.t.∀(x i,yi)∈D, y i(x⊤
+i θ+b)≥1.
+The classifierθSVM learned by a hard margin SVM is the separating hyperplane which maximizes the minimum
+ℓ2-margin. Soudry et al., 2018 show that linear classifiers trained via GD with the unregularized logistic loss
+converge in direction toθSVM. In particular, || θGD
+||θGD||2
+− θSVM
+||θSVM||2
+||2 →0at a worst-case rate ofO(log logt
+logt )
+where t is the number of gradient steps. This result can also be extended to the nonseparable case, though
+as one might expect, the implicit bias is more complex (Ji and Telgarsky, 2019). The SVM solution was
+recently studied in the context of group robustness by Chaudhuri et al., 2023, who showed that under certain
+conditions on the tail of the data distribution,θSVM converges to the classifier with optimal worst-group
+accuracy as the number of data points goes to infinity.
+If LLR maximizes the minimum training margin on the held-out set and this results in a debiased classifier,
+then we should see a high correlation between the size of group minimum margin and group test accuracy
+9
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 4:LLR performance is determined by held-out set group balance.We compare the test
+WGA of ERM and LLR models while controlling the group balance of the training and held-out sets. We
+use ResNet-50 for the vision datasets and BERT-Base for the language datasets, and we plot the mean and
+standard deviation over 3 experimental seeds. We compute the Pearson correlation coefficient between the
+ERM test WGA and the LLR test WGA for each dataset; the presented coefficients are averaged over all 5
+group ratios. We find that LLR worst-group accuracy correlates strongly with change in group balance; in
+particular, LLR tends to improve over ERM if and only if the held-out set has better group balance.
+(i.e.,minority group points lie near the decision boundary). However, in Table 2, we find that the minimum
+training margin for a group is not correlated with the test accuracy for that group.
+Moreover, convergence towardsθSVM is slow in practice. We perform LLR on the held-out sets of
+Waterbirds, CelebA and CivilComments via SGD with learning rate0.001and unregularized logistic loss,
+and we plot the directional error withθSVM in Figure 3. In line with the slowO(log logt
+logt )rate from Soudry
+et al., 2018, we find that even after10×the number of standard training steps, the LLR classifier has yet to
+converge toθSVM. As the minimumℓ2-margin is not well-correlated with group test accuracy and convergence
+to θSVM is slow, we conclude that our initial hypothesis does not sufficiently explain the robustness gains of
+LLR on an imbalanced held-out set.
+4 LLR performance is primarily due to group balance in the held-
+out set
+The negative results of Section 3 prompted us to reconsider our initial hypothesis. We now present strong
+evidence for an alternative hypothesis: that the success of LLR is primarily due tobetter group balancein the
+held-out set as compared to the training set. In particular, we argue that the “free lunch” interpretation
+of CB-LLR (LaBonte et al., 2023) is more likely to arise due to improving class balancing over the ERM
+baseline than an implicit-bias advantage of LLR. Similarly, AFR (S. Qiu et al., 2023) performs implicit
+group-balancing via loss reweighting on the held-out set. While LLR may not be as “unreasonably effective”
+as previously claimed, we do see that it can surprisingly recover the WGA of an optimally class-balanced
+model even when ERM was not optimally class-balanced. Generally, LLR remains a highly effective technique
+when group annotations (or proxies thereof) are available only on the held-out set.
+4.1 LLR worst-group accuracy correlates strongly with ERM vs LLR group
+ratio
+To isolate the effect of group balance on LLR, we perform an ablation study on the ERM and LLR group
+ratios. We directly control the group ratio — defined as the ratio between the number of minority group
+points and the number of majority group points — by removing data from the held-out set until the desired
+group ratio is achieved for each class, keeping the total data in each stage constant. Fixing majority and
+minority group sizes also ensures that each dataset is ultimately class-balanced (i.e.,we use thesubsetting
+10
+class-balancing technique).
+We vary the group ratios for both the ERM training set and the LLR held-out set between0.05and1 .0.
+A group ratio of1.0corresponds to the majority and minority groups having equal size, whereas a group
+ratio of0 .05implies that the minority groups are5%the size of the majority groups. Our results are detailed
+in Figure 4. For a fair comparison, the ERM-trained models are trained with the held-out set added in; as an
+example, on Waterbirds we compare LLR with20%of data following an ERM with80%of data (colored line)
+to an ERM with100%of data (gray line). Note that LLR with a group ratio of1.0corresponds to DFR, as
+this reflects perfectly group-balanced data.
+We find that LLR performance correlates strongly with the change in group balance between the training
+and held-out datasets. LLR only shows significant gains over ERM when it is trained on a held-out set with
+ahigher group ratiothan the ERM training set, and vice versa. Moreover, the test WGA of LLR trained
+with a fixed group ratio is remarkably similar to the test WGA of ERM trained with that same group ratio
+(observed most impressively on CivilComments). In Figure 4, we detail the average Pearson correlation
+coefficients between ERM test WGA and LLR test WGA. Specifically, we compute the Pearson correlation
+coefficients between ERM test WGA (gray line) and LLR test WGA (colored line) for all group ratios in
+(0.05,0.1,0.2,0.5,1.0), and average over group ratios. These average correlation coefficients reveal a strong
+trend, withr >0.9on Waterbirds and CivilComments. We include the full (non-averaged) coefficients in
+Appendix A.
+These results indicate that the two-stage training procedure of LLR methods isnotfundamentally oriented
+towards learning a debiased classifier as we initially hypothesized. Rather, some form of group-balancing is
+generally necessary to maximally capture LLR robustness benefits. Moreover, our results suggest that LLR
+methods are limited by how well they improve the group ratio, and thus DFR likely upper bounds the WGA
+of any LLR method which does not utilize group annotations.
+4.2 LLR can recover optimally class-balanced WGA
+In the previous section, we explicitly controlled group ratios to evaluate LLR worst-group accuracy in a
+fine-grained ablation study. A remaining question is whether our insights hold in more realistic settings,
+i.e.,across benchmark datasets with standard group ratios and data balancing methodologies. This section
+answers this question in the affirmative through an empirical study on the interaction between LLR and
+class-balancing, a common data pre-processing method shown to approach more complicated group robustness
+algorithms (Idrissi et al., 2022). Because groups are defined as a refinement of classes, each of these class-
+balancing strategies implicitly induces some degree of group-balancing without requiring group labels. This
+makes class-balancing a natural baseline for understanding when explicit group-balancing is necessary and
+how much robustness can be achieved without group annotations.
+We utilize three standard techniques for class-balancing, detailed in Section 2:subsetting, wherein the
+size of each class is reduced to match that of the smallest class;upsampling, wherein sampling probabilities
+for each class are adjusted so that mini-batches are class-balanced in expectation; andupweighting, wherein
+minority class samples are assigned larger loss weights (LaBonte et al., 2024). We compare ERM and LLR
+trained with all permutations of these class-balancing methods and display the results in Figure 5.
+Our first finding is that our insights from Section 4.1 hold in realistic benchmark datasets with standard
+group ratios (without our explicit control from earlier). In particular, consider only ERM and LLR with no
+class-balancing — the leftmost gray and blue “No CB” bars respectively in each subplot of Figure 5. We
+can see that in all four subplots, No CB LLR either worsens No CB ERM worst-group accuracy, or they lie
+within one standard deviation of each other. This suggests that without additional intervention in the form
+of class-balancing, LLR does not improve over ERM with the same group ratio. This is especially apparent
+in MultiNLI, the only dataset which is class-balanceda priori; ERM is more robust than any instantiation of
+LLR on this dataset, echoing earlier findings of LaBonte et al., 2023.
+Our second, and more surprising, finding is that CB-LLR (with any class-balancing method) can recover
+optimally class-balanced WGAeven when ERM was not optimally class-balanced. For example, upweighting
+ERM is very poor on CelebA, but running CB-LLR recovers the (best) subsetting ERM worst-group accuracy
+within one standard deviation. Prior work (LaBonte et al., 2024) has shown that subsetting on Waterbirds,
+11
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 5:LLR can recover optimally class-balanced WGA.We compare the test WGA of ERM
+(trained on 100% of the data) against LLR (trained on a held-out subset with the same group ratio). For both
+approaches, we evaluate four class-balancing strategies:no class balancing (No CB),upsampling,subsetting,
+andupweighting(defined in Section 2). We use ResNet-50 for the vision datasets and BERT-Base for the
+language datasets. We plot mean and standard deviation across 3 seeds. Eachx-axis group corresponds to
+the class-balancing method used to train the ERM baseline (gray bar). Within each group, we compare this
+ERM model to the four LLR variants (colored bars), each using the corresponding class-balancing method.
+and upsampling and upweighting on CelebA and CivilComments, can cause substantial degradation in WGA.
+Importantly, this degradation arises from the optimization dynamics of ERM rather than the class distribution
+itself. Because CB-LLR performs only linear retraining on a fixed representation, it does not suffer from the
+same instability.
+Before moving on, we remark that Figure 5 suggests LLR may yet trump optimally class-balanced ERM in
+certain edge cases. Specifically: subsetting ERM/upweighting LLR on CelebA, upsampling ERM/subsetting
+LLR on CivilComments, and upweighting ERM/upsampling LLR on CivilComments exceed all ERMs by
+at least one standard deviation. It is possible that characteristics of thespecific data selectedfor LLR are
+influential in these cases (see,e.g.,previous work by LaBonte et al., 2023; Qiao et al., 2025).
+4.3 Recent LLR methods succeed via implicit group-balancing
+In this section, we reconcile our findings with the literature by asking the following question: if LLR on
+an equally-imbalanced held-out set does not significantly improve WGA, how do LLR methods like CB-
+LLR (LaBonte et al., 2023) and AFR (S. Qiu et al., 2023) achieve state-of-the-art group robustness without
+group annotations? We argue that these techniques enjoy success primarily due toimplicit group-balancing,
+wherein the held-out set is effectively more group-balanced than the training set due to user interventions.
+The CB-LLR results of LaBonte et al., 2023 use class-balancedupsamplingfor both ERM and LLR.
+Since upsampling is a suboptimal procedure for ERM on CelebA and CivilComments (see Figure 5 as well
+as LaBonte et al., 2024), LLR has considerably more room to improve over this baseline. In other words,
+the strong CB-LLR performance is largely explained by the fact that the ERM model it starts from is
+itself degraded by suboptimal class-balancing. The improved WGA on Waterbirds is more simply explained:
+following standard practice (Kirichenko et al., 2023), CB-LLR is run on50%of the Waterbirds validation set
+(which is more group-balanced!) instead of20%of the training set, which is group-imbalancedas we do in
+Figure 5.
+Compared to standard LLR, which utilizes the cross-entropy loss only, AFR incorporates a weighted
+loss function which prioritizes points upon which the ERM model performs poorly (detailed in Equation 1).
+Specifically, AFR introduces a weight for each held-out examplei proportional toexp(−γˆpi), where ˆpi is
+the probability for the correct classyi and γ≥ 0is a tunable temperature parameter.5 Therefore, the AFR
+5 Loss-based adjustments are common among group robustness methods not using group annotations,e.g.,E. Z. Liu et al.,
+2021.
+12
+held-out set effectively has better group balance than the training set, in the sense of theupweightingmethod.
+Notably, the ablations of S. Qiu et al., 2023 show that settingγ= 0reduces to CB-LLR with upweighting!
+A positive takeaway from our analysis in this section is that LLR is exceptional atleveraging data
+interventions on exclusively the held-out set. That is, given a principled technique to increase group balance
+(e.g.,class-balancing in CB-LLR, loss-based upweighting in AFR, or disagreement in SELF (LaBonte et al.,
+2023)), one need only apply the intervention to a limited number of held-out data and retrain the last layer to
+observe robustness gains matching or exceeding that obtained by applying the same method to ERM (which
+would require applying the intervention to the much larger training set). Overall, the strength of LLR is its
+group-annotation and computational efficiency, and it remains a powerful method for group robustness.
+5 Discussion
+In this paper, we proposed and eventually rejected a hypothesis explaining the success of LLR through neural
+collapse and the implicit bias of gradient descent. However, we also presented strong evidence supporting
+an alternate hypothesis: that the improved WGA of LLR is primarily due to improved group balance in
+the held-out set. One consequence of this observation is that LLR can recover the WGA of an optimally
+class-balanced model, even if ERM was not optimally class-balanced. Overall, LLR remains an effective
+method to improve worst-group accuracy, especially if a limited number of group annotations are available
+(e.g.,DFR), or in conjunction with implicit group-balancing techniques (e.g.,CB-LLR, SELF, and AFR).
+Our work highlights the need for further research towards two open questions. First, how do neural
+networks learn both core and spurious features during ERM training? Recent progress towards this question,
+e.g.,by G. Qiu et al., 2024, is heartening, but the fact remains that we have no substantial theoretical
+justification for this key assumption underlying LLR (Izmailov et al., 2022). Second, what is the mechanism
+by which LLR with better group ratio than ERM reweights the core and spurious features? Addressing this
+second question is necessary for a complete understanding of LLR, and it is possible this mechanism could be
+leveraged to design algorithms which target WGA more explicitly than reweighting via logistic regression.
+Acknowledgments.We thank Jacob Abernethy for compute assistance. V.M. acknowledges support from
+the NSF (awards CCF-223915 and IIS-2212182), Google Research, Adobe Research and Amazon Research.
+13
+References
+Bartlett, Peter, Yoav Freund, Wee Sun Lee, and Robert E Schapire (1998). “Boosting the margin: A new
+explanation for the effectiveness of voting methods”. In:The Annals of Statistics26.5, pp. 1651–1686
+(cit. on pp. 3, 8).
+Beery, Sara, Grant van Horn, and Pietro Perona (2018). “Recognition in Terra Incognita”. In:European
+Conference on Computer Vision (ECCV)(cit. on p. 2).
+Borkan, Daniel, Lucas Dixon, Jeffrey Sorenson, Nithium Thain, and Lucy Vasserman (2019). “Nuanced
+metrics for measuring unintended bias with real data for text classification”. In:World Wide Web (WWW)
+(cit. on pp. 4, 5).
+Chaudhuri, Kamalika, Kartik Ahuja, Martin Arjovsky, and David Lopez-Paz (2023). “Why does throwing
+away data improve worst-group error?” In:International Conference on Machine Learning (ICML)(cit. on
+pp. 2, 3, 6, 9).
+Chen, Zhikang, Min Zhang, Sen Cui, Haoxuan Li, Gang Niu, Mingming Gong, Changshui Zhang, and Kun
+Zhang (2024). “Neural Collapse Inspired Feature Alignment for Out-of-Distribution Generalization”. In:
+Conference on Neural Information Processing Systems (NeurIPS)(cit. on p. 3).
+Chouldechova, Alexandra (2016). “Fair prediction with disparate impact: A study of bias in recidivism
+prediction instruments”. In:Conference on Fairness, Accountability, and Transparency in Machine
+Learning (FATML)(cit. on p. 1).
+Dang, Hien, Tho Tran, Stanley Osher, Hung Tran-The, Nhat Ho, and Tan Nguyen (2023).Neural Collapse
+in Deep Linear Networks: From Balanced to Imbalanced Data. arXiv:2301.00437 [cs.LG].url: https:
+//arxiv.org/abs/2301.00437(cit. on p. 3).
+Devlin, Jacob, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova (2019). “BERT: Pre-training of
+Deep Bidirectional Transformers for Language Understanding”. In:North American Association for
+Computational Linguistics (NAACL)(cit. on pp. 5, 24).
+Falcon, William and the PyTorch Lightning maintainers and contributors (2019). “PyTorch Lightning”. In:
+GitHub(cit. on p. 24).
+Fang, Cong, Hangfeng He, Qi Long, and Weijie J. Su (Oct. 2021). “Exploring deep neural networks via
+layer-peeled model: Minority collapse in imbalanced training”. In:Proceedings of the National Academy of
+Sciences118.43.issn: 1091-6490.doi:10.1073/pnas.2103091118.url:http://dx.doi.org/10.1073/
+pnas.2103091118(cit. on p. 3).
+Geirhos, Robert, Jörn-Henrik Jacobsen, Claudio Michaelis, Richard Zemel, Wieland Brendel, Matthias
+Bethge, and Felix A. Wichmann (2020). “Shortcut learning in deep neural networks”. In:Nature Machine
+Intelligence2 (1), pp. 665–673 (cit. on pp. 1, 2).
+Han, X.Y., Vardan Papyan, and David Donoho (2022). “Neural Collapse Under MSE Loss: Proximity to
+and Dynamics on the Central Path”. In:International Conference on Learning Representations (ICLR)
+(cit. on pp. 3, 6).
+Harris, Charles R., K. Jarrod Millman, Stéfan J. van der Walt, Ralf Gommers, Pauli Virtanen, David
+Cournapeau, Eric Wieser, Julian Taylor, Sebastian Berg, Nathaniel J. Smith, Robert Kern, Matti Picus,
+Stephan Hoyer, Marten H. van Kerkwijk, Matthew Brett, Allan Haldane, Jaime Fernández del Río,
+Mark Wiebe, Pearu Peterson, Pierre Gérard-Marchant, Kevin Sheppard, Tyler Reddy, Warren Weckesser,
+Hameer Abbasi, Christoph Gohlke, and Travis E. Oliphant (2020). “Array programming with NumPy”.
+In:Nature585.1, pp. 357–362 (cit. on p. 24).
+He, Kaiming, Xiangyu Zhang, Shaoqing Ren, and Jian Sun (2016). “Deep Residual Learning for Image
+Recognition”. In:Conference on Computer Vision and Pattern Recognition (CVPR)(cit. on pp. 5, 24).
+Hong, Wanli and Shuyang Ling (2023).Neural Collapse for Unconstrained Feature Model under Cross-entropy
+Loss with Imbalanced Data. arXiv:2309.09725 [stat.ML].url: https://arxiv.org/abs/2309.09725
+(cit. on p. 3).
+Hui, Like, Mikhail Belkin, and Preetum Nakkiran (2022). “Limitations of Neural Collapse for Understanding
+Generalization in Deep Learning”. In:arXiv preprint arXiv:2202.08384(cit. on pp. 2, 3, 6).
+Hunter, John D. (2007). “Matplotlib: A 2D Graphics Environment”. In:Computing in Science & Engineering
+9.3, pp. 90–95 (cit. on p. 24).
+14
+Hutchinson, Michael F. (1989). “A stochastic estimator of the trace of the influence matrix for Laplacian
+smoothing splines”. In:Communications in Statistics — Simulation and Computation18.3, pp. 1059–1076
+(cit. on pp. 2, 6–8).
+Idrissi, Badr Youbi, Martín Arjovsky, Mohammad Pezeshki, and David Lopez-Paz (2022). “Simple data
+balancing achieves competitive worst-group-accuracy”. In:Conference on Causal Learning and Reasoning
+(CLeaR)(cit. on pp. 2, 5, 11).
+Izmailov, Pavel, Polina Kirichenko, Nate Gruver, and Andrew Gordon Wilson (2022). “On Feature Learning
+in the Presence of Spurious Correlations”. In:Conference on Neural Information Processing Systems
+(NeurIPS)(cit. on pp. 1, 2, 5, 13, 24).
+Ji, Ziwei and Matus Telgarsky (2019). “The implicit bias of gradient descent on nonseparable data”. In:
+Conference on Learning Theory (COLT)(cit. on pp. 3, 6, 9).
+Kirichenko, Polina, Pavel Izmailov, and Andrew Gordon Wilson (2023). “Last Layer Re-Training is Sufficient
+for Robustness to Spurious Correlations”. In:International Conference on Learning Representations
+(ICLR)(cit. on pp. 1–3, 5, 8, 12).
+Koh, Pang Wei, Shiori Sagawa, Henrik Marklund, Sang Michael Xie, Marvin Zhang, Akshay Balsubramani,
+Weihua Hu, Michihiro Yasunaga, Richard Lanas Phillips, Sara Beery, Jure Leskovec, Anshul Kundaje,
+Emma Pierson, Sergey Levine, Chelsea Finn, and Percy Liang (2021). “WILDS: A Benchmark of in-
+the-Wild Distribution Shifts”. In:International Conference on Machine Learning (ICML)(cit. on pp. 4,
+5).
+Koltchinskii, Vladimir and Dmitry Panchenko (2002). “Empirical margin distributions and bounding the
+generalization error of combined classifiers”. In:The Annals of Statistics30.1, pp. 1–50 (cit. on pp. 3, 8).
+Kothapalli, Vignesh (2023). “Neural Collapse: A Review on Modelling Principles and Generalization”. In:
+Transactions on Machine Learning Research (TMLR)(cit. on p. 6).
+LaBonte, Tyler (2023).Milkshake: Quick and extendable experimentation with classification models.http:
+//github.com/tmlabonte/milkshake(cit. on p. 24).
+LaBonte, Tyler, John C. Hill, Xinchen Zhang, Vidya Muthukumar, and Abhishek Kumar (2024). “The Group
+Robustness is in the Details: Revisiting Finetuning under Spurious Correlations”. In:Conference on
+Neural Information Processing Systems (NeurIPS)(cit. on pp. 2, 4, 11, 12, 18).
+LaBonte, Tyler, Vidya Muthukumar, and Abhishek Kumar (2023). “Towards Last-layer Retraining for Group
+Robustness with Fewer Annotations”. In:Conference on Neural Information Processing Systems (NeurIPS)
+(cit. on pp. 1, 2, 5, 10–13).
+Liu, Evan Zheran, Behzad Haghgoo, Annie S. Chen, Aditi Raghunathan, Pang Wei Koh, Shiori Sagawa,
+Percy Liang, and Chelsea Finn (2021). “Just Train Twice: Improving Group Robustness without Training
+Group Information”. In:International Conference on Machine Learning (ICML)(cit. on pp. 2, 5, 12, 20).
+Liu, Ziwei, Ping Luo, Xiaogang Wang, and Xiaoou Tang (2015). “Deep Learning Face Attributes in the Wild”.
+In:International Conference on Computer Vision (ICCV)(cit. on p. 4).
+Lu, Shenyu, Junyi Chai, and Xiaoqian Wang (2024). “Neural Collapse Inspired Debiased Representation
+Learning for Min-max Fairness”. In:Conference on Knowledge Discovery and Data Mining (KDD)(cit. on
+p. 3).
+Oren, Yonatan, Shiori Sagawa, Tatsunori B. Hashimoto, and Percy Liang (2019). “Distributionally Robust
+Language Modeling”. In:Conference on Empirical Methods in Natural Language Processing (EMNLP)
+(cit. on p. 1).
+Papyan, Vardan, X.Y. Han, and David Donoho (2020). “Prevalence of neural collapse during the terminal
+phase of deep learning training”. In:Proceedings of the National Academy of Sciences (PNAS)117.40,
+pp. 24652–24663 (cit. on pp. 3, 6).
+Park, Juhyeon, Seokhyeon Jeong, and Taesup Moon (2025). “TLDR: Text Based Last-layer Retraining for
+Debiasing Image Classifiers”. In:Winter Conference on Applications of Computer Vision (WACV)(cit. on
+p. 2).
+Paszke, Adam, Sam Gross, Soumith Chintala, Gregory Chanan, Edward Yang, Zachary DeVito, Zeming Lin,
+Alban Desmaison, Luca Antiga, and Adam Lerer (2017). “Automatic differentiation in PyTorch”. In:
+15
+Conference on Neural Information Processing Systems (NeurIPS) Workshop on Automatic Differentiation
+(cit. on p. 24).
+Paszke, Adam, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen,
+Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Z. Yang, Zach
+DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and
+Soumith Chintala (2019). “PyTorch: An Imperative Style, High-Performance Deep Learning Library”. In:
+Conference on Neural Information Processing Systems (NeurIPS)(cit. on p. 24).
+Qiao, Rui, Zhaoxuan Wu, Jingtan Wang, Pang Wei Koh, and Bryan Kian Hsiang Low (2025). “Group-robust
+Sample Reweighting for Subpopulation Shifts via Influence Functions”. In:International Conference on
+Learning Representations (ICLR)(cit. on pp. 2, 12).
+Qiu, GuanWen, Da Kuang, and Surbhi Goel (2024). “Complexity Matters: Feature Learning in the Presence
+of Spurious Correlations”. In:International Conference on Machine Learning (ICML)(cit. on pp. 2, 13).
+Qiu, Shikai, Andres Potapczynski, Pavel Izmailov, and Andrew Gordon Wilson (2023). “Simple and Fast
+Group Robustness by Automatic Feature Reweighting”. In:International Conference on Machine Learning
+(ICML)(cit. on pp. 1, 2, 5, 10, 12, 13).
+Russakovsky, Olga, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej
+Karpathy, Aditya Khosla, Michael Bernstein, Alexander C. Berg, and Li Fei-Fei (2015). “ImageNet
+Large Scale Visual Recognition Challenge”. In:International Journal of Computer Vision (IJCV)115.1,
+pp. 211–252 (cit. on pp. 5, 24).
+Sagawa, Shiori, Pang Wei Koh, Tatsunori B. Hashimoto, and Percy Liang (2020a). “Distributionally Robust
+Neural Networks for Group Shifts: On the Importance of Regularization for Worst-Case Generalization”.
+In:International Conference on Learning Representations (ICLR)(cit. on pp. 1, 2, 4, 5, 8).
+Sagawa, Shiori, Aditi Raghunathan, Pang Wei Koh, and Percy Liang (2020b). “An investigation of why
+overparameterization exacerbates spurious correlations”. In:International Conference on Machine Learning
+(ICML)(cit. on p. 20).
+Shah, Harshay, Kaustav Tamuly, Aditi Raghunathan, Prateek Jain, and Praneeth Netrapalli (2020). “The
+Pitfalls of Simplicity Bias in Neural Networks”. In:Conference on Neural Information Processing Systems
+(NeurIPS)(cit. on p. 1).
+Shwartz-Ziv, Ravid, Micah Goldblum, Yucen Lily Li, C. Bayan Bruss, and Andrew Gordon Wilson (2023).
+“Simplifying Neural Network Training Under Class Imbalance”. In:Conference on Neural Information
+Processing Systems (NeurIPS)(cit. on p. 2).
+Soudry, Daniel, Elad Hoffer, Mor Shpigel Nacson, Suriya Gunasekar, and Nathan Srebro (2018). “The Implicit
+Bias of Gradient Descent on Separable Data”. In:Journal of Machine Learning Research (JMLR)19,
+pp. 1–57 (cit. on pp. 3, 6, 9, 10).
+Stromberg, Nathan, Rohan Ayyagari, Monica Welfert, Sanmi Koyejo, and Lalitha Sankar (2024). “Robustness
+to Subpopulation Shift with Domain Label Noise via Regularized Annotation of Domains”. In:Transactions
+on Machine Learning Research (TMLR)(cit. on p. 2).
+Taghanaki, Saeid Asgari, Aliasghar Khani, Fereshte Khani, Ali Gholami, Linh Trana, Ali Mahdavi-Amiri,
+and Ghassan Hamarneh (2022). “MaskTune: Mitigating Spurious Correlations by Forcing to Explore”. In:
+Conference on Neural Information Processing Systems (NeurIPS)(cit. on p. 4).
+Thrampoulidis, Christos, Ganesh R. Kini, Vala Vakilian, and Tina Behnia (2022).Imbalance Trouble: Revisiting
+Neural-Collapse Geometry. arXiv:2208.05512 [cs.LG].url: https://arxiv.org/abs/2208.05512
+(cit. on p. 3).
+TorchVision maintainers and contributors (2016). “TorchVision: PyTorch’s Computer Vision library”. In:
+GitHub(cit. on p. 24).
+Vapnik, Vladimir (1998).Statistical Learning Theory. Wiley (cit. on p. 1).
+Wah, Catherine, Steve Branson, Peter Welinder, Pietro Perona, and Serge Belongie (2011).The Caltech-UCSD
+Birds-200-2011 Dataset. Tech. rep. California Institute of Technology (cit. on p. 4).
+Wang, Yining, Junjie Sun, Chenyue Wang, Mi Zhang, and Min Yang (2024). “Navigate Beyond Shortcuts:
+Debiased Learning through the Lens of Neural Collapse”. In:Conference on Computer Vision and Pattern
+Recognition (CVPR)(cit. on p. 3).
+16
+Welinder, Peter, Steve Branson, Takeshi Mita, Catherine Wah, Florian Schroff, Serge Belongie, and Pietro
+Perona (2010).Caltech-UCSD Birds 200. Tech. rep. California Institute of Technology (cit. on p. 4).
+Williams, Adina, Nikita Nangia, and Samuel Bowman (2018). “A broad-coverage challenge corpus for
+sentence understanding through inference”. In:North American Association for Computational Linguistics
+(NAACL)(cit. on pp. 4, 5, 24).
+Wolf, Thomas, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric
+Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara
+Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin
+Lhoest, and Alexander Rush (2020). “Transformers: State-of-the-Art Natural Language Processing”. In:
+Conference on Empirical Methods in Natural Language Processing (EMNLP) System Demonstrations
+(cit. on p. 24).
+Xiao, Kai Yuanqing, Logan Engstrom, Andrew Ilyas, and Aleksander Mądry (2021). “Noise or Signal: The Role
+of Image Backgrounds in Object Recognition”. In:International Conference on Learning Representations
+(ICLR)(cit. on p. 2).
+Xu, Jingxuan, Wuyang Chen, Linyi Li, Yao Zhao, and Yunchao Wei (2025). “Collapsed Language Models
+Promote Fairness”. In:International Conference on Learning Representations (ICLR)(cit. on p. 3).
+Ye, Haotian, James Zou, and Linjun Zhang (2023). “Freeze then Train: Towards Provable Representation
+Learning under Spurious Correlations and Feature Noise”. In:International Conference on Artificial
+Intelligence and Statistics (AISTATS)(cit. on p. 2).
+Zech, John R., Marcus A. Badgeley, Manway Liu, Anthony B. Costa, Joseph J. Titano, and Eric Karl
+Oermann (2018). “Variable generalization performance of a deep learning model to detect pneumonia in
+chest radiographs: A cross-sectional study”. In:PLoS Medicine15 (11) (cit. on p. 1).
+Zhang, Michael, Nimit S. Sohoni, Hongyang R. Zhang, Chelsea Finn, and Christopher Ré (2022). “Correct-N-
+Contrast: A Contrastive Approach for Improving Robustness to Spurious Correlations”. In:International
+Conference on Machine Learning (ICML)(cit. on p. 5).
+Zhu, Yukun, Ryan Kiros, Rich Zemel, Ruslan Salakhutdinov, Raquel Urtasun, Antonio Torralba, and Sanja
+Fidler (2015). “Aligning Books and Movies: Towards Story-Like Visual Explanations by Watching Movies
+and Reading Books”. In:International Conference on Computer Vision (ICCV)(cit. on pp. 5, 24).
+17
+A Additional experiments
+In this section, we present additional experiments deferred from the main body of the work.
+A.1 Explicit group-balancing
+First, we study an extension of the implicit group-balancing discussion from Section 4.3 to explicit group-
+balancing. As discussed in Section 2, we investigate three explicit balancing methods: subsetting, upsampling,
+and upweighting. It has previously been observed that using upsampling or upweighting for class-balancing
+can result in drastic decreases to test WGA during training (LaBonte et al., 2024). If the performance
+improvement from LLR is indeed primarily due to the implicit group-balancing achieved by class-balancing,
+we would expect similar degradation when we explicitly group-balance using these same techniques.
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 6:Group-balancing with upsampling and upweighting can lead to catastrophic collapse.
+We compare three group-balancing methods:subsetting,upsampling, andupweighting. We plot the mean and
+standard deviation over3experimental seeds for a ResNet-50 on the vision datasets and a BERT-Base on
+the language datasets. We note a dramatic decrease in test WGA during training for both upsampling and
+upweighting on CelebA and CivilComments. We also see a collapse in WGA for upweighting on MultiNLI.
+Figure 6 shows how different group-balancing methods affect WGA during training. Similar to the
+class-balancing results, we find that upsampling and upweighting cause substantial degradation on CelebA
+and CivilComments. Additionally, group-balanced upweighting leads to degradation on MultiNLI and a mild
+decrease in WGA on Waterbirds. Overall, the training dynamics induced by subsetting, upweighting, and
+upsampling for group-balancing resemble those observed for class-balancing in LaBonte et al. (2024): most
+group-balancing methods behave similarly and do not exhibit degradation.
+ThekeyexceptionsareMultiNLI—wherethedatasetisnaturallyclass-balancedbutnotgroup-balanced—and
+subsetting on Waterbirds. For MultiNLI, the lack of class imbalance causes group-balanced upweighting
+to overweight noisy minority signals, leading to degradation. For Waterbirds, class-balanced subsetting
+disproportionately removes examples from its already small minority groups, harming performance, whereas
+group-balanced subsetting avoids this issue and therefore performs well.
+In Figure 7, we compare the test WGA of class-balanced ERM and group-balanced DFR. This comparison
+is motivated by the practical reality that class-balancing is widely used when group annotations are unavailable,
+and is often assumed to provide a good surrogate for group-balancing. However, recent work suggests that
+class-balancing can interact with robustness in subtle and dataset-dependent ways. By directly contrasting
+class-balanced ERM with group-balanced DFR, we aim to isolate the extent to which robustness gains arise
+from improved representations versus improved group balance. Our results show that while class-balancing
+affects ERM and DFR substantially, explicit group-balancing still yields consistent WGA improvements,
+demonstrating its unique value when group annotations—even limited ones—are available.
+18
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure7:Choiceofgroup-balancingmethodisimportanttoDFRsuccess.Wecompare class-balanced
+ERM to group-balanced DFR across three balancing methods: subsetting, upsampling, and upweighting.
+We plot the mean and standard deviation over 3 experimental seeds for a ResNet-50 on the vision datasets
+and a BERT-Base on the language datasets. We note that the choice of balancing method has a dramatic
+effect on the test WGA for both ERM and DFR. For instance, on CelebA, DFR with subsetting consistently
+outperforms DFR with upsampling or upweighting, regardless of the ERM balancing method used.
+19
+A.2 Supplemental plots for average accuracy
+In this section, we provide corresponding figures to those in the main text displaying average accuracy (AA)
+instead of worst-group accuracy. While group robustness methods are known in some cases to degrade average
+accuracy (Sagawa et al., 2020b; E. Z. Liu et al., 2021), our results show that LLR generally enjoys similar
+average accuracy compared to ERM.
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 8: Test average accuracy (AA) for ERM, upsampling, subsetting, and upweighting across the
+Waterbirds, CelebA, CivilComments, and MultiNLI datasets. Across all four benchmarks, average accuracy
+remains uniformly high and nearly identical across class-balancing methods, indicating that these interventions
+primarily affect minority-group robustness rather than overall predictive performance.
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 9: Test average accuracy (AA) over training epochs for ERM, upsampling, subsetting, and upweighting
+on the Waterbirds, CelebA, CivilComments, and MultiNLI datasets. With the exception of subsetting —
+which consistently underperforms due to lack of data – the class-balancing strategies produce only modest
+variation in average accuracy compared to their much larger impact on worst-group accuracy.
+20
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 10: Test average accuracy of last-layer retraining (LLR) when the underlying ERM model is trained with
+no class-balancing, upsampling, subsetting, or upweighting, across the Waterbirds, CelebA, CivilComments,
+and MultiNLI datasets. Across all benchmarks, LLR produces similar Test AA regardless of the ERM
+class-balancing strategy, indicating that the overall predictive performance of LLR is largely insensitive to
+the class distribution used during ERM training, even though worst-group accuracy differs substantially in
+the corresponding WGA results.
+(a) Waterbirds (b) CelebA (c) CivilComments (d) MultiNLI
+Figure 11: Test average accuracy of last-layer retraining (LLR) under varying group ratios, evaluated across
+Waterbirds, CelebA, CivilComments, and MultiNLI. For each dataset, we report LLR performance when
+applied to ERM models trained with subsetting, upsampling, and no class-balancing. Across all group ratios,
+Test AA remains remarkably stable, indicating that LLR’s overall predictive performance is largely insensitive
+to the choice of regularization — even though worst-group accuracy can vary substantially under the same
+settings.
+21
+A.3 Supplemental correlation coefficients
+In this section, we provide full Pearson correlation coefficients for the plots with averaged coefficients over
+group ratios, namely Figure 4 and Figure 11.
+Table 3: Full Pearson correlation coefficients for Figure 4. Note that the displayed Pearson correlation
+coefficients in Figure 4 are the coefficients in this table averaged across rows.
+LLR Group Ratio 0.05 0.1 0.2 0.5 1.0
+Waterbirds 0.915 0.950 0.961 0.937 0.898
+CelebA 0.793 0.929 0.348 0.820 0.834
+CivilComments 0.999 0.999 0.998 0.996 0.995
+MultiNLI 0.740 0.757 0.786 0.823 0.871
+Table 4: Full Pearson correlation coefficients for Figure 11. Note that the displayed Pearson correlation
+coefficients in Figure 11 are the coefficients in this table averaged across rows.
+LLR Group Ratio 0.05 0.1 0.2 0.5 1.00
+Waterbirds 0.791 0.791 0.791 0.535 0.875
+CelebA -0.707 0.195 -0.022 0.457 -0.468
+CivilComments 0.970 0.975 0.984 0.989 0.979
+MultiNLI 0.976 0.976 0.976 0.966 0.967
+22
+B Additional dataset and training details
+B.1 Dataset details
+We study four benchmarks for group robustness across vision and language tasks, outlined in Section 2 and
+detailed in Table 5.
+Table 5:Dataset composition.The class probabilities change dramatically when conditioned on the
+spurious feature. Note that Waterbirds is the only dataset that has a distribution shift and MultiNLI is
+the only dataset which is class-balanceda priori. The minority groups within each class are denoted by an
+asterisk in the “Num” column. Probabilities may not sum to1due to rounding.
+Dataset GroupgTraining distributionˆpData quantity
+Num ClassySpurioussˆp(y) ˆp(g) ˆp(y|s)Train Val Test
+Waterbirds
+0landbird land .768 .730 .984 3498 467 2225
+1* landbird water.038 .148 184 466 2225
+2* waterbird land .232 .012 .016 56 133 642
+3waterbird water.220 .852 1057 133 642
+CelebA
+0non-blond female .851 .440 .758 71629 8535 9767
+1* non-blond male.411 .980 66874 8276 7535
+2blond female .149 .141 .242 22880 2874 2480
+3* blond male.009 .020 1387 182 180
+CivilComments
+0neutral no identity .887 .551 .921 148186 25159 74780
+1* neutral identity.336 .836 90337 14966 43778
+2* toxic no identity .113 .047 .079 12731 2111 6455
+3toxic identity.066 .164 17784 2944 8769
+MultiNLI
+0contradiction no negation .333 .279 .300 57498 22814 34597
+1* contradiction negation.054 .761 11158 4634 6655
+2entailment no negation .334 .327 .352 67376 26949 40496
+3* entailment negation.007 .104 1521 613 886
+4neither no negation .333 .323 .348 66630 26655 39930
+5* neither negation.010 .136 1992 797 1148
+23
+B.2 Training details
+We utilize ResNet-50 (He et al., 2016) pretrained on ImageNet-1K (Russakovsky et al., 2015) for Waterbirds
+and CelebA. We also utilize a BERT-Base (Devlin et al., 2019) model pretrained on Book Corpus (Zhu et al.,
+2015) and English Wikipedia for CivilComments and MultiNLI. These pretrained models are used as the
+initialization for ERM finetuning under the cross-entropy loss. We use standard ImageNet normalization
+with standard flip and crop data augmentation for the vision tasks and BERT tokenization for the language
+tasks (Izmailov et al., 2022). Our implementation uses the following packages:NumPy (Harris et al., 2020),
+PyTorch (Paszke et al., 2017; Paszke et al., 2019),Lightning (Falcon and the PyTorch Lightning maintainers
+and contributors, 2019),TorchVision (TorchVision maintainers and contributors, 2016),Matplotlib (Hunter,
+2007),Transformers(Wolf et al., 2020), andMilkshake(LaBonte, 2023).
+To our knowledge, the licenses of Waterbirds and CelebA are unknown. CivilComments is released under
+the CC0 license, and information about MultiNLI’s license may be found in Williams et al., 2018.
+Our experiments were conducted on two local 24GB Nvidia RTX A5000 GPUs. We provide our ERM
+finetuning hyperparameters in Table 6. Our LLR experiments were run for the same number of epochs as
+ERM (unless otherwise mentioned) on a held-out dataset (20%of the training set for Waterbirds and half
+the validation set for the other three datasets). We used SGD with learning rate0.01with no regularization
+or learning rate schedule, except for Figure 3 where we used learning rate0.001.
+Our code is available athttps://github.com/tmlabonte/understanding-llr.
+Table 6:Default ERM Hyperparameters.The below table details our default hyperparameters forERM
+only. Note thatfor LLR only, we used SGD with learning rate0.01with no regularization or learning rate
+schedule, except for Figure 3 where we used learning rate0.001.
+Dataset Optimizer Initial LR LR schedule Batch size Weight decay Epochs
+Waterbirds AdamW1×10 −5 Cosine32 1×10 −4 100
+CelebA AdamW1×10 −5 Cosine32 1×10 −4 20
+CivilComments AdamW1×10 −5 Linear32 1×10 −4 20
+MultiNLI AdamW1×10 −5 Linear32 1×10 −4 20
+24
+C Broader impact statement
+This work advances equitable and responsible AI development by providing methods to improve robust
+performance of machine learning models on underrepresented groups, directly mitigating algorithmic bias
+and promoting fairness across diverse user populations. Our research intends to produce systems that offer
+more equitable outcomes, thereby increasing public trust and widening the societal benefits of AI technology.
+However, the responsible deployment of these models, particularly in high-stakes applications, necessitates
+additional comprehensive, multi-metric evaluation on a full spectrum of fairness criteria to prevent unintended
+negative consequences and uphold the highest ethical standards.
+25

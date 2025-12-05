@@ -1,0 +1,1209 @@
+ICAD-LLM: One-for-All Anomaly Detection via In-Context Learning with Large
+Language Models
+Zhongyuan Wu1, 3, Jingyuan Wang1, 2, 3, 4*, Zexuan Cheng1, 3, Yilong Zhou1, 3, Weizhi Wang1, 3,
+Juhua Pu1, 3, Chao Li1, 3, Changqing Ma5
+1School of Computer Science and Engineering, Beihang University, Beijing, China
+2 School of Economics and Management, Beihang University, Beijing, China
+3 MOE Engineering Research Center of Advanced Computer Application Technology, Beihang University, China
+4 MIIT Key Laboratory of Data Intelligence and Management, Beihang University, Beijing, China
+5Capinfo Co., Ltd.
+Abstract
+Anomaly detection (AD) is a fundamental task of critical im-
+portance across numerous domains. Current systems increas-
+ingly operate in rapidly evolving environments that gener-
+ate diverse yet interconnected data modalities—such as time
+series, system logs, and tabular records—as exemplified by
+modern IT systems. Effective AD methods in such environ-
+ments must therefore possess two critical capabilities: (1) the
+ability to handle heterogeneous data formats within a uni-
+fied framework, allowing the model to process and detect
+multiple modalities in a consistent manner during anomalous
+events; (2) a strong generalization ability to quickly adapt to
+new scenarios without extensive retraining. However, most
+existing methods fall short of these requirements, as they typ-
+ically focus on single modalities and lack the flexibility to
+generalize across domains. To address this gap, we introduce
+a novel paradigm: In-Context Anomaly Detection (ICAD),
+where anomalies are defined by their dissimilarity to a rele-
+vant reference set of normal samples. Under this paradigm,
+we propose ICAD-LLM, a unified AD framework leverag-
+ing Large Language Models’ in-context learning abilities to
+process heterogeneous data within a single model. Exten-
+sive experiments demonstrate that ICAD-LLM achieves com-
+petitive performance with task-specific AD methods and ex-
+hibits strong generalization to previously unseen tasks, which
+substantially reduces deployment costs and enables rapid
+adaptation to new environments. To the best of our knowl-
+edge, ICAD-LLM is the first model capable of handling
+anomaly detection tasks across diverse domains and modal-
+ities. The extended version of this paper will be available at
+https://github.com/nobody384/ICAD-LLM.
+Introduction
+Anomaly detection (AD) is a critical task with pervasive im-
+portance across numerous domains. However, most existing
+AD methods are primarily designed for single data modali-
+ties, and their ability to generalize to new, unseen scenarios
+is often limited (Yao et al. 2024). This creates a significant
+gap between academic research and the demands of real-
+world applications. For instance, in modern IT systems like
+*Corresponding author. Email: jywang@buaa.edu.cn
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Datasets in the Same ModalityDatasets in Different Modalities
+…UnifiedModel
+One-for-All
+One-for-One
+…Model 1Model 2Model N
+…Model 1Model 2Model N
+One-for-Many
+Figure 1: An illustration of different levels of AD.
+e-commerce platforms, a single fault such as a payment fail-
+ure can manifest concurrently as CPU spikes (time series),
+error logs (log data), and abnormal transaction records (tab-
+ular data). This situation calls for a universal model that can
+handle various data types effectively, thereby reducing the
+need for multiple, disparate solutions. Furthermore, as these
+business systems rapidly evolve with new services and ar-
+chitectures, existing AD models must adapt quickly to novel
+scenarios without complete retraining for fast deployment.
+Under these conditions, conventional approaches that re-
+quire separate model training for each task or modality be-
+come operationally infeasible.
+In terms of their model-to-task mapping, as shown in Fig-
+ure 1, current AD methods can be categorized into differ-
+ent levels. Traditional One-for-One AD (OFO-AD) methods
+train dedicated models for each specific dataset, learning the
+unique distribution of “normal” instances within that partic-
+ular task (Li et al. 2003; Xu et al. 2018; Guo, Yuan, and
+Wu 2021; Yang et al. 2023; Yin et al. 2024). While effec-
+tive for their designated tasks, these methods fail to gener-
+alize across different tasks or domains, necessitating costly
+retraining for each new application scenario. More recently,
+One-for-Many AD (OFM-AD) approaches have emerged as
+a response to the limitations of OFO-AD, improving gen-
+eralization by enabling a single model to detect anomalies
+across various predefined tasks within the same modality
+(You et al. 2022; He et al. 2024; Yao et al. 2024; Li et al.
+2023a). However, these approaches still fall short of the re-
+quirements outlined above: they remain confined to that sin-
+gle data modality and lack the architectural versatility to be
+arXiv:2512.01672v1  [cs.LG]  1 Dec 2025
+applied to other data types.
+The aforementioned limitations of existing AD methods
+lead to a natural yet ambitious question: Is it possible to
+develop a “One-for-All” model capable of handling diverse
+tasks across multiple data modalities? To answer this ques-
+tion, we must revisit the original definition of anomalies by
+Grubbs (Grubbs 1969), which described anomalies as “one
+that appears to deviate markedly from other members of the
+sample in which it occurs”. This principle, however, is con-
+tradicted by the design of most existing AD methods. By
+evaluating each sample individually, these methods prevent
+the model from directly comparing it to “other members” at
+inference time, which forces the model to rely on an inter-
+nalized, static understanding of normality learned from the
+training set. This act of memorization binds the model to
+a specific task, restricting it from generalizing across tasks
+and modalities. This insight leads us to a new perspective:
+what if we could empower the AD model with the funda-
+mental skill of comparison by providing the necessary con-
+text on-the-fly, thereby decoupling AD from task-specific
+distribution learning? To realize this vision, we introduce In-
+Context Anomaly Detection (ICAD). ICAD explicitly pro-
+vides a reference set of normal samples during inference,
+and then assesses anomalies by comparing the target sample
+to this contextually relevant reference set. By shifting the
+objective from memorization to in-context comparison, this
+approach is inherently more flexible and readily applicable
+across diverse data modalities.
+However, translating this high-level ICAD paradigm into
+a practical and effective One-for-All model is non-trivial.
+It necessitates a framework design that satisfies three key
+requirements (REQ):REQ1-Feature Alignment. Given that
+data from different modalities have vastly different fea-
+ture dimensions and semantic structures, the model must
+first project these disparate inputs into a common em-
+bedding space, which is the foundational step that en-
+ables a single, unified architecture to process them mean-
+ingfully.REQ2-Discrepancy-Sensitive Representation. The
+model must extract rich, semantic representations that are
+not only modality-agnostic but also sensitive to the subtle
+dissimilarities between a target sample and its reference sets.
+REQ3-Task-Agnostic Discriminative Objective. Unlike tra-
+ditional AD training objectives (e.g., minimizing reconstruc-
+tion loss) that are tightly coupled to specific data distribu-
+tions, ICAD requires a new training objective. This objec-
+tive must decouple the model from the training data by ex-
+plicitly training its universal ability to discriminate a target’s
+dissimilarity against its reference set, rather than encourag-
+ing task-specific memorization.
+To fulfill these requirements, we propose ICAD-LLM, a
+unified AD framework leveraging Large Language Mod-
+els’ in-context learning abilities to process heterogeneous
+data within a single model. ICAD-LLM consists of three
+key components, each tailored to satisfy a specific require-
+ment. To meetREQ1, we design aModality-Aware Encoder
+that projects heterogeneous inputs from time-series, logs,
+and tables into a unified, fixed-dimension embedding space.
+To solveREQ2, we employ aPrompt-Guided Representa-
+tion Module. This component harnesses the in-context learn-
+ing capacity of Large Language Models to extract semanti-
+cally rich representations. To addressREQ3, we formulate
+aContextual Contrastive Learningobjective, which explic-
+itly trains the model to discern subtle differences between
+normal and anomalous patterns. Crucially, ICAD-LLM is
+only trained once to acquire a general-purpose anomaly dis-
+crimination capability. At inference time, this single model
+can tackle anomaly detection tasks across diverse modali-
+ties without task-specific retraining. This “train-once, apply-
+broadly” strategy equips ICAD-LLM with much flexibility
+and efficiency. Extensive experiments show that ICAD-LLM
+achieves performance competitive with state-of-the-art task-
+specific methods and exhibits strong generalization to pre-
+viously unseen tasks. To the best of our knowledge, ICAD-
+LLM is the first model capable of handling AD tasks across
+diverse domains and modalities. The main contributions of
+this paper are summarized as follows:
+• We introduce In-Context Anomaly Detection, which re-
+defines anomaly detection based on the concept of con-
+textual dissimilarity, enabling a more generalized and
+flexible anomaly detection approach.
+• We propose ICAD-LLM, a novel model designed to ef-
+fectively implement the ICAD paradigm across multiple
+data modalities and diverse tasks.
+• We demonstrate the ICAD-LLM achieves competitive
+performance on standard AD benchmarks and, more im-
+portantly, exhibits strong generalization to out-of-domain
+datasets without task-specific retraining.
+Related Work
+One-for-One/Many Anomaly Detection
+Traditional anomaly detection often follows a one-for-one
+paradigm, training a separate model for each dataset. Early
+approaches include classic machine learning methods (Bre-
+unig et al. 2000; Li et al. 2003; Liu, Ting, and Zhou 2008),
+while recent deep learning models adopt boundary-based
+formulations that learn compact hyperspheres around nor-
+mal data. Representative works include OmniAnomaly (Su
+et al. 2019a), AnomalyTransformer (Xu et al. 2022), and
+DCdetector (Yang et al. 2023) for time series; MCM (Yin
+et al. 2024) for tabular data; and LogAnomaly (Meng et al.
+2019) and LogBert (Guo, Yuan, and Wu 2021) for sys-
+tem logs. Although effective in their respective domains,
+these models degrade when faced with unseen tasks. The
+one-for-many paradigm addresses this by building a single
+model for multiple datasets within the same modality. Solu-
+tions include unified architectures such as PatchCore (Roth
+et al. 2022), SimpleNet (Liu et al. 2023), GOAD (Bergman
+and Hoshen 2020), UniAD (You et al. 2022), and Mam-
+baAD (He et al. 2024), and adaptations of large-scale
+pre-trained models, e.g., PMAD (Yao et al. 2023), Win-
+CLIP (Jeong et al. 2023), ResAD (Yao et al. 2024), and
+AnomalyLLM (Liu et al. 2024a). Notably, PMAD was
+the first to explicitly advocate the “one-for-all” concept.
+While these approaches improve intra-modality generaliza-
+tion, they remain restricted to specific data types, limiting
+their applicability across heterogeneous modalities.
+Normal Training sampleNormal / Anomalous Testing Sample
+TestingProcess
+Decision Boundary
+ReferenceSetSelection
+/
+(a) (b)TrainingProcessTestingProcess TrainingProcess
+Samples from Different ModalitiesUnseenDatasetRef.SetRef.SetDiscrepancy𝛿
+Figure 2: Comparison of different AD paradigms. (a) Traditional One-for-One/Many AD learns a fixed decision boundary from
+training data to identify outliers. (b) In-Context Anomaly Detection learns a general comparison function, detecting anomalies
+based on their discrepancy from a given reference set.
+Representation Learning with LLMs and Unified
+Architectures
+Recent studies leverage Large Language Models (LLMs)
+and unified architectures to learn transferable representa-
+tions across heterogeneous data. LLM-based approaches
+enrich semantic encoding and contextual understand-
+ing (Cheng et al. 2025; Li et al. 2023b), and introduce ef-
+ficient multi-task adaptation via contextual attention mod-
+ulation (Pan et al. 2025). Unified temporal–spatial frame-
+works align multi-source sequences in shared embedding
+spaces (Yu et al. 2025; Han et al. 2025), while self-
+supervised and generative pretraining (Jiang et al. 2023;
+Ji et al. 2023; Ren, Wang, and Zhao 2022a; Ren et al.
+2021) enhance representation robustness under noise and
+data scarcity. Siamese and graph-based architectures (Ren,
+Wang, and Zhao 2022b; Zhang et al. 2025) further gener-
+alize structured or sparse entities, with robustness-oriented
+designs (Ji et al. 2025; Liu et al. 2024b) supporting adap-
+tation to unseen tasks. Together, these directions establish
+modality-agnostic encoding, feature alignment, and resilient
+representation learning, which are principles underlying uni-
+fied anomaly detection.
+Preliminary
+LetM={M i}m
+i=1 be the set of all possiblemmodali-
+ties, andT= Sm
+i=1 TMi denote the universe of tasks, where
+TMi ={τ (i)
+j }ni
+j=1 represents the set of tasks under modality
+Mi. For any taskτ∈T, we define the task-specific data as
+Dτ =X τ ×Yτ , whereX τ presents all the samples in taskτ,
+andY τ ={0,1}denotes the binary labels indicating normal
+(0) versus anomalous (1) classes. For clarity, we denote the
+general anomaly detection process asA. Figure 2 provides
+a visual comparison of different AD paradigms.
+One-for-One/Many AD
+Given a target samplex tgt ∈ Xτ , both OFO/OFM-AD aim
+to learn a score functionf, formalizing the AD process as:
+A(xtgt;f, θτ ) =I(f(x tgt)≥θ τ ),(1)
+whereθ τ is the decision threshold of taskτandI(·)is the
+indicator function. The key distinction lies in their train-
+ing scope. OFO-AD learnsffrom a task-specific dataset
+Dtrain ⊂ Dτ , specializing in individual tasks. In contrast,
+for OFM-AD, the function is trained on a composite dataset
+that comprises multiple tasks within a single modality, i.e.,
+Dtrain ⊂ S
+τ∈TM
+Dτ , whereT M is the set of tasks under
+modalityM.
+In-Context AD
+Our proposed ICAD paradigm redefines anomaly detection
+by leveraging contextual comparison. LetTtrain ⊂Trepre-
+sent the subset of tasks observed during training, which can
+encompass a mixture of modalities. For any taskτ∗ ∈T(in-
+cluding unseen tasks whereτ ∗ /∈Ttrain), we define a refer-
+ence setR={r 1, r2,···, r K} ⊂ {x∈ Xτ∗ :y= 0}, con-
+sisting ofKnormal samples that characterize the expected
+behavior for that task. Given a target samplextgt ∈ Xτ∗ and
+its reference setR, ICAD determines anomalies by comput-
+ing their contextual discrepancy, and the anomaly detection
+process can be described as:
+A(R, xtgt;δ, θ′
+τ ) =I(δ(R, xtgt)≥θ ′
+τ ),(2)
+whereδ(R, xtgt)measures the dissimilarity between the tar-
+get and reference samples, andθ ′
+τ is the task-specific dis-
+crepancy threshold. By defining anomalies through dynamic
+comparisons to the provided reference sets, this paradigm
+decouples the model from a static definition of normality,
+enabling flexible AD across diverse tasks and modalities.
+Methodology
+In this section, we propose ICAD-LLM, a unified AD frame-
+work that harnesses the powerful in-context learning abili-
+ties of Large Language Models to detect anomalies across
+multiple data modalities. Figure 3 illustrates the overall
+pipeline of ICAD-LLM, which consists of three key com-
+ponents. First, aModality-Aware Encoderaddresses feature
+alignment by projecting heterogeneous inputs into a unified
+embedding space. Second, thePrompt-Guided Representa-
+tion Moduleuses an LLM to extract modality-agnostic rep-
+resentations that are highly sensitive to subtle dissimilarities.
+Third, the model is trained with aContextual Contrastive
+Learning (CCL)objective, which sharpens its discrimina-
+tive power by maximizing the discrepancy for anomalous
+samples while minimizing it for normal ones. The resulting
+discrepancy score is then used for final anomaly detection.
+SamplePreparation
+Reference Set
+Positive Sample
+Negative Sample
+R-S
+R-S
+R-S
+ContextualContrastiveLearning
+PullingPushing
+Pre-trainedLLM
+Reference
+Normal
+Anomalous
+Modality-Aware Encoder
+𝐸𝑛𝑐!"#
+𝐸𝑛𝑐$%&'
+𝐸𝑛𝑐$()!'
+𝑥($%&')
+𝑥($())
+𝑥(!"#)
+𝐞($%&')
+𝐞($())
+𝐞(!"#)
+Determineifthesampleexhibitsanysignificantdiscrepanciesoranomaliesbycomparingittothereferenceset. LLMEmbedder
+𝐞,𝒆-'.
+𝐞-$𝒆$#$𝐞$$
+𝒆/'#
+𝐞/$
+Prompt-Guided Rep. ModuleConcatenate𝐡ℛ
+𝐡1!
+𝐡1"
+Instruction PromptRef./Pos/Neg SamplesSpecial Tokens
+Embeddingsof :
+Figure 3: The overall pipeline of ICAD-LLM. A reference set and target samples are first encoded by the Modality-Aware
+Encoder. The resulting embeddings are then concatenated with prompt and special tokens, and fed into the Prompt-Guided
+Representation Module to extract context-sensitive representations. Finally, the Contextual Contrastive Learning objective is
+employed to optimize the model’s ability to distinguish between these samples.R-Smeans random selection.
+Sample Preparation
+Before detailing the model architecture, we first describe
+how raw, heterogeneous data is transformed into a standard-
+ized “sample” format, which is the fundamental unit that our
+model can process.
+Time Series ProcessingLetX (time)
+raw ∈R L×draw denote a
+raw time series, whereLis the sequence length andd raw is
+the feature dimension. We define a patching function that
+segmentsX (time)
+raw into a set ofnpatches:
+n
+x(time)
+i
+on
+i=1
+=Patch(X (time)
+raw ).(3)
+Each patchx (time)
+i ∈R p×draw is treated as an individual sam-
+ple, wherepis the patch length.
+Tabular Row ProcessingLetX (tab)
+raw ={x (tab)
+raw,i}N
+i=1 be a
+tabular dataset where each rowx(tab)
+raw,i ∈R Fi hasF i features.
+To ensure uniform dimensionality, we define a padding-
+truncation functionΨ(·)that maps each row to a fixed di-
+mensionF ′ with zero-padding or truncation:
+x(tab)
+i = Ψ(x(tab)
+raw,i) =
+(
+[x(tab)
+raw,i,0 F′−Fi ]ifF i < F′
+x(tab)
+raw,i[0 :F ′]ifF i ≥F ′ ,(4)
+where0 F′−Fi ∈R F′−Fi is a zero vector of lengthF ′ −F i,
+andx[0 :F ′]denotes selecting the firstF ′ elements. Each
+x(tab)
+raw,i constitutes a single sample.
+Log Sequence ProcessingRaw log messagesX (log)
+raw =
+{mt}T
+t=1 undergo two-stage processing. First, a log parser 1
+extracts templates:S={k t}T
+t=1 =Parse(X (log)
+raw ), where
+kt ∈ Krepresents the log template at timet. Second,
+1We use Drain3 (https://github.com/logpai/Drain3) as the log
+parser.
+temporal windowing partitionsSinto fixed-size segments:
+x(log)
+i =S[(i−1)w+ 1 :iw], where each window ofw
+consecutive log keys forms a sample.
+Modality-Aware Encoder
+To effectively process heterogeneous samples from various
+modalities, we employ the Modality-Aware Encoder, which
+transforms prepared samples from different modalities into a
+unified embedding space. Given a samplex(M) from modal-
+ityM, the encoder applies a transformation as:
+e(M) =E M(x(M)),(5)
+wheree (M) ∈R N(M)×dmodel is the encoded embedding,
+N(M) is the sequence length, andd model is the embedding
+dimension. The specific implementations ofE M are as fol-
+lows: For a time series samplex(time), we first apply instance
+normalization and then feed the result into a Convolutional
+Neural Network (CNN) to align the feature dimension:
+Etime
+
+x(time)
+
+=CNN
+
+IN
+
+x(time)
+
+.(6)
+For a tabular samplex(tab), following the encoding approach
+of MCM (Yin et al. 2024), the encoderE tab utilizes a two-
+layer Multilayer Perceptron (MLP) to produce its embed-
+ding:
+Etab
+
+x(tab)
+
+=MLP (tab)
+
+x(tab)
+
+.(7)
+For a log samplex(log), the encoderElog first uses the LLM’s
+native tokenizer and embedder Emb(·)to get initial embed-
+dings, which are then refined by a Transformer encoder:
+Elog
+
+x(log)
+
+=TransEnc
+
+Emb
+
+x(log)
+
+.(8)
+Prompt-Guided Representation Module
+At the core of our ICAD model is the Prompt-Guided Rep-
+resentation Module. It leverages a pre-trained Large Lan-
+guage Model (LLM) as the backbone, harnessing its power-
+ful capabilities for contextual reasoning and semantic under-
+standing to produce modality-agnostic representations that
+capture the subtle differences between a target sample and
+its reference set. This module incorporates two key mech-
+anisms:(1) Instruction-based Priming.Inspired by prior
+work (Yu et al. 2025), we prepend an instruction prompt
+to the input sequence which explicitly primes the LLM, di-
+recting its powerful reasoning abilities towards the specific
+goal of assessing contextual dissimilarity, rather than gen-
+eral language understanding.(2) Token-anchored Represen-
+tation Pooling.To obtain distinct and high-level represen-
+tations for both the context and the target, we introduce
+two special, learnable tokens: [REF TOK] and [TGT TOK].
+These tokens are inserted into the input sequence, com-
+pelling the LLM to aggregate and summarize the informa-
+tion of the reference set and the target sample into their re-
+spective token positions.
+Formally, lete p ∈R L×dmodel , whereLis the sequence
+length of prompt tokens, be the embedding of the instruc-
+tion prompt,e rt ∈R 1×dmodel ande tt ∈R 1×dmodel be the cor-
+responding embeddings for the aforementioned [REF TOK]
+and [TGT TOK]. For a given reference setRand a tar-
+get samplex, we denote their embeddings produced by the
+Modality-Aware Encoder ase ref ∈R N×dmodel ande tgt ∈
+RN×dmodel , respectively. The final input sequenceSis for-
+mulated as:
+S=Concat(e p,eref ,ert,etgt,ett).(9)
+This sequence is then fed into our LLM backbone, and we
+extract the final-layer hidden states corresponding to the po-
+sitions of our special tokens. This yields a holistic represen-
+tation for the reference set,hR ∈R dmodel and a representation
+for the target sample,h x ∈R dmodel . These representations
+encapsulate the essential characteristics of their inputs while
+being sensitive to their contextual differences, providing a
+modality-agnostic basis for anomaly detection.
+Contextual Contrastive Learning
+We propose the Contextual Contrastive Learning (CCL) ob-
+jective, which creates a clear margin for discrimination as
+required by the ICAD paradigm by pulling normal sam-
+ples closer to the representation of their reference set,
+while pushing anomalous samples further away. To imple-
+ment this, we formulate the training process around sample
+triplets, each designed to teach the model a specific aspect
+of contextual comparison. For each training step, given a
+source datasetDfrom modalityM, we construct a triplet
+(R, x+, x−)as follows:
+• Reference Set (R): A set ofKnormal samples randomly
+selected fromD, defining the normal context.
+• Positive Sample (x +): Another normal sample drawn
+fromD \ R, representing an instance of in-context nor-
+mality that should be identified as similar toR.
+• Simple Negative Sample (x −
+s ): A normal sample drawn
+from a different datasetD′ of the same modalityM. This
+is designed to instill a coarse-grained, foundational dis-
+criminative ability to the model.
+• Hard Negative Sample (x−
+h ): An anomalous sample from
+the source datasetD, teaching the model to identify sub-
+tle, fine-grained deviations that define a true anomaly.
+To process a triplet(R, x+, x−)efficiently within a single
+forward pass, wherex − can be either a simple or a hard
+negative, we adapt the input sequence from Equation (9) by
+introducing an additional special token, [NEG TOK]. Let
+eneg ∈R N×dmodel be the embedding of the negative sam-
+ple, ande nt ∈R 1×dmodel be the embedding for [NEG TOK].
+The full training sequence is constructed as:
+Strain =Concat
+ 
+ep,eref ,ert,
+etgt,ett,eneg,ent
+
+. (10)
+Notably, we use [TGT TOK] as the token for the positive
+sample to maintain consistency with the inference phase.
+After this sequence is processed by our model, we extract
+the final representations for the reference set (hR), the posi-
+tive sample (hx+ ), and the negative sample (hx−) from their
+respective special token positions. Finally, these representa-
+tions are used to compute the loss functionLof our CCL.
+Lets(·,·)denote the cosine similarity, thenLis defined as:
+L= max (s(hR,hx+ )−s(h R,hx−) +α,0),(11)
+whereα >0is a margin hyperparameter that enforces a
+minimum distance between positive and negative pairs. By
+minimizing this loss, the model is explicitly trained to pro-
+duce a low discrepancy score for contextually similar pairs
+and a high score for dissimilar ones, directly fulfilling the
+discriminative learning requirement of the ICAD paradigm.
+Anomaly Detection During Inference
+During model inference, the setup is simplified. Given a ref-
+erence setRand a test samplex test, we use the ICAD-LLM
+model to compute their representationsh R andh xtest . The
+discrepancy scoreδ(R, xtest)is then calculated as the dis-
+tance between them:
+δ(R, xtest) = 1−s(h R,hxtest )
+2 .(12)
+This score is compared against a pre-defined threshold. If the
+score exceeds this threshold, the samplextest is classified as
+an anomaly relative to the context provided byR.
+Experiment
+Experimental Setup
+DatasetsOur study employs a diverse collection of AD
+datasets spanning multiple modalities. For time series AD,
+we select five prominent datasets: SMD (Su et al. 2019b),
+PSM (Abdulaal, Liu, and Lancewicki 2021), SWaT (Mathur
+and Tippenhauer 2016), MSL, and SMAP (Hundman et al.
+2018). To evaluate performance on tabular data, we incor-
+porate 18 real-world datasets sourced from ADBench (Han
+et al. 2022). Furthermore, for log AD, we select four widely
+used datasets, including BGL, Thunderbird, Liberty2, and
+Spirit2 (Oliner and Stearley 2007).
+Modality Task-Specific AD Methods Universal AD MethodsDatasets Metric
+Time Series Anoamly. DLinear TimesNet OneFitsAll Ours NeuTraL. UniAD ACR Ours
+SMD
+F1
+85.68 79.34 85.94 86.92 88.47 81.47 84.32 74.3888.24
+MSL 84.12 85.41 85.78 82.4886.52 79.68 81.99 76.4385.15
+SMAP 71.57 70.39 72.07 72.84 75.27 64.2974.0269.48 71.95
+SW AT 84.29 89.25 92.37 94.27 94.55 77.43 79.3890.7085.98
+PSM 82.36 93.70 97.33 97.1697.64 91.64 92.84 89.5396.97
+Average 81.60 83.62 86.70 86.73 88.49 78.90 82.51 80.1085.66
+Tabular IForest DAGMM GOAD MCM Ours NeuTraL. UniAD ACR Ours
+Cardio
+AUROC
+79.67 66.61 86.27 94.34 94.69 63.75 62.71 65.51 91.03
+Campaign 69.77 75.60 83.28 87.32 87.44 56.94 50.80 53.0585.31
+Fraud 73.63 81.47 78.0993.2392.64 67.07 74.38 65.7585.26
+HTTP 86.70 92.47 96.78 97.77 98.14 94.1888.61 86.75 91.71
+Optdigits 79.73 64.29 79.62 97.32 97.88 63.26 63.32 61.1490.23
+Shuttle 93.18 90.11 96.0799.3198.74 88.14 90.75 92.24 95.34
+SMTP 86.73 88.94 90.08 91.47 92.46 90.4183.04 83.45 86.52
+Wbc 84.51 77.86 85.31 97.89 99.06 85.17 76.91 77.0697.94
+Average 81.74 79.67 86.94 94.83 95.13 76.12 73.82 73.1290.42
+Log LogCluster DeepLog LogAnomaly LogBert Ours NeuTraL. UniAD ACR Ours
+BGL
+AUROC
+83.72 90.29 82.35 93.66 95.32 75.39 77.24 84.66 92.79
+Thunderbird 74.28 91.88 93.24 92.3794.84 67.36 82.31 78.7585.20
+Liberty2 83.24 86.27 93.63 94.29 98.47 72.55 86.29 84.0688.69
+Spirit2 88.79 95.25 92.89 95.27 97.24 81.49 79.17 87.52 90.44
+Average 82.51 90.92 90.53 93.90 96.47 74.20 81.25 83.75 89.28
+Table 1: Performance comparison of different anomaly detection methods on time series, tabular, and log data. The best and
+second-best results in each category are shown in bold and with an underline, respectively.
+MetricsOur evaluation strategy employs distinct metrics
+tailored to the characteristics of different data modalities.
+For both tabular and log datasets, we utilize AUROC as our
+evaluation metric. For time series, we follow prior works
+(Shen, Li, and Kwok 2020; Xu et al. 2022) and employ F1-
+score with point adjustment.
+Implementation DetailsWe use Qwen2.5-0.5B (Team
+2024) as the pre-trained backbone. During training,K= 5
+samples are randomly selected to form the reference set (R),
+with an 8:2 ratio of simple to hard negatives. The model is
+trained for 5 epochs with a learning rate of 1e-5, sampling
+200k instances per epoch across modalities.
+Baseline MethodsTo provide a comprehensive evalua-
+tion of ICAD-LLM’s performance, we compare it against
+two distinct categories of methods: task-specific baselines
+and universal baselines. For time series AD, we include
+Anomaly Transformer (Xu et al. 2022), DLinear (Zeng et al.
+2023), TimesNet (Wu et al. 2023), and OneFitsAll (Zhou
+et al. 2023); for tabular AD, we evaluate against Isolation
+Forest (Liu, Ting, and Zhou 2008), DAGMM (Zong et al.
+2018), GOAD (Bergman and Hoshen 2020), and MCM (Yin
+et al. 2024); and for log AD, we compare with LogCluster
+(Lin et al. 2016), DeepLog (Du et al. 2017), LogAnomaly
+(Meng et al. 2019), and LogBert (Guo, Yuan, and Wu 2021).
+To assess the capability of handling diverse data types and
+tasks within a single framework, we also compare ICAD-
+LLM against universal AD methods including NeuTraL AD
+(Qiu et al. 2021), UniAD (You et al. 2022) and ACR (Li
+et al. 2023a). They are trained across all datasets used in our
+experiment, mirroring the training scope of ICAD-LLM to
+ensure a fair comparison.
+Main Results
+Table 1 summarizes the comprehensive AD performance of
+ICAD-LLM against competitive baselines across multiple
+modalities, with results structured to highlight two key com-
+parisons: task-specific and universal AD. Notably, Table 1
+summarizes the results on 8 key tabular datasets, while the
+full results of all 18 datasets are provided in the appendix.
+Comparison with Task-Specific MethodsWe first eval-
+uate ICAD-LLM against task-specific baselines within each
+modality. While each baseline model is trained individually
+for a single dataset, ICAD-LLM uses a single model, trained
+only once on a composite dataset comprising all tasks within
+that modality. As shown in Table 1, ICAD-LLM consistently
+achieves competitive or superior performance across nearly
+all benchmarks (e.g.,↑4.18on Liberty2 compared to the
+second-best result). Our approach proves that even a single
+model can develop a sufficient understanding of anomalies
+compared to specialized counterparts.
+Comparison with Universal MethodsWe evaluate the
+performance of universal anomaly detection methods trained
+jointly on datasets from all three modalities—time series,
+tabular, and log data—using a single shared model. Un-
+Time Series Tabular Data Log Data
+0.60
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Performance
+0.869
+0.835
+0.699
+0.874
+0.780
+0.718
+0.834 0.829
+0.794
+0.927
+0.900 0.897
+NeuTraL AD UniAD ACR ICAD-LLM
+Figure 4: Generalization performance comparison different
+methods on unseen datasets across three modalities.
+der this challenging setting, ICAD-LLM delivers perfor-
+mance that closely approaches and occasionally even sur-
+passes strong task-specific baselines. In contrast, existing
+universal AD methods yield results that are generally in-
+ferior to task-specific approaches and often lack reliabil-
+ity across diverse datasets. These observations demonstrate
+ICAD-LLM’s strong adaptability and its practical value in
+meeting the growing demand for efficient, scalable anomaly
+detection solutions capable of handling diverse modalities
+within a single model.
+Generalization Experiment
+To evaluate ICAD-LLM’s ability to generalize to unseen
+data, we conduct experiments where the model is tested
+on datasets that were entirely excluded from training. This
+evaluation comprises one time series dataset, four tabular
+datasets, and one log dataset. For the tabular modality, we re-
+port the average performance. Experiment details and com-
+plete results are provided in the appendix. As shown in Fig-
+ure 4, ICAD-LLM maintains strong performance on these
+unseen datasets, outperforming all baselines across every
+data modality. In contrast, the baselines exhibit inconsistent
+performance across different data types, highlighting their
+limited adaptability. These results validate the robustness
+and effective generalization capability of our model.
+Sensitivity Analysis
+To thoroughly understand the contribution of key design
+choices in ICAD-LLM, we conduct sensitivity analysis to
+investigate two critical factors: the number of samples in the
+reference set and the total volume of training data. Detailed
+experimental setups and the complete results of this analysis
+are provided in the appendix.
+Impact of Reference Set SizeWe assess the influence of
+the reference set size,K, by varying it across a range of val-
+ues, with a focus on smaller sizes (K= 1,2,3,5) and also
+including larger values (K= 7,10) to observe the trend.
+As shown in Figure 5(a), it is observed that asKincreases,
+the average performance initially rises rapidly. However, be-
+yondK= 5, the performance improvement becomes no-
+tably slower. This phenomenon may be attributed to the rep-
+1 2 3 4 5 6 7 8 9 10
+Reference Set Size
+85.0
+87.5
+90.0
+92.5
+95.0Performance
+(a) Impact of Reference Set Size
+Time Series
+Tabular Data
+Log Data
+0 100 200 300 400 500
+Training Data V olume (k)
+85.0
+87.5
+90.0
+92.5
+95.0Performance
+(b) Impact of Training Data V olume
+Time Series
+Tabular Data
+Log Data
+Figure 5: Impact of (a) reference set size and (b) total train-
+ing data volume on the performance of ICAD-LLM.
+resentativeness of the reference set: smaller reference set
+sizes may not adequately capture the common characteris-
+tics of normal instances, while larger sizes yield diminish-
+ing marginal returns as the informative content becomes sat-
+urated. Consequently,K= 5is selected as the reference set
+size for all other experiments in our study.
+Impact of Total Training Data volumeWe evaluate six
+different scales of total training data volumes, ranging from
+10k to 500k samples, sourced from all datasets across the
+various modalities. As presented in Figure 5(b), larger data
+volumes consistently lead to improved model performance.
+However, beyond 200k samples, the performance gains be-
+come marginal while the training cost increases signifi-
+cantly. Therefore, considering this clear performance-cost
+trade-off, we adopt 200k samples as the standard training
+volume in our work.
+Conclusion
+In this paper, we propose In-Context Anomaly Detection
+(ICAD), which reframes anomaly detection as a dynamic
+in-context comparison rather than memorizing a fixed nor-
+mal distribution. Our model, ICAD-LLM, uses a Large Lan-
+guage Model to learn a general discrepancy function, en-
+abling a single training process to handle diverse modali-
+ties and unseen tasks without retraining. Extensive experi-
+ments show that ICAD-LLM matches specialized methods
+and demonstrates strong generalization. This work advances
+the vision of a One-for-ALL AD framework, offering a vi-
+able path for developing more scalable and adaptable sys-
+tems for real-world applications.
+Acknowledgments
+Jingyuan Wang’s work was partially supported by the Na-
+tional Natural Science Foundation of China (No. 72171013,
+72222022, 72242101) and the Fundamental Research Funds
+for the Central Universities (JKF-2025017226182). Juhua
+Pu’s work was partially supported by the National Natural
+Science Foundation of China (No. 62577006).
+References
+Abdulaal, A.; Liu, Z.; and Lancewicki, T. 2021. Practical
+approach to asynchronous multivariate time series anomaly
+detection and localization. InProceedings of the 27th ACM
+SIGKDD conference on knowledge discovery & data min-
+ing, 2485–2494.
+Bergman, L.; and Hoshen, Y . 2020. Classification-Based
+Anomaly Detection for General Data. In8th International
+Conference on Learning Representations, ICLR 2020, Addis
+Ababa, Ethiopia, April 26-30, 2020. OpenReview.net.
+Breunig, M. M.; Kriegel, H.-P.; Ng, R. T.; and Sander, J.
+2000. LOF: identifying density-based local outliers. InPro-
+ceedings of the 2000 ACM SIGMOD international confer-
+ence on Management of data, 93–104.
+Cheng, J.; Wang, J.; Zhang, Y .; Ji, J.; Zhu, Y .; Zhang, Z.;
+and Zhao, X. 2025. Poi-enhancer: An llm-based seman-
+tic enhancement framework for poi representation learning.
+InProceedings of the AAAI conference on artificial intelli-
+gence, volume 39, 11509–11517.
+Du, M.; Li, F.; Zheng, G.; and Srikumar, V . 2017. Deeplog:
+Anomaly detection and diagnosis from system logs through
+deep learning. InProceedings of the 2017 ACM SIGSAC
+conference on computer and communications security,
+1285–1298.
+Grubbs, F. E. 1969. Procedures for detecting outlying obser-
+vations in samples.Technometrics, 11(1): 1–21.
+Guo, H.; Yuan, S.; and Wu, X. 2021. Logbert: Log anomaly
+detection via bert. In2021 international joint conference on
+neural networks (IJCNN), 1–8. IEEE.
+Han, C.; Wang, J.; Wang, Y .; Yu, X.; Lin, H.; Li, C.; and Wu,
+J. 2025. Bridging traffic state and trajectory for dynamic
+road network and trajectory representation learning. InPro-
+ceedings of the AAAI Conference on Artificial Intelligence,
+volume 39, 11763–11771.
+Han, S.; Hu, X.; Huang, H.; Jiang, M.; and Zhao, Y . 2022.
+Adbench: Anomaly detection benchmark.Advances in neu-
+ral information processing systems, 35: 32142–32159.
+He, H.; Bai, Y .; Zhang, J.; He, Q.; Chen, H.; Gan, Z.; Wang,
+C.; Li, X.; Tian, G.; and Xie, L. 2024. Mambaad: Explor-
+ing state space models for multi-class unsupervised anomaly
+detection.arXiv preprint arXiv:2404.06564.
+Hundman, K.; Constantinou, V .; Laporte, C.; Colwell, I.; and
+Soderstrom, T. 2018. Detecting spacecraft anomalies using
+lstms and nonparametric dynamic thresholding. InProceed-
+ings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining, 387–395.
+Jeong, J.; Zou, Y .; Kim, T.; Zhang, D.; Ravichandran, A.;
+and Dabeer, O. 2023. Winclip: Zero-/few-shot anomaly
+classification and segmentation. InProceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 19606–19616.
+Ji, J.; Wang, J.; Huang, C.; Wu, J.; Xu, B.; Wu, Z.; Zhang, J.;
+and Zheng, Y . 2023. Spatio-temporal self-supervised learn-
+ing for traffic flow prediction. InProceedings of the AAAI
+conference on artificial intelligence, volume 37, 4356–4364.
+Ji, J.; Zhang, W.; Wang, J.; and Huang, C. 2025. Seeing
+the Unseen: Learning Basis Confounder Representations for
+Robust Traffic Prediction. InProceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data
+Mining V . 1, 577–588.
+Jiang, J.; Pan, D.; Ren, H.; Jiang, X.; Li, C.; and Wang,
+J. 2023. Self-supervised trajectory representation learning
+with temporal regularities and travel semantics. In2023
+IEEE 39th international conference on data engineering
+(ICDE), 843–855. IEEE.
+Li, A.; Qiu, C.; Kloft, M.; Smyth, P.; Rudolph, M.; and
+Mandt, S. 2023a. Zero-shot anomaly detection via batch
+normalization.Advances in Neural Information Processing
+Systems, 36: 40963–40993.
+Li, J.; Tang, T.; Zhao, W. X.; Wang, J.; Nie, J.-Y .; and Wen,
+J.-R. 2023b. The web can be your oyster for improving lan-
+guage models. InFindings of the Association for Computa-
+tional Linguistics: ACL 2023, 728–746.
+Li, K.-L.; Huang, H.-K.; Tian, S.-F.; and Xu, W. 2003. Im-
+proving one-class SVM for anomaly detection. InPro-
+ceedings of the 2003 International Conference on Machine
+Learning and Cybernetics (IEEE Cat. No.03EX693), vol-
+ume 5, 3077–3081 V ol.5.
+Lin, Q.; Zhang, H.; Lou, J.; Zhang, Y .; and Chen, X. 2016.
+Log clustering based problem identification for online ser-
+vice systems. In Dillon, L. K.; Visser, W.; and Williams,
+L. A., eds.,Proceedings of the 38th International Confer-
+ence on Software Engineering, ICSE 2016, Austin, TX, USA,
+May 14-22, 2016 - Companion Volume, 102–111. ACM.
+Liu, F. T.; Ting, K. M.; and Zhou, Z.-H. 2008. Isolation
+Forest. In2008 Eighth IEEE International Conference on
+Data Mining, 413–422.
+Liu, S.; Yao, D.; Fang, L.; Li, Z.; Li, W.; Feng, K.; Ji, X.; and
+Bi, J. 2024a. Anomalyllm: Few-shot anomaly edge detection
+for dynamic graphs using large language models. In2024
+IEEE International Conference on Data Mining (ICDM),
+785–790. IEEE.
+Liu, Z.; Li, Z.; Wang, J.; and He, Y . 2024b. Full bayesian
+significance testing for neural networks. InProceedings of
+the AAAI Conference on Artificial Intelligence, volume 38,
+8841–8849.
+Liu, Z.; Zhou, Y .; Xu, Y .; and Wang, Z. 2023. Simplenet: A
+simple network for image anomaly detection and localiza-
+tion. InProceedings of the IEEE/CVF conference on com-
+puter vision and pattern recognition, 20402–20411.
+Mathur, A. P.; and Tippenhauer, N. O. 2016. SWaT: A water
+treatment testbed for research and training on ICS security.
+In2016 international workshop on cyber-physical systems
+for smart water networks (CySWater), 31–36. IEEE.
+Meng, W.; Liu, Y .; Zhu, Y .; Zhang, S.; Pei, D.; Liu, Y .; Chen,
+Y .; Zhang, R.; Tao, S.; Sun, P.; et al. 2019. Loganomaly: Un-
+supervised detection of sequential and quantitative anoma-
+lies in unstructured logs. InIJCAI, volume 19, 4739–4745.
+Oliner, A.; and Stearley, J. 2007. What supercomputers say:
+A study of five system logs. In37th annual IEEE/IFIP in-
+ternational conference on dependable systems and networks
+(DSN’07), 575–584. IEEE.
+Pan, D.; Fu, Z.; Wang, J.; Han, X.; Zhu, Y .; and Zhao, X.
+2025. Contextual Attention Modulation: Towards Efficient
+Multi-Task Adaptation in Large Language Models. InPro-
+ceedings of the 34th ACM International Conference on In-
+formation and Knowledge Management, 2273–2283.
+Qiu, C.; Pfrommer, T.; Kloft, M.; Mandt, S.; and Rudolph,
+M. 2021. Neural transformation learning for deep anomaly
+detection beyond images. InInternational conference on
+machine learning, 8703–8714. PMLR.
+Ren, H.; Wang, J.; and Zhao, W. X. 2022a. Generative
+adversarial networks enhanced pre-training for insufficient
+electronic health records modeling. InProceedings of the
+28th ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining, 3810–3818.
+Ren, H.; Wang, J.; and Zhao, W. X. 2022b. RSD: A Rein-
+forced Siamese Network with Domain Knowledge for Early
+Diagnosis. In Hasan, M. A.; and Xiong, L., eds.,Proceed-
+ings of the 31st ACM International Conference on Informa-
+tion & Knowledge Management, Atlanta, GA, USA, October
+17-21, 2022, 1675–1684. ACM.
+Ren, H.; Wang, J.; Zhao, W. X.; and Wu, N. 2021. Rapt:
+Pre-training of time-aware transformer for learning robust
+healthcare representation. InProceedings of the 27th ACM
+SIGKDD conference on knowledge discovery & data min-
+ing, 3503–3511.
+Roth, K.; Pemula, L.; Zepeda, J.; Sch ¨olkopf, B.; Brox, T.;
+and Gehler, P. V . 2022. Towards Total Recall in Industrial
+Anomaly Detection. InIEEE/CVF Conference on Computer
+Vision and Pattern Recognition, CVPR 2022, New Orleans,
+LA, USA, June 18-24, 2022, 14298–14308. IEEE.
+Shen, L.; Li, Z.; and Kwok, J. 2020. Timeseries anomaly
+detection using temporal hierarchical one-class network.
+Advances in neural information processing systems, 33:
+13016–13026.
+Su, Y .; Zhao, Y .; Niu, C.; Liu, R.; Sun, W.; and Pei, D.
+2019a. Robust Anomaly Detection for Multivariate Time
+Series through Stochastic Recurrent Neural Network. In
+Teredesai, A.; Kumar, V .; Li, Y .; Rosales, R.; Terzi, E.; and
+Karypis, G., eds.,Proceedings of the 25th ACM SIGKDD
+International Conference on Knowledge Discovery & Data
+Mining, KDD 2019, Anchorage, AK, USA, August 4-8, 2019,
+2828–2837. ACM.
+Su, Y .; Zhao, Y .; Niu, C.; Liu, R.; Sun, W.; and Pei, D.
+2019b. Robust anomaly detection for multivariate time se-
+ries through stochastic recurrent neural network. InPro-
+ceedings of the 25th ACM SIGKDD international conference
+on knowledge discovery & data mining, 2828–2837.
+Team, Q. 2024. Qwen2.5: A Party of Foundation Models.
+Wu, H.; Hu, T.; Liu, Y .; Zhou, H.; Wang, J.; and Long, M.
+2023. TimesNet: Temporal 2D-Variation Modeling for Gen-
+eral Time Series Analysis. InThe Eleventh International
+Conference on Learning Representations, ICLR 2023, Ki-
+gali, Rwanda, May 1-5, 2023. OpenReview.net.
+Xu, H.; Chen, W.; Zhao, N.; Li, Z.; Bu, J.; Li, Z.; Liu,
+Y .; Zhao, Y .; Pei, D.; Feng, Y .; et al. 2018. Unsupervised
+anomaly detection via variational auto-encoder for seasonal
+kpis in web applications. InProceedings of the 2018 world
+wide web conference, 187–196.
+Xu, J.; Wu, H.; Wang, J.; and Long, M. 2022. Anomaly
+Transformer: Time Series Anomaly Detection with Associ-
+ation Discrepancy. InThe Tenth International Conference on
+Learning Representations, ICLR 2022, Virtual Event, April
+25-29, 2022. OpenReview.net.
+Yang, Y .; Zhang, C.; Zhou, T.; Wen, Q.; and Sun, L. 2023.
+Dcdetector: Dual attention contrastive representation learn-
+ing for time series anomaly detection. InProceedings of the
+29th ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining, 3033–3045.
+Yao, X.; Chen, Z.; Gao, C.; Zhai, G.; and Zhang, C. 2024.
+Resad: A simple framework for class generalizable anomaly
+detection.Advances in Neural Information Processing Sys-
+tems, 37: 125287–125311.
+Yao, X.; Zhang, C.; Li, R.; Sun, J.; and Liu, Z. 2023. One-
+for-All: Proposal Masked Cross-Class Anomaly Detection.
+In Williams, B.; Chen, Y .; and Neville, J., eds.,Thirty-
+Seventh AAAI Conference on Artificial Intelligence, AAAI
+2023, Thirty-Fifth Conference on Innovative Applications of
+Artificial Intelligence, IAAI 2023, Thirteenth Symposium on
+Educational Advances in Artificial Intelligence, EAAI 2023,
+Washington, DC, USA, February 7-14, 2023, 4792–4800.
+AAAI Press.
+Yin, J.; Qiao, Y .; Zhou, Z.; Wang, X.; and Yang, J. 2024.
+Mcm: Masked cell modeling for anomaly detection in tabu-
+lar data. InThe Twelfth International Conference on Learn-
+ing Representations.
+You, Z.; Cui, L.; Shen, Y .; Yang, K.; Lu, X.; Zheng, Y .; and
+Le, X. 2022. A unified model for multi-class anomaly detec-
+tion.Advances in Neural Information Processing Systems,
+35: 4571–4584.
+Yu, X.; Wang, J.; Yang, Y .; Huang, Q.; and Qu, K. 2025.
+BIGCity: A Universal Spatiotemporal Model for Unified
+Trajectory and Traffic State Data Analysis. In41st IEEE
+International Conference on Data Engineering, ICDE 2025,
+Hong Kong, May 19-23, 2025, 4455–4469. IEEE.
+Zeng, A.; Chen, M.; Zhang, L.; and Xu, Q. 2023. Are trans-
+formers effective for time series forecasting? InProceedings
+of the AAAI conference on artificial intelligence, volume 37,
+11121–11128.
+Zhang, W.; Wang, J.; Yang, Y .; and U, L. H. 2025. VecCity:
+A Taxonomy-guided Library for Map Entity Representation
+Learning [Experiment, Analysis\u0026 Benchmark].Proc.
+VLDB Endow., 18(8): 2575–2588.
+Zhou, T.; Niu, P.; Sun, L.; Jin, R.; et al. 2023. One fits
+all: Power general time series analysis by pretrained lm.
+Advances in neural information processing systems, 36:
+43322–43355.
+Zong, B.; Song, Q.; Min, M. R.; Cheng, W.; Lumezanu, C.;
+Cho, D.; and Chen, H. 2018. Deep Autoencoding Gaussian
+Mixture Model for Unsupervised Anomaly Detection. In
+6th International Conference on Learning Representations,
+ICLR 2018, Vancouver, BC, Canada, April 30 - May 3, 2018,
+Conference Track Proceedings. OpenReview.net.
+Appendix
+Implementation Details
+Model Architecture and HyperparametersAll experi-
+ments were conducted on a server equipped with 8 NVIDIA
+RTX 4090 GPUs. We use Qwen2.5-0.5B as the base model.
+The model was trained using the Adam optimizer with a
+learning rate of 1e-5, and a batch size of 64, 256, and 32
+for time series, tabular data, and log data, respectively. We
+trained the model for a total of 5 epochs on the 200k com-
+bined dataset. Our implementation is based on Python 3.10,
+PyTorch 2.6.0, and the Transformers 4.47.1.
+Prompt FormulationTo guide the LLM’s contextual rea-
+soning process, we designed a specific instruction prompt
+for the Prompt-Guided Representation Module. This prompt
+structures the task for the model, instructing it to perform
+a comparison rather than a simple language understanding.
+The prompt template used in our experiments is as follows:
+“Determine if the sample exhibits any significant dis-
+crepancies or anomalies by comparing it to the refer-
+ence set. ”
+This instruction serves as a prefix to the concatenated em-
+beddings of the target and reference samples, forming the
+final input for the LLM.
+Data Splitting Details
+• Task-specific Setting: For a datasetiwithin a single
+modality, the sampling probabilityp i is proportional to
+its sizeN i (number of samples):p i =N i/ P
+j Nj.
+For time-series datasets, to avoid severe under-sampling
+of smaller sets, we adjust the effective size toN ′
+i =
+max(Ni,250ktime points), preventing smaller datasets
+from being under-sampled.
+• Universal Setting: To ensure balanced training across
+modalities, we first select a modality (Tabular, Time-
+series, or Log) with uniform probability (1/3). Then,
+within the chosen modality, we sample triplets from its
+constituent datasets using the same proportional-to-size
+strategy as in the task-specific setting.
+Complete Results of Main Experiment
+For brevity, the main paper presents results on a representa-
+tive subset of 8 tabular datasets. Table 2 provides the com-
+plete performance comparison of ICAD-LLM against base-
+lines on all 18 tabular datasets. As shown, ICAD-LLM con-
+sistently ranks as the best or second-best method across all
+datasets, supporting the conclusions drawn in the main text.
+Generalization Experiment Details
+Experimental SetupsIn the generalization experiment,
+we test the models on datasets entirely excluded from the
+training pool to evaluate their zero-shot adaptation capa-
+bility. The selected datasets (PSM for time series; HTTP,
+Shuttle, SMTP, and Wbc for tabular data; BGL for log
+data) are widely used benchmarks representing diverse real-
+world scenarios. The training set composition was adjusted
+to maintain the total volume at 200k samples, with the refer-
+ence set sizeKfixed at 5.
+Detailed ResultsTable 3 presents the detailed scores for
+each method on the held-out datasets. The results show that
+ICAD-LLM maintains high performance across all modal-
+ities, whereas the performance of baseline methods varies
+significantly.
+Sensitivity Analysis Details
+Impact of Reference Set SizeThis experiment investi-
+gates the model’s sensitivity to the reference set size. We
+varyKwithin the range of{1,2,3,5,7,10}while keeping
+the total training data volume fixed at 200k. Table 4 provides
+the detailed results for each dataset.
+Impact of Training Data VolumeThis experiment ana-
+lyzes the effect of the total training data volume on model
+performance. We vary the volume from 10k to 500k sam-
+ples, with the reference set sizeKfixed at 5. Table 5 shows
+the detailed results. The trend of diminishing returns ob-
+served in the main paper is evident across most individual
+datasets, confirming that 200k samples is a data-efficient
+choice.
+Modality Task-Specific AD Methods Universal AD MethodsDatasets Metric
+Time Series Anoamly.∗ DLinear TimesNet OneFitsAll Ours NeuTraL. UniAD ACR Ours
+SMD
+F1
+85.68 79.34 85.94 86.92 88.47 81.47 84.32 74.3888.24
+MSL 84.12 85.41 85.78 82.4886.52 79.68 81.99 76.4385.15
+SMAP 71.57 70.39 72.07 72.84 75.27 64.2974.0269.48 71.95
+SW AT 84.29 89.25 92.37 94.27 94.55 77.43 79.3890.7085.98
+PSM 82.36 93.70 97.33 97.1697.64 91.64 92.84 89.5396.97
+Average 81.60 83.62 86.70 86.73 88.49 78.90 82.51 80.1085.66
+Tabular IForest DAGMM GOAD MCM Ours NeuTraL. UniAD ACR Ours
+Breastw
+AUROC
+86.20 74.07 83.28 99.45 99.67 67.64 80.72 72.9691.73
+Cardio 79.67 66.61 86.27 94.34 94.69 63.75 62.71 65.51 91.03
+Campaign 69.77 75.60 83.28 87.32 87.44 56.94 50.80 53.0585.31
+Cardiotocography 70.53 79.18 73.92 78.8481.21 52.32 67.55 61.3974.86
+Fraud 73.63 81.47 78.0993.2392.64 67.07 74.38 65.7585.26
+Glass 64.80 68.57 65.09 69.34 70.50 58.01 63.96 52.3566.95
+HTTP 86.70 92.47 96.78 97.77 98.14 94.1888.61 86.75 91.71
+Ionosphere 75.59 69.49 89.26 96.91 99.18 75.75 66.08 80.94 97.64
+Mammography 81.69 73.40 81.77 89.91 91.93 76.63 69.76 75.3384.58
+Optdigits 79.73 64.29 79.62 97.32 97.88 63.26 63.32 61.1490.23
+Pima 65.36 59.65 71.80 74.86 75.38 61.16 58.05 59.3868.39
+Pendigits 84.97 68.07 86.50 97.33 99.68 54.29 58.89 73.83 96.90
+Satellite 80.48 72.84 73.91 78.5780.93 67.9880.7674.95 75.13
+Satimage-2 91.45 87.54 97.41 97.3297.72 78.86 82.49 89.92 95.35
+Shuttle 93.18 90.11 96.0799.3198.74 88.14 90.75 92.24 95.34
+SMTP 86.73 88.94 90.08 91.47 92.46 90.4183.04 83.45 86.52
+Wbc 84.51 77.86 85.31 97.89 99.06 85.17 76.91 77.0697.94
+Wine 63.79 86.48 83.43 93.88 96.35 80.54 87.93 88.84 89.45
+Average 78.82 76.48 83.44 90.84 91.87 71.23 72.60 73.05 86.91
+Log LogCluster DeepLog LogAnomaly LogBert Ours NeuTraL. UniAD ACR Ours
+BGL
+AUROC
+83.72 90.29 82.35 93.66 95.32 75.39 77.24 84.66 92.79
+Thunderbird 74.28 91.88 93.24 92.3794.84 67.36 82.31 78.7585.20
+Liberty2 83.24 86.27 93.63 94.29 98.47 72.55 86.29 84.0688.69
+Spirit2 88.79 95.25 92.89 95.27 97.24 81.49 79.17 87.52 90.44
+Average 82.51 90.92 90.53 93.90 96.47 74.20 81.25 83.75 89.28
+* We replace the joint criterion in Anomaly Transformer with reconstruction error for consistency with other baseline methods.
+Table 2: Performance comparison of different anomaly detection methods on time series, tabular, and log data. The best and
+second-best results in each category are shown in bold and with an underline, respectively.
+Modality Dataset(s) Metrics NeuTralAD UniAD ACR ICAD-LLM
+Time Series PSM F1 86.94 87.44 83.4492.65
+Tabular
+HTTP
+AUROC
+89.8976.73 86.35 88.37
+Shuttle 83.75 87.07 91.37 91.64
+SMTP84.1075.31 78.86 81.99
+Wbc 76.21 72.87 74.9997.60
+Average83.49 78.00 82.9089.96
+Log BGL AUROC 69.90 71.76 79.39 89.65
+Table 3: Generalization performance on unseen datasets. The model is tested on datasets entirely excluded from the training
+pool. The best results are in bold and the second-best are underlined.
+Modality Datasets Metrics K=1 K=2 K=3 K=5 K=7 K=10
+Time Series
+SMD
+F1
+87.28 86.96 86.99 88.4788.5488.53
+MSL 82.91 85.94 86.07 86.52 86.65 86.66
+SMAP 90.60 90.68 91.18 93.2793.3193.30
+SW AT 89.62 92.05 93.8694.55 94.5594.52
+PSM 90.53 93.68 95.81 97.6497.7597.72
+Average88.19 89.86 90.78 92.0992.1692.15
+Tabular
+Breastw
+AUROC
+96.33 98.30 98.38 99.67 99.6599.7
+Cardio 89.27 90.32 92.00 94.34 94.34 94.36
+Campaign 83.65 85.04 86.11 87.44 87.49 87.49
+Cardiotocography 78.02 79.881.4781.21 81.22 81.20
+Fraud 91.85 92.49 92.65 92.6492.8192.79
+Glass 68.68 68.48 70.36 70.50 70.66 70.69
+HTTP 94.68 97.01 98.14 98.14 98.18 98.23
+Ionosphere 96.61 97.43 97.48 99.18 99.34 99.36
+Mammography 86.53 89.94 90.59 91.93 92.04 92.08
+Optdigits 95.83 95.97 96.07 97.88 97.9097.96
+Pima 73.31 74.05 74.3175.3875.37 75.36
+Pendigits 95.37 96.62 97.13 99.6899.7299.71
+Satellite 77.91 78.20 78.51 80.93 80.96 81.00
+Satimage-2 94.64 94.48 96.45 97.72 97.79 97.82
+Shuttle 93.00 95.82 96.8698.74 98.7498.73
+SMTP 86.75 89.52 90.78 92.46 92.54 92.55
+Wbc 95.21 97.09 98.62 99.06 99.22 99.29
+Wine 92.83 95.25 95.85 96.35 96.49 96.50
+Average88.36 89.77 90.65 91.85 91.91 91.93
+Log
+BGL
+AUROC
+93.21 93.35 95.27 95.32 95.41 95.45
+Thunderbird 91.67 93.62 93.75 94.84 94.91 94.92
+Liberty 95.56 96.44 98.67 98.4798.7698.75
+spirit 91.01 93.58 95.6997.2497.07 97.13
+Average92.86 94.25 95.85 96.47 96.54 96.56
+Table 4: Sensitivity analysis with respect to the reference set sizeK. Performance is reported for each dataset asKvaries. The
+best and second-best results for each dataset are in bold and underlined, respectively.
+Modality Datasets Metrics 10K 20K 50K 100K 200K 500K
+Time Series
+SMD
+F1
+81.71 85.63 85.31 87.39 88.47 88.48
+MSL 78.56 79.34 83.81 85.46 86.52 86.60
+SMAP 87.94 92.25 91.95 92.8793.2793.25
+SW AT 85.24 88.34 92.39 94.27 94.55 94.72
+PSM 92.78 92.64 95.04 96.82 97.64 97.64
+Average85.25 87.64 89.71 91.36 92.09 92.14
+Tabular
+Breastw
+AUROC
+96.19 96.59 99.55 99.57 99.67 99.67
+Cardio 83.35 87.11 90.44 92.84 94.34 94.54
+Campaign 77.89 81.91 84.26 85.98 87.44 87.46
+Cardiotocography 71.64 75.39 78.66 81.20 81.21 81.25
+Fraud 88.34 90.75 90.41 91.6692.6492.62
+Glass 65.71 67.46 67.44 69.8170.5070.44
+HTTP 92.71 93.17 93.98 95.95 98.14 98.20
+Ionosphere 95.85 95.97 96.85 97.9899.1899.10
+Mammography 84.85 87.19 89.62 91.06 91.93 92.09
+Optdigits 94.06 95.26 97.1598.0697.88 97.86
+Pima 70.15 72.47 73.00 73.81 75.38 75.49
+Pendigits 95.73 96.89 98.81 99.47 99.68 99.82
+Satellite 77.85 79.05 78.91 79.6980.9380.85
+Satimage-2 94.93 94.53 95.70 97.47 97.72 97.74
+Shuttle 93.45 93.82 95.51 96.6498.7498.68
+SMTP 87.88 90.91 91.01 91.09 92.46 92.64
+Wbc 93.28 93.24 95.42 97.49 99.06 99.17
+Wine 92.06 94.03 93.79 96.32 96.3596.32
+Average86.44 88.10 89.47 90.89 91.85 91.88
+Log
+BGL
+AUROC
+84.89 87.06 90.24 92.83 95.32 95.42
+Thunderbird 86.78 90.97 94.06 94.52 94.84 94.96
+Liberty 91.77 94.55 94.49 96.92 98.47 98.54
+spirit 90.30 92.75 94.21 95.01 97.24 97.27
+Average88.44 91.33 93.25 94.82 96.47 96.55
+Table 5: Sensitivity analysis with respect to the total training data volume. Performance is reported for each dataset across
+different training data sizes. The best and second-best results for each dataset are in bold and underlined, respectively.

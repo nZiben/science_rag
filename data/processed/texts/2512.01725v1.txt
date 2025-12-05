@@ -1,0 +1,695 @@
+Beware of Reasoning Overconfidence: Pitfalls in the
+Reasoning Process for Multi-solution Tasks
+Jiannan Guan1∗ Qiguang Chen1∗ Libo Qin2,
+ Dengyun Peng1 Jinhao Liu1 Liangyu Huo3
+Jian Xie3 Wanxiang Che1,
+1 Research Center for Social Computing and Interactive Robotics, Harbin Institute of Technology,
+2 School of Computer Science and Engineering, Central South University,
+3 Du Xiaoman (Beijing) Science Technology Co., Ltd.
+Abstract:
+Large Language Models (LLMs) excel in reasoning tasks requiring a single correct answer, but they perform
+poorly in multi-solution tasks that require generating comprehensive and diverse answers. We attribute this
+limitation toreasoning overconfidence: a tendency to express undue certainty in an incomplete solution
+set. To examine the effect, we introduceMuSoBench, a benchmark of multi-solution problems. Experiments
+show that the conventional short chain-of-thought (Short-CoT) prompting paradigm exhibits pronounced
+overconfidence, whereas the emerging long chain-of-thought (Long-CoT) approach mitigates it through iterative
+exploration and self-reflection. We further characterise observable behaviours and influential factors. To probe
+the underlying cause, we propose thecognitive-rigidity hypothesis, which posits that overconfidence arises
+when the reasoning process prematurely converges on a narrow set of thought paths. An attention-entropy
+analysis offers preliminary support for this view. These findings provide tools for assessing the completeness of
+LLM reasoning and highlight the need to move evaluation beyond single-answer accuracy toward comprehensive
+exploration.
+∗ Equal Contribution
+Corresponding Author
+Date: Oct. 01, 2025
+Code Repository: https://github.com/jubgjf/reasoning-overconfidence
+Contact: jnguan@ir.hit.edu.cn, qgchen@ir.hit.edu.cn, lbqin@csu.edu.cn, car@ir.hit.edu.cn
+1. Introduction
+Recently, Large Language Models (LLMs) have shown strong performance on tasks requiring multiple
+correct answers [1, 37, 43, 28]. As illustrated in Figure 1, consider planning every possible dinner from
+a fixed set of ingredients: success lies in listing the full menu, not a single dish. We call such problems
+multi-solution reasoning tasks, whose goal is completeness and diversity. Yet advanced methods like Chain-
+of-Thought (CoT) [32], designed for one reasoning path, often stop early. When asked to list all answers,
+LLMs usually produce a few options and then assert confidently that no others exist. As Figure 1 & 2 depict,
+this overconfidence significantly reduces possible solution exploration, exposing a mismatch between stated
+confidence and actual coverage. To systematically analyze this failure mode on multi-solution tasks, we
+introduce the concept ofReasoning Overconfidence: A model’s subjective confidence in its solution set
+arXiv:2512.01725v1  [cs.CL]  1 Dec 2025
+95%Confidence
+All possiblemeals found!Planning 100% complete!
+Poor SolutionCompleteness
+ExcessiveModelConfidence
+ReasoningOverconfidence
++
+All Possible SolutionsMulti-SolutionTaskPlan a variety of dinners withlimited ingredients.
+ Discovered
+Failedto Discover
+Figure1: On multi-solution tasks, the model suffers fromreasoning overconfidence, exhibiting excessively
+high confidence while exploring only a few reasoning paths. This leads to a poor completeness score for the
+final task.
+significantly exceeds its actual ability to recover the full set of correct answers.
+Prior work has examined LLM performance on multi-solution tasks. Some work focuses on reasoning
+under structured constraints. For example, the 24-point game requires enumerating all valid arithmetic
+expressions [39], while benchmarks such as CalibratedMath use problems with multiple correct answers
+to assess uncertainty calibration [24]. Others center on open-ended generation. Creative tasks such as
+story generation evaluate producing diverse content from an effectively unbounded solution space [36, 31].
+However, the datasets used in existing work share a fundamental limitation: Their solution spaces are either
+tightly constrained or nearly unbounded, which hinders reliable estimation of completeness.
+To enable more precise empirical study, we developed theMulti-solution Benchmark (MuSoBench), a
+task suite designed to evaluate reasoning overconfidence under controlled solution spaces. When applied to
+MuSoBench, the conventional short chain-of-thought (Short-CoT) approach exhibits persistent overconfi-
+dence: as shown in Figure 2, its outputs cluster in the high-confidence, low-recall region, providing direct
+empirical evidence of this behavior. Behavioral analysis indicates that Short-CoT performs a shallow search,
+seldom revising its initial reasoning path, which largely explains its inflated confidence. By contrast, the
+Long-CoT paradigm, which promotes iterative exploration and self-reflection [6, 7, 41, 22], substantially
+improves both recall and precision, thereby reducing reasoning overconfidence. Finally, analysis of inter-
+nal activations supports the cognitive rigidity hypothesis, which attributes overconfidence to premature
+convergence on a narrow set of reasoning paths.
+The main contributions are summarized as follows:
+• WefirstintroducethereasoningoverconfidenceconceptasacriticalfailuremodeofLLMsonmulti-solution
+tasks and present MuSoBench, a new benchmark that documents this phenomenon through evidence on
+solution diversity, stability, and calibration.
+• We analyze factors influencing overconfidence and its mitigation. Our results show that the extent of
+overconfidence is governed chiefly by the length of the reasoning trace, the presence of reflective steps,
+and the breadth of exploration, thereby linking the phenomenon to both reasoning paradigms and task
+properties.
+• We advance the cognitive-rigidity hypothesis to explain this behavior, examining internal model states that
+give rise to overconfidence and offering a fresh perspective on the fundamental multi-solution reasoning.
+2
+Figure2: Distribution plots of recall vs. confidence on the TimeTabling dataset. The plots clearly show
+Short-CoT results clustering in the low-recall, high-confidence corner (red). For SubsetSum results, see
+Figure 8 in Appendix.
+2. Problem Formulation & Benchmark
+2.1. Multi-solution Tasks
+Multi-solution tasks require a model to enumerate all valid answers to a single problem rather than to return
+just one. Formally, such a task is characterised by a datasetT={(x i, ˆYi)| |ˆYi| ≥1}N
+i=1, wherexi denotes the
+i-th problem instance andˆYi is the corresponding ground-truth solution set. Givenxi, a modelM outputs its
+own solution setYi =M(x i). The ideal outcome is thatYi matches ˆYi exactly, covering every valid solution
+and omitting none.
+2.2. Reasoning Overconfidence
+ReasoningOverConfidence (ROC) refers to a model’s tendency to report confidence levels that exceed its
+actual performance. In multi-solution tasks, this mismatch often drives the model to return only a subset of
+correct answers and to stop searching prematurely. To characterise the phenomenon quantitatively, we use
+theExpected Calibration Error(ECE), which compares expected and realised performance. LetC(Yi |x i,M)
+denotetheconfidencethatmodel M assignstoitsproposedsolutionset Yi. Amodelisreasoning-overconfident
+when its reported confidence exceeds its observed performancePerf(·):
+C(Yi|xi,M)>Perf(Y i, ˆYi)(1)
+For tasks with multiple valid answers, the relevant performance dimension is thecompletenessof the
+returned set. Because our focus is the model’s failure to enumerateallcorrect solutions, not the precision of
+each individual answer, we measure performance withRecall. Metrics that combine precision and recall
+(e.g., F1-score) would blur the exploration shortfall we seek to isolate; hence, we instantiatePerf(·) as Recall
+throughout this work.
+3
+(a) Reliability Diagrams of Short-CoTvs. Long-CoTon TimeTablingacross different models.(b) Performance of Short-CoTvs. Long-CoTon TimeTabling.
+Figure3: Calibration and performance of Short-CoT vs. Long-CoT on TimeTabling dataset. As shown in (a),
+the diagonal line represents perfect calibration. Long-CoT models (blue) are better calibrated than Short-CoT
+models (orange). As shown in (b), Long-CoT models achieve significantly higher recall than Short-CoT
+models. For SubsetSum results, see Figure 9 in Appendix.
+2.3. MuSoBench Construction
+To systematically and controllably evaluate models on multi-solution tasks, we introduce theMulti-Solution
+Benchmark (MuSoBench), comprising two subtasks:TimeTablingandSubsetSum. TheTimeTablingsubtask
+is to construct conflict-free course schedules subject to constraints on course overlap, instructor availability,
+and classroom capacity. TheSubsetSumsubtask requires enumerating all subsets of a given integer set
+summing to target number.
+Problem complexity is measured by the size of each instance’s solution space. The TimeTabling corpus
+spans ten complexity levels and the SubsetSum corpus seven, with 100 instances per level. For every instance,
+we algorithmically enumerated all feasible solutions and manually verified them to ensure correctness
+and completeness. A detailed description of the dataset construction procedure, together with illustrative
+examples, is provided in Appendix A.1.
+To quantitatively assess model behavior in multi-solution scenarios, we utilize the following metrics:
+• ModelPerformanceMetric:(1)Precision( ↑): Proportionofgeneratedanswersthatarecorrect. (2)Recall
+(↑): Proportion of ground-truth answers the model recovers. This is the primary metric for multi-solution
+tasks.
+• Overconfidence Metric:Expected Calibration Error (ECE)(↓): Average gap between reported confidence
+and realized performance (precision or recall). Lower ECE indicates better calibration.
+• Model Behavior Metric:(1)Correct Solution Retention Rate (CSR)(↑): Capability to maintain previously
+correct solutions. (2)Error Solution Correction Rate (ESC)(↑): Capability to correct earlier error solutions.
+(3)New Solution Discovery Rate (NSD)(↑): Capability to discover additional correct solutions.
+All detailed formulas are in Appendix A.2.
+4
+Figure4: The arrows indicate the movement of model confidence and performance from Short-CoT to
+Long-CoT. The results show that adopting Long-CoT causes most data points to shift toward the diagonal,
+indicating improved calibration (red). Results for SubsetSum are shown in Figure 10 in Appendix.
+3. Experimental Setup
+Our experiments are conducted on the Qwen, DeepSeek, and GPT series of models. We mainly compare the
+following two CoT reasoning paradigms:
+• Short-CoT:Appends zero-CoT prompt [18] to a base instruction to elicit CoT from instruction-tuned
+models, including Qwen3-8B (non-thinking mode) [37], DeepSeek-V3 [26], and gpt-4o-mini [1].
+• Long-CoT:Uses models trained for extended, iterative reasoning and reflection; we use Qwen3-8B
+(thinking mode) [37], DeepSeek-R1 [13], and o4-mini [16].
+We contend this is a valid comparison of the entire paradigm as deployed in practice, rather than comparing
+different prompts or training methods.
+To estimate LLM confidence, we use a verbal-elicitation strategy [34]. This approach applies to both
+open-source and API-only models and is supported by evidence that verbalized confidence closely tracks
+internalprobabilities[ 19]. Inoursetup, themodelfirstgeneratesafullanswerandthenreportsitsconfidence
+on a0–100scale. The prompts are given in Appendix A.3.
+4. Analysis of Reasoning Overconfidence
+4.1. Existence Verification
+Short-CoTdisplayssubstantialreasoningoverconfidenceacrossallmodelseries.Toassesstheexistence
+of ROC, we quantify this phenomenon using recall–confidence reliability diagrams, in which a perfectly
+calibrated model aligns with the main diagonal. In Figure 3 (a), the Short-CoT bars aggregate in the
+lower-right quadrant, indicating high confidence yet low recall, and therefore fall well below the diagonal.
+Consistently, Short-CoT produces expected calibration error (ECE) values above 78.22% for every model
+series, corroborating its marked reasoning overconfidence.
+Long-CoT lowers reasoning over-confidence relative to Short-CoT, yet open-source models still need
+further improvement.Figure 3 (a) shows that the Long-CoT reliability curve lies closer to the diagonal
+5
+Model Paradigm TimeTabling SubsetSum
+CSR (%)↑ESC (%)↑NSD (%)↑CSR (%)↑ESC (%)↑NSD (%)↑
+Qwen Short-CoT43.1565.22 0.19 14.89 15.63 0.20
+Long-CoT 53.1381.83 2.50 75.65 93.93 0.49
+DeepSeek Short-CoT 6.7798.860.0170.4495.14 0.27
+Long-CoT47.5697.510.8663.9596.58 0.70
+GPT Short-CoT34.3471.05 0.26 30.79 33.52 0.16
+Long-CoT 10.4192.12 1.28 45.05 99.23 3.03
+Table 1: Long-CoT models demonstrate significantly higher rates of Error Correction and New Solution
+Discovery, indicating a more flexible and reflective reasoning process compared to the cognitive rigidity of
+Short-CoT.
+compared to Short-CoT, indicating better calibration and a lower rate of ROC. Quantitatively, Long-CoT
+decreases the ECE by at least 18.28% across all model families and even delivers single-digit ECE for
+closed-source models. Nevertheless, open-source models continue to exhibit pronounced ROC, exceeding
+56.46%, even after Long-CoT prompting. In sum, although Long-CoT markedly mitigates ROC compared
+with Short-CoT, additional advances are required to enhance calibration in open-source models.
+4.2. Behavioral Diagnostics
+We demonstrate the cause of ROC under the Short-CoT paradigm. We discover that models meeting with
+ROC can trigger the following unexpected behavior:
+Calibrating ROC is coupled with actual performance improvement.Short-CoT instances concentrate in
+the“low-recall, high-confidence”quadrant (Figure 2). By halting early, as shown in Figure 3 (b), the model
+retrieves few correct solutions yet remains overly sure of their completeness, constraining answer diversity.
+Figure 4 plots, for each problem, the vector from the Short-CoT point to its Long-CoT counterpart. The
+consistent upward shift indicates that Long-CoT searches more exhaustively and recovers solutions missed
+by Short-CoT, while the concurrent leftward shift toward lower confidence reveals better self-calibration.
+Thus, ROC calibration aligns with performance gains.
+Cognitive Rigidity and Resistance to Guidance.As shown in Table 1, models using Short-CoT exhibit
+extremely low error correction and new solution discovery rates. Even when prompted to reconsider, the
+model is largely unable to identify its previous errors or explore new, correct paths. This cognitive rigidity
+indicates that the model stops exploring alternative reasoning paths once it settles on an initial set of answers.
+Long-CoT models, in contrast, are far more capable of self-correction and discovery. Experiments on dataset
+generalizability are available in Appendix A.4.
+4.3. Influencing Factors
+We now investigate key factors that mitigate ROC behavior.
+Inference-Time Scaling Law also holds for the phenomenon of reasoning overconfidence.Building on
+the inference-time scaling law, which raises accuracy by increasing inference calculations [33], we investigate
+6
+(b) Performance (Recall, top row) and confidence (bottom row) as a function of task complexity on the TimeTablingdataset.
+(a) Confidence vs. reasoning length
+(c) The effect of decoding temperature on Recall and ECE.
+Figure5: Factors that influence reasoning overconfidence. (a) A strong negative correlation shows that Long-
+CoT has moderate confidence. (b) As task complexity rises, Short-CoT keeps unjustifiably high confidence
+despite falling recall, indicating poor self-monitoring, whereas Long-CoT lowers its confidence in line with
+the harder setting, demonstrating better calibration. (c) Decoding temperature has little effect on recall or
+expected calibration error. More results see in Figure 11 in Appendix.
+whether longer chains also temper ROC. We therefore measure how reasoning length relates to the model’s
+final confidence. Figure 5 (a) shows a strong negative correlation: extended chains yield lower confidence
+estimates. Thus, extra computation not only improves accuracy but also calibrates predictions by curbing
+ROC; longer reasoning promotes a more cautious self-assessment.
+Long-CoT strategies substantially reduce ROC as task complexity increases, whereas Short-CoT is
+insensitive to task complexity.Following previous work [35], we posit that greater complexity, reflected
+by a much smaller ground-truth solution space, should dampen a model’s confidence. Figure 5(b) confirms
+this expectation for Long-CoT: its confidence decreases as complexity rises, indicating proper calibration.
+Short-CoT, however, maintains high confidence while recall drops sharply, revealing persistent overconfidence.
+Hence, Long-CoT acknowledges growing difficulty, whereas Short-CoT remains blind to task complexity.
+Decodingtemperatureincreasestoken-leveldiversityratherthanalleviatingROCorexpandingsolution
+exploration.Figure 5(c) demonstrates that adjusting the decoding temperature scarcely affects the model’s
+self-reported confidence and fails to reduce ROC. Higher temperatures likewise do not encourage a broader
+search across alternative reasoning paths. Instead, temperature primarily injects stochastic variation at the
+token level, enlarging lexical diversity without prompting the model to revisit or deepen its chain of thought.
+These observations indicate that ROC originates in the model’s intrinsic reasoning mechanism rather than in
+tunable decoding heuristics.
+7
+(c) Reliability Diagrams of different self-consistency selection strategies.(b) The effect of appending a simple exploratory prompt to a Short-CoTmodel.
+(a) The impact of different reflection counts on model performance and confidence.
+Figure6: Mitigate reasoning overconfidence through various strategies. (a) As reflection time increases,
+recall improves, and overconfidence decreases significantly. (b) A simple exploratory prompt boosts both
+precision and recall, demonstrating its potential at breaking cognitive rigidity. (c)w/ Votingaggregation
+strategy significantly improves calibration. More results are shown in Figure 12 in Appendix.
+5. Mitigation Strategies
+Building on Chen et al.[7], we separate the two mechanisms thought to drive Long-CoT performance,
+reflection, and exploration, to quantify their individual effects and derive practical guidance.
+Reflection steps enhance solution diversity and reduce ROC.We evaluated the reflection’s effect on
+ROC by pausing Long-CoT at scheduled checkpoints. After a fixed number of iterations, and before the final
+answer, we inserted the control token</think> to record the intermediate output. Figure 6 (a) reveals that
+additional reflection rounds raise recall while lowering confidence, thereby lessening ROC. This evidence
+indicates that reflection exposes otherwise overlooked solutions and thus decreases ROC.
+Sequential exploration–scaling prompts unlock rigid thinking and reduce ROC in Short-CoT.We
+tested whether ROC of Short-CoT can be eased by an external exploratory cue. After the model produced its
+initial answer, we appended the prompt “Wait, there may be other solutions.” Figure 6 (b) shows that this
+cue markedly improves performance. The added exploration frees the model from cognitive rigidity and
+yields more correct answers. ROC also drops slightly, as shown in Figure 13 in Appendix.
+8
+Method Precision (%)↑Recall (%)↑ECE (r) (↓)
+TimeTabling
+Long-CoT 54.88 9.99 77.23
+w/ Median Conf 59.10 19.81 81.13
+w/ Voting74.04 49.55 64.32
+SubsetSum
+Long-CoT 85.98 21.24 68.31
+w/ Median Conf92.1333.33 71.68
+w/ Voting 72.7551.40 65.43
+Table 2: Performance of self-consistency strategies on the Long-CoT Qwen3-8B model, using n=32 parallel
+reasoning paths. Results highlight that the choice of aggregation strategy involves significant trade-offs
+between performance and model calibration.
+Parallel exploration–scaling prompting mitigates ROC and boosts recall.We use a self-consistency
+paradigm that generates multiple reasoning paths in parallel and aggregates them by two strategies: (1)w/
+Median Conf: select the path with the median confidence score; (2)w/ Voting: unite all unique answers
+and weight their confidence by frequency. As shown in Table 2, aggregation choice is decisive.w/ Voting
+markedly increases recall on both datasets and improves calibration, indicating stronger ROC mitigation and
+broader solution coverage. By contrast, as shown in Figure 6 (c),Median Confraises precision and recall over
+the baseline but degrades calibration, worsening ECE.
+6. Investigating the Internal Mechanism
+To explain the rationale of reasoning overconfidence, we introduce thecognitive-rigidity hypothesis. It
+posits that ROC arises when the model’s core reasoning layers lock too early onto a single trajectory, exhibiting
+cognitive rigidity. Following Cui et al.[10], we treat attention entropy as a proxy for internal diversity.
+Accordingly, we compute layer-wise attention entropy for Qwen3-8B under the Short-CoT and the lower-ROC
+Long-CoT settings.
+Paradigms with reduced ROC show low attention entropy in core reasoning layers, indicating cognitive
+rigidity.Figure 7 exhibits three phases consistent with Cui et al.[10]: (1) Shallow layers (0–10): Initial
+entropies differ but rapidly converge. (2) Core reasoning layers (15–30): Reduced-ROC paradigms sustain
+higher entropy than high-ROC counterparts. (3) Deep layers (≈35): The trend reverses; high-ROC paradigms
+terminate with greater entropy.
+These patterns support the cognitive-rigidity hypothesis. In core layers, the low entropy of high-ROC
+paradigms signals narrowly focused attention that restricts exploratory reasoning, whereas Long-CoT’s higher
+entropy reflects flexibility to pursue alternative paths. The final reversal strengthens this interpretation:
+high-ROC rigidity produces late-stage uncertainty (high entropy), while Long-CoT, having explored more
+broadly, converges decisively (low entropy).
+9
+Figure7: Attention entropy of Short-CoT vs. Long-CoT on Qwen3-8B. We present layers 5, 25, and 35 as
+representative examples of three phases of the reasoning process. The model’s entropy evolution follows a
+three-phase pattern of convergence, divergence, and reversal: the Long-CoT paradigm shows higher entropy
+in core layers, promoting exploration, whereas the Short-CoT paradigm ends with higher entropy in the
+deepest layers. Detailed results are provided in Figure 14 in the Appendix.
+7. Related Work
+Chain-of-Thought (CoT) prompting markedly elevates Large Language Models’ reasoning by eliciting explicit
+intermediate steps that mirror human cognition [32, 4, 5, 9]. Yet its standard, concise variant, Short-CoT,
+remains brittle [27, 7]. To improve robustness, later work introduced more expressive reasoning topologies.
+Tree-of-Thought [39] and Graph-of-Thoughts [3], for example, let models explore multiple reasoning paths
+concurrently, enabling branching and backtracking to boost the likelihood of a correct answer [15].
+A model’s ability to report accurate confidence is crucial for its reliability, especially in high-stakes
+applications and for detecting hallucinations [2, 14]. However, a significant body of work has shown that
+LLMs are often poorly calibrated and exhibit overconfidence, expressing high certainty in answers that
+are incorrect or incomplete [17, 30]. Research has explored mitigating this issue through methods like
+probability calibration [11, 12] or by developing prompting strategies that leverage self-consistency or
+relative ranking to better estimate verbal confidence [20, 38, 29]. Overconfidence is pronounced in CoT
+reasoning: orderly steps can falsely signal correctness, leading models to commit before exploring the full
+solution space [25, 8]. Although recent work shows Long-CoT models are better calibrated than Short-CoT
+ones [40], these studies, and calibration research in general, still judge confidence only by the accuracy of a
+single final answer.
+Prior efforts that allow multiple solutions either restrict the solution space to narrow fact-checking tasks
+[23,21] or apply standard calibration metrics [24] without addressing the unique failure modes of exhaustive
+generation. To examine a key failure mode in multi-solution scenarios, we formally define and analyze
+Reasoning Overconfidence: a model’s unwarranted certainty that its generated solution set is complete. We
+shift evaluation from confidence-accuracy to confidence-completeness correlations, offering a fresh lens for
+enhancing LLM reliability.
+8. Conclusion
+ThispaperidentifiesreasoningoverconfidenceinLLMsasacriticalfailuremodeonmulti-solutiontasks, where
+standard Short-CoT yields incomplete yet highly confident solutions. To better understand this phenomenon,
+our analysis delves into its key influencing factors. In response to this problem, we demonstrate that the
+emerging Long-CoT effectively mitigates this issue by improving both solution diversity and confidence
+10
+calibration. We attribute the success of Long-CoT to its ability to overcome our proposed cognitive-rigidity
+hypothesis: a state where Short-CoT locks the model into a narrow search space. These findings underscore
+the limitations of conventional CoT and call for more exploratory reasoning paradigms to build reliable AI.
+Acknowledgements
+This work was supported by the National Natural Science Foundation of China (NSFC) via grants 62236004,
+62206078, 62476073, 92570120, and 62306342. This work was sponsored by the CCF-Zhipu Large Model
+Innovation Fund (NO.CCF-Zhipu202406).
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report.
+arXiv preprint arXiv:2303.08774, 2023.
+[2] Dario Amodei, Chris Olah, Jacob Steinhardt, Paul Christiano, John Schulman, and Dan Mané. Concrete
+problems in ai safety.arXiv preprint arXiv:1606.06565, 2016.
+[3] Maciej Besta, Nils Blach, Ales Kubicek, Robert Gerstenberger, Michal Podstawski, Lukas Gianinazzi,
+Joanna Gajda, Tomasz Lehmann, Hubert Niewiadomski, Piotr Nyczyk, et al. Graph of thoughts: Solving
+elaborate problems with large language models. InProceedings of the AAAI conference on artificial
+intelligence, volume 38, pages 17682–17690, 2024.
+[4] Qiguang Chen, Libo Qin, Jiaqi Wang, Jingxuan Zhou, and Wanxiang Che. Unlocking the capabilities of
+thought: A reasoning boundary framework to quantify and optimize chain-of-thought.Advances in
+Neural Information Processing Systems, 37:54872–54904, 2024.
+[5] Qiguang Chen, Libo Qin, Jin Zhang, Zhi Chen, Xiao Xu, and Wanxiang Che. M3 cot: A novel benchmark
+for multi-domain multi-step multi-modal chain-of-thought.arXiv preprint arXiv:2405.16473, 2024.
+[6] Qiguang Chen, Dengyun Peng, Jinhao Liu, HuiKang Su, Jiannan Guan, Libo Qin, and Wanxiang Che.
+Aware first, think less: Dynamic boundary self-awareness drives extreme reasoning efficiency in large
+language models.arXiv preprint arXiv:2508.11582, 2025.
+[7] Qiguang Chen, Libo Qin, Jinhao Liu, Dengyun Peng, Jiannan Guan, Peng Wang, Mengkang Hu, Yuhang
+Zhou, Te Gao, and Wanxiang Che. Towards reasoning era: A survey of long chain-of-thought for
+reasoning large language models.arXiv preprint arXiv:2503.09567, 2025.
+[8] Jiahao Cheng, Tiancheng Su, Jia Yuan, Guoxiu He, Jiawei Liu, Xinqi Tao, Jingwen Xie, and Huaxia
+Li. Chain-of-thought prompting obscures hallucination cues in large language models: An empirical
+evaluation.arXiv preprint arXiv:2506.17088, 2025.
+[9] Zihui Cheng, Qiguang Chen, Xiao Xu, Jiaqi Wang, Weiyun Wang, Hao Fei, Yidong Wang, Alex Jinpeng
+Wang, Zhi Chen, Wanxiang Che, et al. Visual thoughts: A unified perspective of understanding
+multimodal chain-of-thought.arXiv preprint arXiv:2505.15510, 2025.
+[10] Ganqu Cui, Yuchen Zhang, Jiacheng Chen, Lifan Yuan, Zhi Wang, Yuxin Zuo, Haozhan Li, Yuchen
+Fan, Huayu Chen, Weize Chen, et al. The entropy mechanism of reinforcement learning for reasoning
+language models.arXiv preprint arXiv:2505.22617, 2025.
+11
+[11] Adam Fisch, Tommi Jaakkola, and Regina Barzilay. Calibrated selective classification.arXiv preprint
+arXiv:2208.12084, 2022.
+[12] Chuan Guo, Geoff Pleiss, Yu Sun, and Kilian Q Weinberger. On calibration of modern neural networks.
+InInternational conference on machine learning, pages 1321–1330. PMLR, 2017.
+[13] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong
+Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement
+learning.arXiv preprint arXiv:2501.12948, 2025.
+[14] Bairu Hou, Yang Zhang, Jacob Andreas, and Shiyu Chang. A probabilistic framework for llm hallucina-
+tion detection via belief tree propagation.arXiv preprint arXiv:2406.06950, 2024.
+[15] Mengkang Hu, Yao Mu, Xinmiao Chelsey Yu, Mingyu Ding, Shiguang Wu, Wenqi Shao, Qiguang
+Chen, Bin Wang, Yu Qiao, and Ping Luo. Tree-planner: Efficient close-loop task planning with large
+language models. InThe Twelfth International Conference on Learning Representations, 2024. URL
+https://openreview.net/forum?id=Glcsog6zOe.
+[16] AaronJaech,AdamKalai,AdamLerer,AdamRichardson,AhmedEl-Kishky,AidenLow,AlecHelyar,Alek-
+sander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card.arXiv preprint arXiv:2412.16720,
+2024.
+[17] Zhengbao Jiang, Frank F Xu, Jun Araki, and Graham Neubig. How can we know what language models
+know?Transactions of the Association for Computational Linguistics, 8:423–438, 2020.
+[18] Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language
+models are zero-shot reasoners.Advances in neural information processing systems, 35:22199–22213,
+2022.
+[19] Abhishek Kumar, Robert Morabito, Sanzhar Umbet, Jad Kabbara, and Ali Emami. Confidence under
+the hood: An investigation into the confidence-probability alignment in large language models.arXiv
+preprint arXiv:2405.16282, 2024.
+[20] Loka Li, Zhenhao Chen, Guangyi Chen, Yixuan Zhang, Yusheng Su, Eric Xing, and Kun Zhang. Confi-
+dence matters: Revisiting intrinsic self-correction capabilities of large language models.arXiv preprint
+arXiv:2402.12563, 2024.
+[21] Moxin Li, Wenjie Wang, Fuli Feng, Fengbin Zhu, Qifan Wang, and Tat-Seng Chua. Think twice before
+trusting: Self-detection for large language models through comprehensive answer reflection.arXiv
+preprint arXiv:2403.09972, 2024.
+[22] Zhong-Zhi Li, Duzhen Zhang, Ming-Liang Zhang, Jiaxin Zhang, Zengyan Liu, Yuxuan Yao, Haotian Xu,
+Junhao Zheng, Pei-Jie Wang, Xiuyi Chen, et al. From system 1 to system 2: A survey of reasoning large
+language models.arXiv preprint arXiv:2502.17419, 2025.
+[23] Stephanie Lin, Jacob Hilton, and Owain Evans. Truthfulqa: Measuring how models mimic human
+falsehoods.arXiv preprint arXiv:2109.07958, 2021.
+[24] Stephanie Lin, Jacob Hilton, and Owain Evans. Teaching models to express their uncertainty in words.
+arXiv preprint arXiv:2205.14334, 2022.
+12
+[25] Zhan Ling, Yunhao Fang, Xuanlin Li, Zhiao Huang, Mingu Lee, Roland Memisevic, and Hao Su.
+Deductive verification of chain-of-thought reasoning.Advances in Neural Information Processing Systems,
+36:36407–36433, 2023.
+[26] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi
+Deng,ChenyuZhang,ChongRuan,etal. Deepseek-v3technicalreport.arXivpreprintarXiv:2412.19437,
+2024.
+[27] Libo Qin, Qiguang Chen, Fuxuan Wei, Shijue Huang, and Wanxiang Che. Cross-lingual prompting:
+Improving zero-shot chain-of-thought reasoning across languages.arXiv preprint arXiv:2310.14799,
+2023.
+[28] Libo Qin, Qiguang Chen, Xiachong Feng, Yang Wu, Yongheng Zhang, Yinghui Li, Min Li, Wanxiang
+Che, and Philip S Yu. Large language models meet nlp: A survey.arXiv preprint arXiv:2405.12819,
+2024.
+[29] Vaishnavi Shrivastava, Ananya Kumar, and Percy Liang. Language models prefer what they know:
+Relative confidence estimation via confidence preferences.arXiv preprint arXiv:2502.01126, 2025.
+[30] Aniket Kumar Singh, Suman Devkota, Bishal Lamichhane, Uttam Dhakal, and Chandra Dhakal.
+The confidence-competence gap in large language models: A cognitive study.arXiv preprint
+arXiv:2309.16145, 2023.
+[31] Phoebe J Wang and Max Kreminski. Guiding and diversifying llm-based story generation via answer
+set programming.arXiv preprint arXiv:2406.00554, 2024.
+[32] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+et al. Chain-of-thought prompting elicits reasoning in large language models.Advances in neural
+information processing systems, 35:24824–24837, 2022.
+[33] Yangzhen Wu, Zhiqing Sun, Shanda Li, Sean Welleck, and Yiming Yang. Inference scaling laws: An
+empirical analysis of compute-optimal inference for problem-solving with language models.arXiv
+preprint arXiv:2408.00724, 2024.
+[34] MiaoXiong, ZhiyuanHu, XinyangLu, YifeiLi, JieFu, JunxianHe, andBryanHooi. Canllmsexpresstheir
+uncertainty? an empirical evaluation of confidence elicitation in llms.arXiv preprint arXiv:2306.13063,
+2023.
+[35] Chenjun Xu, Bingbing Wen, Bin Han, Robert Wolfe, Lucy Lu Wang, and Bill Howe. Do language models
+mirror human confidence? exploring psychological insights to address overconfidence in llms.arXiv
+preprint arXiv:2506.00582, 2025.
+[36] Weijia Xu, Nebojsa Jojic, Sudha Rao, Chris Brockett, and Bill Dolan. Echoes in ai: Quantifying lack of
+plot diversity in llm outputs.arXiv preprint arXiv:2501.00273, 2024.
+[37] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao,
+Chengen Huang, Chenxu Lv, et al. Qwen3 technical report.arXiv preprint arXiv:2505.09388, 2025.
+[38] Ruixin Yang, Dheeraj Rajagopal, Shirley Anugrah Hayati, Bin Hu, and Dongyeop Kang. Confidence
+calibration and rationalization for llms via multi-agent deliberation.arXiv preprint arXiv:2404.09127,
+2024.
+13
+[39] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and Karthik Narasimhan.
+Treeofthoughts: Deliberateproblemsolvingwithlargelanguagemodels.Advancesinneuralinformation
+processing systems, 36:11809–11822, 2023.
+[40] Dongkeun Yoon, Seungone Kim, Sohee Yang, Sunkyoung Kim, Soyeon Kim, Yongil Kim, Eunbi Choi,
+Yireun Kim, and Minjoon Seo. Reasoning models better express their confidence.arXiv preprint
+arXiv:2505.14489, 2025.
+[41] Zhiyuan Zeng, Qinyuan Cheng, Zhangyue Yin, Bo Wang, Shimin Li, Yunhua Zhou, Qipeng Guo,
+Xuanjing Huang, and Xipeng Qiu. Scaling of search and learning: A roadmap to reproduce o1 from
+reinforcement learning perspective.arXiv preprint arXiv:2412.14135, 2024.
+[42] Yiming Zhang, Harshita Diddee, Susan Holm, Hanchen Liu, Xinyue Liu, Vinay Samuel, Barry Wang, and
+Daphne Ippolito. Noveltybench: Evaluating language models for humanlike diversity.arXiv preprint
+arXiv:2504.05228, 2025.
+[43] Ziyu Zhuang, Qiguang Chen, Longxuan Ma, Mingda Li, Yi Han, Yushan Qian, Haopeng Bai, Zixian
+Feng, Weinan Zhang, and Ting Liu. Through the lens of core competency: Survey on evaluation of
+large language models.arXiv preprint arXiv:2308.07902, 2023.
+14
+A. Appendix
+A.1. Benchmark Construction
+To evaluate reasoning overconfidence on multi-solution tasks, we constructed two unique datasets focused
+on combinatorial optimization and constraint satisfaction problems: Timetabling and SubsetSum. The
+construction method for both datasets follows a systematic three-stage process. This process includes (1)
+parameterized problem generation, (2) exhaustive solution enumeration through deterministic search, and
+(3) complexity stratification based on the size of the solution space. Using this method, we produced a
+collection of problems that haveknown and completesolution sets. These problems are also categorized
+according to a quantifiable complexity metric.
+The first dataset contains instances of the Timetabling problem, which is a classic constraint satisfaction
+problem. Each problem instance defines a set of resources and constraints. The objective is to generate all
+valid schedules by assigning a specific time slot and room to each course without violating any constraints.
+A problem is formally defined by a set of courses, time slots, rooms, and teachers. The constraints for a
+valid schedule are as follows: Each course must be assigned to one of its pre-approved time slots and rooms.
+Each course is assigned a unique teacher, and a teacher cannot teach multiple courses at the same time.
+Furthermore, a room cannot accommodate more than one course at any given time.
+The generation process begins by randomly determining the number of courses, teachers, rooms, and time
+slots within preset limits. A teacher is then randomly assigned to each course. Next, the set of allowed time
+slots and rooms for each course is generated by randomly sampling from the global pool of available times
+and rooms. To introduce variety in constraint tightness, we use a probabilistic parameter. This parameter
+controls whether a course is restricted to a single, specific room, which creates more constrained problem
+instances.
+The second dataset contains instances of the SubsetSum problem. This is a classic NP-complete problem in
+computational complexity theory. A problem instance consists of a set of unique integers,S={s 1,s 2, . . . ,sn},
+and a target integer valueK. The task is to find all non-empty subsetsS′ ⊆S where the sum of the elements
+is exactly equal to the target, such that∑︀
+si∈S′ si =K.
+The generation process for these problems is designed to guarantee that each instance has at least one
+solution. This approach avoids trivial cases where no solution exists. First, a setS containing n unique
+integers is created by sampling from a specified value range. Subsequently, instead of choosing a random
+target K that might not be achievable, the target is constructed differently. A random, non-empty subset ofS
+is selected, and the sum of its elements is calculated. This sum is then set as the problem’s targetK. This
+construction method ensures that at least one feasible subset exists.
+For both datasets, once a problem instance is generated, a deterministic backtracking algorithm is used
+to systematically explore the entire search space. This exhaustive search finds every possible valid solution,
+whether it is a complete schedule or a qualifying subset. The total number of solutions is then counted.
+This count serves as a practical indicator of the problem’s combinatorial complexity. Problems with a larger
+solution space are considered to be in a different complexity class than those with a smaller one.
+Based on this solution count, each problem is assigned to a specific complexity level. These levels are
+defined by ranges in the number of solutions, for example, 1-50 solutions or 51-100 solutions. The generation
+and solving loop continues until a target quota of problems is met for each complexity level. Finally, each
+generated problem and its complete, enumerated set of solutions are formatted into human-readable text.
+They are then provided as question-answer pairs for manual verification.
+15
+Prompt for Long-CoT models on TimeTabling task:
+[Instruction1,TimeTabling ]
+You are asked to perform a timetabling task.
+Please find ALL FEASIBLE SCHEDULES that satisfies all constraints one by
+one and output the number of feasible schedules.
+Output format example:
+Solution 1:
+| Course | Time | Room | Teacher |
+|---------|-------|-------|----------|
+| Course0 | T2 | R0 | P0 |
+| Course1 | T3 | R2 | P2 |
+| Course2 | T0 | R2 | P1 |
+Solution 2:
+| Course | Time | Room | Teacher |
+|---------|-------|-------|----------|
+| Course0 | T2 | R0 | P0 |
+| Course1 | T3 | R2 | P2 |
+| Course2 | T1 | R2 | P1 |
+...
+Total xxx feasible solutions shown above.
+The question is <<QUESTION>>
+You must output all feasible solutions without using ellipsis, etc.
+The most important thing is to FIND THE SPECIFIC CONTENT OF EACH SOLUTION,
+rather than just counting the number of solutions.
+Please note that the examples I gave you are just to show the format, the
+actual answer may be different from the examples shown.
+where<<QUESTION>>is a task instance of the TimeTabling task.
+Prompt for Long-CoT models on SubsetSum task:
+[Instruction1,SubsetSum ]
+You are asked to perform a subset-sum
+task.
+Please find ALL FEASIBLE SUBSETS that meet the requirements one by
+one and output the number of feasible subsets.
+Output format example:
+Solution 1: {1, 3, 5}
+Solution 2: {1, 4, 4}
+...
+Total xxx feasible solutions shown above.
+The question is <<QUESTION>>
+You must output all feasible solutions without using ellipsis, etc.
+16
+The most important thing is to FIND THE SPECIFIC CONTENT OF EACH SOLUTION,
+rather than just counting the number of solutions.
+Please note that the examples I gave you are just to show the format, the
+actual answer may be different from the examples shown.
+where<<QUESTION>>is a task instance of the SubsetSum task.
+For Short-CoT models, we append a guiding phrase “Think step by step before answering.” to the
+instruction.
+Figure8: Distribution plots of recall vs. confidence on the SubsetSum dataset.
+(a) Reliability Diagrams of Short-CoTvs. Long-CoTon TimeTablingacross different models.(b) Performance of Short-CoTvs. Long-CoTon TimeTabling.
+Figure9: Calibration and performance of Short-CoT vs. Long-CoT on SubsetSum dataset.
+Example of TimeTabling task:
+17
+[Question]
+Constraints:
+- Course0 : Time [3, 4], Room [8],
+Teacher [2]
+- Course1 : Time [0, 4], Room [3],
+Teacher [2]
+- Course2 : Time [3, 4], Room [0],
+Teacher [1]
+- Multiple courses cannot be scheduled in the same time slot and room.
+- A teacher can only teach one course at a time.
+[Answer]
+Solution 1:
+| Course | Time | Room | Teacher |
+|---------|-------|-------|----------|
+| Course0 | T3 | R8 | P2 |
+| Course1 | T0 | R3 | P2 |
+| Course2 | T3 | R0 | P1 |
+Solution 2:
+| Course | Time | Room | Teacher |
+|---------|-------|-------|----------|
+| Course0 | T3 | R8 | P2 |
+| Course1 | T0 | R3 | P2 |
+| Course2 | T4 | R0 | P1 |
+Solution 3:
+| Course | Time | Room | Teacher |
+|---------|-------|-------|----------|
+| Course0 | T3 | R8 | P2 |
+| Course1 | T4 | R3 | P2 |
+| Course2 | T4 | R0 | P1 |
+Solution 4:
+...
+Example of SubsetSum task:
+[Question]
+Given the set of unique integers:
+{18, 25, 16, 45, 48, 40, 38, 14, 22, 8}
+Find all subsets that sum exactly to the target: 62
+[Answer]
+[8, 14, 18, 22], [8, 14, 40], [8, 16, 38], [14, 48], [22, 40]
+18
+A.2. Evaluation Metric Construction
+We use the following metrics to evaluate model behavior quantitatively:
+Precision:The fraction of generated answers that are correct.
+Precision(x) = |Yi ∩ ˆYi|
+|Yi| (2)
+Recall:The fraction of ground-truth answers that the model found.
+Recall(x) =|Yi ∩ ˆYi|
+| ˆYi|
+(3)
+This is our primary metric for multi-solution tasks.
+ExpectedCalibrationError(ECE):ECE measures the consistency between a model’s reported confidence
+and its average performance within specific confidence intervals. A perfectly calibrated model has an ECE of
+0.
+The calculation process is as follows: First, the confidence interval[0, 1]is divided intoM equally-sized
+bins, denoted asB1,B 2, . . . ,BM. For allN problem instances, each is assigned to its corresponding bin based
+on the model’s reported confidence score. For each binBm, the average confidenceconf(Bm) and the average
+performance (e.g., average precisionprec(Bm) or average recallrecall(Bm)) of the samples within it are
+calculated.
+conf(Bm) = 1
+|Bm|
+∑︁
+i∈Bm
+ci (4)
+prec(Bm) = 1
+|Bm|
+∑︁
+i∈Bm
+Precision(xi)(5)
+recall(Bm) = 1
+|Bm|
+∑︁
+i∈Bm
+Recall(xi)(6)
+Here, |Bm| is the number of samples in binm, ci is the confidence of thei-th sample, andPrecision(xi) and
+Recall(xi)are its precision and recall, respectively.
+The ECE value is the weighted average of the absolute difference between the average performance
+and the average confidence across all bins. Depending on the performance metric, we define ECE based on
+precision (ECE (p)) and ECE based on recall (ECE (r)).
+ECE (p)=
+M∑︁
+m=1
+|Bm|
+N |prec(Bm)−conf(B m)|(7)
+ECE (r)=
+M∑︁
+m=1
+|Bm|
+N |recall(Bm)−conf(B m)|(8)
+A lower ECE value indicates better calibration performance, meaning the model’s reported confidence is
+more reliable.
+19
+Figure10: The arrows indicate the movement of model confidence and performance from Short-CoT to
+Long-CoT.
+To measure reasoning stability, we ask the model a follow-up question to probe its ability to reflect. Let
+Yi,1 andY i,2 be the solution sets from the first and second rounds.
+Correct Solution Retention Rate:The model’s ability to stick to its correct answers.
+Retention(x) =|(Yi,1 ∩ ˆYi)∩(Y i,2 ∩ ˆYi)|
+|(Yi,1 ∩ ˆYi)|
+(9)
+Error Correction Rate:The model’s ability to fix its mistakes.
+Correction(x) =1− |(Yi,1 \ ˆYi)∩(Y i,2 \ ˆYi)|
+|(Yi,1 \ ˆYi)|
+(10)
+New Solution Discovery Rate:The model’s ability to find new correct solutions.
+Discovery(x) =|(Yi,2 ∩ ˆYi)\ Yi,1|
+| ˆYi|
+(11)
+A.3. Confidence Elicitation
+Prompt for asking model confidence:
+[Instruction2]
+Please rate your confidence in the proposed answer on a scale of 0-100.
+Put your confidence score within [[CONFIDENCE: \boxed{}]]
+Prompt for model reconsideration:
+20
+[Instruction3]
+Recheck all your answers. You can now supplement and correct your answers.
+If you think your answer does not need to be changed, please output
+[[UNCHANGE]].
+If you need to supplement or correct your answer, please input [[CHANGE]]
+and re-output your new answer IN FULL, NOT JUST THE PART YOU CHANGED.
+(b) Performance (Recall, top row) and confidence (bottom row) as a function of task complexity on the SubsetSumdataset.
+(a) Confidence vs. reasoning length
+(c) The effect of decoding temperature on Recall and ECE.
+Figure11: Factors that influence reasoning overconfidence.
+Hyperparameter Value
+temperature0.2
+top_p1.0 (Default)
+top_kNA
+max_completion_tokens20480
+Table 3: Hyperparameters used for all experiments. Temperature is set to 0.2 except where noted otherwise.
+A.4. Dataset Generalizability
+To verify that ROC is not limited to combinatorial tasks, we conducted experiments on NoveltyBench [42], a
+creative generation benchmark. As shown in Table 4, the results are consistent: Short-CoT exhibits higher
+ECE, lower Utility, and lower Distinct compared to Long-CoT, confirming that reasoning overconfidence is a
+general phenomenon in multi-solution tasks.
+21
+Model Paradigm Utility (%)↑ECE(Utility) (%)↓Distinct (%)↑ECE(Distinct) (%)↓
+Qwen Short-CoT 41.12 53.87 36.80 65.73
+Long-CoT48.34 47.33 45.20 56.13
+Table 4: Results on NoveltyBench. Long-CoT consistently outperforms Short-CoT in both performance (Utility
+and Distinct) and calibration (ECE).
+A.5. Detailed Results
+Results on SubsetSum are provided in Figure 8-12. Reliability diagrams of the simple exploration prompt
+are provided in Figure 13. Attention entropy of Qwen3-8B layer 5-35 is shown in Figure 14.
+A.6. Hyperparameters
+Hyperparameters used in all experiments are shown in Table 3. We use OpenAI’s API client to access each
+model, sotop_kparameter is not applicable.
+A.7. Infrastructure
+All experiments were conducted on an A800 cluster with CUDA driver version 12.4.
+22
+(c) Reliability Diagrams of different self-consistency selection strategies.(b) The effect of appending a simple exploratory prompt to a Short-CoTmodel.
+(a) The impact of different reflection counts on model performance and confidence.
+Figure12: Mitigate reasoning overconfidence through various strategies.
+(a) Appending a simple exploratory prompt on TimeTablingdataset. (b) Appending a simple exploratory prompt on SubsetSumdataset.
+Figure13: Simple exploratory prompt improves calibration on TimeTabling dataset, but not on SubsetSum
+dataset.
+23
+Figure14: Attention Entropy.
+24

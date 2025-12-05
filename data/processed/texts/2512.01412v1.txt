@@ -1,0 +1,1015 @@
+A SELF-EXPLAINABLEMODEL OFLONGTIMESERIES BY
+EXTRACTINGINFORMATIVESTRUCTUREDCAUSALPATTERNS ∗
+Ziqian Wang
+Department of Automation
+Tsinghua University
+Beijing, China
+wangziqi24@mails.tsinghua.edu.cn
+Yuxiao Cheng
+Department of Automation
+Tsinghua University
+Beijing, China
+cyx22@mails.tsinghua.edu.cn
+Jinli Suo
+Department of Automation
+Tsinghua University
+Beijing, China
+jlsuo@tsinghua.edu.cn
+ABSTRACT
+Explainability is essential for neural networks modeling time series data, yet most existing explainable
+artificial intelligence (XAI) techniques generate point-wise importance scores that overlook intrinsic
+temporal semantics such as trends, cycles, and abrupt regime changes. This limitation obscures human
+interpretation and weakens trust in long-sequence models. To address these issues, we establish
+four desiderata for interpretable time-series modeling—temporal continuity, pattern-centricity, causal
+disentanglement, and faithfulness to the inference process—and propose EXCAP (EXplainable
+Causal Aggregation Patterns), a unified framework satisfying all four. EXCAP integrates an attention-
+based segmenter that extracts continuous temporal patterns, a causally disentangled decoder guided by
+a pre-trained causal graph, and a latent aggregation loss that enforces separability and stability in the
+representation space. Theoretical analysis demonstrates that EXCAP guarantees Lipschitz-continuous
+explanations over time, bounded error under causal mask perturbations, and improved latent-space
+stability. Comprehensive experiments on classification and forecasting benchmarks confirm that
+EXCAP outperforms state-of-the-art XAI methods in both predictive accuracy and interpretability,
+producing temporally coherent and causally grounded explanations. These results indicate that
+EXCAP provides a principled and scalable framework for faithful and interpretable modeling of
+long-horizon time-series, with direct relevance to decision-critical domains such as healthcare and
+finance.
+KeywordsExplainable AI, Time-series modeling, Causal representation learning, Interpretable deep learning
+1 Introduction
+Building explainable artificial intelligence (XAI) models is essential to enhance trust and accountability in machine-
+assisted decision making, particularly in high-stakes domains such as medicine, finance, and transportation [1, 2]. Time
+series data play a pivotal role in these domains, as exemplified by predicting sepsis onset from physiological signals
+in intensive care units [ 3] or forecasting stock market volatility [ 4]. Despite rapid progress in deep learning, most
+XAI methods still produce point-wise or feature-wise importance scores that work well for static inputs (e.g., images)
+but are inadequate for temporally dependent data, where trends, cycles, and abrupt regime shifts are fundamental.
+These approaches often fail to capture long-range dependencies and to uncover causal relationships underlying model
+predictions [5]. Recent attempts to leverage large language models (LLMs) for time-series reasoning [6] have provided
+intuitive, natural-language explanations, yet they remain post hoc approximations that do not necessarily reflect the
+model’s internal inference process.
+A practical explainable time-series model should extract task-relevant patterns that integratetemporal,spectral, and
+causalstructures [ 7, 8, 9, 10]. To this end, we identify four fundamental desiderata for interpretable temporal modeling:
+(i)Continuity, ensuring smooth variation of explanations along time; (ii)Pattern-centricity, associating attributions
+with coherent motifs such as peaks, trends, or state transitions; (iii)Causal disentanglement, isolating explanatory
+∗Preprint. This version: 2025. Available at arXiv:XXXX.XXXXX.
+arXiv:2512.01412v1  [cs.LG]  1 Dec 2025
+Embeddings
+Causal Graph
+Time Series Result
+Method Continuity Pattern Causal Faithful to
+on time dim. centric Disentanglement decision process
+Attention-based ✓ ✓ × △
+Causal-based × × ✓ ✓
+Post-hoc × × × △
+EXCAP (Ours) ✓ ✓ ✓ ✓
+✓: Supported,× Not Supported,△: Partially Supported
+(a) Overview of EXCAP Framework
+(b) Comparison of Methodological Properties Across Interpretation Approaches
+Figure 1:Overview and comparative positioning of EXCAP.(a) The proposed EXCAP framework extracts
+temporally and causally structured representations. (b) Qualitative comparison of interpretability properties across
+representative approaches.
+rather than merely correlative factors; and (iv)Faithfulness, preserving consistency between the explanation and the
+model’s internal reasoning.
+As summarized in Fig. 1(b), commonly used post hoc techniques such as LIME and SHAP [11, 12] provide feature-level
+relevance scores but lack temporal continuity and pattern-level semantics. Attention-based models (e.g., [13]) yield
+smoother attributions but offer limited causal interpretability. Recent works including BasisFormer [14], PatchX [8],
+and smoothed-SHAP variants [15] improve local pattern discovery and attribution stability, yet they struggle to jointly
+ensure temporal coherence and causal grounding. Conversely, causal discovery frameworks such as PCMCI [ 16]
+and CausalConceptTS [9] reveal directed dependencies across variables but overlook temporally meaningful motifs.
+Existing approaches thus meet only a subset of the desiderata, motivating the need for a unified framework that bridges
+temporal, causal, and semantic interpretability.
+To address these limitations, we proposeEXCAP(EXplainableCausalAggregationPatterns), a unified framework
+that provides faithful and semantically coherent explanations for multivariate time series. As shown in Fig. 1(a),
+EXCAP integrates three key components: (i) an attention-based segmenter that adaptively partitions input sequences
+into continuous temporal regions; (ii) a causal decoder guided by a pre-trained causal graph to achieve variable-level
+disentanglement; and (iii) a latent aggregation loss that enforces separation and stability in the representation space.
+This design jointly satisfies temporal continuity, pattern-centricity, causal disentanglement, and faithfulness while
+maintaining competitive predictive performance.
+The main contributions of this work are summarized as follows:
+• We formalize four desiderata for explainable time-series modeling and theoretically characterize their relation-
+ships through Lipschitz continuity, causal robustness, and latent-space stability.
+• We propose EXCAP, a unified neural framework integrating attention-based segmentation, causal decoding,
+and latent aggregation for temporally and causally structured explanations.
+• We derive theoretical guarantees on temporal continuity, faithfulness, and bounded causal error, and analyze
+the model’s linear-time computational complexity.
+• Extensive experiments on classification and forecasting benchmarks demonstrate that EXCAP achieves superior
+interpretability and predictive accuracy compared to state-of-the-art baselines.
+2
+2 Related Work
+2.1 Explainable Artificial Intelligence (XAI)
+Explainable artificial intelligence (XAI) seeks to bridge the gap between complex machine-learning models and
+human interpretability. Existing approaches can be broadly categorized into two paradigms:inside-outandoutside-in
+explanations.
+Inside-out explanations.These methods analyze the internal structure of neural networks to reveal how individual
+input features affect predictions. Gradient-based approaches, such as Integrated Gradients [17], Grad-CAM [18], and
+Deep Taylor Decomposition [19], compute partial derivatives with respect to inputs to assign relevance scores. Although
+effective, they can suffer from gradient noise and instability in non-smooth or heavily regularized models. Non-gradient-
+based variants, including DeepLIFT [20] and Class Activation Mapping (CAM) [21], propagate contribution scores
+layer by layer to improve robustness. Architecture-level approaches such as self-explaining neural networks [22] embed
+interpretability mechanisms directly within the model, providing intrinsic rather than post hoc explanations.
+Outside-in explanations.Outside-in approaches treat the model as a black box and infer explanations by perturbing
+inputs or approximating decision boundaries. Perturbation-based methods, such as CXPlain [23] and DeepSHAP [12],
+measure output changes when masking or modifying input regions. Surrogate models, including LIME [ 11] and
+interpretable mimic networks [24], replace complex predictors with simpler local approximations. Feature-selection-
+based frameworks like L2X [25] and INV ASE [26] learn to identify the most informative input subsets. While these
+methods have advanced interpretability in static domains such as images and tabular data, they often face scalability
+and generalization challenges in dynamic, high-dimensional settings like time series, where temporal dependencies are
+intrinsic.
+2.2 Explainability for Time-Series Models
+The increasing adoption of deep learning in healthcare, finance, and industrial monitoring has spurred interest in
+explainable models for sequential data. Unlike static data, time-series inputs exhibit strong temporal dependencies and
+evolving contextual patterns, making conventional XAI approaches insufficient.
+Post hoc adaptations.Early work adapted generic XAI methods to temporal data. Gradient-based saliency techniques
+such as Vanilla Gradients, Integrated Gradients [27], and SmoothGrad [28] highlight influential time points but yield
+noisy, fragmented explanations that overlook long-range dependencies [29]. Perturbation-based tools like LIME and
+SHAP [15] have also been applied, yet defining meaningful temporal perturbations is non-trivial and computationally
+costly. To mitigate these issues, dynamic masking approaches [ 30] learn temporal relevance masks to identify
+salient subsequences, and metrics such as AUC∼ and F1∼ [31] have been proposed to evaluate explanation fidelity.
+Counterfactual explanations offer intuitive “what-if” analyses but remain computationally expensive and unstable in
+high-dimensional settings.
+Intrinsic and pattern-based interpretability.Intrinsic methods embed explainability within model architectures.
+Attention mechanisms [ 32] highlight influential time steps or variables, though their role as true explanations re-
+mains debated [33]. Decomposition-based architectures disentangle temporal components such as trends, seasonality,
+and residuals, providing intuitive interpretability. Basis-function and patch-based models (e.g., BasisFormer [ 34],
+PatchTST [35], and PatchX [8]) segment time series into coherent regions to enhance both efficiency and interpretability.
+Representation-learning methods such as TS-TCC [36] and TS2Vec [37] aim to learn temporally invariant embeddings
+that improve downstream interpretability. These studies collectively highlight the importance of segment-level reasoning
+and temporal coherence—key motivations behind the design of our EXCAP framework.
+2.3 Causal and Prototype-Based Interpretability
+Recent research has shifted toward explanations grounded in causality and human-recognizable patterns. Causal
+discovery methods, including Granger causality [38] and PCMCI [16], uncover directional dependencies in multivariate
+time series, enabling insights beyond correlation. Frameworks such as CausalConceptTS [9] integrate causal graphs into
+neural architectures to promote disentangled and counterfactually consistent reasoning. Complementarily, prototype-
+and pattern-based methods identify representative subsequences or “shapelets” [39] that serve as interpretable anchors
+for model predictions. These advances motivate our causal–pattern hybrid approach, in which EXCAP leverages causal
+decoding and latent aggregation to align learned representations with semantically meaningful temporal events.
+For completeness, an extended taxonomy of explainable and causal time-series methods is provided in the Supplementary
+Material (Section 2.1).
+3
+DistanceLoss
+= 1
+𝑀෍
+𝑘=1
+𝑀
+𝑥𝑘 −𝑦𝑘
+2
+𝑥𝑘
+2
++ 𝑦𝑘
+2
+ClusteringLoss= 1
+𝑁෍
+𝑖=1
+𝑁
+𝑥𝑖 −μ 2
+μ
+2
+Segmenter
+Attention Normalization
+Thresholding
+Proximity Sequence Detection
+Position Encoding
+High Attention
+Subsequence
+Low Attention
+Subsequence
+Encoder
+TCN
+ClusteringLossLclus
+DistanceLossLdis
+MainLossLmain
+Pre-training Phase
+Frequency/Wavelet Transform
+Causal Graph
+Input Multi-dim Time Series
+Reference  
+Model
+Reference Attention
+Causal Discovery
+Causal Graph
+Decoder
+Decoder
+Binarization
+Segment Encoding
+Normalization, Thresholding, Proximity Sequence Detection
+Figure 2:Architecture of the EXCAP framework.The attention-based segmenter divides the input multivariate time
+series into temporally coherent segments; the encoder maps each segment into a latent representation capturing both
+local and global dynamics; the causal decoder integrates these embeddings under a pre-trained causal graph to yield
+disentangled predictions.
+3 The Proposed EXCAP Framework
+3.1 Overview of the Proposed Framework
+To address four key desiderata—temporal continuity, pattern-centricity, causal disentanglement, and faithful-
+ness—formalized in the theoretical analysis (Section 3.6), we proposeEXCAP(EXplainable Causal Aggregation
+Patterns), an interpretable neural framework for multivariate time-series modeling.
+As illustrated in Fig. 2, EXCAP comprises three main components: (i) an attention-based segmenter that partitions
+the input sequence into semantically coherent temporal regions; (ii) an encoder that integrates local segment structure
+with global temporal and frequency information; and (iii) an interpretable causal decoder that disentangles predictive
+dependencies using a pre-trained causal graph.
+The model is jointly optimized using a composite loss that includes a task-specific term for accuracy, a distance loss
+Ldist to separate salient and background representations, and a clustering loss Lclus to enforce semantic aggregation in
+the latent space.
+3.2 Attention-Based Segmenter
+The attention segmenter identifies salient temporal regions in the input by leveraging pre-trained attention maps. Each
+segment is assigned a positional embedding and subsequently fed to the encoder. This mechanism enables temporally
+localized interpretation while retaining global alignment. Segment-level decomposition additionally provides the
+structural basis for capturing multi-scale temporal patterns, addressing thepattern-centricitydesideratum.
+Reference model.To obtain attention scores used for segmentation, we utilize a pre-trained reference model. Given
+an input multivariate time series X∈R N×T , instance normalization is first applied, followed by an LSTM layer to
+model temporal dependencies. Both the LSTM outputs and the original inputs are projected into a shared latent space,
+and a self-attention mechanism (with tanh activation and a linear projection) produces the attention map A∈R N×T .
+A softmax operation is applied across the time dimension to normalize each attention vector.
+Attention-guided segmentation.We segment X along the time dimension based on the attention map A. To ensure
+per-dimension independence, we reshape each row An into column vectors An ∈R T×1 , and apply 1D max pooling
+to enhance local continuity. A change-point detector then identifies segment boundaries based on large attention
+gradients. Let the initial boundary set be B={b 0 = 0, b1, . . . , bL =T}, where L is the number of detected segments.
+4
+IfL > Lmax, we iteratively remove boundaries with the smallest change magnitude:
+B′={b0,bL}∪
+(
+bi∈B\{b0,bL}
+ ∆i∈arg max
+Top-(Lmax−2)
+({∆j}L−1
+j=1 )
+)
+,(1)
+where∆ j =|A pooled[bj]−A pooled[bj−1]|.
+The resulting segment boundaries define subsequences sk =X[:, bk :b k+1]∈R N×Tk , for k= 0, . . . , L−1. Each sk
+is then zero-padded to a fixed lengthT max, and a positional encodingE pos ∈R N×Tmax is added element-wise:
+s′
+k =s pad
+k +E pos.(2)
+Finally, we construct the padded segment set S={s ′
+1, . . . ,s′
+L} ∈RL×N×Tmax . Segments with average attention
+scores above a threshold are retained assalientand serve as the basic explanatory units in subsequent stages. This
+satisfies temporalcontinuity, since the attention-driven grouping favors contiguous, smoothly varying regions rather
+than isolated points.
+3.3 Encoder
+EXCAP adopts a shared Temporal Convolutional Network (TCN) encoder to process each segment independently while
+maintaining shared parameters across all segments. This shared architecture ensures that all segments are projected into
+a unified latent space, allowing direct comparison among their representations and enabling structured, segment-level
+explanations.
+Each padded segment s′
+k ∈R N×Tmax is first passed through a linear projection layer to increase the effective feature
+dimensionality. This is followed by a stack of residual blocks with dilated convolutions, which capture temporal patterns
+of varying durations within the segment. The output of the TCN encoder is then aggregated across time to produce a
+fixed-length latent representation zk ∈R dz for each segment, regardless of its original length Tk. These segment-level
+embeddings capture localized patterns spanning distinct temporal scales, meeting thepattern-centricitydesideratum.
+To complement these local segment-wise representations with global temporal structure, we also extract frequency-
+domain information from the original input sequenceX∈R N×T . Specifically, we perform two operations:
+•Wavelet decomposition.Each channelX n ∈R T undergoes multilevel wavelet decomposition:
+W(Xn) ={a J, dJ, dJ−1 , . . . , d1},(3)
+wherea J captures low-frequency trends, and the decomposition levelJis selected as
+J= max
+
+1,min
+
+log2
+ fs
+2fd
+
+, Jmax
+
+,(4)
+with fs denoting the sampling rate, fd the dominant frequency estimated from the power spectral density
+PSD(f) =|F(X n)(f)|2, andJ max the maximum decomposition level.
+• Fourier truncation.We compute the Fourier transform of each channel and retain the leading t′ frequency
+components:
+˜Xn =F(X n)[:,:t ′], t ′ ≤T.(5)
+These global features (trend, periodicity, spectral load) are fused with the local TCN segment embeddings and projected
+into a shared latent spaceRdz . This fusion enables the model to reason jointly over short-term fluctuations and long-term
+structure, and it supportsfaithfulnessby aligning the learned latent features with actual computations used for prediction.
+3.4 Interpretable Decoder
+Decoder.The interpretable decoder produces outputs for each target dimension separately through D dedicated
+decoding branches, with each output variable Yj modeled independently to capture task-specific temporal dynamics.
+This architectural design is consistent with causally disentangled neural networks (CDNN) [40], in which the predictive
+functionf Θ processes each output dimension with its own restricted receptive field:
+fΘ(X,A) = [f Θ1 (X⊙a :,1), . . . , fΘD (X⊙a :,D)]⊤ ,(6)
+which enforces strict dimension-wise separation
+∀i̸=j, ∂ˆyi
+∂Xj
+= 0,and Dec i ∩Dec j =∅.(7)
+5
+Each decoder branch Decj receives a segment-encoded tensor X′′ ∈R dz×L×N and processes it using a specialized
+network:
+hj = Γ
+
+Ψattn(Ψlstm(X′′
+j ))⊕Ψ gate(X′′
+j )
+
+,ˆy j = Φ(hj, L),(8)
+where Ψlstm is a bidirectional LSTM encoder, Ψattn performs attention-weighted aggregation over the L segments, Ψgate
+captures inter-channel interactions, ⊕ denotes residual fusion with temporal alignment, Γ is layer normalization, and Φ
+is a projection head that adapts to the number of available segmentsL.
+Causal disentanglement.To ensure interpretability and causal traceability, the decoder incorporates a static causal
+graph G0 = (V, E), pre-trained via CUTS, and encodes it as a binary causal mask M∈ {0,1}D×N . For each output
+variableY j, only the input variables identified as its causal parentsPa(Y j)are used to generate its prediction:
+ˆyj =Dec j
+
+X′′Pa(Yj)
+
+,X ′′Pa(Yj) =X ′′ ⊙M j,:,(9)
+where ⊙ denotes element-wise masking. This guarantees that the prediction for Yj is only influenced by its identified
+causal parents, enforcing directed structural constraints and directly supporting thecausal disentanglementdesideratum.
+We intentionally avoid dynamic causal structure during training, since dynamically updatingM can introduce instability,
+particularly under limited data.
+Segment attribution and contrastive learning.EXCAP further improves interpretability by explicitly contrasting
+salient vs. background segments (as identified in Section 3.2). For each input variable Xi, the decoder aggregates the
+embeddings of salient segments into hhigh
+i and those of background segments into hlow
+i , both in Rdz . These are trained
+with a contrastive objective:
+Ldist =
+X
+i
+max
+
+0, δ− ∥hhigh
+i −c (k)
+i ∥+∥h low
+i −c (k)
+i ∥
+
+,(10)
+where c(k)
+i ∈R dz is a latent-space prototype and δ is a margin hyperparameter. By enforcing margin separation between
+salient and background regions, EXCAP produces latent factors that correspond to human-recognizable temporal events,
+contributing to downstreamfaithfulness.
+3.5 Latent Space Aggregation Loss
+EXCAP jointly optimizes predictive performance and interpretable structure by combining task-specific objectives with
+latent-space regularization.
+Task losses.We apply either a classification loss Lcls (cross-entropy) or a regression loss Lmse (mean squared error),
+depending on the task. Each decoder branch Decj maps the causally masked segment representation X′′Pa(Yj) to a
+scalar predictionˆyj ∈R. The losses are defined as
+Lcls =− 1
+D
+DX
+j=1
+yj log ˆyj,L mse = 1
+D
+DX
+j=1
+(ˆyj −y j)2.(11)
+Latent constraints.To encourage structure in the latent space, we introduce two auxiliary regularization losses, both
+conditioned on attention saliency:
+• Separation loss.This loss enforces a margin-based distinction between high-attention and low-attention
+segment features:
+Ldist = 1
+N
+NX
+i=1
+h
+∥hhigh
+i −h low
+i ∥2 −δ
+i
++
+.(12)
+• Clustering loss.This loss aligns latent embeddings with attention-aware prototypes c(k)
+i ∈R dz to enhance
+semantic coherence:
+Lclus = 1
+2N
+X
+k∈{high,low}
+NX
+i,j=1
+w(k)
+ij · ∥c(k)
+i −c (k)
+j ∥2.(13)
+Here, hhigh
+i and hlow
+i are aggregated latent features computed over salient and background segments, respectively, by
+averaging the TCN encoder outputs over each group of attention-guided subsequences.
+6
+Total loss and staged optimization.The overall training objective is a weighted combination of task loss and
+interpretability-driven regularizers:
+Ltotal =αL cls/mse +βL dist +γL clus.(14)
+Following [41], we employ a staged optimization strategy: early in training, α≫γ , prioritizing predictive accuracy; in
+later epochs, γ is gradually increased and β decreased to emphasize latent structure and interpretability. This strategy
+promotes compact latent clusters for high-attention patterns (e.g., clinically meaningful events or anomalous bursts) and
+looser embeddings for background segments, leading to more stable and faithful explanations.
+3.6 Theoretical Analysis
+We now establish the theoretical properties that allow EXCAP To meet four key desiderata—temporal continuity,
+pattern-centricity, causal disentanglement, and faithfulness—formalized in the theoretical framework below. Unless
+otherwise stated, we assume that all mappings are differentiable and bounded and that the segmenter attention function
+A(·)and decoder branches Dec j(·)satisfy standard Lipschitz continuity conditions.
+3.6.1 Global Stability of Explanations
+Let g:R N×T →R L denote the segment-level explanation mapping that assigns an importance score to each
+attention-guided segments k obtained from the inputX∈R N×T .
+Proposition 1(Global Lipschitz Stability of Explanations).Assume that the EXCAP explanation mapping g(·) is
+composed of a sequence of operators: instance normalization N(·) , attention-based segmentation A(·), 1D max
+pooling P(·), change-point detection C(·), and a ReLU-based temporal convolutional encoder E(·). If each operator is
+Li-Lipschitz continuous (or non-expansive), then their composition
+g=E ◦ C ◦ P ◦ A ◦ N
+isC-Lipschitz with constant
+C=L E LC LP LA LN .
+Consequently, for any bounded perturbation∆X,
+∥g(X+ ∆X)−g(X)∥ 2 ≤C∥∆X∥ 2.(15)
+Sketch of proof. Each operator used in EXCAP—normalization, softmax-based attention, pooling, and ReLU-TCN
+encoding—is either non-expansive or Lipschitz with a bounded constant. The Lipschitz constant of their composition
+equals the product of per-layer constants. The change-point detection step can be approximated by a differentiable
+soft-sign or soft-threshold function, preserving continuity in the limit. Thus the entire explanation mapping g(·) satisfies
+the global bound (15).
+This property guarantees that small perturbations in the input sequence lead to proportionally small changes in the
+explanation map, providing robustness to temporal noise and minor time misalignments. As a corollary, when ∆X
+corresponds to a one-step temporal shift, the continuity bound in Eq. (15) directly yields temporal smoothness of
+explanations.
+3.6.2 Faithfulness under Deletion Perturbation
+Proposition 2(Deletion Faithfulness Lower Bound).Let f:R N×T →R denote the predictive mapping and E(X)∈
+[0,1] N×T its normalized importance map satisfying P
+i,t Ei,t = 1. For a small deletion ratio ρ>0 , let X−ρ denote the
+input obtained by masking the top-ρ fraction of entries with the highest Ei,t values. Assume f is locally L-smooth and
+differentiable onX. Then the expected output degradation satisfies
+E
+
+f(X)−f(X −ρ)
+
+≥κCov
+ 
+E(X),∇ Xf(X)
+
+,(16)
+whereκ>0depends on the perturbation magnitude and local smoothness off.
+Sketch of proof. By the first-order Taylor expansionf(X+∆X)≈f(X)+⟨∇ Xf(X),∆X⟩ . Deletion of salient regions
+corresponds to a negative perturbation ∆X=−M⊙X , where M is a binary mask selecting the top-ρ entries of E(X).
+Taking expectation over random mask realizations conditioned on E(X) yields E[∆f]≈ −E[⟨∇Xf,M⊙X⟩] =
+κCov(E,∇f)after normalization. Higher-order terms are bounded by local smoothnessL.
+7
+Intuitively, Eq. (16) states that a faithful explanation must be positively correlated with the model’s local sensitivity
+∇f(X): masking features with higher Ei,t should cause larger output degradation. This theoretical relation aligns
+with the empirical perturbation analysis shown in Fig. 3(b)–(c), where deletion of high-attribution segments leads to
+significantly greater performance drops.
+3.6.3 Pattern-centricity
+Proposition 3(Segment-Level Pattern Preservation).Let {sk}L
+k=1 be the attention-guided segments of X and zk =
+fTCN(s′
+k)∈R dz their latent embeddings obtained from the shared encoderf TCN. Then, for any two segmentsi, j,
+⟨zi,z j⟩= Φ(pattern(s i),pattern(s j)),
+where Φ(·,·) is a similarity measure in the latent space induced by the convolutional kernel of fTCN. Consequently,
+temporally similar patterns are mapped to nearby latent representations.
+Proof. Because all segments are encoded by a single parameter-shared fTCN, the encoder defines a stationary metric
+Φ(·,·) whose inner product reflects similarity in temporal shape. Segments exhibiting comparable waveform morphology
+or regime transitions yield similar embeddings, leading to coherent pattern-level grouping in {zk}. Thus explanations
+correspond to structured motifs rather than point-wise saliency.
+3.6.4 Causal disentanglement
+Lemma (Zero-cross sensitivity).Let the decoderf Θ(X,M)be defined as
+ˆy=
+
+fΘ1 (X⊙M 1,:), . . . , fΘD (X⊙M D,:)
+⊤
+,
+where M∈{0,1} D×N is the causal mask and each branch fΘj is differentiable with respect to its masked input. Then
+for anyi̸=j,
+∂ˆyi
+∂Xj
+= 0.
+Proof.Each output ˆyi depends solely on the subset X⊙M i,:, where Mi,k = 0 for all k /∈Pa(Yi). Consequently,
+no computational path connects a non-parent variable Xj to ˆyi, and the corresponding Jacobian entry ∂ˆyi/∂Xj
+vanishes identically. This guarantees that each decoder branch responds only to its causal parents, ensuring structural
+independence across outputs.□
+Proposition (Robustness to mis-specified causal masks).Let M⋆ denote the ground-truth causal adjacency and M
+the mask used in the EXCAP decoder. Assume each decoding branch fΘj is L-Lipschitz with respect to its masked
+input. Then for each output variableY j,
+E∥yj −ˆyj(M)∥2 ≤E∥y j −ˆyj(M⋆)∥2 +L 2∥M−M ⋆∥2
+F ,
+where∥ · ∥F denotes the Frobenius norm.
+Proof.Each decoder branch conditions on the masked representation X′′Pa(Yj) =X ′′⊙Mj,:. When M=M ⋆, the
+mapping recovers the true conditional expectation of Yj given its causal parents. If M deviates from M⋆ by ∆M, the
+perturbation of the prediction satisfies ∥ˆyj(M)−ˆyj(M⋆)∥ ≤L∥∆M∥F . Taking the squared expectation yields the
+stated bound.□
+Together, these results establish thecausal disentanglement consistencyof EXCAP: (i) zero-cross sensitivity ensures
+that non-parent variables exert no influence on unrelated outputs, and (ii) bounded error under mask perturbation
+guarantees robustness against mild causal mis-specification. As illustrated in Fig. 2, each decoding branch is restricted
+to its causal parents, and the overall decoder preserves structurally independent, causally traceable explanations.
+3.6.5 Latent separability and stability
+Proposition (Latent separability under margin constraint).Let hhigh
+i , hlow
+i ∈R dz denote the aggregated latent
+representations of high- and low-attention segments for variable Xi, and let δ >0 be the enforced margin in Ldist. If
+Ldist ≤0is satisfied at convergence, then
+∥hhigh
+i −h low
+i ∥2
+2 ≥δ,∀i= 1, . . . , N.
+8
+Table 1: Summary of theoretical properties of EXCAP.
+Property Desideratum Analytical Expression Relevant Module Key Implication
+Temporal conti-
+nuity
+Smoothness over
+time
+∥g(X1:t+1)−g(X 1:t)∥ ≤
+LA∥xt+1 −x t∥
+Attention-based Seg-
+menter
+Prevents abrupt attribu-
+tion jumps
+Pattern-centricity Structured tempo-
+ral motifs
+⟨zi,z j⟩=
+Φ(pattern(si),pattern(s j))
+Segment Encoder Enables interpretable mo-
+tif clustering
+Causal disentan-
+glement
+Parent-only influ-
+ence
+E∥yj −ˆyj(M)∥2 ≤E∥y j −
+ˆyj(M∗)∥2 +σ 2∥M−M ∗∥2
+F
+Causal Decoder Bounds bias from spuri-
+ous correlations
+Faithfulness Perturbation
+response
+F(E)≥1−CVar(A(X)) Attention & Latent
+Losses
+Links attention stability
+to fidelity
+Computational ef-
+ficiency
+ScalabilityO(NT)overall complexity Segment-wise TCN Ensures linear-time scala-
+bility
+Consequently, in the latent space Z, the Euclidean distance between salient and background representations of each
+variable is at least
+√
+δ, yielding an upper bound on the nearest-neighbor classification error:
+P[misclassify]≤exp(−c δ),
+for some constantc >0determined by the distributional smoothness ofZ.
+Proof.The distance loss Ldist = 1
+N
+P
+i[∥hhigh
+i −h low
+i ∥2
+2 −δ] + penalizes all pairs with separation smaller than
+√
+δ. At
+convergence where Ldist = 0, every such pair satisfies ∥hhigh
+i −h low
+i ∥2
+2 ≥δ . Following the margin-based generalization
+bound in metric learning [42], the probability of assigning a high-attention embedding to the wrong cluster decays
+exponentially withδ.□
+Proposition (Regularization-induced stability).Consider training EXCAP with total lossL total =αL task +βL dist +
+γLclus, and weight-decay parameter λ >0. Under standard smoothness and bounded-loss assumptions, the algorithm
+enjoys uniform stability of order
+ϵstab =O
+ 1
+λn + β+γ
+n
+
+,
+where n is the number of training samples. Hence, stronger regularization (λ, β, γ) improves consistency of predictions
+with respect to small perturbations in the data or initialization.
+Proof sketch.Following the Bousquet–Elisseeff uniform-stability framework [ 42], regularized empirical risk minimiza-
+tion satisfies ϵstab ≤ 2L2
+λn . Here, Ldist and Lclus act as additional quadratic penalties, effectively tightening the curvature
+of the loss landscape. This reduces the sensitivity of the minimizer to sample perturbations, yielding the stated O( 1
+λn )
+stability bound.□
+Geometrically, Ldist enlarges the margin between salient and background clusters, while Lclus contracts intra-cluster
+variance around their attention-conditioned prototypes. Together they produce a semantically organized latent space,
+where decision-relevant patterns form compact, well-separated manifolds as visualized in Fig. 3(e).
+3.6.6 Computational efficiency
+Proposition 4(Linear-Time Complexity).Let T be the sequence length, N the number of variables, Lmax the maximum
+number of detected segments, and Tmax the padded segment length. Then the overall computational complexity of
+EXCAP is
+O(NT+L maxTmax) =O(NT),
+whereas a Transformer-based attention model requiresO(T 2).
+Proof. The segmenter scans each variable once to compute attention and boundaries, giving O(NT) . Each of the
+Lmax segments is processed by a TCN encoder of length Tmax with constant kernel size, yielding O(LmaxTmax).
+Since LmaxTmax ≈T , total complexity remains linear in T. Thus EXCAP scales efficiently while maintaining
+interpretability.
+This property ensures that EXCAP satisfies the scalability requirement essential for long-sequence applications.
+9
+4 Experiments
+We evaluate EXCAP on both time-series classification and long-horizon forecasting benchmarks, focusing on (i)
+predictive performance, (ii) attribution faithfulness and causal interpretability, and (iii) robustness under perturbations.
+All experiments are implemented in PyTorch 2.1 and conducted on 8× NVIDIA RTX 3090 GPUs. Each configuration
+is repeated five times with distinct random seeds, and we report the mean results with standard deviations to ensure
+statistical reliability. Differences exceeding one standard deviation from the complete model are regarded as significant
+and are marked with an asterisk (∗) in the tables.
+4.1 Experimental Setup
+Datasets.We consider four classification datasets from industrial monitoring and healthcare, and two multivariate
+long-term forecasting datasets:
+•Wafer[43]: binary defect / anomaly detection in semiconductor manufacturing.
+•Epilepsy[44]: binary EEG seizure identification.
+•UWave[45]: multi-class gesture recognition.
+•MITECG[46]: multi-class arrhythmia classification.
+• ETT[ 47]: multivariate electricity transformer temperature forecasting, modeling long-term temporal depen-
+dencies.
+• Traffic[ 48]: multivariate road network load forecasting, characterized by strong exogenous and causal
+structure across sensors.
+These datasets cover a wide range of signal characteristics (periodic versus bursty), supervision types (binary and
+multi-class classification as well as regression), and causal regimes (e.g., spatially structured dependencies in Traffic).
+Detailed dataset statistics, including the number of variables, sequence length, and train/validation/test splits, are
+summarized in Supplementary Section 4.
+Baselines.We compare EXCAP against both domain-specific and general-purpose attribution methods:
+• TimeX[ 49]: learns a latent space of overlapping windows and attributes importance via reconstruction-based
+saliency.
+• TimeX++[ 50]: extends TimeX with an information bottleneck objective to emphasize task-relevant temporal
+regions.
+• WinIT[ 51]: slides fixed-length windows and scores them by the change in model output under masked
+perturbation.
+•Integrated Gradients (IG)[52]: path-integrated gradient attribution from a baseline to the input.
+• SHAP[ 12]: Shapley-value estimation by sampling coalitions of time steps and measuring marginal predictive
+contribution.
+•Random: a non-informative baseline that masks randomly selected regions.
+These methods encompass post-hoc gradient-based explanations (IG), Shapley-style game-theoretic attribution (SHAP),
+and recent time-series–specific segmentation-based explainers (TimeX, TimeX++, and WinIT). Detailed hyperparameter
+configurations for all baselines and the proposed EXCAP model are provided in Supplementary Section 5.4 to ensure
+full reproducibility.
+Evaluation protocol.For classification tasks, we report the area under the receiver operating characteristic (AUROC)
+and the area under the precision–recall curve (AUPRC) to quantify predictive performance under class imbalance.
+For forecasting tasks, we use mean squared error (MSE) as the regression metric. To evaluate interpretability, we
+adopt a perturbation-based faithfulness test: for each model, the top-k% of input regions with the highest attribution
+scores are masked, and the degradation in predictive performance is measured. A more faithful explainer yields a
+larger performance drop when salient regions are masked than when low-attribution or random regions are masked.
+Following [49, 50], we setk= 15%unless otherwise specified.
+We additionally report astabilitymetric that quantifies the consistency of attribution across random seeds. Formally,
+for each dataset and model, stability is defined as the coefficient of variation of the AUROC degradation across five
+10
+Table 2:Classification performance under 15% masking on four datasets.We report post-masking AUPRC and
+AUROC after removing the top 15% most attributed inputs according to each method. ↓ denotes absolute score after
+masking (higher drop = more faithful attribution); ∆ reports relative degradation from the unmasked baseline. Bold and
+underline denote best and second-best.Note.Results are reported as mean ± std over five runs.
+Dataset Method AUPRC↓AUROC↓∆AUPRC%∆AUROC%
+Wafer
+EXCAP 0.2750±0.0084 0.1331 ±0.0120-27.76%-13.35%
+TimeX 0.1854 ±0.0005 0.1077±0.0004 -19.17% -11.04%
+TimeX++ 0.1401±0.0106 0.0905±0.0060 -17.45% -10.26%
+WinIT 0.0103±0.0032 0.0168±0.0061 -1.69% -1.06%
+IG 0.1654±0.00010.1652±0.0007 -17.04%-16.61%
+SHAP 0.0096±0.0013 0.0151±0.0009 -2.81% -3.91%
+Random 0.0380±0.0004 0.0279±0.0004 -1.52% -0.99%
+UWave
+EXCAP 0.1672±0.00620.0916±0.0035-28.61% -10.30%
+TimeX 0.0687 ±0.0054 0.0346 ±0.0008 -11.26% -3.83%
+TimeX++ 0.0578±0.0064 0.0298±0.0017 -10.62% -3.40%
+WinIT 0.0334±0.0039 0.0126±0.0028 -6.56% -1.45%
+IG 0.0070±0.0005 0.0017±0.0000 -1.43% -0.20%
+SHAP 0.0026±0.0034 0.0002±0.0010 -2.93% -0.25%
+Random 0.0141±0.0032 0.0021±0.0008 -0.54% -0.02%
+Epilepsy
+EXCAP 0.3875±0.00840.3800±0.0120-40.07% -63.53%
+TimeX 0.0351±0.0005 0.0298±0.0004 -3.54% -3.08%
+TimeX++ 0.0339±0.0006 0.0288±0.0006 -3.54% -2.98%
+WinIT 0.0527 ±0.0032 0.0376 ±0.0061 -5.31% -3.94%
+IG 0.0102±0.0001 0.0012±0.0007 -1.03% -0.12%
+SHAP 0.0274±0.0004 0.0108±0.0004 -3.69% -1.94%
+Random 0.0366±0.0013 0.0189±0.0009 -2.76% -1.10%
+MITECG
+EXCAP 0.4717±0.00890.2255±0.0077-51.97% -23.13%
+TimeX 0.1263±0.0090 0.0236±0.0001 -13.18% -2.38%
+TimeX++ 0.1100±0.0002 0.0234±0.0001 -13.21% -2.41%
+WinIT 0.1441±0.0019 0.0491±0.0008 -15.51% -5.01%
+IG 0.1273±0.0102 0.0438±0.0049 -15.07% -4.78%
+SHAP 0.1499 ±0.0153 0.0824 ±0.0073 -17.74% -9.00%
+Random 0.0953±0.0050 0.0420±0.0045 -11.28% -4.59%
+independent runs:
+Stability= std(∆AUROC)
+mean(∆AUROC).
+Lower values indicate more consistent explanations under stochastic training variations. All reported results represent
+the mean and standard deviation over five random seeds. Significance is assessed qualitatively using these statistics;
+differences consistently exceeding one standard deviation are marked as significant and indicated with an asterisk (∗) in
+the tables.
+4.2 Quantitative Results
+Table 2 summarizes classification performance under the perturbation protocol. We first train each model normally. We
+then mask (zero out) the top 15% most highly attributed inputs according to that model’s own explanation mechanism
+and recompute AUROC and AUPRC. We report (i) the absolute post-masking AUROC/AUPRC and (ii) the relative
+degradation (∆). Larger degradation is interpreted as higher attribution fidelity: the regions identified as “important”
+truly carry decision-critical signal.
+EXCAP consistently shows the largest AUROC and AUPRC degradation across all four datasets (Wafer, UWave,
+Epilepsy, MITECG), indicating that the segments it marks as salient are causally linked to its predictions. For example,
+onEpilepsy, masking EXCAP’s top attributions reduces AUROC and AUPRC by−63.53% and −40.07%, respectively,
+substantially higher than alternative attribution methods. OnMITECG, EXCAP exhibits a −51.97% AUPRC drop and
+a−23.13%AUROC drop, again exceeding all baselines.
+This behavior aligns with thefaithfulnessdesideratum: EXCAP’s internal attribution is not a post-hoc heuristic but is
+structurally tied to the causal decoder and latent separation objective.
+11
+EXCAP
+SHAP
+0 20 40 60 80 100 120 140 160 180
+(a) Visualization of interpretations on Epilepsy dataset.
+TimeX
+0
+0.8
+Attention Intensity
+Class 0 segment
+Class 1 segment
+Low attention segment
+frequency domain
+local minimum
+sudden rise
+smooth fluctuation
+(e) Latent Space with Pattern.
+spike
+spike
+wave
+spike-like structures
+Positive Sample
+Negative Sample
+(d) Visualization of interpretation results on EEG samples.
+(b) AUPRC under increasing masking ratios
+on MITECG.
+Threshold Threshold
+(c) AUROC and AUPRC under high vs. low
+attribution masking on Epilepsy dataset.
+Figure 3:Perturbation-based interpretability evaluation.(a) Attribution map visualization on Epilepsy. EXCAP
+highlights coherent seizure-relevant motifs. (b) Performance degradation under increasing masking ratios on MITECG.
+Larger AUPRC/AUROC drop⇒ higher attribution faithfulness. (c) Comparison between masking high-attribution vs.
+low-attribution regions. (d) EXCAP attention on seizure/non-seizure EEG samples, aligned with clinically meaningful
+spike-wave bursts. (e) t-SNE of EXCAP latent space: high-attention segments cluster by waveform archetypes, while
+background segments remain diffuse.
+4.3 Interpretability Analysis
+We next analyze the qualitative coherence and internal consistency of EXCAP’s explanations.
+Fig. 3(a) visualizes attribution maps onEpilepsy, a dataset with clinically interpretable EEG morphology. EXCAP
+emphasizes contiguous spike-and-wave bursts in seizure segments and abrupt regime changes in non-seizure segments,
+while baseline methods often yield noisy, scattered importance over individual time steps. This supports thepattern-
+centricitydesideratum: EXCAP explains decisions in terms of structured temporal motifs, not isolated timestamps.
+Fig. 3(d) shows that high-scoring EXCAP segments align with neurologically plausible seizure signatures. This
+alignment is consistent with how neurologists identify ictal episodes (sustained rhythmic discharges and spike trains),
+suggesting that EXCAP’s mask is not only internally faithful but also clinically meaningful.
+To further assess attribution faithfulness, Fig. 3(c) compares masking by high-importance vs. low-importance regions.
+OnEpilepsy, masking high-attribution regions (High) produces substantially larger degradation than masking low-
+attribution regions (Low), indicating that the model’s own explanations correspond to genuinely decision-critical
+inputs.
+Finally, Fig. 3(e) shows a t-SNE projection of latent representations for high-attention segments. These segments form
+compact clusters associated with recurring waveform archetypes (e.g., spike, plateau, rhythmic oscillation), whereas
+low-attention segments remain diffuse. This reflects the role of Ldist and Lclus in producing semantically structured
+latent spaces.
+12
+Table 3:Ablation on temporal structure.Removing the wavelet-based trend extractor (“w/o Trend”) and temporal
+trimmer (“w/o Trend & Trimmer”) reduces AUROC on pattern-rich datasets. Values denote mean± std over five runs;
+∗denotes a difference exceeding one standard deviation from the complete model.
+Dataset Complete w/o Trend w/o Trend & Trimmer
+Wafer0.9948±0.0024 0.9827±0.0141 ∗ 0.9815±0.0140 ∗
+UWave0.8944±0.0045 0.8769±0.0060 ∗ 0.8936±0.0043
+Epilepsy0.9916±0.0028 0.9727±0.0143 ∗ 0.9832±0.0189 ∗
+MITECG0.9870±0.0038 0.9783±0.0041 0.9875±0.0037
+Table 4:Ablation on Epilepsy classification.“w/o Clus./Dist.” removes latent aggregation losses. We report AUROC
+before masking, AUROC after masking top-15% salient regions (↓AUROC), and stability (lower is better). ∗ denotes a
+difference exceeding one standard deviation from the complete model.
+Config AUROC↓AUROC Stability
+w/o Clus./Dist.0.9974±0.0012 0.3530±0.0076 ∗ 0.0140±0.0015 ∗
+Complete0.9916±0.0028 0.3800±0.0120 0.0120±0.0010
+4.4 Ablation Studies
+We ablate three key components of EXCAP—temporal structure modeling, latent aggregation losses, and causal
+disentanglement—to quantify their individual contributions to predictive and interpretive performance.
+Temporal structure.Table 3 examines the impact of removing the wavelet-based trend extractor and the temporal
+trimmer. On datasets with strong regime structure such as Wafer and Epilepsy, removing either module significantly
+reduces AUROC, confirming that explicitly modeling slow-varying trends and trimming salient intervals enhances
+discrimination. Differences between the complete EXCAP and ablated variants that exceed one standard deviation are
+regarded as significant and are marked with an asterisk (∗).
+Latent aggregation and clustering.We next ablate the latent regularization losses Lclus and Ldist, which are designed
+to enforce separation between salient and background representations and to stabilize attribution consistency. As
+shown in Table 4, removing these losses yields a negligible AUROC gain before masking but significantly worsens
+post-masking robustness and stability. This demonstrates that the latent aggregation terms are critical not only for
+interpretability but also for consistent, perturbation-stable predictions. Statistical testing confirms that AUROC drops
+and stability differences between the complete and ablated models are significant (p <0.05).
+Causal disentanglement.Finally, we assess the effect of the causal decoder and static causal mask M. Table 5
+compares four variants on long-horizon forecasting (ETT): (1) removing latent aggregation losses (“w/o Clus./Dist.”),
+(2) removing causal disentanglement (“w/o Causal Dis.”), (3) replacing the learned causal graph with a random
+adjacency (“w/ Rand. Causal G.”), and (4) the complete model. The full EXCAP achieves both the lowest MSE and the
+highest robustness (lowest ↓MSE, lowest stability variance). Randomizing or removing causal constraints significantly
+deteriorates performance (p <0.05), supporting the causal disentanglement principle.
+4.5 Robustness and Stability
+Across all datasets, EXCAP exhibits two desirable robustness properties:
+1. Faithful degradation under perturbation.When salient segments (as identified by EXCAP) are masked,
+performance consistently degrades more than for any baseline. This indicates that EXCAP’s explanations are
+causally aligned with its predictive mechanism, rather than being post-hoc artifacts.
+2. Low attribution variance.The stability metrics reported in Tables 4 and 5 show that EXCAP’s explanations
+are more consistent across seeds than ablated variants. This is especially important in high-stakes settings
+(e.g., seizure detection), where inconsistent explanations across runs would reduce trust.
+These results demonstrate that EXCAP satisfies the four desiderata defined and analyzed in the theoretical framework
+of Section 3.6.
+To empirically validate the Lipschitz stability in Proposition 1, we added Gaussian perturbations ∆∼N(0, σ2) to the
+test sequences (Epilepsy dataset) and measured the change in the segment-level explanation vectors. As shown in
+Table 6, the attribution differenceE∥g(X+ ∆)−g(X)∥ 2 increases roughly linearly with E∥∆∥2, yielding empirical
+13
+Table 5:Ablation on ETT forecasting.We remove latent aggregation and causal components and report MSE
+before masking, MSE after masking (↓MSE), and stability (lower indicates more consistent performance). ∗ denotes a
+difference exceeding one standard deviation from the complete model.
+Config MSE↓MSE Stability
+w/o Clus./Dist.0.2765±0.0041 0.4279±0.0093 ∗ 0.0056±0.0006 ∗
+w/o Causal Dis.0.2697±0.0032 ∗ 0.3520±0.0110 ∗ 0.0090±0.0009 ∗
+w/ Rand. Causal G.0.2984±0.0068 ∗ 0.3952±0.0081 ∗ 0.0175±0.0015 ∗
+Complete0.2475±0.0030 0.4534±0.0105 0.0050±0.0005
+Table 6: Empirical Lipschitz stability of EXCAP explanations on Epilepsy. Values are mean± std over three random
+perturbation runs.
+σE∥∆∥ 2 E∥g(X+ ∆)−g(X)∥ 2 Lemp
+0.0100.133±0.000 0.605±0.11 4.54±0.90
+0.0200.266±0.000 0.816±0.18 3.06±0.70
+0.0500.666±0.001 1.243±0.24 1.87±0.25
+Lipschitz constants between 1.8 and 4.5 across runs. This confirms that EXCAP’s explanations are globally stable and
+temporally continuous under small perturbations. We repeated the perturbation experiment three times with different
+noise realizations and report mean ± standard deviation in Table 6, which shows bounded empirical Lipschitz constants
+(1.8–4.5) with small variance across runs.
+Runtime and complexity comparison.To empirically validate the linear-time complexity discussed in Proposition 5
+(Section 3.6), we compare the runtime and memory consumption of EXCAP with representative Transformer-based
+models under identical settings. Table 7 reports average inference time per batch and peak GPU memory usage
+measured on a single RTX 3090 GPU. EXCAP achieves comparable or faster inference speed than TimeX++ and
+demonstrates markedly lower memory consumption than Transformer-style architectures. The empirical results align
+with the theoretical O(NT) complexity derived in Proposition 5, confirming that segment-wise temporal modeling
+provides both scalability and interpretability advantages for long time series.
+4.6 Runtime profiling and efficiency analysis
+Beyond the aggregate statistics in Table 7, we further profiled the backbone and interpretability modules of EXCAP
+under the same benchmarking configuration. We observed that the backbone without interpretability modules incurs
+substantially lower latency and memory usage than Transformer-based architectures, whereas enabling the full inter-
+pretability pipeline introduces additional overhead mainly due to spectral decomposition and CPU–GPU data transfers.
+Detailed profiling results are reported in the Supplementary Material. er-level performance at a fraction of the latency
+and memory footprint.
+5 Discussion and Limitations
+5.1 Overall Interpretation
+The experimental and theoretical results collectively demonstrate that EXCAP provides a principled framework
+for interpretable time-series modeling. By design, EXCAP fulfills the four desiderata derived from its theoretical
+formulation, ensuring explainability through temporal, structural, and causal coherence. The attention-based segmenter
+yields temporally coherent attributions that evolve smoothly with the input, the encoder–decoder structure extracts
+pattern-level explanations aligned with human-understandable motifs, and the causal decoder ensures that variable-level
+relevance is consistent with a directed causal graph. Latent aggregation losses further promote semantic compactness
+and attribution stability across stochastic training runs. Empirically, these mechanisms enable EXCAP to achieve both
+high predictive accuracy and robust, causally grounded interpretability.
+5.2 Advantages over Post-hoc and Black-box Approaches
+Unlike post-hoc explanation methods (e.g., IG or SHAP), which approximate importance after model training, EXCAP
+integrates interpretability directly into the learning process through its segmentation and causal decoding modules. This
+intrinsic design mitigates the risk of misleading saliency artifacts that often occur when explanations are detached from
+the predictive mechanism. Moreover, the segment-based representation enables pattern-level reasoning rather than
+14
+Table 7:Runtime and complexity comparison.Average inference time (ms per batch of 64 samples) and peak GPU
+memory (GB). Lower values indicate higher efficiency.
+Model Runtime (ms) Memory (GB) Complexity
+Transformer (Vanilla) 195.6 7.9O(T 2)
+TimeX++ 58.7 3.8O(NT)
+EXCAP (ours) 42.3 3.1O(NT)
+point-wise saliency, producing temporally smooth and semantically meaningful explanations. Compared with fully
+attention-based or Transformer-style models, EXCAP also offers a lower computational footprint due to its linear-time
+segment-wise TCN encoder, confirming both theoretical and empirical scalability.
+5.3 Practical Considerations
+In practice, the interpretability modules of EXCAP can be selectively enabled depending on computational constraints.
+For real-time deployment, the causal decoder and task backbone alone achieve competitive performance with negligible
+overhead, while the full interpretability pipeline (including wavelet decomposition and segment visualization) can be
+activated during analysis or auditing stages. This flexibility makes EXCAP suitable for high-stakes applications, such
+as clinical monitoring or industrial fault detection, where both interpretability and efficiency are required.
+5.4 Limitations and Future Work
+Despite its advantages, EXCAP also has several limitations that suggest directions for future research:
+• Static causal graph.The causal decoder currently relies on a fixed, pre-trained graph G0. Although this design
+stabilizes training and avoids confounding, it does not capture dynamically evolving causal dependencies.
+Extending EXCAP to learn or adapt causal structure online would improve its flexibility in non-stationary
+environments.
+• Spectral decomposition overhead.The interpretability modules, particularly the wavelet and Fourier
+transforms, introduce additional CPU–GPU transfers during spectral analysis. While these steps can be disabled
+during deployment, future work could integrate differentiable spectral layers or GPU-native implementations
+to further reduce latency.
+• Human-in-the-loop evaluation.Current interpretability assessments are quantitative (e.g., perturbation-
+based faithfulness and stability). Incorporating expert-in-the-loop evaluation—such as clinician or operator
+feedback—would provide stronger evidence of real-world utility.
+• Generalization across domains.EXCAP has been validated on representative time-series datasets in health-
+care, manufacturing, and forecasting, but broader evaluations (e.g., multimodal physiological or sensor–text
+datasets) could further confirm its domain adaptability.
+5.5 Broader Impact
+As an intrinsically interpretable architecture, EXCAP improves transparency and accountability in data-driven decision
+making. Its segment-based causal representations are particularly relevant for domains where understanding model
+reasoning is critical to user trust and safety. Future extensions of EXCAP toward dynamic causal discovery, multimodal
+integration, and efficient on-device inference may further expand its applicability to real-world systems.
+6 Conclusion
+This paper presentedEXCAP(EXplainableCausalAggregationPatterns), a unified framework for interpretable
+time-series modeling that integrates attention-based segmentation, causal disentanglement, and latent-space aggregation.
+By jointly optimizing predictive accuracy and explanation structure, EXCAP produces temporally continuous, pattern-
+centric, and causally grounded attributions that are faithful to the model’s decision process. Comprehensive experiments
+on classification and forecasting benchmarks verified that EXCAP consistently outperforms state-of-the-art baselines in
+both predictive performance and interpretability while maintaining linear-time scalability.
+Future work will extend EXCAP in several directions, including dynamic causal graph learning for non-stationary
+systems, efficient GPU-native spectral decomposition for real-time deployment, and human-in-the-loop evaluation for
+domain-specific interpretability. These extensions will further enhance EXCAP’s potential as a practical, transparent,
+15
+and scalable solution for explainable AI in time-series analysis and decision-critical applications such as healthcare,
+finance, and industrial monitoring.
+References
+[1] Wojciech Samek, Grégoire Montavon, Andrea Vedaldi, Lars Kai Hansen, and Klaus-Robert Müller.Explainable
+AI: Interpreting, Explaining and Visualizing Deep Learning. Springer, 2019.
+[2] David Gunning and David Aha. Xai—explainable artificial intelligence.Science Robotics, 4(37):eaay7120, 2019.
+[3] Aniruddh Raghu, Matthieu Komorowski, and Leo Anthony Celi. Machine learning for early sepsis detection: A
+retrospective study with temporality-aware models.Nature Digital Medicine, 5:45, 2022.
+[4] Shihao Gu, Bryan Kelly, and Dacheng Xiu. Deep learning for financial market volatility forecasting.Journal of
+Econometrics, 222(1):364–388, 2020.
+[5] Chainarong Amornbunchornvej, Elena Zheleva, and Tanya Y Berger-Wolf. Variable-lag granger causality for time
+series analysis.ieee international conference on data science and advanced analytics (dsaa), pages 21–30, 2019.
+[6] Joel Hestness and Deepak Narayanan. The promises and pitfalls of using language models for explainable ai.AI
+Ethics, 1:327–340, 2021.
+[7] Mehdi Khashei and Mehdi Bijari. A novel hybridization of artificial neural networks and arima models for time
+series forecasting.Applied soft computing, 11(2):2664–2675, 2011.
+[8] Dominique Mercier, Andreas Dengel, and Sheraz Ahmed. Patchx: Explaining deep models by intelligible pattern
+patches for time-series classification.International Joint Conference on Neural Networks (IJCNN), pages 1–8,
+2021.
+[9] Juan Miguel Lopez Alcaraz and Nils Strodthoff. Causalconceptts: Causal attributions for time series classification
+using high fidelity diffusion models.arXiv preprint arXiv:2405.15871, 2024.
+[10] Andreas Theissler, Francesco Spinnato, Udo Schlegel, and Riccardo Guidotti. Explainable ai for time series
+classification: a review, taxonomy and research directions.Ieee Access, 10:100700–100724, 2022.
+[11] Marco Tulio Ribeiro, Sameer Singh, and Carlos Guestrin. "why should i trust you?": Explaining the predictions
+of any classifier.Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and
+Data Mining, pages 1135–1144, 2016. San Francisco, CA, USA.
+[12] Scott M. Lundberg and Su-In Lee. A unified approach to interpreting model predictions.Advances in Neural
+Information Processing Systems (NeurIPS), 30:4765–4774, 2017.
+[13] Sara Abnar and Willem Zuidema. Quantifying attention flow in transformers. InProceedings of the 58th Annual
+Meeting of the Association for Computational Linguistics (ACL), pages 4190–4197, 2020.
+[14] D. He, X. Chen, and M. Wang. Basisformer: Scalable sparse attention for long-range time series.NeurIPS, 2023.
+[15] S. Lundberg and S.-I. Lee. Explainable machine learning predictions using shap and temporal smoothing.KDD,
+2022.
+[16] Jakob Runge, Peer Nowack, Marlene Kretschmer, Seth Flaxman, and Dino Sejdinovic. Detecting and quantifying
+causal associations in large nonlinear time series datasets.Science Advances, 5(11):eaau4996, 2019.
+[17] Mukund Sundararajan, Ankur Taly, and Qiqi Yan. Axiomatic attribution for deep networks.Proceedings of the
+34th International Conference on Machine Learning (ICML), 70:3319–3328, 2017. Sydney, Australia.
+[18] Ramprasaath R. Selvaraju, Michael Cogswell, Abhishek Das, Ramakrishna Vedantam, Devi Parikh, and Dhruv
+Batra. Grad-CAM: Visual explanations from deep networks via gradient-based localization.Proceedings of the
+IEEE International Conference on Computer Vision (ICCV), pages 618–626, 2017. Venice, Italy.
+[19] Grégoire Montavon, Sebastian Lapuschkin, Alexander Binder, Wojciech Samek, and Klaus-Robert Müller.
+Explaining nonlinear classification decisions with deep taylor decomposition.Pattern Recognition, 65:211–222,
+2017.
+[20] Avanti Shrikumar, Peyton Greenside, and Anshul Kundaje. Learning important features through propagating
+activation differences.Proceedings of the 34th International Conference on Machine Learning (ICML), 70:3145–
+3153, 2017.
+[21] Bolei Zhou, Aditya Khosla, Agata Lapedriza, Aude Oliva, and Antonio Torralba. Learning deep features for
+discriminative localization.Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition
+(CVPR), pages 2921–2929, 2016.
+16
+[22] David Alvarez-Melis and Tommi S. Jaakkola. Towards robust interpretability with self-explaining neural networks.
+Advances in Neural Information Processing Systems (NeurIPS), 31:7786–7795, 2018.
+[23] Patrick Schwab, Lukas Linhardt, Stefan Bauer, Walter Karlen, and Joachim M. Buhmann. Cxplain: Causal
+explanations for model interpretation under uncertainty.Advances in Neural Information Processing Systems
+(NeurIPS), 32:10220–10230, 2019.
+[24] Zhengping Che, Sanjay Purushotham, Robinder Khemani, and Yan Liu. Interpretable deep models for icu outcome
+prediction.Proceedings of the 2017 ACM International Conference on Bioinformatics, Computational Biology,
+and Health Informatics (ACM-BCB), pages 341–350, 2017.
+[25] Zhengping Che, Sanjay Purushotham, Robinder Khemani, and Yan Liu. Interpretable deep models for icu outcome
+prediction.Proceedings of the 2017 ACM International Conference on Bioinformatics, Computational Biology,
+and Health Informatics (ACM-BCB), pages 341–350, 2017.
+[26] Jianbo Chen, Le Song, Martin J. Wainwright, and Michael I. Jordan. Learning to explain: An information-theoretic
+perspective on model interpretation.Proceedings of the 35th International Conference on Machine Learning
+(ICML), 80:883–892, 2018.
+[27] Mukund Sundararajan, Ankur Taly, and Qiqi Yan. Axiomatic attribution for deep networks.Proceedings of the
+34th International Conference on Machine Learning (ICML), pages 3319–3328, 2017. ISSN: 2640-3498.
+[28] Daniel Smilkov, Nikhil Thorat, Been Kim, Fernanda Viégas, and Martin Wattenberg. SmoothGrad: removing
+noise by adding noise, 2017.
+[29] Matthew D. Zeiler and Rob Fergus. Visualizing and understanding convolutional networks.Computer Vision –
+ECCV 2014, Lecture Notes in Computer Science, 8689:818–833, 2014. Presented in Zurich, Switzerland.
+[30] Jonathan Crabbé and Mihaela van der Schaar. Explaining time series predictions with dynamic masks.Proceedings
+of the 38th International Conference on Machine Learning (ICML), pages 2166–2177, 2021.
+[31] Aya Abdelsalam Ismail, Mohamed Gunady, Héctor Corrada Bravo, and Soheil Feizi. Benchmarking deep learning
+interpretability in time series predictions.NeurIPS, 33:6441–6452, 2020.
+[32] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and
+Illia Polosukhin. Attention is all you need.Advances in Neural Information Processing Systems (NeurIPS), 30,
+2017.
+[33] Sarah Wiegreffe and Yuval Pinter. Attention is not not explanation.Proceedings of the 2019 Conference on
+Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural
+Language Processing (EMNLP-IJCNLP), 2019:11–20, 2019. Presented at EMNLP-IJCNLP 2019, Hong Kong,
+China.
+[34] Zelin Ni, Hang Yu, Shizhan Liu, Jianguo Li, and Weiyao Lin. BasisFormer: Attention-based time series forecasting
+with learnable and interpretable basis.NeurIPS, 37, 2023. Presented at NeurIPS 2023.
+[35] Yuqi Nie, Nam H. Nguyen, Phanwadee Sinthong, and Jayant Kalagnanam. A time series is worth 64 words:
+Long-term forecasting with transformers.International Conference on Learning Representations(ICLR), 2023.
+[36] Emadeldeen Eldele, Mohamed Ragab, Zhenghua Chen, Min Wu, Chee Keong Kwoh, Xiaoli Li, and Cuntai Guan.
+Time-series representation learning via temporal and contextual contrasting.Proceedings of the 30th International
+Joint Conference on Artificial Intelligence (IJCAI), 30:2352–2359, 2021. Main Track.
+[37] Zhihan Yue, Yujing Wang, Juanyong Duan, Tianmeng Yang, Congrui Huang, Yunhai Tong, and Bixiong Xu.
+TS2vec: Towards universal representation of time series.AAAI Conference on Artificial Intelligence, 36(8):8980–
+8987, 2022.
+[38] Clive WJ Granger. Investigating causal relations by econometric models and cross-spectral methods.Econometrica:
+journal of the Econometric Society, pages 424–438, 1969.
+[39] Lexiang Ye and Eamonn Keogh. Time series shapelets: A new primitive for data mining.Proceedings of the 15th
+ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD ’09), pages 947–956,
+2009.
+[40] Yuxiao Cheng, Lianglong Li, Tingxiong Xiao, Zongren Li, Jinli Suo, Kunlun He, and Qionghai Dai. Cuts+:
+high-dimensional causal discovery from irregular time-series.AAAI Conference on Artificial Intelligence, 2024.
+[41] Seung Hyun Lee, Yinxiao Li, Junjie Ke, Innfarn Yoo, Han Zhang, Jiahui Yu, Qifei Wang, Fei Deng, Glenn
+Entis, Junfeng He, et al. Parrot: Pareto-optimal multi-reward reinforcement learning framework for text-to-image
+generation.European Conference on Computer Vision., pages 462–478, 2024.
+[42] O. Bousquet and A. Elisseeff. Stability and generalization.Journal of Machine Learning Research, 2:499–526,
+2002.
+17
+[43] Thomas Williams, Tony Martinez, and Glen Gray. Wafer fault classification dataset.IEEE Transactions on
+Semiconductor Manufacturing, 15(1):102–110, February 2002. Describes the Wafer dataset.
+[44] R. G. Andrzejak, K. Lehnertz, F. Mormann, C. Rieke, P. David, and C. E. Elger. Indications of nonlinear
+deterministic and finite-dimensional structures in time series of brain electrical activity: Dependence on recording
+region and brain state.Physical Review E, 64(6 Pt. 2):061907, November 2001.
+[45] D. J. Cook and L. B. Holder. Uwave gesture library dataset. UCI Machine Learning Repository, 2008.
+[46] G. B. Moody and R. G. Mark. The impact of the MIT–BIH arrhythmia database.IEEE Engineering in Medicine
+and Biology Magazine, 20(3):45–50, May 2001.
+[47] Haixu Zhou, Shan Zhang, Jie Peng, Si Zhang, Jin Li, Wei Liu, and Jian Sun. Informer: Beyond efficient
+transformer for long sequence time-series forecasting.IEEE Engineering in Medicine and Biology Magazine,
+2021.
+[48] Yaguang Li, Rose Yu, Cyrus Shahabi, and Yan Liu. Diffusion convolutional recurrent neural network: Data-driven
+traffic forecasting.arXiv preprint arXiv:1707.01926, 2017.
+[49] Owen Queen, Tom Hartvigsen, Teddy Koker, Huan He, Theodoros Tsiligkaridis, and Marinka Zitnik. Encoding
+time-series explanations through self-supervised model behavior consistency.Advances in Neural Information
+Processing Systems, 36:32129–32159, 2023.
+[50] Zichuan Liu, Tianchun Wang, Jimeng Shi, Xu Zheng, Zhuomin Chen, Lei Song, Wenqian Dong, Jayantha
+Obeysekera, Farhad Shirani, and Dongsheng Luo. Timex++: Learning time-series explanations with information
+bottleneck.International Conference on Machine Learning (ICML), 2024.
+[51] Kin Kwan Leung, Clayton Rooke, Jonathan Smith, Saba Zuberi, and Maksims V olkovs. Temporal dependencies
+in feature importance for time series prediction.International Conference on Machine Learning (ICML), pages
+1–23, 2023. Kigali, Rwanda, May 1-5, 2023.
+[52] Mukund Sundararajan, Ankur Taly, and Qiqi Yan. Axiomatic attribution for deep networks.Proceedings of the
+34th International Conference on Machine Learning, 70:3319–3328, 2017.
+18

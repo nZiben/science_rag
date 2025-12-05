@@ -1,0 +1,730 @@
+Feature-Based Semantics-Aware Scheduling for
+Energy-Harvesting Federated Learning
+Eunjeong Jeong∗, Giovanni Perin †, Howard H. Yang ‡, and Nikolaos Pappas ∗
+∗Department of Computer and Information Science,Link ¨oping University, Link ¨oping, Sweden
+†Department of Information Engineering,University of Brescia, Brescia, Italy
+‡ZJU-UIUC Institute,Zhejiang University, Haining, China
+Email:{eunjeong.jeong, nikolaos.pappas}@liu.se, giovanni.perin@unibs.it, haoyang@intl.zju.edu.cn
+Abstract—Federated Learning (FL) on resource-constrained
+edge devices faces a critical challenge: The computational en-
+ergy required for training Deep Neural Networks (DNNs) often
+dominates communication costs. However, most existing Energy-
+Harvesting FL (EHFL) strategies fail to account for this reality,
+resulting in wasted energy due to redundant local computations.
+For efficient and proactive resource management, algorithms that
+predict local update contributions must be devised. We propose
+a lightweight client scheduling framework using the Version Age
+of Information (V AoI), a semantics-aware metric that quantifies
+update timeliness and significance. Crucially, we overcome V AoI’s
+typical prohibitive computational cost, which requires statistical
+distance over the entire parameter space, by introducing a
+feature-based proxy. This proxy estimates model redundancy
+using intermediate-layer extraction from a single forward pass,
+dramatically reducing computational complexity. Experiments
+conducted under extreme non-IID data distributions and scarce
+energy availability demonstrate superior learning performance
+while achieving energy reduction compared to existing baseline
+selection policies. Our framework establishes semantics-aware
+scheduling as a practical and vital solution for EHFL in realistic
+scenarios where training costs dominate transmission costs.
+Index Terms—Federated learning, semantic communications,
+energy harvesting, energy efficiency, scheduling algorithms
+I. INTRODUCTION
+Federated Learning (FL) [1] has emerged as a powerful
+framework to enable distributed learning on edge devices while
+preserving data privacy. However, as FL applications increas-
+ingly employ Deep Neural Networks (DNNs) over large-scale
+networks, the dominant constraint has evolved from communi-
+cation bandwidth to the computational energy required for lo-
+cal training. On resource-constrained edge devices, the energy
+consumption of backpropagation is substantial, making client
+scheduling critical for realizing energy-efficient FL. A well-
+designed scheduling policy limits the number of participating
+clients and prioritizes informative updates, thereby conserving
+resources while maintaining learning performance.
+Energy-Harvesting Federated Learning (EHFL) has been
+proposed to address energy limitations by leveraging intermit-
+tent renewable energy sources. Yet existing EHFL literature
+often assumes that each communication consumes an equal
+amount of the device’s battery and time budget for local
+This work has been supported by the EU through the Horizon Europe/JU
+SNS project ROBUST-6G (grant no. 101139068).
+G. Perin is also with the Dept. of Information Engineering (DEI), University
+of Padova, Padova, Italy.
+training [2], [3]. This assumption fails in modern edge AI,
+where a single DNN training epoch consumes significantly
+more energy than transmitting parameters [4]. Under this
+realistic constraint, systems cannot afford to waste energy on
+training models that yieldredundantupdates. Therefore, blind
+selection policies based solely on battery levels or random
+sampling are insufficient; the system must predict a client’s
+contributionbeforeinitiating expensive training.
+This is where semantics-aware metrics offer a promising
+solution. Unlike traditional metrics focused on throughput or
+latency, semantics-aware measures evaluate the informational
+value of updates relative to the learning objective [5]–[7]. The
+Version Age of Information (V AoI) [8]–[11] is particularly
+promising because it captures both timeliness and relevance of
+client updates [12]. Prior work has shown that V AoI-assisted
+FL can improve robustness and reduce both loss and Age of
+Information [13]. However, existing V AoI approaches suffer
+from a critical limitation: the evaluation of the metric itself
+is often computationally prohibitive. These methods typically
+require calculating statistical distances over the entire param-
+eter space, which paradoxically increases the computational
+burden and renders the approach infeasible for DNNs.
+To address this, we propose a lightweight, V AoI-based client
+scheduling framework for EHFL. Our approach quantifies
+update contributions by performing a single forward pass
+to extract feature vectors from an intermediate layer. This
+method requires only one forward pass (no backward pass)
+followed by simple distance calculations, dramatically reduc-
+ing computational overhead. Experiments demonstrate that
+this feature-based VAoI approach offers significant advantages
+under severe data heterogeneity and scarce energy availability.
+The contributions of this study are summarized as follows.
+•A computation-efficient proxy for model dissimilarity
+based on intermediate feature extraction, eliminating ex-
+pensive parameter-space distance calculations.
+•Demonstration that V AoI effectively captures local update
+significance under realistic constraints where training
+energy dominates transmission costs.
+•Experimental validation showing robust learning per-
+formance under extreme non-IID data distributions and
+scarce energy availability, with reduced energy consump-
+tion compared to baseline methods.
+arXiv:2512.01983v1  [cs.LG]  1 Dec 2025
+II. RELATEDWORKS
+The underlying principle of using lightweight distance met-
+rics to evaluate client importance or dissimilarity is a well-
+established area of FL research. The idea is often framed
+in the context of personalized Federated Learning (pFL) and
+Multi-Task Learning (MTL) [14]–[19]. For example, in [15]
+the authors use the popular cosine similarity on a factorization
+of the model parameters of hidden layers, whereas in [19] the
+Wasserstein distance is computed at the sample level between
+pairs of clients, but without directly sharing information.
+While the methodology is similar, we aim to improve the
+common shared global model instead of creating different
+versions targeting personalized data distributions. On similar
+research lines, distance metrics are also computed based on the
+dataset labels, whose distribution is assumed to be shared with
+the server [20], loss functions [21], or based on hash sketches
+mapping the dataset samples into scalars [22]. However, we
+note that the first listed approach partially breaks the privacy-
+preserving scheme of FL, whereas the latter method requires
+additional computational burden that could be avoided by
+using the inner feature maps of the local models.
+Security mechanisms also use distance and similarity met-
+rics computed on internal representations, model parameters,
+or loss functions [23]–[25]. However, these approaches are
+meant to filter out updates that are considered as outliers, e.g.,
+due to attackers trying to poison the global model. We remark
+that our goal is fundamentally different, i.e., we want new
+and different information to join collaborative learning so as
+to diversify the global model.
+Different from what was previously done in the literature,
+we use the Euclidean distance computed on internal model
+representations to update the V AoI, which is then used to
+sample clients carryinguseful informationto the global model.
+Our approach is especially lightweight as it only requires a
+forward pass of a minibatch of data up to a selected hidden
+layer. Notably, we show that this procedure yields increased
+accuracy under non-IID data distributions and/or when clients
+are constrained by tight energy constraints.
+III. SYSTEMMODEL
+A. Federated Learning
+We consider a distributed network consisting of a central
+server andNclients, indexed byi∈[N] ={1, . . . , N}. The
+goal of the FL process is to find the global model parameters
+w∈R dw that minimize the global empirical risk:
+f(w) = 1
+N
+NX
+i=1
+fi(w)(1)
+wheref i is the local loss function of clienti, defined over
+its private and fixed local datasetD i. We assume a standard
+Federated Averaging (FedAvg) [26] as model aggregation
+method, defined over discrete epochs (global communication
+rounds)t∈ {0, . . . , T−1}. An illustration is depicted in Fig. 1.
+server
+VAoI-
+aided 
+Schedule
+ℒ𝒾
+𝓈 = 1
+𝑀𝑖 𝑋𝑖
+① s ≡ 0 (mod S) ’
+Broadcast global model 
+𝐰 𝑡 to all clients.
+② Case 1: ℒ𝒾
+(𝓈) = 1
+User 𝑖 starts local training according 
+to the output from VAoI scheduling 
+algorithm, if 𝐸𝑖
+𝑠 ≥ 𝜅.
+④ before s ≡ S-1 (mod S) ’
+User uploads local update to 
+server if 𝐸𝑖
+𝑠 ≥ 1.
+⑤ s ≡ S-1 (mod S) ’
+Server aggregates local 
+models and updates 𝐰 𝑡+1 . 
+battery level
+𝐸𝑖
+𝑠 ∈ 0,𝐸max
+user 𝑖
+VAoI-
+aided 
+Schedule
+ℒ𝒾
+𝓈 = 0
+𝑀𝑖 𝑋𝑖
+user 𝑗
+③ κ slots after launch
+Local model 𝐰𝑖
+𝑡 is 
+updated.
+② Case 2: ℒ𝒾
+(𝓈) = 0 ’
+User 𝑖 stays idle according to the 
+output from VAoI scheduling 
+algorithm, even if 𝐸𝑗
+𝑠 ≥ 𝜅.
+battery level
+𝐸𝑗
+𝑠 ∈ 0,𝐸max
+Fig. 1. A schematic view of Energy-Harvesting Federated Learning. Useri
+(left, blue) represents clients participating in local training and model aggre-
+gation at epocht, whereas Userj(right, orange) symbolizes idle clients.
+Model training and V AoI-based participant selection in this figure, depicted
+as rectangular boxes with magenta edges, is described in Fig. 3.
+B. Version Age of Information
+Version Age of Information (V AoI) [8] quantifies the infor-
+mation discrepancy between a source and a receiver, serving
+as an evaluation metric when the system aims to minimize
+this information gap. The term “version” refers to a discrete
+counter that tracks the number of updates generated at a node.
+Att= 0, the version of the source,V(t), is set to0. When
+the source’s content is updated, its version index increases
+by 1. Similarly, thei-th receiver maintains a local version
+index, denoted asV i(t), which updates when its local content
+is refreshed. The V AoI at nodeiisX i(t) =V(t)−V i(t). This
+is a general definition independent of the application, and we
+adapt a modified one tailored to our scenario.
+V AoI jointly captures the freshness of the data and the
+deviation of content between the receiver and the source,
+which are two semantic properties of information. V AoI resets
+to0when the update is successfully transmitted by the
+source and incorporated by the receiver, as the entities become
+synchronized in that instance. Note that it does not increase
+linearly with time.
+Letq i(t)∈ {0,1}refer to a binary indicator with a value1
+if clientiparticipates in the global aggregation during roundt.
+At every roundt, the V AoI of clientievolves as:
+Xi(t+ 1) =
+(
+(Xi(t) + 1)(1−qi(t)), d(w (t),w (t)
+i )≥µ
+Xi(t)(1−q i(t)),otherwise
+(2)
+whereµis the predetermined threshold. The measure
+d(w(t),w (t)
+i )in (2) is the statistic distance (dissimilarity)
+                    
+1 epoch = 𝑆 slots
+Batch training Uploading local 
+update to Server
+Model aggregation at Server
+Fig. 2. Relation between epochs and slots with an exemplary case of a client
+allocating slots for scheduled and/or available actions.S= 30andκ= 20
+are assumed in this example.
+Hist. vector 𝐡𝑖
+𝑡
+Feature vector 𝐯𝑖
+𝑡
+Feature vector 𝐯𝑖
+𝑡+1
+M𝑖
+𝑡 = 𝑑 𝐯𝑖
+𝑡 ,𝐡𝑖
+𝑡
+M𝑖
+𝑡+1 = 𝑑 𝐯𝑖
+𝑡+1 ,𝐡𝑖
+𝑡
+Hist. vector
+Saved at the latest local 
+training event.
+ℒ𝒾 = 1
+ℒ𝒾 = 0
+Fig. 3. V AoI-aided participant selection. The figure illustrates an exemplary
+case in which a user is selected for local training at epocht(upper block,
+blue) and keeps the local model untrained at epocht+1(lower block, orange).
+If the most recent local update was doneτ i epochs ago,M (t)
+i is obtained by
+measuring distance betweenv (t)
+i andh (t−τi)
+i .
+between the global modelw (t) and the current local model
+w(t)
+i , capturing the model disparity.
+C. Energy Harvesting
+We consider a system operating over discrete time slotss∈
+{0, . . . , ST−1}, whereSis the number of slots per epoch and
+Tis the number of epochs, as illustrated in Fig. 2. Each useri
+relies on a rechargeable battery with current energy levelE (s)
+i .
+The battery levels depend on the stochastic energy harvesting
+and the users’ operational decisions.
+At the beginning of each time slots, userimay harvest a
+unit of energy from the environment. We denote this event by
+the binary variableC (s)
+i , whereC (s)
+i = 1implies the battery
+recharges by one unit, andC (s)
+i = 0implies no energy is
+harvested. The probability of harvesting is given byp bc =
+Pr[C(s)
+i = 1], thusC (s)
+i following a Bernoulli distribution.
+If the user is not currently locked into a long-term task (i.e.,
+they are available), they choose among three actions: (1) stay-
+ing idle (1 slot, 0 energy), (2) transmission (1 slot, 1 energy),
+or (3) local training (κslots,κenergy). We define binary
+decision variablesT (s)
+i andL (s)
+i for transmission and training
+engagement, respectively. Since a user cannot simultaneously
+transmit and initiate training, the decision variables satisfy the
+constraintT (s)
+i +L (s)
+i ≤1.
+The battery level evolves according to the chosen action
+and the harvested energy. For single-slot actions (idle or
+transmission), the battery level at the next step is:
+E(s+1)
+i = max(E(s)
+i − T(s)
+i ,0) +C(s)
+i ,(3)
+On the other hand, in the case of multi-slot action as local
+training, the user remains busy forκconsecutive slots if it
+initiates training at slots. The battery level is updated only
+after the task completes at slots+κ:
+E(s+κ)
+i = max(E(s)
+i −κ,0) +
+s+κ−1X
+s′=s
+C(s′)
+i .(4)
+Note that if the user remains idle (T (s)
+i =L (s)
+i = 0), the
+battery simply accumulates harvested energy.
+The system enforces strict energy causality. A user can
+undertake an action only if their current battery levelE (s)
+i
+is sufficient to fully cover the energy cost of that action,
+otherwise the action is denied. Thus, transmission is only
+possible ifE (s)
+i ≥1, and local training is only possible if
+E(s)
+i ≥κ.
+IV. VERSIONAGE OFINFORMATION IN
+ENERGY-HARVESTINGFEDERATEDLEARNING
+Encoding feature vectors for evaluating model dissimilarity
+takes the concept of checking feature map difference and
+makes it statistically robust and hyper-lightweight. Instead
+of calculating the full L2 distance for all feature vectors,
+the system focuses on the statistical properties of features
+generated by the local and global models.
+The model dissimilarity metric is used as follows.
+1)Client’s inference:Clientiruns a single forward pass on
+a small local batchB i using the global modelw (t).
+2)Feature vector extraction:Clientiextracts the feature
+vector from a chosen hidden layerz.
+3)Statistical distance check:Clienticompares the global
+model-generated feature vectors with the historical mo-
+ments it has recorded.
+M(t)
+i =
+ 1
+|Bi|
+ 
+z(w(t);Bi)
+
+−h (t−τi)
+i
+
+2
+(5)
+whereh (·)
+i is the average feature vector (mean of the hidden
+layer output) stored by clienti, computed at the latest
+time slot when clientiwas trained (i.e., whenw i was
+last created), denoted byt−τ i. WhenL (s′)
+i = 1for slots
+rangings ′ ∈ {s, . . . , s+κ−1}that lays on epocht, the
+historical moment vector of clientiis obtained by feeding
+the training batchesB (t,s′)
+i :
+h(t)
+i = 1
+|Di|
+s+κ−1X
+s′=s
+z(w(t,s′)
+i ;B (t,s′)
+i ),(6)
+where|D i|is the number of training samples inD i.
+Algorithm 1:EHFL with lightweight V AoI for client
+selection.
+Input:Total epochsT, number of slots per epochS,
+user set[N] ={1,···, N}, battery charging
+probabilityp bc, learning rateγ, initial battery
+levelE (0)
+i = 0, local training modelw (t)
+i =0,
+local dataset{D i} ∀i∈[N]
+Output:{x t :∀t}
+1fors= 0,···, ST−1do
+2t← ⌊s/S⌋// index of current epoch
+3foreachi∈[N]do in parallel
+4ifC (s)
+i = 1then
+5E (s)
+i ←E (s)
+i + 1// Charge battery
+6ifL (s)
+i = 1then
+7w (t,b+1)
+i ←BATCHTRAIN(w (t,b)
+i ,Di, b)
+8else ifihas an unsentw i andE (s)
+i ≥1then
+9iuploadsw i (message) to the server.
+10ifs≡0 (modS)then
+11foreachi∈[N]do
+12w (t)
+i ←w (t) // Server broadcasts global
+model.
+13N(t),{X i(t+ 1)} ←
+CLIENTSELECT({X i(t)},{w (t)}, k)// Alg. 2
+14foreachi∈ N(t)do in parallel
+15ifimeets conditions to start trainingthen
+16SetL (s′)
+i = 1fors ′ ∈ {s, . . . , s+κ−1}
+17w (t,0)
+i ←w (t)
+i
+18w (t,1)
+i ←BATCHTRAIN(w (t,0)
+i ,Di,0)
+19ifs≡S−1 (modS)then
+20β (t)
+i ← |Di|PN
+i=1 |Di| // superposition weight
+21w (t+1) ← P
+i∈N(t) β(t)
+i w(t)
+i // Aggregation
+22returnw (T)
+23FunctionBATCHTRAIN(w (t)
+i ,Di, b):
+24B (t,b)
+i ← {Minibatch sampled fromDi}
+25w (t,b+1)
+i ←w (t,b)
+i −γ∇f i(w(t,b)
+i ;B (t,b)
+i )
+26ifb=κ−1then
+27ilocally savesw (t,κ)
+i as message.
+28icomputes and locally savesh (t)
+i as in (6).
+29returnw (t,b+1)
+i
+4)Staleness evaluation (V AoI):The V AoI (Xi(t)) is updated
+using the standard evolution rule in Eq. (2), with the fol-
+lowing substitution: The expensive full model dissimilarity,
+d(w(t),w (t)
+i ), is replaced by the lightweight feature-based
+distance,M (t)
+i , calculated in Step 3.
+Xi(t+ 1) =
+(
+(Xi(t) + 1)(1−qi(t)), M (t)
+i ≥µ
+Xi(t)(1−q i(t)),otherwise. (7)
+If Clientiis selected to participate (q i(t) = 1), the
+age resets to zero, as the client synchronizes with the
+Algorithm 2:V AoI-based client selection.
+Input:global modelw (t), Upper bound for choosing
+participants with large version agek, Version
+age at the current epochX i(t)∀i∈[N]
+1FunctionCLIENTSELECT({X i(t)},{w (t)}, k):
+2Compute probabilities{p i} ← Xi(t)PN
+j=1 Xj(t) .
+3N(t)← {Subset ofkclients with largestp i.}
+4foreachi∈[N]do
+5ifi∈ N(t)then
+6q i(t)←1
+7v (t)
+i ← 1
+|Bi|z(w(t);Bi)// Forward pass;
+Return avg. feature vector
+8M i ← ∥v(t)
+i −h (t−τi)
+i ∥2
+9FindX i(t+ 1)from Eq. (7)
+10returnN(t),{X i(t+ 1)}
+new global model. Otherwise, the age only increments if
+the computed distanceM (t)
+i exceeds the predetermined
+thresholdµ, indicating that the current global update is
+semantically significant to clienti.
+The comprehensive execution flow of the proposed scheme
+is outlined in Alg. 1. Each clientibegins batch training over
+its local model only if it satisfies the following conditions,
+which are assessed in line 15 of Alg. 1:
+•Priority based on version age:i∈ N(t), where the
+participation groupN(t)is formed according to the
+function CLIENTSELECTin Alg. 2.
+•No pending update: the user does not yet have a local
+updatew i to transmit to the server.
+•Sufficient battery:E (s)
+i ≥κ.
+V. NUMERICALRESULTS
+We evaluate the proposed scheme on an image classification
+task using the CIFAR-10 dataset. Each model is a convolu-
+tional neural network consisting of six convolutional layers,
+three max-pooling layers, and three fully-connected layers.
+We considerN= 100clients, each of which possesses 300
+training samples. To simulate non-IID data distribution, we
+partition the dataset following a Dirichlet distribution with
+concentration coefficientα={0.1,1.0,10.0}, where smaller
+αindicates more severe heterogeneity. stochastic gradient
+descent with a learning rateγ= 0.01and cross-entropy loss
+overT= 500global rounds, each comprisingS= 30time
+slots. We extract representations from the output layer of the
+local model for the lightweight V AoI calculation. This layer
+generates a feature vector with 10 elements, corresponding
+to the number of classes in CIFAR-10. For energy harvesting,
+we vary the battery charging probabilityp bc ∈ {0.01,0.1,1.0}.
+We set the computational cost of a single local training toκ=
+20battery units, while uplink transmission consumes 1 battery
+unit. The maximum battery capacity isE max =κ+ 5 = 25
+units, and initial battery is setE (0)
+i = 0for alli∈[N].
+We implement the following algorithms as benchmarks:
+0.0
+0.2
+0.4
+0.6F1/uni00A0Score
+pbc = 0.01,/uni00A0= 0.1
+ pbc = 0.01,/uni00A0= 1.0
+ pbc = 0.01,/uni00A0= 10.0
+0.0
+0.2
+0.4
+0.6F1/uni00A0Score
+pbc = 0.1,/uni00A0= 0.1
+ pbc = 0.1,/uni00A0= 1.0
+ pbc = 0.1,/uni00A0= 10.0
+0 100 200 300 400 500
+Epoch
+0.0
+0.2
+0.4
+0.6F1/uni00A0Score
+pbc = 1.0,/uni00A0= 0.1
+0 100 200 300 400 500
+Epoch
+pbc = 1.0,/uni00A0= 1.0
+0 100 200 300 400 500
+Epoch
+pbc = 1.0,/uni00A0= 10.0
+FedAvg FedBacys FedBacys/uni00ADOdd Ours
+Fig. 4. F1 score with respect to number of epochs.
+0 100 200 300 400 500
+Epoch
+0
+20
+40Average/uni00A0Version/uni00A0Age
+pbc = 0.01,/uni00A0= 0.1
+0 100 200 300 400 500
+Epoch
+pbc = 0.01,/uni00A0= 1.0
+0 100 200 300 400 500
+Epoch
+pbc = 0.01,/uni00A0= 10.0
+FedAvg FedBacys FedBacys/uni00ADOdd Ours
+Fig. 5. Average version age across all clients with respect to epochs.
+FedAvg [26]:A greedily energy-aware baseline. Battery evo-
+lution follows a Bernoulli process. Clients operate using
+a greedy strategy, launching local training as soon as the
+minimum energy requirement (κunits) is met, without
+consideration of future energy needs or data quality.
+FedBacys [27]:A procrastination-based, deadline-driven
+scheme. Clients are organized into cyclical groups, and
+each group must meet a strict transmission deadline.
+Clients procrastinate initiating local training until the
+last possible time slot to maximize harvested energy.
+FedBacys-Odd [4]:An energy-efficient variation of FedBa-
+cys designed for scenarios where training energy domi-
+nates communication. Clients utilize the same launching
+criteria as FedBacys: (i) sufficient battery, (ii) no pend-
+ing updates, and (iii) deadline observance. Additionally,
+clients launch training only if an internal counter, tracking
+opportunities met by criteria (i)-(iii), is odd-numbered.
+The odd-chance rule skips every other valid training
+opportunity to save energy.
+We evaluate the performance of the considered schemes
+based on two key metrics: (1) Learning performance measured
+by the F1 score on the global test set, and (2) energy efficiency
+measured by the total cumulative battery units consumed by
+the network throughout the training process.
+Fig. 4 demonstrates the advantages of leveraging V AoI
+under severe heterogeneity (smallα, top row) and scarce en-
+ergy (smallp bc, left column) conditions. Our scheme balances
+energy efficiency with learning performance by prioritizing
+semantically informative clients, ensuring that critical updates
+are not missed when energy is limited.
+The average V AoI for all clients in each global round is
+shown in Fig. 5, which shows that our proposed scheme
+pbc = 0.01 pbc = 0.1 pbc = 1.0
+Battery/uni00A0Charging/uni00A0Probability
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Normalized
+Energy/uni00A0Consumption
+Client/uni00A0Selection/uni00A0Scheme
+FedAvg FedBacys FedBacys/uni00ADOdd Ours
+Fig. 6. Network-wide energy consumption (α= 0.1, k= 10, µ= 0.5).
+Normalization is done within eachp bc group by dividing all values by the
+max value across all 4 schemes in each group.
+maintains the lowest average version age among all compar-
+isons. This result is consistent with its design objective, as
+the selection policy explicitly prioritizes clients with higher
+version ages (staleness) and high significance to global update.
+This emphasizes that V AoI is an effective metric for guiding
+FL networks toward a robust and sustainable trajectory.
+Fig. 6 illustrates the total energy consumption across differ-
+ent schemes. We observe that the degree of data heterogeneity
+(α) does not impact the energy consumption patterns of
+any scheme, as energy expenditure is primarily driven by
+participation frequency rather than data distribution. Thus, a
+notable performance gap appears when the battery charging
+probability (p bc) is high. Our proposed V AoI-aided scheme
+reduces energy consumption by up to 37% compared to the
+baseline FedAvg. While the purely battery-aware strategy
+(FedBacys-Odd) achieves slightly lower total energy consump-
+tion than our algorithm, it proves vulnerable under high data
+heterogeneity since it lacks a mechanism to account for the
+utility of local updates.
+VI. CONCLUSIONS
+We addressed a critical challenge in Energy-Harvesting
+Federated Learning (EHFL) concerning the dominance of
+local training costs over communication costs in Deep Neural
+Network scenarios. We proposed a lightweight, V AoI-driven
+scheduling framework that utilizes a feature-based proxy to
+estimate the semantic utility of updates via a single forward
+pass. By effectively filtering out redundant computations, our
+approach achieves significant energy savings and maintains
+robust convergence under extreme non-IID and scarce energy
+conditions, outperforming standard baselines, and establishing
+semantics-aware selection as a vital mechanism for sustainable
+FL deployment.
+REFERENCES
+[1] J. Kone ˇcn`y, H. B. McMahan, D. Ramage, and P. Richt ´arik, “Federated
+optimization: Distributed machine learning for on-device intelligence,”
+arXiv preprint arXiv:1610.02527, 2016.
+[2] Z. Chen, D. Li, R. Ni, J. Zhu, and S. Zhang, “FedSeq: A hybrid
+federated learning framework based on sequential in-cluster training,”
+IEEE Systems Journal, vol. 17, no. 3, pp. 4038–4049, 2023.
+[3] R. V . da Silva, O. L. A. L ´opez, and R. D. Souza, “Federated learning-
+distillation alternation for resource-constrained IoT,”arXiv preprint
+arXiv:2505.20456, 2025.
+[4] E. Jeong and N. Pappas, “Computation-aware energy-harvesting fed-
+erated learning: Cyclic scheduling with selective participation,”arXiv
+preprint arXiv:2511.11949, 2025.
+[5] A. Kosta, N. Pappas, and V . Angelakis, “Age of information: A new
+concept, metric, and tool,”Foundations and Trends® in Networking,
+vol. 12, no. 3, pp. 162–259, 2017.
+[6] S. E. Trevlakis, N. Pappas, and A.-A. A. Boulogeorgos, “Toward
+natively intelligent semantic communications and networking,”IEEE
+Open Journal of the Communications Society, vol. 5, 2024.
+[7] J. Luo and N. Pappas, “Semantic-aware remote estimation of multiple
+markov sources under constraints,”IEEE Transactions on Communica-
+tions, vol. 73, no. 11, pp. 11093–11105, 2025.
+[8] R. D. Yates, “The age of gossip in networks,” inProc. IEEE Int. Symp.
+Inf. Theory, pp. 2984–2989, 2021.
+[9] B. Abolhassani, J. Tadrous, A. Eryilmaz, and E. Yeh, “Fresh caching
+for dynamic content,” inProc. IEEE Conf. Comput. Commun., 2021.
+[10] B. Buyukates, M. Bastopcu, and S. Ulukus, “Version age of information
+in clustered gossip networks,”IEEE Journal on Selected Areas in
+Information Theory, vol. 3, no. 1, pp. 85–97, 2022.
+[11] E. Delfani and N. Pappas, “Semantics-aware updates from remote energy
+harvesting devices to interconnected leo satellites,”IEEE Communica-
+tions Letters, vol. 29, no. 8, pp. 1928–1932, 2025.
+[12] E. Delfani and N. Pappas, “Version age-optimal cached status updates
+in a gossiping network with energy harvesting sensor,”IEEE Trans.
+Commun., vol. 73, no. 4, pp. 2344–2360, 2025.
+[13] X. Hu, N. Pappas, and H. H. Yang, “Version age-based client scheduling
+policy for federated learning,” inProc. IEEE Int. Conf. Acoust. Speech
+Signal Process. Works., pp. 695–699, 2024.
+[14] A. Z. Tan, H. Yu, L. Cui, and Q. Yang, “Towards personalized federated
+learning,”IEEE Trans. Neural Netw. Learn. Syst., vol. 34, no. 12,
+pp. 9587–9603, 2023.
+[15] W. Jeong and S. J. Hwang, “Factorized-FL: Personalized federated
+learning with parameter factorization & similarity matching,”Adv.
+Neural Inf. Process. Syst., vol. 35, pp. 35684–35695, 2022.
+[16] V . Smith, C.-K. Chiang, M. Sanjabi, and A. S. Talwalkar, “Federated
+multi-task learning,”Adv. Neural Inf. Process. Syst., vol. 30, 2017.
+[17] O. Marfoq, G. Neglia, A. Bellet, L. Kameni, and R. Vidal, “Federated
+multi-task learning under a mixture of distributions,” inAdv. Neural Inf.
+Process. Syst., vol. 34, pp. 15434–15447, 2021.
+[18] J. Huang, C. Hong, Y . Liu, L. Y . Chen, and S. Roos, “Maverick matters:
+Client contribution and selection in federated learning,” inAdvances in
+Knowledge Discovery and Data Mining, pp. 269–282, Springer Nature
+Switzerland, 2023.
+[19] E. Jeong and M. Kountouris, “Personalized decentralized federated
+learning with knowledge distillation,” inProc. IEEE Int. Conf. Commun.,
+pp. 1982–1987, 2023.
+[20] F. Fam ´a, C. Kalalas, S. Lagen, and P. Dini, “Measuring data similarity
+for efficient federated learning: A feasibility study,” inInt. Conf. Comput.
+Netw. Commun., pp. 394–400, 2024.
+[21] M. Tang, X. Ning, Y . Wang, J. Sun, Y . Wang, H. Li, and Y . Chen,
+“FedCor: Correlation-based active client selection strategy for heteroge-
+neous federated learning,” inProc. IEEE Comput. Soc. Conf. Comput.
+Vis. Pattern Recognit., pp. 10102–10111, June 2022.
+[22] Z. Liu, Z. Xu, B. Coleman, and A. Shrivastava, “One-pass distribution
+sketch for measuring data heterogeneity in federated learning,”Adv.
+Neural Inf. Process. Syst., vol. 36, pp. 15660–15679, 2023.
+[23] P. Blanchard, E. M. El Mhamdi, R. Guerraoui, and J. Stainer, “Machine
+learning with adversaries: Byzantine tolerant gradient descent,”Adv.
+Neural Inf. Process. Syst., vol. 30, 2017.
+[24] M. Fang, X. Cao, J. Jia, and N. Gong, “Local model poisoning
+attacks to byzantine-robust federated learning,” in29th USENIX security
+symposium (USENIX Security 20), pp. 1605–1622, 2020.
+[25] C. Sandeepa, B. Siniarski, S. Wang, and M. Liyanage, “SHERPA: Ex-
+plainable Robust Algorithms for Privacy-Preserved Federated Learning
+in Future Networks to Defend Against Data Poisoning Attacks,” in2024
+IEEE Symposium on Security and Privacy (SP), pp. 4772–4790, 2024.
+[26] B. McMahan, E. Moore, D. Ramage, S. Hampson, and B. A. y.
+Arcas, “Communication-Efficient Learning of Deep Networks from
+Decentralized Data,” inProc. Int. Conf. Artif. Intell. Stat., vol. 54 of
+Proceedings of Machine Learning Research, pp. 1273–1282, PMLR,
+20–22 Apr 2017.
+[27] E. Jeong and N. Pappas, “Battery-aware cyclic scheduling in energy-
+harvesting federated learning,” inProc. IEEE Int. Workshop Signal
+Process. Advances Wireless Commun., pp. 1–5, 2025.

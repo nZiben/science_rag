@@ -1,0 +1,941 @@
+Consistency Flow Model Achieves One-step Denoising
+Error Correction Codes
+Haoyu Lei∗, Chin Wa Lau†, Kaiwen Zhou‡, Nian Guo§, Farzan Farnia¶
+Abstract
+Error Correction Codes (ECC) are fundamental to reliable digital communication, yet designing neural
+decoders that are both accurate and computationally efficient remains challenging. Recent denoising
+diffusion decoders with transformer backbones achieve state-of-the-art performance, but their iterative
+sampling limits practicality in low-latency settings. We introduce theError Correction Consistency Flow
+Model (ECCFM), an architecture-agnostic training framework for high-fidelity one-step decoding. By
+casting the reverse denoising process as a Probability Flow Ordinary Differential Equation (PF-ODE)
+and enforcing smoothness through a differential time regularization, ECCFM learns to map noisy signals
+along the decoding trajectory directly to the original codeword in a single inference step. Across multiple
+decoding benchmarks, ECCFM attains lower bit-error rates (BER) than autoregressive and diffusion-based
+baselines, with notable improvements on longer codes, while delivering inference speeds up from 30x to
+100x faster than denoising diffusion decoders.
+1 Introduction
+Error Correction Codes (ECC) play a central role in modern digital communications and have been
+essential in a wide range of applications, including wireless communication and data storage. The core task
+of an ECC decoder is to recover a message from a received signal corrupted by noise during transmission.
+Recently, inspired by the great success of deep neural networks in domains such as computer vision [1],
+generative modeling [2–4], and natural language processing [5,6], neural network-based ECC decoders were
+introduced, which have been shown to be capable of improving the performance scores of conventional,
+problem-specific algorithms such as Belief Propagation (BP) [7] and Min-Sum (MS) [8].
+The existing neural decoders can be categorized into two groups. Early model-based approaches [9–13]
+achieved successful results by integrating neural networks into conventional decoding algorithms. However,
+their reliance on problem-specific structures can limit their applicability as a general-purpose decoder. To
+address this limitation and train a general-purpose decoder, model-free decoders enable the extension of a
+general neural bet architecture without prior knowledge of the decoding algorithm. While the early proposals
+applying fully connected neural net architectures [14–16] could lead to overfitting, the preprocessing techniques
+that utilize magnitude and syndrome vectors [17] have been effective in reducing the error. These improvements
+have led to efficient transformer-based decoders [18], which leverage the self-attention mechanism to improve
+the numerical performance on short block codes. The auto-regressive method in transformer-based decoders
+has been improved in several recent works [19,20]. Notably, the recent work by [21] integrates cross-attention
+between magnitude and syndrome, resulting in the state-of-the-art performance in the decoding task.
+∗Department of Computer Science and Engineering, The Chinese University of Hong Kong, hylei22@cse.cuhk.edu.hk
+†Huawei Technologies Co., Ltd., Theory Lab
+‡Huawei Technologies Co., Ltd., Noah’s Ark Lab
+§Huawei Technologies Co., Ltd., Theory Lab
+¶Department of Computer Science and Engineering, The Chinese University of Hong Kong, farnia@cse.cuhk.edu.hk
+1
+arXiv:2512.01389v1  [cs.LG]  1 Dec 2025
+Figure 1: Illustration of our proposed Error Correction Consis-
+tency Flow Model (ECCFM). ECCFM learns to map received
+signals from the trajectories to a single, consistent codeword
+predictionx 0, represented by aδfunction.
+In parallel, the remarkable success of dif-
+fusion generative models [3,4] across various
+domains [22–26] has inspired a new direction
+for deep learning-based ECC. Diffusion models
+train a noise estimator to gradually denoise a
+noisy input data and reverse a forward noise
+manipulation process, generating high-quality
+samples by an iterative application of a neural
+net denoiser to an input Gaussian noise. The
+DDECC method [27] extends the denoising dif-
+fusion framework to ECC, naturally modeling
+the AWGN channel as a forward diffusion pro-
+cess. In this setup, a time-dependent trans-
+former learns to denoise the received signal
+iteratively, recovering the original codeword.
+This framework provides complementary gains
+over auto-regressive methods and establishes
+a new state-of-the-art in terms of Bit Error
+Rates (BER), particularly for long codes and
+low SNR, due to its iterative refinement denoising process.
+However, the iterative denoising of DDECC has introduced a new challenge: the multi-step sampling
+process incurs significant computational overhead and high latency, reducing the practicality of the approach
+in real-world applications. This motivates the following question: Can a decoder maintain the performance
+achieved by the denoising diffusion frameworks at a lower latency that meets the latency requirements of
+several communication settings?
+In this work, we aim to address this question by proposing Error Correction Consistency Flow Models
+(ECCFM), an architecture-agnostic training framework designed to construct high-fidelity, one-step denosing
+decoders. Inspired by recent advances in consistency models [28], we formulate the decoding process as
+a Probability-Flow Ordinary Differential Equation (PF-ODE), which seeks to learn an optimal trajectory
+from the noisy signal distribution to the clean codeword distribution as shown in Figure 1. However, a key
+challenge in the ECC setting is that the noise level cannot be measured by a continuous timestep as in image
+generation; instead, it is indicated by the sum of syndrome error in [29]. A direct adaptation of consistency
+models struggles to learn this highly non-smooth decoding trajectory.
+To overcome the mentioned challenge, we propose a differential time condition, using a soft-syndrome
+formulation from [30] to regularize the reverse ODE process. This ensures the decoding trajectory is smooth
+for single-step mapping. Building upon this theoretical foundation, the ECCFM decoder is trained directly
+with a consistency objective and a soft-syndrome regularization term, enabling it to map any noisy received
+signal to the estimated original codeword in a single, efficient inference step.
+We demonstrate the effectiveness of ECCFM through several numerical experiments on a diverse set
+of standard codes, including BCH, Low-Density Parity-Check (LDPC), Polar, MacKay, and CCSDS. The
+results show that ECCFM can improve Bit-Error-Rate (BER) compared to leading auto-regressive methods,
+exhibiting particularly strong gains on longer codes with code lengths above 200. Notably, it achieves an
+inference speedup of 30x to 100x over the existing iterative denoising diffusion methods in a single step, while
+maintaining comparable decoding performance. In our numerical evaluation, ECCFM offers a model-free
+training diagram for building ECC decoders that achieves near state-of-the-art performance with low latency,
+and requires only a single-step inference suited for most real-world applications.
+2 Related Works
+Neural Network-based ECC Decoders.Neural network-based decoders are broadly categorized into
+model-based and model-free approaches. Model-based decoders augment conventional algorithms, such as
+2
+Belief Propagation (BP) [7] and Min-Sum (MS) [8], by using neural networks to learn the message-passing
+process. This paradigm has been extensively explored across various architectures and code types [9–13,31–33],
+consistently achieving superior performance over conventional algorithms [34]. However, they are often limited
+by challenges in capturing long-range dependencies and the reliance on the underlying decoding algorithm.
+In contrast, model-free decoders treat decoding as a learning problem without depending on problem-
+specific algorithms. While early fully-connected architectures [14–16] struggled with overfitting, [17] proposes
+the pre-processing by decomposing the magnitude and syndrome vector to address overfitting issues for
+model-free decoders. Inspired by the recent breakthrough of Transformers [5], ECCT [18] pioneered by
+applying self-attention to the channel output, and modeling decoding as an auto-regressive sequence-to-
+sequence task. Several works have improved based on this approach: FECCT [19] improved generalization,
+DC-ECCT [20] enabled joint encoder-decoder training, and CrossMPT [21] introduced cross-attention to
+achieve better performance and efficiency among auto-regressive methods. Recently, diffusion generative
+models have emerged as a powerful alternative. DDECC [29] frames decoding as a denoising process, modeling
+the AWGN channel as the forward diffusion step, and offers performance gains over auto-regressive decoders.
+Diffusion Generative Models.Diffusion generative models [3,4,35,36] learn to reverse a forward
+noising process by estimating the data’s score function [37]. They have achieved state-of-the-art performance
+in synthesizing high-fidelity samples across diverse domains like images [22,38,39], video [23,40], text
+generation [24,26], and graphs [41–43]. However, a primary limitation of diffusion models is the significant
+computational overhead during inference, due to the iterative nature of the denoising process. To mitigate
+this, numerous accelerated sampling methods have been developed [44,45].
+This framework is particularly well-suited for Error Correction Code (ECC) decoding, where the AWGN
+channel naturally models the forward process [27]. While diffusion-based decoders have reached state-of-the-art
+performance [27,46], they inherit the same computational inefficiency compared to methods like auto-regressive
+decoders [18,46]. To address this issue, we draw inspiration from Consistency Models (CMs) [28,47,48], a
+novel technique for accelerating diffusion models. CMs are designed to directly learn the reverse denoising
+trajectory, enabling mapping noisy samples to the target data distribution in one step and maintaining high
+generation quality.
+3 Preliminaries
+Error Correction Codes.In the error correction code setting, we consider a linear codebook C,
+defined by ak×n generator matrixG and an( n−k ) ×n parity-check matrixH. Note that these matrices
+satisfy GH⊤ = 0over the binary fieldF2. The encoder maps a messagem∈ {0, 1}k to ann-bit codeword
+x∈ C ⊂ {0, 1}n via the linear transformationx = mG. The codeword x is then modulated using Binary
+Phase-Shift Keying (BPSK), where07→ +1and1 7→ −1, resulting in the signalxs ∈ {−1, +1}n. We suppose
+this signal is transmitted over an Additive White Gaussian Noise (AWGN) channel. The received signal
+y is given by: y = xs + z, where the noise vectorz is sampled from an isotropic Gaussian distribution,
+z∼ N(0, σ2In).
+The objective of a decoder is to estimate the original codewordˆxfrom the noisy signaly. An essential tool
+for error detection is the syndrome, calculated from a hard-demodulated formulation of the received signal,
+yb, performed asyb = bin(sign(y)). Here sign(y)is+1for y≥ 0and −1otherwise, and the bin function
+maps {−1, +1} back to{1, 0}. The syndrome is then computed ass = Hy⊤
+b . An error is detected if the
+syndrome is a non-zero vector (i.e.,s(y) ̸= 0). Following the pre-processing technique proposed by [17], the
+input vector to the neural network is[|y|, s(y)]with lengthn+ (n−k)to avoid overfitting.
+Diffusion Generative Models. Diffusion Models (DMs) [3,4,49] are generative models that generate
+samples from a target data distribution,pdata(x0)by reversing a predefined forward noising process [35]. In
+the forward diffusion process, a data samplex0 is gradually perturbed with Gaussian noise over a continuous
+time intervalt∈ [0, T]. This forward process can be mathematically described as adding noise to obtain a
+noisy data pointxt = √αtx0 + √1−α tϵt, whereϵt ∼ N(0, I)is standard Gaussian noise and αt ∈ [0, 1]
+monotonically decreases with time stept to control the noise level. Denoising Diffusion Probabilistic Models
+(DDPMs) [3]ϵθ : X ×[T] 7→ Xis trained to predict the noiseϵt at each time stept, also learn thescore
+3
+functionofp t(xt)[4,49]:
+min
+θ
+Ext,ϵt,t
+hϵθ(xt, t)−ϵt
+2
+2
+i
+= min
+θ
+Ext,ϵt,t
+
+
+
+ϵθ(xt, t) +
+√
+1−α t ∇xt logp t(xt)| {z }
+Score Function
+
+2
+2
+
+,(1)
+During inference, samples can be generated by solving the reverse-time SDE starting fromt = T to t = 0.
+Crucially, there exists a corresponding deterministic process, theprobability flow ODE(PF-ODE), whose
+trajectories share the same marginal distributionspt(xt)t∈[0,T] as the SDE [4]. The formulation of PF-ODE
+can be described and simplified as following [28,36]:
+dxt =−˙σ(t)σ(t)∇xt logp t(xt)dt= xt −ϵ θ(xt, t)
+t ,(2)
+Sample generation of diffusion models is performed by solving this PF-ODE backwards in time fromt = T
+to t = 0, starting from a sample drawn from the prior Gaussian distribution,xT ∼ N(0, σ(T)2I). This
+requires a numerical ODE solver (e.g., Euler [4,49] or Heun [36]) to obtain asolution trajectory{ˆxt}t∈[0,T]
+that transforms noise into a data sample.
+Denoising Diffusion Error Correction Codes.The application of diffusion models to error correction
+was pioneered by DDECC [29]. Its core insight is to model the transmission of a BPSK-modulated codeword
+x0 ∈ {−1, 1}n over an AWGN channel as the forward diffusion process. A received signaly is treated as
+a noisy samplex t at a specific timestept, where the noise schedule is designed to match the channel’s
+characteristics. This forward process is described as:
+y :=x t =x 0 +
+q
+¯βtϵ,(3)
+where ϵ∼ N(0, I), and the cumulative noise variance¯βt = Pt
+i=1 βi corresponds to the channel’s noise level
+σ2. Decoding is then performed via an iterative reverse denoising process, starting with the received signal
+y :=x t and applying the denoising update rule for multiple steps, with a trained denoising networkϵθ(·,·)
+predicting the multiplicative noise:
+xt−1 =x t −
+p¯βtβt
+¯βt +β t
+(xt −sign(x t)ϵθ(xt, t)),(4)
+A key innovation in DDECC is its conditioning mechanism. In the ECC domain, the number of parity check
+errors (syndrome sum),et = P
+i s(y)i, serves as a direct measure of the noisy level in a received signaly.
+Therefore, DDECC conditions its denoising networkϵθ on the sum of syndrome erroret instead of a timestep
+t, making the diffusion models adapted to the structure of the error correction problem. The denoising
+network is trained to learn the hard prediction of the multiplicative noise with a Binary Cross-Entropy (BCE)
+loss:
+L(θ) =−E et,x0,ϵ log(ϵθ(x0 +
+q
+¯βtϵ, et),˜ϵb),(5)
+where˜ϵb =bin(x 0(x0 +
+p¯βtϵ))denotes the target binary multiplicative noise.
+4 Method: Consistency Flow Model for One-step decoding
+4.1 Error Correction Consistency Flow Property
+Despite its impressive decoding performance, a drawback of the DDECC algorithm is the computational
+overhead during inference due to its iterative denoising mechanism. Inspired by the recent success of
+Consistency Models (CMs) [28,47] in image generation, we propose the first approach for training consistency
+models for Error Correction Codes (ECC). Consistency Models (CMs) [28] were introduced to overcome the
+4
+Figure 2: Training Dynamics from iterative denoising to 1-step consistency decoding. DDECC’s iterative diffusion
+denoising learns a noise predictor,ϵθ(·, et), requiring a multi-step iterative process to reverse the noise and decode the
+codeword. Our ECCFM,fθ(·, e†), directly learns the mapping from any noisy signal to the original clean codeword.
+By using the smooth soft-syndrome condition (e†), it achieves successful decoding in a single step.
+inference computational costs by enabling fast, one-step generation. The core principle is that: any two
+points(x t, t)and(x r, r)on the same PF-ODE trajectory should map to the same origin pointx0. CMs build
+upon Eq. 2 and learn a functionfθ(xt, t)that directly estimates thetrajectoryfrom noisy data to clean data
+with a single step:
+fθ(xt, t) =x0,(6)
+The training objective of CMs is to enforce the self-consistency property across a discrete time steps. The
+continuous time interval[0, T]is discretized into N− 1sub-intervals, defined by timesteps1 = t1 <···<
+tN = T. The model is then trained to minimize the following loss, which enforces that the model’s output
+remains consistent at adjacent points on the same PF-ODE trajectory:
+LStandard-CM(θ) :=E[w(t)d
+ 
+fθ(xt, t), fθ(xr, r)
+
+],(7)
+Here, fθ is the consistency network being trained andw(t)denotes the time schedule. This function is defined
+by two fundamental properties proposed by [28,47]:1) Boundary Condition: At timestept = 0, the
+function is the identity:fθ(x0, 0) =x 0.2) Self-Consistency: For any two points(xt, t)and(x r, r)on the
+same trajectory, the function yields the same output:fθ(xt, t) =fθ(xr, r).
+Unlike generation tasks, which aim to sample from a target data distributionpdata, the goal in ECC is to
+decode a single, ground-truth codewordx0 corresponding to a given received noisy signaly. The ideal target
+distribution for the decoder is therefore a point mass at the correct codeword, which we model conceptually
+as a Dirac delta function,δ(x − x0). Based on this, we propose that a consistency-based decoder should
+satisfy the following Error Correction Consistency Flow condition:
+Error Correction Self-consistency.Given a trajectory {y :=x t}t∈[0,T] , we learn the consistency
+function asf : (xt, t; θ) 7→ x0, holding the Error Correction Consistency Flow property: for a given ground-
+truth codewordx 0, all points(x t, t)on any trajectory originating fromx 0 map directly back to it, i.e.,
+5
+fθ(xt, t) =x 0,∀t∈ [0, T]. This implies that for any two noisy signalsxt andx r derived from the samex0,
+their consistency function outputs must be identical and correct:fθ(xt, t) = fθ(xr, r) =x 0,∀t, r∈ [0, T]. We
+learn the consistency model such that the conditional distribution is modeled aspθ(x|xt) = δ(x −f θ(xt, t)),
+wheref θ(xt, t)directly estimatesx0.
+To train a consistency modelfθ that achieves this property, a naive adaptation of the vanilla consistency
+loss would be to minimize the distance between two noisy signals from the same trajectory similar to Eq. 7.
+However, this standard consistency objective is indirect; it only enforces relative consistency between outputs.
+In decoding tasks, the ground truthx0 is known during training, and consistency models are optimized to
+decode the clean codeword. We leverage this property by proposing the Error Correction Consistency Flow
+Loss (EC-CM), which minimizes the distance of each estimation to the ground truthx0:
+LEC-CM(θ) :=E[w(t)
+h
+d
+ 
+fθ(xt, t),x0
+
++d
+ 
+fθ(xr, r),x0
+i
+],(8)
+However, in ECC domain, Binary Cross Entropy (BCE) is the commonly used divergence measure. By
+Proposition 4.1, we demonstrate that our formulation in Eq. 8 serves as an upper bound on the vanilla
+consistency loss in terms of Total variation distance, directly optimizing for the Error Correction Consistency
+property.
+Proposition 4.1.Let LStandard-CM be defined by the Total Variation distance,TV(·,·), and LEC-CM be
+defined by the Binary Cross Entropy,BCE(·,·). For any timestepst, rand ground truthx0, the following
+semi–triangle inequality holds:
+TV2 
+fθ(xt, t), fθ(xr, r)
+
+≤BCE
+ 
+fθ(xt, t),x0
+
++BCE
+ 
+fθ(xr, r),x0
+
+.(9)
+This fundamental change requires all decoding trajectories mapping to their origin codeword, as demon-
+strated in Figure 1, and the learned solution distribution is expected to center onx0.
+4.2 Differential Consistency Condition for Smooth Trajectory
+Figure 3: Decoding trajectories for models conditioned on
+Hard Syndrome versus Soft Syndrome on a POLAR(64,48)
+code. The soft-syndrome conditioning results in a smoother
+path to a valid codeword. Additional Results under low
+SNR are available in Appendix 7.5.2, Figure 7.
+The training objective of a consistency model is
+to learn a functionfθ(xt, t)that maps any point on
+a trajectory back to its originx0. This is enforced
+by both satisfying the self-consistency property and
+the boundary condition, which is rooted in the dif-
+ferential equationdf
+dt = 0. Following Eq. 10 and 11
+in [48], the consistency functionfθ is parameterized
+to satisfy these conditions:
+fθ(xt, t) =x0 ⇔ df
+dt = 0, fθ(x0,0) =x 0,(10)
+In practice, this differential form is discretized for
+training using afinite-difference approximation, by
+dividing the time horizon intoN− 1sub-intervals
+1 =t 1 <· · ·< tN =T:
+0 = df
+dt ≈ fθ(xt, t)−fθ(xr, r)
+t−r ,(11)
+wheredt= ∆t=t−r,t > r≥0.
+A critical problem arises when applying the con-
+sistency framework to ECC decoding tasks: the time
+variables t and r, which represent noise levels, are not directly observable from the received signals. A
+seemingly natural solution, proposed in DDECC [29], is to use the sum of syndrome error,et, as a measurement
+6
+Algorithm 1Error Correction Consistency Training
+Require: Model fθ, parity-check matrixH, learning rateη, syndrome weightλ, denoising stepsN, time
+scaling factorα.
+fortraining batchx 0 do
+t∼ U{1, . . . , N}, r=αt ▷Sample forward diffusion steps
+ϵ∼ N(0,I)▷Sample Gaussian noise
+xt ←x 0 +
+p¯βt ·ϵ,x r ←x 0 +
+p¯βr ·ϵ▷Generate noisy signals via forward process
+e†
+t =L Soft-syn(xt, H), e†
+r =L Soft-syn(xr, H)▷Calculate soft-syndrome
+LEC-CM ← LBCE(fθ(xt, e†
+t),x 0) +LBCE(fθ(xr, e†
+r),x 0)
+LTotal ← LConsistency +λ·
+
+LSoft-syn(fθ(xt, e†
+t), H) +LSoft-syn(fθ(xr, e†
+r), H)
+
+θ←θ−η· ∇ θLTotal
+end for
+of the noise level, since an error count of zero (et = 0) indicates a valid codeword. The hard syndrome is
+computed ass = Hy⊤
+b , whereH is the parity-check matrix. The sum of syndrome error,et = P
+i s(xt)i, is
+then the sum of binary syndrome bits.
+However, naively replacing the continuous time variablest and r in Eq. 11 with their discrete, integer-valued
+counterparts et and er violates the core assumption of a smooth, differential trajectory. As we demonstrate
+in Figure 3, the trajectory defined by the syndrome error is highly non-smooth and clustered: A small change
+in the noisy signal can cause an abrupt jump in the syndrome error count, invalidating the finite-difference
+approximation; And it is common for two different noisy signals,xt andx r, to have the same syndrome error
+count (et =e r), leading to instability during training.
+Therefore, the discrete and non-smooth nature of the syndrome error makes it an unsuitable conditioning
+variable for standard consistency model training in ECC, which necessitates a smooth and differential measure
+of noise level along the denoising trajectory. We then propose replacing this discrete error sum condition
+with a continuous and differentiable alternative. Inspired by [30], we introduce thesoft syndromeas the basis
+for the consistency noise condition. The soft syndrome,s†, is a fully differentiable function that leverages the
+log-likelihood ratios of the received signalxt: and offers a continuous measure of how close each parity-check
+equation is to being fulfilled.
+Differential Soft-syndrome Error Time Condition.Similar to the conventional hard sum of
+syndrome error, we compute the soft-syndrome error conditione†
+t of the parity-check matrixHas:
+e†
+t :=− 1
+n−k
+X
+j
+log Pr(S†
+j = 0) =− 1
+n−k
+X
+j
+log(1−s †
+j),
+LSoft-syn(xt, H) =−e†
+t,(12)
+This soft-syndrome error condition is computed as the binary cross-entropy between the estimated syndrome
+and the all-zero syndrome, which requires valid codewords to satisfy all parity-check equations. We use
+the mean-field approximation to provide differential conditions to estimate the probability of satisfying
+zero-syndrome conditions in Eq. 12:
+s†
+j = 1
+2 − 1
+2
+Y
+{i:Hj,i=1}
+
+2·sigmoid
+ 2xt,i
+σ2
+
+−1
+
+,Pr(S †
+j = 0) = 1−s †
+j,(13)
+where xt,i is thei-th position of the received codewordxt, the noise levelσ is given to the decoder at the
+receiver’s side. The soft-syndrome is zero if and only if the codeword is valid, yet it varies smoothly and
+continuously with the received signalxt. By usinge†
+t as the time condition, we provide the consistency model
+with a smooth, differentiable trajectory from a noisy signal to a valid codeword, resolving the instability and
+degeneracy issues of the hard error sum and enabling stable training.
+7
+4.3 Error Correction Consistency Flow Training Dynamics
+Building upon the differential time conditions via soft-syndrome in Eq. 12, we make it able to learn a
+smooth trajectory satisfying consistency conditions as shown in Figure 2. Given a codewordxs ∈ {−1, +1}n
+modulated using BPSK, and the signal received is then perturbed with an AWGN channely = xs +z = xs ·˜zs,
+where ˜zs denotes the multiplicative noise. We follow the standard pre-processing techniques proposed by [17],
+the input of the neural network is a concatenated vector representing magnitude and hard syndrome[|y|, s(y)]
+with length2 n−k . For the forward process in AWGN channel, we build the trajectory by adding the
+same Gaussian noiseϵ∼ N(0, I)with a different time schedule
+p¯βt, wheret∈ [0, ..., N]and N denotes the
+pre-defined forward noising steps. Thus, during training, we sample different noisy signalsy1 :=x t, y2 :=x r
+with different noise levelst∼ U{0, ..., N}and r = αt, i.e.xt :=x 0 +
+p¯βt ·ϵ ,x r :=x 0 +
+p¯βr ·ϵ , where
+α∈ [0, 1]denotes the time scaling factor. Then a consistency modelfθ predicts the clean codeword. Following
+Eq. 8, we get the consistency loss for two different noisy signalsyt, yr, which learns the mapping to their
+original clean codewordx0. We further add the soft-syndrome loss in Eq. 12 as the regularization term to
+stabilize training and fast convergence, validated in Appendix 7.5.4:
+LTotal(θ) =E
+h
+w(t)
+
+d(fθ(xt, e†
+t),x 0) +d
+
+fθ(xr, e†
+r),x 0
+
+| {z }
+Consistency Loss
++λ·
+
+LSoft-syn(fθ(xt, e†
+t), H) +LSoft-syn(fθ(xr, e†
+r), H)
+
+| {z }
+Soft-syndrome Loss
+i
+where d(·,·)is a distance metric, such as Binary Cross-Entropy (BCE) in this work, andλ is a hyperparameter
+that weights the syndrome regularization term. Once trained according to Algorithm 1, the learned consistency
+function fθ can decode the noisy received signaly in a one step: ˆx0 = fθ(y, e†
+t), as shown in Appendix 2,
+Algorithm 2.
+5 Numerical Results
+Datasets.We evaluate our proposed ECCFM framework on the following set of standard error correction
+codes, including BCH, Polar, and LDPC codes (MacKay, CCSDS, and WRAN variants). Our evaluation
+considers multiple code lengths (n), rates (k/n), and Signal-to-Noise Ratios (SNRs), specificallyEb/N0 values
+from 4 to 6 dB, to ensure a robust assessment of performance.
+Evaluation Metrics.We evaluate decoding performance using two standard metrics following established
+benchmarks [18,21,29]: Bit Error Rate (BER) and Frame Error Rate (FER). BER measures the fraction of
+individual bits that are incorrectly decoded. FER (also known as Block Error Rate, BLER) measures the
+fraction of entire codewords that contain one or more bit errors. Concerning the latency factor, we evaluate
+computational efficiency by reporting inference time and throughput (decoded samples per second).
+Baselines.We numerically compared the results with multiple baselines for the decoding task, including:
+1) Conventional BP-based decoders: BP [17] and ARBP [32]. 2) Auto-regressive model-free decoders:
+ECCT [18], and CrossMPT [21]. 3) Denoising diffusion model-free decoders: DDECC [29].
+Experimental Setup.We reproduced the results for all model-free baselines (ECCT, CrossMPT,
+DDECC) by implementing them with their publication-stated hyperparameters. Our primary ECCFM model
+utilizes a Cross-attention Transformer following CrossMPT, usingN = 6layers and a hidden dimension of
+d = 128. All the other three baselines (ECCT, CrossMPT, DDECC) apply the same network architecture to
+ensure fair comparison. ECCFM was trained for 1500 epochs using the Adam optimizer on a single GPU.
+The learning rate was managed by a cosine decay scheduler, starting at10−4 and decreasing to5 × 10−7.
+Detailed training configurations and hyperparameter selections are provided in Appendix 7.4.
+Overall Performance. Following established benchmarks [18,21,29], we conducted a decoding per-
+formance comparison measured in−ln (BER). Our method was evaluated versus two classes of decoders:
+conventional BP-based algorithms (BP and ARBP) and model-free neural decoders (ECCT, CrossMPT, and
+8
+Table 1: Performance comparison of various decoders across different codes and Signal-to-Noise Ratios (Eb/N0).
+The results are reported in terms of−ln (BER)(the higher, the better). All model-free methods use a fixed model
+architecture (N = 6,d = 128). Best results are shown inboldand the second-best results are shown inunderline,
+respectively.
+Architecture BP-based decoders Model-free decoders
+Code Type ParametersBP ARBP ECCT CrossMPT DDECCECCFM(Ours)4 5 6 4 5 6 4 5 6 4 5 6 4 5 6 4 5 6
+BCH(63,36) 4.03 5.42 7.26 4.57 6.39 8.92 4.69 6.48 9.06 4.94 6.74 9.285.026.829.885.006.899.76(63,45) 4.36 5.55 7.26 4.97 6.90 9.41 5.47 7.56 10.515.737.98 10.80 5.688.08 11.225.708.0311.04
+POLAR
+(64,32) 4.26 5.38 6.50 5.57 7.43 9.82 6.87 9.21 12.15 7.429.9413.287.04 9.44 12.707.55 10.31 13.80(64,48) 4.74 5.94 7.42 5.41 7.19 9.30 6.21 8.31 10.85 6.368.5311.095.93 8.00 10.446.56 8.78 11.52(128,64) 4.10 5.11 6.15 4.84 6.78 9.30 5.79 8.45 11.10 7.45 9.71 14.31 7.7111.4013.858.01 12.22 16.71(128,86) 4.49 5.65 6.97 5.39 7.37 10.13 6.29 8.98 12.82 7.43 10.8015.137.6110.50 13.887.78 11.21 16.05(128,96) 4.61 5.79 7.08 5.27 7.44 10.20 6.30 9.04 12.40 7.06 10.25 13.23 7.1410.3113.667.21 10.52 14.32
+LDPC(121,60) 4.82 7.21 10.87 5.22 8.31 13.07 5.12 8.21 12.80 5.759.4215.215.42 9.11 13.826.02 9.94 15.55(121,70) 5.88 8.76 13.04 6.45 10.01 14.77 6.30 10.11 15.50 7.0611.2917.10 6.91 11.02 17.157.35 12.23 17.60(121,80) 6.66 9.82 13.98 7.22 11.03 15.90 7.27 11.21 17.02 7.8712.6517.727.61 11.89 16.188.25 13.33 18.69MacKay(96,48) 6.84 9.40 12.57 7.43 10.65 14.65 7.37 10.55 14.72 7.85 11.72 15.498.03 12.4415.797.9212.2516.08CCSDS(128,64) 6.55 9.65 13.78 7.25 10.99 16.36 6.82 10.60 15.87 7.56 11.87 16.80 7.7712.3517.22 7.95 12.6817.01
+DDECC). To ensure a fair comparison, all neural models were implemented with a fixed architecture (N = 6
+layers, d = 128hidden dimensions). Furthermore, to ensure statistical significance, each simulation was run
+until at least 500 error codes were observed, under a maximum of108 test instances.
+As shown in Table 1, our proposed ECCFM framework consistently achieves better performance across
+the tested code families, including BCH, Polar, LDPC, CCSDS and MacKay with different code rates(n, k).
+In the test cases, ECCFM achieves the best or second-best BER, performing better than autoregressive and
+diffusion-based neural decoders and showing considerable gain over POLAR codes. This result indicates the
+applicability and effectiveness of the proposed consistency-based training approach.
+Performance on Longer Codes.To further evaluate scalability, we conducted a focused evaluation
+on longer codes commonly used in practical communication systems: LDPC(n = 204, k= 102), LDPC(n =
+529, k= 440), WRAN(n = 384, k= 320), and Polar(n = 512, k= 384). All methods were implemented with
+the same model architecture (N = 6, d= 128). As illustrated in Figure 4, ECCFM improves upon the scores
+of the neural net baselines across a range of SNRs (2 dB to 6 dB), highlighting the scalability and robustness
+of ECCFM for those challenging decoding tasks. Additional results on other high-length codes are presented
+in Appendix 7.5.7, which also suggest inference speed gain compared to the baselines.
+Performance on Rayleigh Fading Channel.While our proposed ECCFM training dynamics and the
+definition of soft-syndrome are intrinsic to the code structure and independent of the underlying channel
+model, we validate our approach on Rayleigh fading channels to demonstrate robustness. We follow the same
+experimental settings described in [18,46]. In contrast to the AWGN channel, the received signal is defined
+by: y = hx + z, whereh is ann-dimensional i.i.d. Rayleigh distributed vector with a scale parameterα = 1
+and z∼N (0, σ2). In Figure 6, our method achieved competitive performance compared to baselines across
+different SNRs on Polar and LDPC. These numerical results confirm that our proposed ECCFM framework
+generalizes effectively to non-Gaussian channels without fundamental modifications.
+Inference Time and Throughput Comparison.A key benefit of ECCFM is its ability to perform
+high-fidelity decoding in only one step. To quantify this efficiency gain, we measured inference time (total
+seconds to decode10 5 samples) and throughput (samples decoded per second). As shown in Figure 5,
+9
+Figure 4: Performance comparison of various decoding baselines on medium-to-long block codes. The plot shows the
+Bit Error Rate (BER) at different Signal-to-Noise Ratios (SNRs), from 2 dB to 6 dB and divided by 0.5 dB.
+ECCFM demonstrates a speed advantage over diffusion-based methods such as DDECC, achieving speedups
+of over30xfor short codes and100xfor medium-to-long codes. This disparity arises because diffusion
+models require several iterative denoising steps for inference, a computational cost that scales with code
+complexity as detailed in Appendix 7.5.8. Notably, ECCFM achieves decoding speeds comparable to the
+fastest auto-regressive baseline (CrossMPT) due to its one-step nature. Therefore, ECCFM matches the
+competitive performance of denoising diffusion decoders while operating at the high throughput of single-step
+auto-regressive decoders.
+Ablation Study: Model-Agnostic Property of ECCFM.We discussed that ECCFM is a model-
+agnostic training framework, i.e., its performance could be preserved over different neural network architectures.
+To test this, we conducted an ablation study where we decoupled our framework from the cross-attention
+transformer backbone conducted before. Specifically, we took the underlying architecture of the ECCT
+baseline and trained it using our proposed ECCFM training objective. We then compared this model directly
+against the original ECCT, which uses the same architecture. The results in Table 2 show that applying
+the ECCFM training objective yields improvement in−ln (BER)over the standard ECCT, with comparable
+performance versus the iterative denoising DDECC method. These results demonstrate that ECCFM’s
+property of model-agnostic and its benefits are attributable to the consistency-based training framework
+itself.Ablation Study: Necessity of Soft-syndrome Time Condition in Consistency Training.
+We further investigated the necessity of using soft-syndrome as a time condition for building the smooth
+trajectory. We trained ECCFM with either a hard-syndrome time condition or a soft-syndrome time condition.
+In Appendix 7.5.5, Table 7, our experiments revealed that using soft-syndrome as time condition is necessary
+for successful training of ECCFM. The continuous nature of the soft-syndrome provides a smooth reverse
+trajectory to learn, whereas models conditioned on the hard syndrome failed to converge.
+10
+Figure 5: Comparison of Inference Time (top) and Throughput (bottom) across various decoding baselines and code
+types.
+Figure 6: Performance comparison of various decoding baselines on Rayleigh Fading channels. The plot shows the Bit
+Error Rate (BER) at different Signal-to-Noise Ratios (SNRs).
+6 Conclusions and Limitations
+In this work, we introduced the Error Correction Consistency Flow Model (ECCFM), a novel training
+framework for obtaining the successful results of diffusion-based decoders with the low latency required
+for several practical applications. By reformulating the decoding task as a one-step consistency mapping
+and introducing a differential soft-syndrome error condition, we managed to handle non-smooth trajectories
+that previously hindered the application of consistency models to ECC. Our experiments demonstrate that
+ECCFM achieves comparable Bit-Error-Rates across various standard codes, while offering a consistent
+inference speedup over denoising diffusion methods. Despite these successful results, our work has limitations
+to be addressed in future research. First, our evaluation is focused on the AWGN channel; the framework’s
+performance and the suitability of the soft-syndrome condition on other channel models, such as fading
+channels, remain to be investigated. Second, the convergence rate and training efficiency of consistency
+models highly rely on building a smooth trajectory, which varies in different code types. Future work can
+explore adaptive methods for more general decoding tasks.
+11
+Table 2: Performance comparison of ECCFM versus the standard ECCT and DDECC, using an identical ECCT
+backbone on POLAR and LDPC codes.
+Architecture ECCT Backbone
+Code Type Parameters ECCT DDECCECCFM(ECCT)
+4 5 6 4 5 6 4 5 6
+POLAR
+(64,32) 6.87 9.21 12.15 7.04 9.44 12.70 7.12 9.77 12.71
+(64,48) 6.21 8.31 10.85 5.93 8.00 10.446.38 8.55 11.23
+(128,64) 5.79 8.45 11.107.71 11.4013.85 7.32 11.03 14.87
+(128,86) 6.29 8.98 12.827.61 10.5013.88 7.18 10.17 15.02
+(128,96) 6.30 9.04 12.407.14 10.3113.66 6.86 9.94 13.83
+LDPC
+(121,60) 5.12 8.21 12.80 5.42 9.1113.82 5.558.86 13.97
+(121,70) 6.30 10.11 15.506.9111.02 17.156.87 11.2116.13
+(121,80) 7.27 11.21 17.02 7.61 11.89 16.187.80 12.03 17.95
+References
+[1] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. Deep residual learning for image recognition.
+InProceedings of the IEEE conference on computer vision and pattern recognition, pages 770–778, 2016.
+(Cited on page 1.)
+[2] Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair, Aaron
+Courville, and Yoshua Bengio. Generative adversarial networks.Communications of the ACM, 63(11):139–
+144, 2020. (Cited on page 1.)
+[3] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. InAdvances in
+Neural Information Processing Systems, volume 33, pages 6840–6851, 2020. (Cited on pages 1, 2, and 3.)
+[4] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben
+Poole. Score-based generative modeling through stochastic differential equations.arXiv preprint
+arXiv:2011.13456, 2020. (Cited on pages 1, 2, 3, and 4.)
+[5] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
+Kaiser, and Illia Polosukhin. Attention is all you need.Advances in neural information processing
+systems, 30, 2017. (Cited on pages 1 and 3.)
+[6] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners.
+Advances in neural information processing systems, 33:1877–1901, 2020. (Cited on page 1.)
+[7] Thomas J Richardson and Rüdiger L Urbanke. The capacity of low-density parity-check codes under
+message-passing decoding.IEEE Transactions on information theory, 47(2):599–618, 2002. (Cited on
+pages 1 and 3.)
+[8] Marc PC Fossorier, Miodrag Mihaljevic, and Hideki Imai. Reduced complexity iterative decoding of
+low-density parity check codes based on belief propagation.IEEE Transactions on communications,
+47(5):673–680, 1999. (Cited on pages 1 and 3.)
+[9] Loren Lugosch and Warren J Gross. Neural offset min-sum decoding. In2017 IEEE International
+Symposium on Information Theory (ISIT), pages 1361–1365. IEEE, 2017. (Cited on pages 1 and 3.)
+12
+[10] Eliya Nachmani and Lior Wolf. Hyper-graph-network decoders for block codes.Advances in Neural
+Information Processing Systems, 32, 2019. (Cited on pages 1 and 3.)
+[11] Hongfei Zhu, Zhiwei Cao, Yuping Zhao, and Dou Li. Learning to denoise and decode: A novel residual
+neural network decoder for polar codes.IEEE Transactions on Vehicular Technology, 69(8):8725–8738,
+2020. (Cited on pages 1 and 3.)
+[12] Jincheng Dai, Kailin Tan, Zhongwei Si, Kai Niu, Mingzhe Chen, H Vincent Poor, and Shuguang
+Cui. Learning to decode protograph ldpc codes.IEEE Journal on Selected Areas in Communications,
+39(7):1983–1999, 2021. (Cited on pages 1 and 3.)
+[13] Hee-Youl Kwak, Jae-Won Kim, Yongjune Kim, Sang-Hyo Kim, and Jong-Seon No. Neural min-sum
+decoding for generalized ldpc codes.IEEE Communications Letters, 26(12):2841–2845, 2022. (Cited on
+pages 1 and 3.)
+[14] Tobias Gruber, Sebastian Cammerer, Jakob Hoydis, and Stephan Ten Brink. On deep learning-based
+channel decoding. In2017 51st annual conference on information sciences and systems (CISS), pages
+1–6. IEEE, 2017. (Cited on pages 1 and 3.)
+[15] Sebastian Cammerer, Tobias Gruber, Jakob Hoydis, and Stephan Ten Brink. Scaling deep learning-based
+decoding of polar codes via partitioning. InGLOBECOM 2017-2017 IEEE global communications
+conference, pages 1–6. IEEE, 2017. (Cited on pages 1 and 3.)
+[16] Hyeji Kim, Yihan Jiang, Ranvir B Rana, Sreeram Kannan, Sewoong Oh, and Pramod Viswanath.
+Communication algorithms via deep learning. InInternational Conference on Learning Representations,
+2018. (Cited on pages 1 and 3.)
+[17] Amir Bennatan, Yoni Choukroun, and Pavel Kisilev. Deep learning for decoding of linear codes-a
+syndrome-based approach. In2018 IEEE International Symposium on Information Theory (ISIT), pages
+1595–1599. IEEE, 2018. (Cited on pages 1, 3, and 8.)
+[18] Yoni Choukroun and Lior Wolf. Error correction code transformer.Advances in Neural Information
+Processing Systems, 35:38695–38705, 2022. (Cited on pages 1, 3, 8, 9, and 16.)
+[19] Yoni Choukroun and Lior Wolf. A foundation model for error correction codes. InThe Twelfth
+International Conference on Learning Representations, 2024. (Cited on pages 1 and 3.)
+[20] Yoni Choukroun and Lior Wolf. Learning linear block error correction codes. InProceedings of the 41st
+International Conference on Machine Learning, pages 8801–8814, 2024. (Cited on pages 1 and 3.)
+[21] Seong-Joon Park, Hee-Youl Kwak, Sang-Hyo Kim, Yongjune Kim, and Jong-Seon No. Crossmpt:
+Cross-attention message-passing transformer for error correcting codes. InThe Thirteenth International
+Conference on Learning Representations, 2025. (Cited on pages 1, 3, and 8.)
+[22] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer. High-resolution
+image synthesis with latent diffusion models. InProceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition (CVPR), pages 10684–10695, 2022. (Cited on pages 2 and 3.)
+[23] Yingqing He, Tianyu Yang, Yong Zhang, Ying Shan, and Qifeng Chen. Latent video diffusion models for
+high-fidelity long video generation.arXiv preprint arXiv:2211.13221, 2022. (Cited on pages 2 and 3.)
+[24] Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion modeling by estimating the ratios of
+the data distribution.arXiv preprint arXiv:2310.16834, 2023. (Cited on pages 2 and 3.)
+[25] Haoxin Chen, Yong Zhang, Xiaodong Cun, Menghan Xia, Xintao Wang, Chao Weng, and Ying Shan.
+Videocrafter2: Overcoming data limitations for high-quality video diffusion models. InProceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 7310–7320, 2024. (Cited on
+page 2.)
+13
+[26] Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong
+Wen, and Chongxuan Li. Large language diffusion models.arXiv preprint arXiv:2502.09992, 2025.
+(Cited on pages 2 and 3.)
+[27] Yoni Choukroun and Lior Wolf. Denoising diffusion error correction codes.arXiv preprint
+arXiv:2209.13533, 2022. (Cited on pages 2 and 3.)
+[28] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. InProceedings of
+the 40th International Conference on Machine Learning, pages 32211–32252, 2023. (Cited on pages 2, 3,
+4, 5, 15, 17, and 19.)
+[29] Yoni Choukroun and Lior Wolf. Denoising diffusion error correction codes. InThe Eleventh International
+Conference on Learning Representations, 2023. (Cited on pages 2, 3, 4, 6, 8, and 16.)
+[30] Chin Wa Lau, Xiang Shi, Ziyan Zheng, Haiwen Cao, and Nian Guo. Interplay between belief propagation
+and transformer: Differential-attention message passing transformer, 2025. (Cited on pages 2 and 7.)
+[31] Hee-Youl Kwak, Dae-Young Yun, Yongjune Kim, Sang-Hyo Kim, and Jong-Seon No. Boosting learning
+for ldpc codes to improve the error-floor performance.Advances in Neural Information Processing
+Systems, 36:22115–22131, 2023. (Cited on page 3.)
+[32] Eliya Nachmani and Lior Wolf. Autoregressive belief propagation for decoding block codes.arXiv
+preprint arXiv:2103.11780, 2021. (Cited on pages 3 and 8.)
+[33] Miroslav Marinkovic, Maxim Piz, Chang-Soon Choi, Goran Panic, Marcus Ehrig, and Eckhard Grass.
+Performance evaluation of channel coding for gbps 60-ghz ofdm-based wireless communications. In21st
+Annual IEEE International Symposium on Personal, Indoor and Mobile Radio Communications, pages
+994–998. IEEE, 2010. (Cited on page 3.)
+[34] Toshiki Matsumine and Hideki Ochiai. Recent advances in deep learning for channel coding: A survey.
+IEEE Open Journal of the Communications Society, 2024. (Cited on page 3.)
+[35] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised
+learning using nonequilibrium thermodynamics. InInternational conference on machine learning, pages
+2256–2265. pmlr, 2015. (Cited on page 3.)
+[36] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based
+generative models.Advances in neural information processing systems, 35:26565–26577, 2022. (Cited on
+pages 3 and 4.)
+[37] Charles Stein. A bound for the error in the normal approximation to the distribution of a sum of
+dependent random variables. InProceedings of the sixth Berkeley symposium on mathematical statistics
+and probability, volume 2: Probability theory, volume 6, pages 583–603. University of California Press,
+1972. (Cited on page 3.)
+[38] Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis.Advances in
+neural information processing systems, 34:8780–8794, 2021. (Cited on page 3.)
+[39] Dustin Podell, Zion English, Kyle Lacey, Andreas Blattmann, Tim Dockhorn, Jonas Müller, Joe Penna,
+and Robin Rombach. SDXL: Improving latent diffusion models for high-resolution image synthesis. In
+The Twelfth International Conference on Learning Representations, 2024. (Cited on page 3.)
+[40] Andreas Blattmann, Robin Rombach, Huan Ling, Tim Dockhorn, Seung Wook Kim, Sanja Fidler, and
+Karsten Kreis. Align your latents: High-resolution video synthesis with latent diffusion models. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages 22563–22575,
+2023. (Cited on page 3.)
+14
+[41] Zhiqing Sun and Yiming Yang. Difusco: Graph-based diffusion solvers for combinatorial optimization.
+Advances in neural information processing systems, 36:3706–3731, 2023. (Cited on page 3.)
+[42] Yang Li, Jinpei Guo, Runzhong Wang, and Junchi Yan. T2t: From distribution learning in training to
+gradient search in testing for combinatorial optimization.Advances in Neural Information Processing
+Systems, 36:50020–50040, 2023. (Cited on page 3.)
+[43] Haoyu Lei, Kaiwen Zhou, Yinchuan Li, Zhitang Chen, and Farzan Farnia. Boosting generaliza-
+tion in diffusion-based neural combinatorial solver via inference time adaptation.arXiv preprint
+arXiv:2502.12188, 2025. (Cited on page 3.)
+[44] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models.arXiv preprint
+arXiv:2010.02502, 2020. (Cited on page 3.)
+[45] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan Li, and Jun Zhu. Dpm-solver: A fast ode
+solver for diffusion probabilistic model sampling in around 10 steps.Advances in neural information
+processing systems, 35:5775–5787, 2022. (Cited on page 3.)
+[46] Seong-Joon Park, Hee-Youl Kwak, Sang-Hyo Kim, Yongjune Kim, and Jong-Seon No. Crossmpt: Cross-
+attention message-passing transformer for error correcting codes.arXiv preprint arXiv:2405.01033, 2024.
+(Cited on pages 3, 9, 16, and 18.)
+[47] Yang Song and Prafulla Dhariwal. Improved techniques for training consistency models.arXiv preprint
+arXiv:2310.14189, 2023. (Cited on pages 3, 4, 5, and 16.)
+[48] Zhengyang Geng, Ashwini Pokle, William Luo, Justin Lin, and J Zico Kolter. Consistency models made
+easy.arXiv preprint arXiv:2406.14548, 2024. (Cited on pages 3, 6, and 16.)
+[49] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution.
+Advances in neural information processing systems, 32, 2019. (Cited on pages 3 and 4.)
+7 Appendix
+7.1 Preliminary on Consistency Models
+Consistency Models (CMs).A major concern of DMs is the slow sampling process, which requires
+sequential calculation of the denoiserϵθ. Consistency Models (CMs) [28] were introduced to overcome this by
+enabling fast, 1-step generation. The core principle is the self-consistency property: any two points(xt, t)
+and(x r, r)on the same PF-ODE trajectory should map to the same origin point,x0. CMs build upon Eq. 2
+and learn a functionfθ(xt, t)that directly estimates thetrajectoryfrom noisy data to clean data with a
+single step:
+fθ(xt, t) =x0,(14)
+The training objective of CMs is to enforce the consistency property across a discrete set of time steps. The
+continuous time interval[0, T]is discretized into N− 1sub-intervals, defined by timesteps1 = t1 <···<
+tN = T. The model is then trained to minimize the following loss, which enforces that the model’s output is
+consistent for adjacent points on the same ODE trajectory:
+arg min
+θ
+E[w(ti)d(fθ(xti+1 , ti+1), fθ−(˜xti, ti))],(15)
+Here, fθ is the network being trained, whilefθ− is an exponential moving average (EMA) offθ’s past samples.
+The term˜xti =x ti+1 − (ti −t i+1)ti+1∇xti+1
+logp ti+1 (xti+1 )is obtained by taking a single ODE solver step
+backwards fromx ti+1 using the score function. This training process can be performed in two ways: by
+distilling knowledge from a pre-trained diffusion model, known as Consistency Distillation (CD), or by training
+from scratch, known as Consistency Training (CT). However, training CMs is difficult and resource-intensive.
+15
+It requires a carefully designed curriculum for the number of discretization stepsN to ensure stabilized
+training. The follow-up works improved the vanilla CMs, such as iCT [47], which proposed enhanced metrics
+and schedulers, and ECT [48], which uses "pre-training diffusion+consistency tuning" to stabilize learning.
+7.2 Consistency Sampling Algorithm
+Once we obtain the well-trained consistency modelfθ following Algorithm 1, we can simply apply the
+one-step sampling to estimate the codewordˆx0, given any received signalsy.
+Algorithm 2Error Correction Consistency One-step Sampling
+Require:Consistency Modelf θ, parity-check matrixH.
+forTest batch noisy signalsydo
+e†
+t =L Soft-syn(y, H)▷Calculate soft-syndrome
+ˆx0 =f θ(y, e†
+t)▷Estimate clean codeword with one-step
+end for
+7.3 Proof of Proposition 4.1
+Proof. Let ˆxt = fθ(xt, t)and ˆxr = fθ(xr, r)denote the predicted outcome by consistency model at timesteps
+t and r, respectively. LetLStandard-CM be defined by the Total Variation distance,TV(·,·), andLEC-CM be
+defined by the Binary Cross Entropy, BCE(·,·). Letx0 denote the ground truth codeword.
+First, by the Triangle Inequality of the Total Variation (TV) distance, we have:
+LStandard-CM =TV( ˆxt, ˆxr)≤TV( ˆxt,x 0) +TV( ˆxr,x 0).(16)
+Squaring both sides of the inequality:
+TV2(ˆxt, ˆxr)≤
+ 
+TV(ˆxt,x 0) +TV( ˆxr,x 0)
+2
+≤2TV 2(ˆxt,x 0) + 2TV2(ˆxr,x 0),
+By Pinsker’s Inequality, which states that for any two probability distributionsP and Q, DKL(P∥Q) ≥
+2TV2(P, Q),
+TV2(ˆxt, ˆxr)≤D KL(x0∥ˆxt) +D KL(x0∥ˆxr),(17)
+Recall that the BCE loss is defined asBCE(P, Q) = H(Q) + DKL(Q∥P), whereH(Q)is the entropy ofQ.
+Since entropy is non-negative (H(Q)≥0), we have:
+DKL(x0∥ˆx)≤BCE( ˆx,x 0),(18)
+Substituting them into Eq. 17, we show that:
+TV2(ˆxt, ˆxr)≤BCE( ˆxt,x 0) +BCE( ˆxr,x 0) =L EC-CM.(19)
+7.4 Detailed Experimental Setting
+We provide the specific design choices of ECCFM and the listed training hyperparameters. Following
+the design in [18,29,46], we generate the training set by corrupting the all-zero codewordx0 with AWGN
+noise z, following the diffusion processy =x 0 +
+p¯βN ·ϵ , where ϵ∼ N(0, I). The diffusion process was
+configured with a total ofN = n−k + 5steps. We employed a linear variance schedule withβi = 0.01for
+short codes and a more fine-grainedβi = 0.0025for medium-to-long codes. Each epoch consisted of 1,000
+steps with a minibatch size of 128. To ensure a fair comparison, all neural models were implemented with a
+fixed architecture (N = 6layers, d = 128hidden dimensions). Each test task was run until at least 500 error
+codes were observed, under a maximum of107 test instances.
+16
+Table 3: Training hyperparameters and design choices.
+Parameters Design Choice
+Consistency Lossd(·,·) =Binary Cross Entropy( ˆx0,x 0)
+Syndrome Weightλ= 0.01
+Training Epoch1500
+Mini-batch1000
+Training Batchsize128
+Test Numbers At least 500 error cases and at most10 7 total numbers
+Test Batchsize2048for short codes,256for medium-to-long codes
+Weighting Functionw(t) = 1
+Total Diffusion StepsN=n−k+ 5
+Forward Scheduleβ i = 0.01for short codes,β i = 0.0025for medium-to-long codes
+Time Stept∼ U{1,2, . . . , N}
+Scaling Factorα= 0.8
+Initial Learning Rateη= 1e −4
+Learning Rate Schedule Cosine Decay
+Decay Rateη ′ = 5e−7
+Exponential Moving Average Ratio EMA= 0.999
+7.5 Additional experimental results
+7.5.1 Additional Results on Multi-step Sampling
+We investigated the multi-step sampling technique from [28] to explore the quality-cost trade-off. Using
+a 2-step strategy with a re-noising ratio ofα = 0.2N, we observed that performance slightly deteriorated
+(higher BER) compared to one-step decoding in Table 4.
+We interpret this result from the nature of ECC task. Unlike image generation, error correction aims
+to recover the exact original data from different noise levels, and the multiple decoding steps for a one-step
+consistency decoder risk introducing additional error rather than refining the result, potentially leading to
+error accumulation.
+Table 4: Performance comparison of ECCFM(1-step) and ECCFM(2-step)
+Code Type ECCFM (1-step) ECCFM (2-step)
+Eb/N0 4 5 6 4 5 6
+POLAR(64,32)7.55 10.31 13.807.21 9.97 13.22
+POLAR(128,64)8.01 12.22 16.717.67 11.89 16.02
+POLAR(128,96)7.21 10.52 14.326.97 10.16 13.88
+LDPC(121,70)7.35 12.23 17.607.02 11.17 15.93
+LDPC(121,80)8.25 13.33 18.697.95 13.14 17.78
+7.5.2 Soft-syndrome Under Low SNR
+The soft-syndrome time condition in the diffusion denoising phase does not require any theoretical
+assumption on SNRs. To validate the efficacy of soft-syndrome condition under low SNR, we visualize the
+syndrome change for both hard-syndrome and soft-syndrome for POLAR(64,48) and BCH(63,36) codes under
+17
+Table 5: Quantifying the training costs of ECCFM and CrossMPT.
+Code Type Parameter FLOPs Model Parameters Training (epoch)
+CrossMPT ECCFM CrossMPT ECCFM CrossMPT ECCFM
+BCH(61,36) 112.2 M 112.6 M 1.20 M 1.42 M 41 s 71 s
+POLAR
+(64,32) 120.4 M 120.8 M 1.20 M 1.42 M 41 s 75 s
+(128,64) 253.4 M 253.8 M 1.24 M 1.45 M 43 s 78 s
+(128,96) 202.8 M 203.2 M 1.23 M 1.44 M 47 s 82 s
+LDPC (121,70) 229.6 M 230.0 M 1.23 M 1.44 M 43 s 67 s
+(121,80) 212.4 M 212.9 M 1.23 M 1.44 M 45 s 69 s
+WRAN(384,320) 608.2 M 608.6 M 1.42 M 1.63 M 74 s 83 s
+2 dB in Figure 7. The results show that soft-syndrome maintains consistent performance in building a smooth
+trajectory.
+(a) Syndrome Change on LDPC(64,48)
+ (b) Syndrome Change on BCH(63,36)
+Figure 7: Syndrome Change (Hard syndrome and soft syndrome) during iterative denoising on LDPC and BCH under
+low SNRs (2 dB).
+7.5.3 Quantifying the Training Costs
+In the main part, we apply the cross-attention transformer proposed by [46] as the backbone architecture
+for ECCFM. The total number of parameters marginally exceeds that of the standard CrossMPT backbone
+due to a 2-layer time embedding for the soft-syndrome time condition. We present a comparison of the
+training costs in Table 5.
+7.5.4 Ablation Study: Soft-syndrome Loss Term in Total Loss
+The soft-syndrome loss term in Eq. 14 serves primarily as a regularization term, designed to stabilize
+training and accelerate convergence. By explicitly incorporating this loss, we guide the optimization toward
+a feasible solution space during the early stages of training. To empirically validate this, we conducted an
+18
+ablation study comparing the model’s performance with and without the soft-syndrome term. As shown in
+Table 6, including this loss results in faster convergence of the primary consistency objective.
+Table 6: Comparison of training time to achieve the target consistency loss with or without soft-syndrome loss term
+Code Type Loss function Target consistency loss Epoch
+POLAR(64,32) w/ Soft-syn Loss1.05×10 −4 721
+w/o Soft-syn Loss1.05×10 −4 1323
+POLAR(128,64) w/ Soft-syn Loss2.06×10 −2 866
+w/o Soft-syn Loss2.06×10 −2 1474
+LDPC(121,80) w/ Soft-syn Loss6.50×10 −3 827
+w/o Soft-syn Loss6.50×10 −3 1451
+7.5.5 Additional Results of Soft-syndrome Time Condition in Consistency Training
+As stated in the main part, we trained ECCFM with either a hard-syndrome time condition or a soft-
+syndrome time condition and validated the necessity of using soft-syndrome as time condition for successful
+training of ECCFM in Table 7.
+Table 7: Performance comparison of ECCFM(Hard-syndrome) and ECCFM(Soft-syndrome)
+Code Type Hard-syndrome Soft-syndrome
+Eb/N0 4 5 6 4 5 6
+POLAR(64,32) 4.36 5.78 9.817.55 10.31 13.80
+POLAR(128,64) 4.87 7.92 10.108.01 12.22 16.71
+POLAR(128,96) 4.11 6.97 9.227.21 10.52 14.32
+LDPC(121,70) 4.32 8.31 11.417.35 12.23 17.60
+LDPC(121,80) 5.09 8.95 11.908.25 13.33 18.69
+7.5.6 Applying Vanilla Consistency Training in ECC
+To clarify the contribution of our proposed consistency training framework, we conducted an ablation
+study comparing ECCFM against a baseline utilizing the standard consistency model (Vanilla-CM) objective.
+In this experiment, we retained the forward sampling and time-conditioning mechanisms from DDECC but
+replaced the training objective with the standard consistency loss following [28]. As shown in Table 8, directly
+applying the Vanilla-CM to the ECC domain results in a significant performance degradation, and highlights
+a fundamental mismatch between the standard consistency objective and the discrete, non-differentiable
+nature of the syndrome condition in ECC domain.
+7.5.7 Additional Results on Long Codes
+As established in Figure 4, ECCFM demonstrates scalability, achieving competitive performance on both
+short and medium-to-long codes. To further validate this, we present additional results for LDPC codes of
+varying lengths and rates, specifically LDPC(n = 204, k= 102) and LDPC(n = 408, k= 204). The BER and
+FER results in Figure 8 confirm that ECCFM improves decoding performance while maintaining its high
+inference speed.
+19
+(a) BER on LDPC(204,102)
+ (b) BER on LDPC(408,204)
+(c) FER on LDPC(204,102)
+ (d) FER on LDPC(408,204)
+Figure 8: Performance comparison in terms of Bit Error Rate (BER) and Frame Error Rate (FER) for two LDPC
+codes with different blocklengths and rates: LDPC(n = 204, k= 102) and LDPC(n = 408, k= 204). Our method is
+evaluated against ECCT, CrossMPT, and DDECC.
+20
+Table 8: Performance comparison of Vanilla-CM and ECCFM
+Code Type Vanilla-CM ECCFM
+Eb/N0 4 5 6 4 5 6
+POLAR(64,32) 4.67 6.21 8.327.55 10.31 13.80
+POLAR(128,64) 4.98 6.45 8.788.01 12.22 16.71
+POLAR(128,96) 4.33 5.86 7.917.21 10.52 14.32
+LDPC(121,70) 4.21 6.13 8.457.35 12.23 17.60
+LDPC(121,80) 4.87 6.84 9.118.25 13.33 18.69
+7.5.8 Additional Results on Inference Time and Throughput
+To evaluate the practical efficiency of ECCFM, we benchmarked its inference time and throughput on
+both POLAR and LDPC codes against established baselines (ECCT, CrossMPT, and DDECC). Inference
+time was measured as the total duration in seconds to decode106 samples, while throughput was defined as
+the number of samples decoded per second. As illustrated in Figure 5, ECCFM achieves a speedup over the
+denoising diffusion method, DDECC. The advantage scales with code complexity, growing from a 30x speedup
+on short codes to over 100x on longer codes. Further analysis, detailed in Figure 9, Figure 10, Figure 11, and
+Figure 12 confirms that these efficiency gains are consistent across a wide range of code types, lengths, and
+rates. This performance demonstrates that ECCFM provides a significant improvement in decoding speed,
+particularly for long codes where latency is a critical bottleneck.
+7.5.9 Analysis on Computational Overhead of iterative denoising phase
+To point out the ECCFM’s speed advantage, we analyzed the iterative convergence of the denoising
+diffusion framework. Specifically, we measured the average number of inference steps required for the DDECC
+model to converge to a valid codeword (i.e., achieve a zero syndrome,et = 0). As detailed in Table 9, the
+computational overhead for DDECC increases substantially under these three conditions: longer codes, lower
+code rates, and lower SNRs. This is precisely the bottleneck that ECCFM’s one-step decoding offers a
+consistent gain in efficiency, particularly in these difficult decoding scenarios.
+Table 9: Convergence steps toet = 0of the DDECC decoder on longer codes across different Signal-to-Noise Ratios
+(Eb/N0). The results are reported in terms of the average steps(variance).
+Code Type Parameters Converge Steps: Average(Variance)
+2 3 4 5 6
+POLAR(512,384) 123.40(11.38) 91.34(21.68) 60.24(18.00) 41.40(16.13) 24.99(14.82)
+LDPC
+(204,102) 57.10(21.51) 39.37(10.50) 29.47(7.50) 21.25(6.90) 14.24(6.31)
+(408,204) 112.12(39.47) 76.91(13.18) 58.39(10.38) 42.39(9.62) 28.99(8.81)
+(529,440) 89.54(8.07) 59.25(27.75) 27.48(9.78) 17.06(6.95) 9.22(6.03)
+WRAN(384,320) 59.66(9.79) 37.59(18.88) 18.57(7.99) 11.23(5.49) 5.91(4.64)
+21
+(a) LDPC(121,60)
+ (b) LDPC(121,70)
+(c) LDPC(121,80)
+ (d) LDPC(529,440)
+Figure 9: Inference time on LDPC(n = 121, k= 60), LDPC(n = 121, k= 70), LDPC(n = 121, k= 80) and
+LDPC(n= 529, k= 440), comparing with ECCT, CrossMPT and DDECC.
+22
+(a) LDPC(121,60)
+ (b) LDPC(121,70)
+(c) LDPC(121,80)
+ (d) LDPC(529,440)
+Figure 10: Throughput on LDPC(n = 121, k= 60), LDPC(n = 121, k= 70), LDPC(n = 121, k= 80) and
+LDPC(n= 529, k= 440).
+23
+(a) POLAR(128,86)
+ (b) POLAR(128,96)
+ (c) POLAR(512,384)
+Figure 11: Inference time on POLAR(n = 128, k= 86), POLAR(n = 128, k= 96) and POLAR(n = 512, k= 384),
+comparing with ECCT, CrossMPT and DDECC.
+(a) POLAR(128,86)
+ (b) POLAR(128,96)
+ (c) POLAR(512,384)
+Figure 12: Inference time on POLAR(n= 128, k= 86), POLAR(n= 128, k= 96) and POLAR(n= 512, k= 384).
+24

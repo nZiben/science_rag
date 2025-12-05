@@ -1,0 +1,2074 @@
+Mofasa:A Step Change in
+Metal-Organic Framework Generation
+Vaidotas Šimkus, Anders Christensen, Steven Bennett, Ian Johnson,
+Mark Neumann, James Gin, Jonathan Godwin, Benjamin Rhodes
+{vaidas,ben}@orbitalindustries.com
+Orbital
+Mofasa is an all-atom latent diffusion model with state-of-the-art performance for
+generating Metal-Organic Frameworks (MOFs). These are highly porous crystalline
+materials used to harvest water from desert air, capture carbon dioxide, store toxic gases
+and catalyse chemical reactions. In recognition of their value, the development of MOFs
+recently received a Nobel Prize in Chemistry.
+In many ways, MOFs are well-suited for exploiting generative models in chemistry:
+they are rationally-designable materials with a large combinatorial design space and
+strong structure-property couplings. And yet, to date, a high performance generative
+model has been lacking. To fill this gap, we introduce Mofasa, a general-purpose latent
+diffusion model that jointly samples positions, atom-types and lattice vectors for systems
+as large as 500 atoms. Mofasa avoids handcrafted assembly algorithms common in
+theliterature,unlockingthesimultaneousdiscoveryofmetalnodes,linkersandtopologies.
+To help the scientific community build on our work, we releaseMofasaDB, an annotated
+library of hundreds of thousands of sampled MOF structures, along with a user-friendly
+web interface for search and discovery:https://mofux.ai/.
+Discovering novel periodic crystal structures at scale is a grand challenge in materials science.
+In few places is this opportunity greater than with Metal-Organic Frameworks (MOFs)—highly
+porous materials critical for next-generation climate technologies [55].
+Traditionally, MOFs are viewed as modular compositions of metal nodes and organic linkers
+arranged in a specific network topology. While new materials can be found by traversing the
+combinatorial space of known building blocks, discovering truly novel chemistry requires more
+than just recombining existing components—we must adopt anall-atomdesign approach.
+All-atomgenerativemodelspresentapromisingpathforwardtodiscovertrulynovelchemistries
+duetotheirunconstrainednature[22,62,47]. Yet,theyhavefailed,sofar,toscaletolargecrystal
+systems containing many atoms in the unit cell. This is odd, because generative models of text,
+images, and—most pertinently—biomolecules scale well as a function of dimensionality [26, 29].
+Thismotivatesustofindascalablerecipeforall-atomgenerationoflargecrystalstructures. Our
+methodtakesADiT[47]asaninitialtemplate,andre-engineersthearchitecture,parameterization,
+training loss, and sampling algorithm. In this sense, our approach is proudly incremental: we
+eschew methodological novelty in favor of thorough engineering. However, once implemented
+correctly, theresultsare far from incremental, and it is these results that constitute the bulk of
+this report.
+1
+arXiv:2512.01756v1  [cs.LG]  1 Dec 2025
+Validity 
+(all passed)
+No atomic overlap
+     No undercoord. 
+Nitrogen
+No undercoord. 
+Carbon
+No overcoord. 
+Carbon
+No overcoord. 
+Nitrogen
+No lone 
+molecule
+No geom. exposed metal
+20%
+40%
+60%
+80%
+100%
+   QMOF 
+(train data) Mofasa-opt Mofasa ADiT-QMOF
+Figure 1:Validation of geometric structure with MOFChecker. Mofasa demonstrates a
+step-change improvement over the leading all-atom baseline, ADiT [47], increasing overall
+MOFChecker validity by3.8×from 15.7% to 59.9%.
+2481 2664721437 400
+Experimental
+(excl. train)
+Train
+Sampled
+Metal Nodes
+277 48
+38
+38 104
+Experimental
+(excl. train)
+TrainSampled
+Topologies
+Rediscovered
+(sampled  exp, not train)
+Potentially novel
+(sampled only)
+In distribution
+(sampled  train, not exp)
+Figure 2:Rediscovery and novelty analysis.Mofasa demonstrates strong generalization by
+rediscovering437 nodes + 38 topologies absent from the training set. Beyond generating known
+chemistry, the model also generates MOFs with chemistries unseen in experimental databases.
+2
+Our main contributions are:
+• High-fidelity generation (53–62%MOFChecker validity1) of entire 3D crystal structures
+(positions, atom-types, lattice) for MOFs up to 500 atoms. On QMOF, we push SoTA
+forward by>3×(see Figure 1).
+• From a total of 100k samples, 40–46% arevalid, novel and uniqueas measured byMOFid +
+MOFChecker. Importantly, the training set (QMOF) imposes an upper limit of70%.
+• Arediscovery rateof 8.5% and 50.0% for nodes and topologies, respectively. Mofasa
+rediscovers a significant number of metal nodes and topologies that are not present in the
+training data, but are present in other experimental databases.
+• An open source database,MofasaDB, containing∼200k generated structures annotated
+with a large set of descriptors and properties to enable screening by composition, types of
+nodes and linkers, topology, space group, porosity and more (see Appendix A).
+• A scalable data-agnostic architecture. Without modification, Mofasa can be jointly trained
+on MOFs, other porous materials classes, organic molecular crystals, and gas-phase
+organics + transition metal complexes.
+1 Results
+1.1 Comparison to state-of-the-art
+A unified benchmark for MOF generation is lacking. As a consequence, many recent works [44,
+56, 61] use disparate metrics and datasets, rendering direct comparison infeasible. Nonetheless,
+we believe ADiT [47], MOFFlow-2 [49] and MOF-BFN [45] are a fair representation of the
+state-of-the-art. All these works reportMOFChecker validity [46], a rigorous metric that assesses
+structural and compositional validity of MOFs by penalizing flaws such as floating atoms and
+incorrect coordination (see Tables 4 and 5 for a full breakdown of the criteria).
+MOFChecker validityscoresforMofasa(trainedondifferentdatasets)areshowninTable1,along
+with reference values for the training data and baseline methods. Mofasa-opt refers to model
+samples that have been geometry-optimized with an MLIP (see Appendix D).
+Model Sample
+count (𝑛)
+Validity (%) Training dataset
+Name Count (𝑛) Validity (%)
+†ADiT 1k 15.7 QMOF [17] 14k 80.0
+Mofasa202k 52.9 QMOF [17] 14k 80.0
+Mofasa-opt202k59.9QMOF [17] 14k 80.0
+†MOFFlow-2 10k 38.8 BW [8, 11] 157k 100.0
+†MOF-BFN 1k 32.3 BW [8, 11] 324k –
+Mofasa10k44.8BW [23] 250k 85.8
+Mofasa250k 52.2 Exp. [17, 23, 64] 49k 84.2
+Mofasa-opt225k62.8Exp. [17, 23, 64] 49k 84.2
+Table 1:Comparison of MOFChecker validity (%) across datasets.†indicates baseline models,
+andbold(Mofasa/Ours). Right hand side shows the training dataset and its statistics for each
+model. In this table and elsewhere, Experimental (Exp.) = QMOF [17] + CoRE-MOF-2024
+(computation-readysplits)[64]+ARC-MOFDB12&DB14[23]. SeemoredetailsinAppendixB.
+1Exact percentage varies with training set and whether samples are relaxed with an MLIP.
+3
+8
+ 7
+ 6
+ 5
+ 4
+ 3
+ 2
+ 1
+eV/atom
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4Density
+Energy (eV/atom)
+Train (Mofasa)
+Mofasa
+Train (MOFFlow-2)
+MOFFlow-2
+MOFDiff
+Figure3:PotentialenergyhistogramsontheBoyd-Woo(BW)[8,11]dataset.Notethat,Mofasa
+(black) and MOFFlow-2 (red) are trained on slightly different subsets of BW (see Appendix B)
+and the Mofasa energies (black, blue) were computed withOrb-v3-con-inf-omat[58] vs UMA
+[60] for the MOFFlow-2 and MOFDiff. Nonetheless, the trend is clear: Mofasa is much better at
+matching the energy distribution of its training data.
+One significant limitation ofMOFChecker is that it is discrete and brittle. Small, structural
+deviationscancausephysicallyreasonablestructurestobeflaggedasinvalid. Onewaytogauge
+the magnitude of structural errors is to study the energies of the samples using MLIPs, which
+are fast DFT surrogate models. In Figure 3, we plot the energy per atom of Mofasa samples
+(and its training set) against the samples and training set of MOFFlow-2 and MOFDiff [32].
+It is evident that Mofasa is substantially better at following the true distribution of energies.
+Interestingly, this performance gap is not clear from theMOFChecker scores in Table 1, where
+Mofasa’s44.8% validity is only modestly higher than MOFFlow-2’s38.8%. This discrepancy
+underscores the need for distributional coverage evaluations alongside geometric checks.
+1.2 Validity, novelty, and uniqueness
+Validity scores and distributional similarities can be trivially maximized by a model that strictly
+memorizes the training data. To assess generalization, standard practice is to compute a Valid,
+Novel, and Unique (VNU) score. Here, a sample is considerednovelif it does not match any
+data point in the training set, anduniqueif it does not match any other sample in a fixed set of
+generated samples. What, however, should count as a ‘match’? This is a matter of an ongoing
+debate with many pitfalls [54, 48]. We do not claim to resolve all such pitfalls here and our
+definition of “novelty” should be interpreted with care.
+We leverage prior efforts to uniquely identify MOFs usingMOFid [12]. MOFid decomposes a 3D
+MOF into building blocks: metal nodes, organic linkers, network topology, and catenation. The
+final identifier is a string representation of these four components that is both convenient and
+chemically-informed. One drawback is incomplete coverage:MOFid only succeeds for∼85% of
+systems in QMOF, often failing on chemically valid structures such as 2D or rod-like MOFs
+[such as MOF-74, see 12] and is sensitive to geometric perturbations (see Tables 7 to 9).
+Figure 4 shows Mofasa’s “success rates” for a range of sample sizes and different combinations
+of VNU conditions. Importantly, at 100,000 samples, we see that:
+•Mofasa obtains∼68%(maximum∼84%) NU score (MOFid exists + novel + unique).
+• Mofasa(-opt) obtains40% (46%) (maximum∼70%) VNU score (NU +MOFChecker-valid).
+4
+0
+10
+20
+30
+40
+50
+60
+70
+80MOFid (%)
+      All 
+    samples
+MOFid Existence, Uniqueness and Novelty
+1k 10k 100k
+Sample Size (N)
+0
+10
+20
+30
+40
+50
+60
+70MOFid + Valid (%)
+ MOFChecker 
+ valid samples
+Limit (QMOF)
+MOFid Exists
+MOFid Exists + Unique
+MOFid Exists + Unique + Novel
+Mofasa
+Mofasa-opt
+Figure 4:Validity, Novelty, and Uniqueness (VNU) analysis.Percentage of QMOF samples for
+whichMOFidsexists(purple)andisunique(teal)andisnovel(lightgreen).Toprow:allsamples
+without validity constraints; the maximum score is84%.Bottom row:only MOFChecker valid
+systems; the maximum score is70%. See Appendix Table 6 for full numerical results.
+1.3 Rediscovery of unseen experimental nodes, linkers, and topologies
+MOFscanbecomputationallydesignedwithoutmachinelearning[36]usingrule-basedsystems
+for assembling libraries of building blocks according to predefined topologies [16]. While these
+rule-based systems can be combined with generative models of building blocks [42, 61], they
+remain fundamentally constrained. The presupposition of a known topology introduces a
+degree of subjectivity [33], hinders the exploration of polymorphs [28], and creates a barrier to
+incorporating new sources of non-porous systems into the training data.
+Incontrast,Mofasageneratesatomsdirectlyinthefull3Dcrystal. Topologiesandbuildingblocks
+are not presupposed, theyemergefrom the generative process. This allows us to simultaneously
+discover new MOF “components” (nodes, linkers and topologies) as demonstrated in Table 2.
+The key figure in this table is therediscovery rate, which is the fraction of unique and novel
+sampled components that exist in an experimental database, butnotin the training data. See
+Figure 2 for a visual summary. Metal nodes have a rediscovery rate of8.5% and topologies
+have a rediscovery rate of50.0%, which proves Mofasa performs useful generalization. The
+rediscovery rate for linkers is very low (0.5%) which is expected given the enormous chemical
+diversity of possible linkers compared to the more constrained set of stable metal nodes and
+topologies.
+1.4 Distributional realism of simple properties
+Figure 5 shows a range of simple property histograms forMofasaDB (∼200k samples from our
+QMOF model). The top row displays the distributions of lattice vector lengths (𝑎,𝑏,𝑐 ), which
+5
+Table 2:Analysis of unique MOF Components.For each data source (experimental, training
+set, samples) we count the numbers of unique components. We then remove all components in
+the training set from the sampled components, to obtain unique + novel components. Finally, a
+unique and novel component is counted asRediscoveredif it exists in an experimental source.
+Component # Unique
+(Experiment)
+# Unique
+(Train)
+# Unique
+(Samples)
+# Unique + Novel
+(Samples)
+# Rediscovered
+(Rate %)
+MOFid 34,873 11,014 134,800 134,351 182 (0.1%)
+Nodes 3,584 666 5,558 5,158 437 (8.5%)
+Linkers 15,188 6,302 111,047 109,831 538 (0.5%)
+Linker combos 10,682 3,911 63,128 62,996 92 (0.1%)
+Topologies 467 152 180 76 38 (50.0%)
+are of ascending order in the Niggli-reduced representation. Mofasa tracks the QMOF training
+distribution well across all three dimensions, with a slight bias towards short𝑎 & 𝑏 lengths.
+The second row visualizes the lattice angles (𝛼,𝛽,𝛾 ), where Mofasa is again reasonable, but
+overemphasizes∼90◦angles. The third row examines symmetry and topology. We calculate
+spacegroupsusing pymatgen [6]attwodifferentsymmetrythresholds(symprec). Thegenerated
+samples are95% and 84% triclinic for0.01 and 0.1 thresholds, which is substantially larger than
+the 54% and 48% in the data distribution. Surprisingly, geometry relaxation does not improve
+spacegroup symmetry matching, suggesting that the lack of diverse symmetries is a relatively
+fundamental problem, not simply a numerical precision issue.
+The fourth row characterizes chemical complexity through the count of distinct nodes and
+linkers and the degree of catenation. In the distinct node/linker plots, the zero bin represents
+cases where theMOFid algorithm failed to identify a recognizable building block. The model
+overproducesfailurecasesandunderproducessinglenode/linkersystems. Italsooverproduces
+multivariate MOFs with4+linkers, but otherwise matches the real data reasonably well. The
+final two rows present porosity metrics calculated using Zeo++ [5] with a1.86Å Nitrogen probe.
+These four distributions show that the model generates MOFs with fairly realistic internal voids,
+but skews towards overly small LCD/PLD values, which in turn means a higher percentage of
+systems do not allow the Nitrogen probe to enter (see percentages in legends of final row plots).
+1.5 Dynamic behavior of sampled frameworks
+ToinvestigatethedynamicbehaviorofgeneratedMOFs,weusedashortthree-stepMDpipeline
+(see Appendix E) on 1,000 randomly selected samples fromMofasaDB. These simulations
+indicate the structural flexibility of sampled structures above 0 K, helping us to understand
+dynamic behavior due to thermal effects that local geometry minimizations fail to identify. Our
+simulations usedorb-v3-con-inf-omat [37, 58] + D3 [4], a combination that was shown to be
+highly accurate for MOFs in the zero-shot setting by Kraß et al. [50].
+Wereportrootmeansquaredeviation(RMSD)oftheinitialandfinalframesoftheNPTtrajectory,
+as well as the volume drift between the first 10 ps and final 10 ps. Of the 1,000 samples, 3.6%
+did not converge after 1,000 geometry optimization steps and 4.7% exhibited rapid volume
+expansion, resulting in a failure of the MD run. The RMSD and volume drift histograms in
+Figure6(a-b)showthatthemajorityofthesamplesdonotexhibitasignificantvolumeoratomic
+displacement, with 91% drifting by less than 10% in volume and 80.7% having<2Å RMSD.
+In Figure 6 (c), we highlight four representative copper-node systems, which demonstrate the
+wide range of coordination sites accessible to the generative model. The under-coordinated
+Structures 1 (T-shaped) and 2 (square planar) resemble less stable open metal sites, which
+6
+5 10 15 20
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25Density
+Lattice A
+QMOF
+Mofasa (QMOF)
+Mofasa-opt (QMOF)
+5 10 15 20 25
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25Density
+Lattice B
+10 15 20 25 30
+0.000
+0.025
+0.050
+0.075
+0.100
+0.125Density
+Lattice C
+60 80 100 120
+0.000
+0.025
+0.050
+0.075
+0.100Density
+Lattice Alpha
+60 70 80 90 100 110
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25Density
+Lattice Beta
+60 80 100 120
+0.00
+0.05
+0.10
+0.15Density
+Lattice Gamma
+triclinic
+monoclinicorthorhombic
+trigonal
+tetragonal hexagonal
+cubic
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Frequency
+Spacegroup (symprec 0.01)
+QMOF
+Mofasa (QMOF)
+Mofasa-opt (QMOF)
+triclinic
+monoclinicorthorhombic
+trigonal
+tetragonal hexagonal
+cubic
+0.0
+0.2
+0.4
+0.6
+0.8Frequency
+Spacegroup (symprec 0.1)
+UNKNOWN
+sql pcu rna hcb dia fcu ttp fes nbo
+0.0
+0.2
+0.4
+0.6
+0.8Frequency
+Topology
+0 1 2 3 4 5 6 7 8
+0.0
+0.2
+0.4
+0.6Frequency
+Num Distinct Nodes
+0 1 2 3 4 5 6 7 8 9 10
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5Frequency
+Num Distinct Linkers
+0 1 2 3 4 5
+0.0
+0.2
+0.4
+0.6
+0.8Frequency
+Catenation
+0 5 10 15 20
+0.0
+0.2
+0.4
+0.6Density
+Largest Cavity Diameter (LCD)
+0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5
+0.0
+0.2
+0.4
+0.6
+0.8Density
+Pore Limiting Diameter (PLD)
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5
+0.0
+0.5
+1.0
+1.5Density
+Accessible Volume (cm^3/g) (excl. zeros)
+QMOF (80.8% zeros)
+Mofasa (QMOF) (88.8% zeros)
+Mofasa-opt (QMOF) (89.2% zeros)
+0 500 1000 1500 2000 2500
+0.0000
+0.0005
+0.0010
+0.0015
+0.0020Density
+Accessible Surface Area (m^2/cm^3) (excl. zeros)
+QMOF (80.8% zeros)
+Mofasa (QMOF) (88.8% zeros)
+Mofasa-opt (QMOF) (89.2% zeros)
+Figure 5:Marginal distributions of simple properties of real data (QMOF, black) and
+generated samples (Mofasa, blue).There is a significant amount of distributional overlap for
+all properties, with no signs of severe mode collapse. Nonetheless, several areas remain for
+improvement: generated MOFs are on average, slightly too small, too cubic, far too likely to be
+triclinic, more likely to failMOFid identification (resulting in 0 nodes/linkers) and insufficiently
+porous as assessed by Zeo++ with a1.86Å Nitrogen probe (note the legends of the final row,
+which state the percentage of systems for which zero volume/area is accessible).
+7
+                 Structure 1     -5.79%                                 Structure 2     -1.40%
+a) c)
+a)
+                 Structure 3     -0.18%                                      Structure 4     +2.14%
+b)
+Figure 6:Evaluation of dynamic stability.Dynamic properties of 917 randomly selected
+samples fromMofasaDB, calculated over a 50 ps MD trajectory. (a) Distribution of volume
+drift, calculated as the relative change in mean volume between the first and final 10 ps of
+the trajectory; (b) distribution of root mean square deviation (RMSD) between the initial and
+final frames; and (c) representative Cu-MOF trajectory endpoints with varying coordination
+geometries. The values below each structure indicate the volume drift percentage.
+resulted in the largest contraction during the NPT run. In contrast, Structure 3 adopted the
+thermodynamically preferred square pyramidal geometry, characteristic of the prototypical
+copper paddle-wheel, and was the most rigid lattice. Finally, Structure 4 exhibited a distorted
+heteroleptic coordination environment, resulting in a volume expansion of 2.14%.
+Altogether,thehighstabilityrateandchemicallyintuitivestructuresobservedinthecopper-node
+examples underscore the physical plausibility and coordination diversity of the samples.
+1.6 Conditional generation
+All results presented so far pertain to unconditional samples. However, due to our multitask
+training setup (Section 3.1), Mofasa can accept several types of conditioning, including i)
+per-node atom-types (chemical formula) and ii) a set of molecular graphs (formula + bonds)
+for each node/linker fragment. Both types of conditioning provide useful information to the
+model, which ought to enhance sample quality.
+In Figure 7, we confirm that conditioning increasesMOFChecker validity across all system-
+sizes. We can distinguish three broad regimes: i) the0−50 atom range, where both types of
+conditioning boost performance significantly (+15 -20 %) ii) the50−250 atom range, where
+unconditional < formula < formula+bonds, with∼10% jumps between each iii) the250−500
+atom range, which resembles the last case except with larger gaps of15−20 %. At 500 atoms,
+unconditional Mofasa decays to5%, whilst formula + bonds remains steadily above40%.
+8
+0
+20
+40
+60
+80
+100MOFChecker validity (%)
+Experimental
+Mofasa
+Mofasa-opt
+Mofasa (Formula)
+Mofasa (Formula+Bonds)
+0 100 200 300 400 500
+Number of atoms
+0
+2000Count
+Figure 7:MOFChecker validity vs system-size for different conditioning scenarios.The more
+information that is conditioned on, the higher performance. The most informative conditioning
+(chemical formulas + bond-graphs) obtains>40%validity at 500 atoms.
+2 Significance for generative modeling of materials
+Mofasa achieves high-fidelity generation—satisfying complex structural validity checks, exhibit-
+ing high degree of novelty, and maintaining high dynamic stability—all without relying on
+domain-specific compositional heuristics often used in MOF design. This success is significant
+not just for MOF discovery, but for the broader field of generative models in materials science.
+Recent successful models such as MOFDiff [32], MOFFUSION [56] and MOF-BFN [45] have
+relied on a modular approach, treating MOFs as compositions of rigid building blocks. While
+this aligns with chemical intuition, it inherently constrains the model: architectures tailored
+to rigid building blocks are incompatible with non-modular domains. This incompatibility
+isolates MOF generation from the broader landscape of generative models for materials and
+hinders the development of a foundation model for atomic systems.
+To unlock cross-domain transfer learning, we must operate at the atomic granularity. However,
+unified all-atom approaches, such as MatterGen [62], UniGenX [63] and ADiT [47], have, so
+far, not demonstrated scaling to large crystal systems like MOFs. They are often restricted
+to small crystal systems (<50 atoms) or suffer severe underfitting when modeling complex
+porous crystals. One might wonder if all-atom models suffer from adata bottleneck—that they
+require massive datasets to learn how to generate valid structures. Our results challenge this
+assumption by achieving state-of-the-art performance on systems up to 170 atoms using only
+∼14k structures in QMOF (and up to 500 atoms on49𝑘experimental structures).
+This efficiency validates the all-atom approach as a viable backbone for future foundation
+models: if Mofasa can outperform domain-specific models, it is well-positioned to scale further.
+In the next section, we detail the implementation that enabled these results.
+9
+b. Crystal structure decoding
+d. Generation process
+a. Crystal structure encoding
+c. Forward diffusion process
+Local latents
+(N, D)
+Global latents
+(D,)
+Noisy latents
+Noisy latents
+Local inputs
+Atom types (N,)
+Frac. pos. (N, 3)
+Global inputs
+Cell lengths (3,)
+Cell angles (3,)
+GNS Encoder
+GNS Decoder
+… …
+GNS Denoiser GNS Denoiser
+… …
+Standard 
+Gaussian noise
+(N+1, D)
+Figure8:OverviewofMofasa.(a)Theencodermapsthecrystalstructuretoacontinuouslatent
+representation. (b) The decoder reconstructs the structure from the latent representation. (c)
+The forward process corrupts the latents with noise until it is indistinguishable from standard
+Gaussian noise. (d) The denoising model learns to reverse this process to generate clean latents.
+3 An all-atom model for large crystal structure generation
+Mofasafollowsthestandardlatentdiffusionframework[20],akintorecentgenerativeapproaches
+in materials science [47, 53]. As illustrated in Figure 8, the model consists of three main
+components: encoder, decoder, and a denoising model. These components interact across three
+distinct stages:
+• Autoencoding crystal structures (Panels a, b):The encoder maps an input crystal
+structure (atomic types, fractional positions, and lattice parameters) into a continuous
+latent representation. This representation consists oflocal latents, encoding smoothed
+atomic neighborhoods, andglobal latents, capturing system-wide properties.
+• Latent diffusion (Panels a, c, d):We train a denoising diffusion model to generate valid
+latent representations. During training, clean latents from the encoder are gradually
+corrupted by noise until they are indistinguishable from a standard Gaussian distribution
+(Panel c). A denoising model is trained to predict the “velocity” required to reverse this
+corruption (Panel d).
+• Generation (Panels b, d):To generate novel crystal structures, we sample pure Gaussian
+noise, iteratively denoise it using the trained model to obtain a clean latent representation
+(Panel d), and then map it to the atomic domain using the decoder (Panel b).
+3.1 Key Modeling Choices
+While the full methodology is detailed in Appendix C, we highlight five important modeling
+decisions that enable high-fidelity generation.
+10
+Specialized processing for low- and high-level contexts.The encoder, the decoder, and the
+diffusion model share a common backbone: a hierarchical graph network simulator (GNS) [15].
+Adapted from the Orb model [58], we leverage an architecture validated for fast, high-accuracy
+interatomic potential modeling. Importantly, the hierarchical message passing introduced here
+addresses the heterogeneity of crystal data, where local (atom-level) and global (system-level)
+features possess distinct properties necessitating specialized processing. This separation also
+enables directional information flow: the encoder uses it to aggregate atomistic details into the
+global latents, whereas the decoder and denoiser use it to broadcast global context back to local
+representations. This allows the model to simultaneously resolve fine-grained atomic details
+while maintaining precise long-range coherence.
+Self-conditioning.Although the learned latent space is continuous, it encodes mixed discrete
+(atom types) and continuous (fractional positions) structural information. We find that self-
+conditioning—often used to bridge the gap between discrete and continuous diffusion—is
+also essential in this context, which we hypothesize is necessary for learning conditional
+dependencies between atom types (e.g., common bonding pairs) [57, Appendix A.3.2].
+Tweaked cosine schedule.We use a cosine-based schedule with a log-SNR shift. This
+modification allocates significantly more training capacity (approx. 78% of diffusion timesteps)
+to the signal-dominated regime, which we found important for learning and generating
+fine-grained structural details.
+Permutation symmetry breaking.Graph neural networks, such as our GNS backbone, are
+inherentlypermutationequivariant. However,thestandarddiffusiontrainingobjectiveregresses
+denoiser predictions against ordered targets, which introduces ambiguity: many permutations
+ofthecleanlatentscanresultinthesamenoisylatents. Thenetworkcannotdistinguishbetween
+permuted versions of the graph, yet the loss penalizes them differently based on the ordered
+targets. To resolve this ambiguity forde novogeneration, we explicitly break permutation
+symmetry during training by conditioning the model on a canonical node ordering derived
+from the crystal graph topology. In contrast, we omit this ordering for conditional tasks (e.g.,
+conformer generation or structure inpainting), as the conditioning signal provides sufficient
+context to implicitly resolve the symmetry.
+Multi-task conditional training.To enable broad applicability, we train a single model for
+multiple tasks. By stochastically providing conditioning information, Mofasa learns to perform
+de novogeneration, structure inpainting (e.g., generating linkers within a fixed node scaffold),
+and conditional generation based on chemical composition or bond topology.
+4 Related work
+Modular generation.This approach exploits the compositional structure of MOFs by gen-
+erating individual building blocks—nodes, linkers, or topology—before assembling them
+into a full structure [38, 32, 56]. GHP-MOFAssemble [38] demonstrates this by generating
+linkersfrommolecularfragmentsusingDiffLinkerandcombiningthemwithpre-selectedmetal
+nodes into a fixed topology [34]. MOFDiff advances this via a coarse-grained (CG) diffusion
+process, where CG graph nodes, representing entire building blocks and their locations, are
+first generated via a diffusion model. Then, these CG nodes are replaced with atom-level details
+and assembled with a rigid assembly algorithm to determine the orientation of the otherwise
+fixed building block structure [32]. However, MOFDiff is restricted to a pre-determined library
+of rigid building blocks found in the training distribution, and hence hence has a significantly
+limited generalization. Addressing this limitation, MOFFlow-2 performs a similar two-step
+11
+Table3: ComparisonofgenerativemodelsforMetal-OrganicFrameworksandinorganiccrystals.
+Model Approach Resolution Domain
+Modular & Assembly-based
+GHP-MOFAssemble [38] Diffusion (Linkers) + Rigid assembly Building blocks MOFs
+MOFDiff [32] Diffusion (CG) + Rigid assembly Building blocks MOFs
+MOFFLOW-2 [49] Autoregressive (Linkers) + Flow-matching (Assembly) Building blocks MOFs
+MOFFUSION [56] Latent diffusion (Mesh) Implicit (Mesh) MOFs
+LLM & Agentic Approaches
+CrystaLLM [30] Autoregressive Text (CIF) General
+MatterGPT [31] Autoregressive Text (SLICES) General
+MOFGPT [40] Autoregressive Text (MOFid) MOFs
+Inizan et al. [44] Agentic pipeline (LLM + Diffusion + Screening) Hybrid (Text + SMILES + 3D) MOFs
+Direct All-Atom Generation
+CDVAE [22] VAE + Diffusion All-atom General
+MatterGen / UniMat [62, 39] Diffusion All-atom General
+FlowMM / CrystalFlow [35, 52] Flow-matching All-atom General
+ADiT / UAE-3D [47, 53] Latent diffusion All-atom General
+Mofasa (Ours) Latent diffusion All-atom General
+approach: first generating building block SMILES with an autoregressive model, then using a
+flow matching model infers the position and torsion angles for structural assembly [49]. Finally,
+MOFFUSIONdepartsfrommodelingthediscretebuildingblocks,insteadusinglatentdiffusion
+to first generate a continuous signed distance function that defines the geometry of the MOF,
+and then decoding these shapes into atomic structures [56].
+All-atomde novogeneration.A key requirement for crystal generation is the joint generation
+of atom types, positions, and lattice vectors. The seminal E(n)-equivariant diffusion model
+established theall-atomframework for jointly generating atomic composition and geometry of
+moleculesdirectlyin3Dspace[19]. Simultaneously,CDVAEpavedthewayforageneral-purpose
+all-atom approach toinorganic crystalgeneration [22]. Subsequently, MatterGen [62] improved
+generation fidelity by scaling the diffusion principles to a diverse, curated dataset of crystal
+structures up to 20 atoms. Simultaneously, UniMat [39] introduced a periodic-table inspired
+representation for molecular and crystal structures and used a diffusion model to generate
+small crystals. Flow-based model, such as FlowMM [35] and CrystalFlow [52] have also been
+usedformodelingcrystalstructures, offeringincreasedmodelingflexibilityandfastersampling.
+However, despite these advancements, the all-atom class of models remained primarily used on
+small inorganic materials (typically fewer than 60 atoms per unit cell).
+Addressing this gap, ADiT proposed a unified latent diffusion-based framework for generating
+bothperiodicmaterialsandnon-periodicmolecules[47,53]. Whilepromisingforlargersystems,
+ADiT focused on small systems (MP20, QM9), and its performance on complex porous crystals
+(QMOF)hasbeeneffectivelylimited(achieving 15.7%MOFChecker validityonQMOF).Weadopt
+a similar diffusion-based framework as a conceptual foundation, re-engineering the model
+architecture, parameterization, and training objective. This yields state-of-the-art results on
+MOFs (achieving 52.9% validity on QMOF and 52.2% on a combination of experimental MOF
+DBs), while retaining a general-purpose capability applicable to diverse crystal modalities.
+LLM-based generation.While diffusion-based approaches dominate 3D structure generation,
+autoregressive language models have also been applied to MOF crystal generation by treating
+structures as text sequences. Models such as CrystaLLM [30] and MatterGPT [31] are LLMs
+trained on crystallographic information files (CIF) and SLICES representations, respectively,
+learning the grammar of crystal structures. Similarly, MOFGPT uses an LLM to generateMOFid
+identifier sequences, incorporating a transformer-based property predictor and a reinforcement
+learning-based module for property-guided design [40]. Moving beyond direct sequence
+12
+generation, Inizan et al. [44] recently proposed a promising agentic pipeline where an LLM
+orchestrates linker SMILES generation while a separate diffusion model handles 3D structure
+generation. The generated structures are then geometry-optimized and screened, to ensure
+validityandsynthesizability. Byachievingahigh-fidelity3Dgenerationdirectly,Mofasaoffersa
+way to significantly reduce the cost of the post-processing steps, potentially accelerating agentic
+materials discovery by orders of magnitude.
+5 Limitations and future work
+While Mofasa achieves state-of-the-art performance in MOF generation, several limitations
+remain that present opportunities for future research.
+An important constraint is the computational complexity of the architecture. The decoder
+and denoiser models operate on fully-connected graphs because, unlike in the encoder, the
+atomic positions are undefined during the early stages of generation, preventing the use of
+nearest neighbor methods typically used to construct sparse graphs. As a result, the memory
+requirement scales quadratically (𝑁2) with the number of atoms (𝑁), making scaling beyond
+𝑁=500 atoms per unit cell difficult. Future work may investigate sparse graph approximations
+with long-range shortcut connections to maintain information flow while reducing the memory
+and computational overhead.
+In addition, the GNS backbone architecture leaves room for optimization. We believe that
+explicit edge representations may be redundant. Moreover, the hierarchical message passing
+could be simplified to further reduce the number of computations.
+Another key limitation is the requirement to specify the number of atoms (𝑁)a priori. Inde novo
+generation, this can be done by sampling𝑁 from the empirical training distribution. However,
+thisposesachallengeforconditionalgeneration, wherespecificpropertyconstraints(e.g.,metal
+node composition) effectively alter the distribution of feasible atom counts. Currently, Mofasa
+does not have a mechanism to sample this conditional distribution.
+Finally, while Mofasa is designed to be general-purpose, this study focused exclusively on
+Metal-Organic Frameworks. Investigating the model’s performance and transfer learning
+between other material classes remains an important direction for future investigation.
+6 Conclusion
+We introduced Mofasa, an all-atom generative model based on latent diffusion. We evaluated
+the model on Metal-Organic Framework (MOF) generation—a domain of structurally complex
+porous materials—valued for carbon capture, gas separation, catalysis, and hydrogen storage.
+Mofasa achieves unprecedented generation fidelity, demonstrating high validity and dynamic
+stability. Notably, the model shows strong generalization, rediscovering metal nodes and
+topologies absent from the training distribution but observed in other experimental datasets.
+Mofasa is the first model to successfully scale the all-atom approach to large crystal structures.
+We demonstrated the generation of complex unit cells containing up to 500 atoms, scaling
+well beyond prior inorganic crystal models (typically limited to<60 atoms). Unlike tailored
+approaches that rely on MOF-specific decompositions, our method provides a more flexible
+framework, enabling the discovery of more novel chemistries.
+Ultimately, these results extend beyond the MOF domain. By eliminating the need for domain-
+specific heuristics while maintaining high structural fidelity at scale, Mofasa validates the
+all-atom diffusion approach as a robust path toward future foundation models capable of
+transfer learning across the full range of materials.
+13
+References
+[1] R. W. Grosse-Kunstleve, N. K. Sauter, and P. D. Adams.Numerically Stable Algorithms for
+the Computation of Reduced Unit Cells. In:Acta Crystallographica Section A. Foundations of
+Crystallography 60.1 (2004), pp. 1–6.issn: 0108-7673.doi:10.1107/S010876730302186X
+(cit. on p. 22).
+[2] ErikBitzek,PekkaKoskinen,FranzGähler,MichaelMoseler,andPeterGumbsch.Structural
+relaxation made simple. In:Physical review letters97.17 (2006), p. 170201 (cit. on p. 27).
+[3] Tommi Junttila and Petteri Kaski.Engineering an Efficient Canonical Labeling Tool for Large
+and Sparse Graphs. In:Workshop on Algorithm Engineering and Experiments (ALENEX 2007).
+Society for Industrial and Applied Mathematics, 2007, pp. 135–149.doi:10.1137/1.
+9781611972870.13(cit. on p. 26).
+[4] Stefan Grimme, Jens Antony, Stephan Ehrlich, and Helge Krieg.A consistent and accurate
+ab initio parametrization of density functional dispersion correction (DFT-D) for the 94 elements
+H-Pu. In:The Journal of chemical physics132.15 (2010) (cit. on pp. 6, 27).
+[5] Thomas F Willems, Chris H Rycroft, Michaeel Kazi, Juan C Meza, and Maciej Haranczyk.
+Algorithms and tools for high-throughput geometry-based analysis of crystalline porous materials.
+In:Microporous and Mesoporous Materials149.1 (2012), pp. 134–141 (cit. on pp. 6, 32).
+[6] Shyue Ping Ong, William Davidson Richards, Anubhav Jain, Geoffroy Hautier, Michael
+Kocher,ShreyasCholia,DanGunter,VincentL.Chevrier,KristinA.Persson,andGerbrand
+Ceder.Python Materials Genomics (Pymatgen): A Robust, Open-Source Python Library for
+MaterialsAnalysis.In:ComputationalMaterialsScience68(2013),pp.314–319.issn:0927-0256.
+doi:10.1016/j.commatsci.2012.10.028(cit. on pp. 6, 19, 32).
+[7] Peter G. Boyd and Tom K. Woo.A Generalized Method for Constructing Hypothetical
+Nanoporous Materials of Any Net Topology from Graph Theory. In:CrystEngComm18.21
+(2016), pp. 3777–3792.issn: 1466-8033.doi:10.1039/C6CE00407E(cit. on p. 19).
+[8] Peter G. Boyd, Yongjin Lee, and Berend Smit.Computational Development of the Nanoporous
+Materials Genome. In:Nature Reviews Materials2.8 (2017), p. 17037.issn: 2058-8437.doi:
+10.1038/natrevmats.2017.37(cit. on pp. 3, 4, 19).
+[9] AäronvandenOord,OriolVinyals,andKorayKavukcuoglu.NeuralDiscreteRepresentation
+Learning. In:Advances in Neural Information Processing Systems (NeurIPS). 2017. arXiv:
+1711.00937v2(cit. on p. 24).
+[10] Petar Veličković, Guillem Cucurull, Arantxa Casanova, Adriana Romero, Pietro Liò,
+and Yoshua Bengio.Graph Attention Networks. In:International Conference on Learning
+Representations (ICLR). 2018.doi:10.48550/arXiv.1710.10903 . arXiv:1710.10903 (cit.
+on p. 20).
+[11] Peter G. Boyd, Arunraj Chidambaram, Enrique García-Díez, Christopher P. Ireland,
+ThomasD.Daff,RichardBounds,AndrzejGładysiak,PascalSchouwink,SeyedMohamad
+Moosavi, M. Mercedes Maroto-Valer, Jeffrey A. Reimer, Jorge A. R. Navarro, Tom K. Woo,
+Susana Garcia, Kyriakos C. Stylianou, and Berend Smit.Data-Driven Design of Metal–
+Organic Frameworks for Wet Flue Gas CO2 Capture. In:Nature576.7786 (2019), pp. 253–256.
+issn: 1476-4687.doi:10.1038/s41586-019-1798-7(cit. on pp. 3, 4, 19).
+[12] BenjaminJ.Bucior,AndrewS.Rosen,MaciejHaranczyk,ZhenpengYao,MichaelE.Ziebel,
+Omar K. Farha, Joseph T. Hupp, J. Ilja Siepmann, Alán Aspuru-Guzik, and Randall
+Q. Snurr.Identification Schemes for Metal–Organic Frameworks To Enable Rapid Search and
+Cheminformatics Analysis. In:Crystal Growth & Design19.11 (2019), pp. 6682–6697.issn:
+1528-7483.doi:10.1021/acs.cgd.9b01050(cit. on pp. 4, 19, 35).
+[13] Jonathan Ho, Ajay Jain, and Pieter Abbeel.Denoising Diffusion Probabilistic Models. In:
+Neural Information Processing Systems (NeurIPS). 2020.doi:10.48550/arXiv.2006.11239.
+arXiv:2006.11239(cit. on pp. 24, 25).
+14
+[14] Alfredo Nazábal, Pablo M. Olmos, Zoubin Ghahramani, and Isabel Valera.Handling
+IncompleteHeterogeneousDataUsingVAEs.In:PatternRecognition107(2020).issn:0031-3203.
+doi:10.1016/j.patcog.2020.107501. arXiv:1807.03653(cit. on p. 22).
+[15] Alvaro Sanchez-Gonzalez, Jonathan Godwin, Tobias Pfaff, Rex Ying, Jure Leskovec, and
+PeterW.Battaglia.LearningtoSimulateComplexPhysicswithGraphNetworks.In:International
+Conference on Machine Learning (ICML). arXiv, 2020.doi:10.48550/arXiv.2002.09405 .
+arXiv:2002.09405(cit. on pp. 11, 20).
+[16] Sangwon Lee, Baekjun Kim, Hyun Cho, Hooseung Lee, Sarah Yunmi Lee, Eun Seon
+Cho, and Jihan Kim.Computational Screening of Trillions of Metal–Organic Frameworks
+for High-Performance Methane Storage. In:ACS Applied Materials & Interfaces(2021).doi:
+10.1021/acsami.1c02471(cit. on p. 5).
+[17] Andrew S. Rosen, Shaelyn M. Iyer, Debmalya Ray, Zhenpeng Yao, Alán Aspuru-Guzik,
+LauraGagliardi,JustinM.Notestein,andRandallQ.Snurr.MachineLearningtheQuantum-
+ChemicalPropertiesofMetal–OrganicFrameworksforAcceleratedMaterialsDiscovery.In:Matter
+4.5 (2021), pp. 1578–1597.issn: 2590-2385.doi:10.1016/j.matt.2021.02.015 (cit. on
+pp. 3, 19).
+[18] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco Tagliasacchi.
+SoundStream:AnEnd-to-EndNeuralAudioCodec.In:IEEE/ACMTransactionsonAudio,Speech
+and Language Processing30 (2021).doi:10.48550/arXiv.2107.03312. arXiv:2107.03312
+(cit. on p. 22).
+[19] Emiel Hoogeboom, Victor Garcia Satorras, Clément Vignac, and Max Welling.Equivariant
+Diffusion for Molecule Generation in 3D. In:International Conference on Machine Learning
+(ICML). 2022.doi:10.48550/arXiv.2203.17003. arXiv:2203.17003(cit. on pp. 12, 22).
+[20] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer.
+High-Resolution Image Synthesis with Latent Diffusion Models. In:Conference on Computer
+Vision and Pattern Recognition (CVPR). 2022.doi:10.48550/arXiv.2112.10752 . arXiv:
+2112.10752(cit. on pp. 10, 20, 24).
+[21] Tim Salimans and Jonathan Ho.Progressive Distillation for Fast Sampling of Diffusion Models.
+In:International Conference on Learning Representations (ICLR). 2022.doi:10.48550/arXiv.
+2202.00512. arXiv:2202.00512(cit. on p. 25).
+[22] Tian Xie, Xiang Fu, Octavian-Eugen Ganea, Regina Barzilay, and Tommi Jaakkola.Crystal
+Diffusion Variational Autoencoder for Periodic Material Generation. In:International Conference
+on Learning Representations (ICLR). 2022.doi: 10 . 48550 / arXiv . 2110 . 06197. arXiv:
+2110.06197(cit. on pp. 1, 12, 23).
+[23] Jake Burner, Jun Luo, Andrew White, Adam Mirmiran, Ohmin Kwon, Peter G. Boyd,
+StephenMaley,MarcoGibaldi,ScottSimrod,VictoriaOgden,andTomK.Woo.ARC-MOF:
+A Diverse Database of Metal-Organic Frameworks with DFT-Derived Partial Atomic Charges and
+Descriptors for Machine Learning. In:Chemistry of Materials(2023).doi:10.26434/chemrxiv-
+2022-mvr06(cit. on pp. 3, 20).
+[24] Ting Chen, Ruixiang Zhang, and Geoffrey Hinton.Analog Bits: Generating Discrete Data
+Using Diffusion Models with Self-Conditioning. In:International Conference on Learning
+Representations (ICLR). 2023.doi:10.48550/arXiv.2208.04202 . arXiv:2208.04202 (cit.
+on p. 25).
+[25] Akim Kotelnikov, Dmitry Baranchuk, Ivan Rubachev, and Artem Babenko.TabDDPM:
+ModellingTabularDatawithDiffusionModels.In:InternationalConferenceonMachineLearning
+(ICML). 2023 (cit. on p. 22).
+[26] Joseph L. Watson, David Juergens, Nathaniel R. Bennett, Brian L. Trippe, Jason Yim,
+Helen E. Eisenach, Woody Ahern, Andrew J. Borst, Robert J. Ragotte, Lukas F. Milles,
+Basile I. M. Wicky, Nikita Hanikel, Samuel J. Pellock, Alexis Courbet, William Sheffler,
+Jue Wang, Preetham Venkatesh, Isaac Sappington, Susana Vázquez Torres, Anna Lauko,
+Valentin De Bortoli, Emile Mathieu, Sergey Ovchinnikov, Regina Barzilay, Tommi S.
+15
+Jaakkola, Frank DiMaio, Minkyung Baek, and David Baker.De Novo Design of Protein
+Structure and Function with RFdiffusion. In:Nature620.7976 (2023), pp. 1089–1100.issn:
+1476-4687.doi:10.1038/s41586-023-06415-8(cit. on p. 1).
+[27] Minkai Xu, Alexander Powers, Ron Dror, Stefano Ermon, and Jure Leskovec.Geometric
+Latent Diffusion Models for 3D Molecule Generation. In:International Conference on Machine
+Learning (ICML). 2023.doi: 10.48550/arXiv.2305.01140 . arXiv:2305.01140 (cit. on
+p. 22).
+[28] Yizhi Xu, Joseph M. Marrett, Hatem M. Titi, James P. Darby, Andrew J. Morris, Tomislav
+Friščić, and Mihails Arhangelskis.Experimentally Validated Ab Initio Crystal Structure
+Prediction of Novel Metal–Organic Framework Materials. In:Journal of the American Chemical
+Society145.6 (2023), pp. 3515–3525.issn: 0002-7863.doi:10.1021/jacs.2c12095 (cit. on
+p. 5).
+[29] Josh Abramson, Jonas Adler, Jack Dunger, Richard Evans, Tim Green, Alexander Pritzel,
+Olaf Ronneberger, Lindsay Willmore, Andrew J. Ballard, Joshua Bambrick, Sebastian
+W. Bodenstein, David A. Evans, Chia-Chun Hung, Michael O’Neill, David Reiman,
+Kathryn Tunyasuvunakool, Zachary Wu, Akvil˙e Žemgulyt˙e, Eirini Arvaniti, Charles
+Beattie, Ottavia Bertolli, Alex Bridgland, Alexey Cherepanov, Miles Congreve, Alexander
+I. Cowen-Rivers, Andrew Cowie, Michael Figurnov, Fabian B. Fuchs, Hannah Gladman,
+Rishub Jain, Yousuf A. Khan, Caroline M. R. Low, Kuba Perlin, Anna Potapenko, Pascal
+Savy, Sukhdeep Singh, Adrian Stecula, Ashok Thillaisundaram, Catherine Tong, Sergei
+Yakneen, Ellen D. Zhong, Michal Zielinski, Augustin Žídek, Victor Bapst, Pushmeet Kohli,
+Max Jaderberg, Demis Hassabis, and John M. Jumper.Accurate Structure Prediction of
+Biomolecular Interactions with AlphaFold 3. In:Nature630.8016 (2024), pp. 493–500.issn:
+1476-4687.doi:10.1038/s41586-024-07487-w(cit. on p. 1).
+[30] Luis M Antunes, Keith T Butler, and Ricardo Grau-Crespo.Crystal structure generation
+with autoregressive large language modeling. In:Nature Communications15.1 (2024), p. 10570
+(cit. on p. 12).
+[31] Yan Chen, Xueru Wang, Xiaobin Deng, Yilun Liu, Xi Chen, Yunwei Zhang, Lei Wang, and
+Hang Xiao.MatterGPT: A generative transformer for multi-property inverse design of solid-state
+materials. In:arXiv preprint arXiv:2408.07608(2024) (cit. on p. 12).
+[32] Xiang Fu, Tian Xie, Andrew S. Rosen, Tommi Jaakkola, and Jake Smith.MOFDiff: Coarse-
+grained Diffusion for Metal-Organic Framework Design. In:International Conference on Learning
+Representations(ICLR).2024.doi: 10.48550/arXiv.2310.10732.arXiv: 2310.10732 (cit.on
+pp. 4, 9, 11, 12).
+[33] Lawson T Glasby, Joan L Cordiner, Jason C Cole, and Peyman Z Moghadam.Topological
+characterization of metal–organic frameworks: a perspective. In:Chemistry of Materials36.19
+(2024), pp. 9013–9030 (cit. on p. 5).
+[34] Ilia Igashov, Hannes Stärk, Clément Vignac, Arne Schneuing, Victor Garcia Satorras,
+Pascal Frossard, Max Welling, Michael Bronstein, and Bruno Correia.Equivariant 3D-
+conditional Diffusion Model for Molecular Linker Design. In:Nature Machine Intelligence6.4
+(2024), pp. 417–427.issn: 2522-5839.doi:10.1038/s42256-024-00815-9(cit. on p. 11).
+[35] BenjaminKurtMiller,RickyT.Q.Chen,AnuroopSriram,andBrandonM.Wood.FlowMM:
+Generating Materials with Riemannian Flow Matching. In:International Conference on Machine
+Learning (ICML). 2024.doi: 10.48550/arXiv.2406.04713 . arXiv:2406.04713 (cit. on
+p. 12).
+[36] Peyman Z Moghadam, Yongchul G Chung, and Randall Q Snurr.Progress toward the
+computational discovery of new metal–organic framework adsorbents for energy applications. In:
+Nature Energy9.2 (2024), pp. 121–133 (cit. on p. 5).
+[37] MarkNeumann,JamesGin,BenjaminRhodes,StevenBennett,ZhiyiLi,HitarthChoubisa,
+Arthur Hussey, and Jonathan Godwin.Orb: A Fast, Scalable Neural Network Potential.
+Tech. rep. arXiv:2410.22570. arXiv, 2024. arXiv:2410.22570(cit. on pp. 6, 20, 22, 23, 27).
+16
+[38] Hyun Park, Xiaoli Yan, Ruĳie Zhu, Eliu A Huerta, Santanu Chaudhuri, Donny Cooper,
+Ian Foster, and Emad Tajkhorshid.A generative artificial intelligence framework based on
+a molecular diffusion model for the design of metal-organic frameworks for carbon capture. In:
+Communications Chemistry7.1 (2024) (cit. on pp. 11, 12).
+[39] Sherry Yang, KwangHwan Cho, Amil Merchant, Pieter Abbeel, Dale Schuurmans, Igor
+Mordatch, and Ekin Dogus Cubuk.Scalable Diffusion for Materials Generation. 2024.doi:
+10.48550/arXiv.2311.09235. arXiv:2311.09235(cit. on p. 12).
+[40] Srivathsan Badrinarayanan, Rishikesh Magar, Akshay Antony, Radheesh Sharma Meda,
+and Amir Barati Farimani.MOFGPT: Generative Design of Metal-Organic Frameworks Using
+Language Models. In:Journal of Chemical Information and Modeling(2025).doi:10.48550/
+arXiv.2506.00198. arXiv:2506.00198(cit. on p. 12).
+[41] Orion Cohen, Janosh Riebesell, Rhys Goodall, Adeesh Kolluru, Stefano Falletta, Joseph
+Krause, Jorge Colindres, Gerbrand Ceder, and Abhĳeet S Gangan.TorchSim: An efficient
+atomistic simulation engine in PyTorch. In:AI for Science1.2 (2025), p. 025003 (cit. on p. 27).
+[42] Chenru Duan, Aditya Nandy, Sizhan Liu, Yuanqi Du, Liu He, Yi Qu, Haojun Jia, and
+Jin-Hu Dou.Building-Block Aware Generative Modeling for 3D Crystals of Metal Organic
+Frameworks. 2025.doi:10.48550/arXiv.2505.08531. arXiv:2505.08531(cit. on p. 5).
+[43] Christopher Fifty, Ronald G. Junkins, Dennis Duan, Aniketh Iyengar, Jerry W. Liu, Ehsan
+Amid, Sebastian Thrun, and Christopher Ré.Restructuring Vector Quantization with the
+Rotation Trick. In:International Conference on Learning Representations (ICLR). 2025.doi:
+10.48550/arXiv.2410.06424. arXiv:2410.06424(cit. on p. 22).
+[44] Theo Jaffrelot Inizan, Sherry Yang, Aaron Kaplan, Yen-hsu Lin, Jian Yin, Saber Mirzaei,
+Mona Abdelgaid, Ali H Alawadhi, KwangHwan Cho, Zhiling Zheng, et al.System of
+agentic AI for the discovery of metal-organic frameworks. In:arXiv preprint arXiv:2504.14110
+(2025) (cit. on pp. 3, 12, 13).
+[45] Rui Jiao, Hanlin Wu, Wenbing Huang, Yuxuan Song, Yawen Ouyang, Yu Rong, Tingyang
+Xu, Pengju Wang, Hao Zhou, Wei-Ying Ma, Jingjing Liu, and Yang Liu.MOF-BFN: Metal-
+Organic Frameworks Structure Prediction via Bayesian Flow Networks. In:Neural Information
+Processing Systems (NeurIPS). 2025 (cit. on pp. 3, 9, 19, 20).
+[46] Xin Jin, Kevin Maik Jablonka, Elias Moubarak, Yutao Li, and Berend Smit.MOFChecker:
+a package for validating and correcting metal–organic framework (MOF) structures. In:Digital
+Discovery(2025) (cit. on pp. 3, 34).
+[47] Chaitanya K. Joshi, Xiang Fu, Yi-Lun Liao, Vahe Gharakhanyan, Benjamin Kurt Miller,
+Anuroop Sriram, and Zachary W. Ulissi.All-Atom Diffusion Transformers: Unified Generative
+ModellingofMoleculesandMaterials.In:InternationalConferenceonMachineLearning(ICML).
+2025.doi: 10.48550/arXiv.2503.03965. arXiv:2503.03965 (cit. on pp. 1–3, 9, 10, 12, 19).
+[48] Mikkel Juelsholt.Continued Challenges in High-Throughput Materials Predictions: MatterGen
+Predicts Compounds from the Training Dataset.2025.doi:10.26434/chemrxiv-2025-mkls8
+(cit. on p. 4).
+[49] NayoungKim,SeongsuKim,andSungsooAhn.FlexibleMOFGenerationwithTorsion-Aware
+Flow Matching. In:Neural Information Processing Systems (NeurIPS). 2025.doi:10.48550/
+arXiv.2505.17914. arXiv:2505.17914(cit. on pp. 3, 12, 19, 20).
+[50] Hendrik Kraß, Ju Huang, and Seyed Mohamad Moosavi.MOFSimBench: Evaluating
+Universal Machine Learning Interatomic Potentials In Metal–Organic Framework Molecular
+Modeling. In:arXiv preprint arXiv:2507.11806(2025) (cit. on pp. 6, 27).
+[51] Greg Landrum, Paolo Tosco, Brian Kelley, Ricardo Rodriguez, David Cosgrove, Riccardo
+Vianello, sriniker, Peter Gedeck, Gareth Jones, Eisuke Kawashima, Schneider Nadine,
+Dan Nealschneider, Andrew Dalke, tadhurst-cdd, Matt Swain, Brian Cole, Samo Turk,
+Aleksandr Savelev, Niels Maeder, Alain Vaucher, Maciej Wójcikowski, Hussein Faara,
+Ichiru Take, Rachel Walker, Vincent F. Scalfani, Daniel Probst, Kazuya Ujihara, Axel Pahl,
+17
+Guillaume Godin, and Juuso Lehtivarjo.RDKit: Open-source Cheminformatics.Zenodo.
+2025.doi:10.5281/zenodo.17746401(cit. on p. 33).
+[52] XiaoshanLuo,ZhenyuWang,QingchangWang,XuechenShao,JianLv,LeiWang,Yanchao
+Wang, and Yanming Ma.Crystalflow: A flow-based generative model for crystalline materials.
+In:Nature Communications16.1 (2025) (cit. on p. 12).
+[53] Yanchen Luo, Zhiyuan Liu, Yi Zhao, Sihang Li, Hengxing Cai, Kenji Kawaguchi, Tat-Seng
+Chua, Yang Zhang, and Xiang Wang.Towards Unified and Lossless Latent Space for 3D
+Molecular Latent Diffusion Modeling. In:Neural Information Processing Systems (NeurIPS).
+2025.doi:10.48550/arXiv.2503.15567. arXiv:2503.15567(cit. on pp. 10, 12).
+[54] MasahiroNegishi,HyunsooPark,KingaO.Mastej,andAronWalsh.ContinuousUniqueness
+andNoveltyMetricsforGenerativeModelingofInorganicCrystals.In:AIforAcceleratedMaterials
+Discovery (AI4Mat) Workshop (NeurIPS). 2025.doi:10.48550/arXiv.2510.12405. arXiv:
+2510.12405(cit. on p. 4).
+[55] Nobel Prize Outreach.Press release: The Nobel Prize in Chemistry 2025. NobelPrize.org.
+Accessed: 2025-11-25. 2025.url: https://www.nobelprize.org/prizes/chemistry/
+2025/press-release/(cit. on p. 1).
+[56] Junkil Park, Youhan Lee, and Jihan Kim.Multi-Modal Conditional Diffusion Model Using
+SignedDistanceFunctionsforMetal-OrganicFrameworksGeneration.In:NatureCommunications
+16.1 (2025), p. 34.issn: 2041-1723.doi:10.1038/s41467-024-55390-9 (cit. on pp. 3, 9, 11,
+12).
+[57] PatrickPynadath,JiaxinShi,andRuqiZhang.CANDI:HybridDiscrete-ContinuousDiffusion
+Models. 2025.doi:10.48550/arXiv.2510.22510. arXiv:2510.22510(cit. on pp. 11, 25).
+[58] Benjamin Rhodes, Sander Vandenhaute, Vaidotas Simkus, James Gin, Jonathan Godwin,
+Tim Duignan, and Mark Neumann.Orb-v3: Atomistic Simulation at Scale. Tech. rep.
+arXiv:2504.06231. arXiv, 2025. arXiv:2504.06231(cit. on pp. 4, 6, 11, 19, 20, 22, 27, 33).
+[59] Vinh Tong, Trung-Dung Hoang, Anji Liu, Guy Van den Broeck, and Mathias Niepert.
+Rao-Blackwell Gradient Estimators for Equivariant Denoising Diffusion. In:Neural Information
+Processing Systems (NeurIPS). 2025.doi:10.48550/arXiv.2502.09890. arXiv:2502.09890
+(cit. on p. 26).
+[60] Brandon M Wood, Misko Dzamba, Xiang Fu, Meng Gao, Muhammed Shuaibi, Luis
+Barroso-Luque, Kareem Abdelmaqsoud, Vahe Gharakhanyan, John R Kitchin, Daniel S
+Levine,etal.UMA:AFamilyofUniversalModelsforAtoms.In:arXivpreprintarXiv:2506.23971
+(2025) (cit. on p. 4).
+[61] Xiaoli Yan, Nathaniel Hudson, Hyun Park, Daniel Grzenda, J. Gregory Pauloski, Marcus
+Schwarting, Haochen Pan, Hassan Harb, Samuel Foreman, Chris Knight, Tom Gibbs, Kyle
+Chard, Santanu Chaudhuri, Emad Tajkhorshid, Ian Foster, Mohamad Moosavi, Logan
+Ward, and E. A. Huerta.MOFA: Discovering Materials for Carbon Capture with a GenAI- and
+Simulation-Based Workflow. 2025.doi:10.48550/arXiv.2501.10651 . arXiv:2501.10651
+(cit. on pp. 3, 5).
+[62] Claudio Zeni, Robert Pinsler, Daniel Zügner, Andrew Fowler, Matthew Horton, Xiang Fu,
+SashaShysheya,JonathanCrabbé,LixinSun,JakeSmith,BichlienNguyen,HannesSchulz,
+Sarah Lewis, Chin-Wei Huang, Ziheng Lu, Yichi Zhou, Han Yang, Hongxia Hao, Jielan Li,
+Ryota Tomioka, and Tian Xie.MatterGen: A Generative Model for Inorganic Materials Design.
+In:Nature(2025).doi: 10.48550/arXiv.2312.03687. arXiv:2312.03687 (cit. on pp. 1, 9,
+12).
+[63] Gongbo Zhang, Yanting Li, Renqian Luo, Pipi Hu, Zeru Zhao, Lingbo Li, Guoqing Liu,
+ZunWang,RanBi,KaiyuanGao,LiyaGuo,YuXie,ChangLiu,JiaZhang,TianXie,Robert
+Pinsler, Claudio Zeni, Ziheng Lu, Yingce Xia, Marwin Segler, Maik Riechert, Li Yuan,
+LeiChen,HaiguangLiu,andTaoQin.UniGenX:UnifiedGenerationofSequenceandStructure
+with Autoregressive Diffusion. 2025.doi:10.48550/arXiv.2503.06687. arXiv:2503.06687
+(cit. on p. 9).
+18
+[64] Guobin Zhao, Logan Brabson, Saumil Chheda, Ju Huang, Haewon Kim, Kunhuan Liu,
+Kenji Mochida, Thang Pham, Prerna Prerna, Gianmarco Terrones, Sunghyun Yoon,
+LionelZoubritzky,François-XavierCoudert,MaciejHaranczyk,HeatherKulik,Mohamad
+Moosavi,DavidSholl,IljaSiepmann,RandallSnurr,andYongchulChung.CoREMOFDB:
+A Curated Experimental Metal-Organic Framework Database with Machine-Learned Properties
+for Integrated Material-Process Screening. 2025.doi:10.26434/chemrxiv-2024-nvmnr-v2
+(cit. on pp. 3, 20).
+Appendix A: MofasaDB
+To help the scientific community build on top of this work, we provide a dataset of 201,926 raw
+and Orb-optimized structures generated by Mofasa-QMOF (trained on the QMOF (<170 atoms)
+subset). To enable property-based screening, all samples include the pre-computed properties
+detailed in Appendix H. For each sample, we additionally include latent embeddings from the
+orb-v3-direct-20-omat MLIP [58]. The data can be accessed at athttps://huggingface.co/
+datasets/Orbital-Materials/MofasaDBand is released under the CC-BY 4.0 license.
+Additionally, we also make available an interactive web interface for exploring and screening
+the unoptimized database; available athttps://mofux.ai/. The exploration is supported by
+the included latents, allowing interactive search in theOrb latent space, which clusters similar
+MOFs as demonstrated in F.
+Appendix B: Training datasets & pre-processing
+Here, we detail the datasets used to train Mofasa and the relevant baselines. All crystal
+structures used to train Mofasa were standardized to their primitive unit cells usingpymatgen
+[6]. Additionally,weappliedthe metal-oxo algorithmfromthe MOFid package[12]todecompose
+the MOF structures. This generated atom-level labels (metal nodes, bridges, organic linkers,
+and solvents) which were used for conditional training and downstream analysis.
+ADiT + QMOF.The ADiT baseline [47] was trained on the Quantum MOF (QMOF) database
+[17], whichcontains20kexperimentallysynthesizedMOFswithstructuresrelaxedviaDFT.The
+authors filtered the dataset to include only structures with fewer than 150 atoms in the unit cell
+(corresponding to the 81st percentile of the full distribution). This resulted in a final training set
+of approximately14k samples after a training/validation/test split.
+Mofasa+QMOF.TocompareagainsttheADiTbaseline,wetrainedMofasaonQMOFsystems
+with up to 170 atoms in the unit cell (corresponding to 85th percentile). The data was randomly
+split 80/10/10% into training, validation, and test sets, resulting in a final training dataset of
+approximately14k structures.
+MOFFlow-2 + BW.The MOFFlow-2 baseline [49] was trained on the Boyd-Woo (BW) database
+[8, 11], consisting of358k total hypothetical MOFs constructed using the ToBasCCo assembly
+method[7]. Theauthorsused MOFid todecomposeMOFsintothebuildingblocks,discardedany
+structureswithmorethan20buildingblocks,andfilteredoutallsystemsthatfailed MOFChecker
+criteria. This resulted in a training dataset of157k samples with 100%MOFCheckervalidity.
+MOF-BFN + BW.The MOF-BFN baseline [45] also used the BW database. In contrast to
+MOFFlow-2 they only filtered out structures with more than 200 building blocks. The authors
+did not report the exact final training set size.
+19
+Mofasa + BW.For comparison with MOFFlow-2 [49] and MOF-BFN [45] we use Mofasa on
+ARC-MOF DB0 split [23], which consists of263k systems after additional ARC-MOF structure
+checks, including metal oxidation states, atom overlaps, unrealistically small unit cells, and
+over-coordination. We further filter out systems that have more than 500 atoms in the unit cell.
+After a 95/4/1% training/validation/test split, we trained Mofasa on238k systems.
+Mofasa + Experimental.We define the “Experimental” dataset as a combination of several
+available experimental sources: QMOF, the computatioSn-ready split of CoRE-MOF-2024 [64],
+and the DB12 and DB14 subsets from ARC-MOF [23]. This combinations results in a total of
+49k systems with an averageMOFChecker validity of 84.2%. When training Mofasa we only use
+systems up to 500 atoms from the Experimental dataset.
+Appendix C: Building Mofasa
+Weadoptthelatentdiffusionframework[20]involvinganautoencoderandadenoisingdiffusion
+model. The autoencoder learns a continuous latent representation from a crystal structure’s
+mixed categorical and continuous features, while the diffusion model learns to generate these
+latent representations. The autoencoder and diffusion model components share a common
+graph neural network (GNN) backbone, which is an adaptation of an established architecture
+previously validated in machine-learned interatomic potential models [37, 58] for fast and
+accurate molecular simulations.
+C.1 Hierarchical GNS backbone
+The shared backbone architecture for both autoencoder and diffusion models is an extended
+version of the Graph Network Simulator (GNS) [15]. This architecture incorporates two key
+modifications: (1) the addition of a graph attention mechanism [10], and (2) a hierarchical
+messagepassingscheme. Thishierarchicalschemeismotivatedbytheheterogeneityofatomistic
+structuraldata,wherestructuralfeaturesatthelocalandgloballevelshavefundamentallydistinct
+properties, hence necessitating specialized processing. We enable this by defining the graph
+components as distinct local and global sets, where local components may represent individual
+atoms (or atomic neighborhoods) and global components capture broader system properties
+like lattice parameters.
+We denote the sets of local nodes, local edges, global nodes, and global edges as𝑽L ={𝒗 L
+𝑖 },
+𝑬L ={𝒆 L
+𝑗,𝑘}, 𝑽G ={𝒗 G
+𝑙 }, and𝑬G ={𝒆 G
+𝑚,𝑛}, respectively. All edges are directional. While local
+edges are restricted to connecting local nodes, global edges are allowed to cross-communicate
+between the global and local contexts, handled by a dedicated neural network distinct from
+the local message passing networks. Precise construction of these sets will be introduced in
+subsequent sections.
+The processing of the GNS is outlined in Algorithm 1, with the key modification being the
+message passing stage. Each message passing iteration consists of two sequential steps: a local
+step, where information is exchanged exclusively between local nodes via local edges; and a
+global step, which processes a joint graph of global and local nodes. This global step aggregates
+atom-levelinformationtoupdatetheglobalcontextand,simultaneously,broadcastssystem-level
+context to the local nodes connected via the directed global edges. The message computation
+also involves an edge-attention mechanism, adopted directly from Orb [37, Section 2.2].
+20
+Algorithm 1Hierarchical GNS processing
+Inputs:
+Features:Local nodes𝑽 0
+L and edges𝑬0
+L, and global nodes𝑽0
+G and edges𝑬0
+G.
+Embedders:Local embedding MLP,EmbedL(·), and global embedding MLP,EmbedG(·).
+Message passing networks:Local edge and node networks,𝜙𝑡
+E,L(·)and 𝜙𝑡
+N,L(·), and global
+edge and node networks,𝜙𝑡
+E,G(·)and𝜙 𝑡
+N,G(·)for𝑡∈{1,...,𝑇}.
+Edge-attention functions:𝜓𝑡
+1(·)and𝜓 𝑡
+2(·)for𝑡∈{1,...,𝑇}.
+Read-out layers:Local read-out MLP,ReadL(·), and global read-out MLP,ReadG(·).
+1:defComputeDeltas(𝑽,𝑬;𝜙 E,𝜙 N,𝜓1,𝜓2)
+2:for each𝒆 𝑖,𝑗 ∈𝑬,𝒗 𝑖 ∈𝑽,𝒗 𝑗 ∈𝑽:⊲Compute edge residuals for each edge
+3:Δ𝒆 𝑖,𝑗 ←𝜙 E([𝒆𝑖,𝑗,𝒗 𝑖,𝒗 𝑗])
+4:for each𝒗 𝑖 ∈𝑽:⊲Compute node residuals for each node
+5:𝒎 1
+𝑖 ←Í
+𝑗∈ℛ(𝑖)𝜓1(𝒆𝑖,𝑗)Δ𝒆𝑖,𝑗;𝒎 2
+𝑖 ←Í
+𝑗∈𝒮(𝑖)𝜓2(𝒆𝑗,𝑖)Δ𝒆𝑗,𝑖
+6:Δ𝒗 𝑖 ←𝜙 N([𝒗𝑖,𝒎 1
+𝑖 ,𝒎 2
+𝑖])
+7:return{Δ𝒗 𝑖}𝑖,{Δ𝒆 𝑖,𝑗}𝑖,𝑗
+# 1. Embedding Stage
+8:𝑽 1
+L ,𝑬 1
+L ←Embed L(𝑽0
+L ,𝑬 0
+L);𝑽 1
+G,𝑬 1
+G ←Embed G(𝑽0
+G,𝑬 0
+G)
+# 2. Message Passing Loop
+9:for𝑡=1to𝑇
+# Local Step: Update local components
+10:Δ𝑽 𝑡
+L,Δ𝑬 𝑡
+L ←ComputeDeltas(𝑽 𝑡
+L,𝑬 𝑡
+L;𝜙t
+E,L,𝜙t
+N,L,𝜓𝑡
+1,L,𝜓𝑡
+2,L)
+11:𝑽 𝑡+1
+L ←𝑽 𝑡
+L +Δ𝑽 𝑡
+L;𝑬 𝑡+1
+L ←𝑬 𝑡
+L +Δ𝑬 𝑡
+L
+# Global Step: Update global components, incorporating local node info
+12:𝑽 𝑡
+Joint ←𝑽 𝑡
+G ∪𝑽 𝑡+1
+L
+13:Δ𝑽 𝑡
+Joint,Δ𝑬 𝑡
+G ←ComputeDeltas(𝑽 𝑡
+Joint,𝑬 𝑡
+G;𝜙t
+E,G,𝜙t
+N,G,𝜓𝑡
+1,𝐺,𝜓𝑡
+2,𝐺)
+14:𝑽 𝑡+1
+G ←𝑽 𝑡
+𝐺 +Δ𝑽 𝑡
+Joint|G;𝑬 𝑡+1
+G ←𝑬 𝑡
+G +Δ𝑬 𝑡
+G
+# Broadcast global information to connected local nodes
+15:𝑽 𝑡+1
+L ←ScatterAdd(𝑽 𝑡+1
+L ,Δ𝑽 𝑡
+Joint|L)
+# 3. Read-out Stage
+16:returnRead(𝑽 𝑇+1
+L ),Read(𝑽 𝑇+1
+G )
+21
+C.2 Learning to represent crystal systems
+A crystal structure is defined in terms of its periodically repeating unit cell containing𝑁
+atoms. To ensure a unique representation across infinitely-many arbitrary unit cell choices, we
+standardize the structures using primitive cell reduction and Niggli reduction [1]. We represent
+this standardized structure with the tuple𝑺=(𝑨,𝑭,𝑳) , where𝑨={𝑎 𝑖}𝑁
+𝑖=1 ∈A 𝑁 denotes the
+atomic types,𝑭={𝒇 𝑖}𝑁
+𝑖=1 ∈[0,1) 𝑁×3 represents the fractional positions relative to the unit
+cell, and𝑳=(𝑎,𝑏,𝑐,𝛼,𝛽,𝛾)∈R 3
+>0 ×[𝜋
+3 ,2𝜋
+3 ]3 is the rotationally-invariant lattice representation
+consisting of three length parameters and three angles describing the basis vectors.
+While the above representation is rotationally invariant, the fractional positions depend on the
+arbitrary choice of the unit cell origin. To ensure the model learns robust representations, we
+use data augmentation. For every training sample, we shift all fractional positions by a random
+vector 𝒖∼𝒰[0,1) 3, obtaining the augmented sample𝑺′ =(𝑨,(𝑭+𝒖)mod 1,𝑳) , where the
+modulooperatorcorrespondstotheperiodicboundaryconditionandensuresthatthefractional
+positions remain in[0,1)3. For conciseness in this paper we will use𝑺 and 𝑺′interchangeably,
+since they represent the same system.
+Learning to directly generate mixed categorical and continuous data, such as crystal structures,
+presents significant challenges [e.g., 14, 19, 25, 27]. To mitigate these issues, we train an
+autoencoder that maps the crystal structure𝑺 to a continuous latent representation𝒁 using an
+encoderEnc(·), and reconstructs it via a decoderDec(·).
+C.3 Mapping crystal systems to latent representations
+The encoderEnc(·)maps a crystal structure𝑺 to a continuous latent representation𝒁 using the
+GNS architecture defined in Section C.1. We adapt the implementation and input featurization
+fromOrb[37,58],astate-of-the-artMLIP,leveragingitsabilitytoproducerobustrepresentations
+for modeling potential energy and atomic forces.
+Feature construction.We construct the input local node features𝑽L by concatenating the
+one-hot representations of the atomic types𝑨 with sinusoidal embeddings of the fractional
+coordinates 𝑭. The input local edges𝑬L are then constructed using a unit cell-aware nearest
+neighbor scheme; the resulting edge displacement vectors are encoded using Bessel basis
+functions. To incorporate lattice information in the local context, we concatenate the lattice
+parameters, encoded via radial basis functions, to both the local node and edge feature vectors.
+Finally, we initialize a single global node𝑽G using the encoded lattice parameters and create
+directed global edges pointing from every local node to this global node.
+Encoder processing.The GNS message passing maps these inputs to the latent representation
+𝒁. The local message passing layers, which incorporate distance-smoothed attention [37], learn
+a smooth, localized representation of atomic structure, denoted𝒁L ∈R 𝑁×𝐷. On the other
+hand, the global message passing steps aggregate system-level context from both local and
+global nodes into a global latent representation𝒁G ∈R 𝐷. Together, these define the continuous
+latent representation as𝒁=(𝒁 L,𝒁 G), which we learn to generate using a diffusion model in
+Section C.7.
+C.4 Regularizing the representation space
+To ensure the latent space is structured and informative for the diffusion model, we regularize
+representations with a bottleneck layer before the decoder. We set the latent dimensionality
+to 𝐷=4 . We use separate bottleneck layers for the two components: for the local latents𝒁L
+we use residual vector quantization [18] with the rotation trick [43], whereas for the global
+22
+latent vector𝒁G, we apply a Gaussian KL-divergence bottleneck. The regularized features after
+the bottleneck are denoted ase𝒁=Bottleneck(𝒁) . Empirically, we observed that the model
+performance is robust to the specific choice of bottleneck configuration.
+C.5 Mapping latent representations to crystal systems
+Similar to the encoder, the decoder modelDec(·)uses the GNS architecture to reconstruct a
+crystal structureˆ𝑺from the latent representatione𝒁.
+Feature construction.We initialize the input node features using the regularized latentse𝒁
+obtained from the bottleneck layer. In contrast to the sparse nearest-neighbor graph used in
+the encoder, the decoder constructs a fully-connected graph for the local context: local edges
+are created from each local node to every other node, initialized with the concatenated latent
+vectors of the connected pair. Additionally, the directed global edges are initialized from the
+single global node to every local node.
+Decoder processing.Decoder message passing uses the edge-attention mechanism [37],
+omitting the distance-based smoothing used in the encoder, as spatial positions are not yet
+defined at this stage. The local message passing steps evolve the local features to recover atom-
+level details, while the global steps broadcast system-level context to the local nodes. Finally,
+dedicated read-out heads produce the reconstruction parameters: the fractional coordinatesˆ𝑭
+and atom type probabilitiesˆ𝑷𝑨 are predicted from local nodes (where the discrete atom type is
+given by ˆ𝑨={arg max 𝑗 ˆ𝑃𝑗
+𝑖}𝑖), and the lattice parametersˆ𝑳are predicted from the global node.
+C.6 Training the autoencoder
+We train the autoencoder to reconstruct the input crystal system𝑺=(𝑨,𝑭,𝑳) by minimizing a
+weighted sum of reconstruction losses and regularization losses. Given the decoder outputs
+(ˆ𝑷𝑨, ˆ𝑭, ˆ𝑳)=Dec( e𝒁)for latentse𝒁=Bottleneck(𝒁) with 𝒁=Enc(𝑺) , we define the objectives as
+follows.
+Reconstruction losses.We use the average cross-entropy loss to predict the discrete atom
+types ˆ𝑨:
+ℒ𝑨(𝑨, ˆ𝑷𝑨)= 1
+𝑁
+𝑁Õ
+𝑖=1
+CrossEntropy(𝑎𝑖,ˆP𝑖).(1)
+For fractional positionsˆ𝑭we use mean squared error (MSE):
+ℒ𝑭(𝑭, ˆ𝑭)= 1
+𝑁
+𝑁Õ
+𝑖=1
+𝒇𝑖 −ˆ𝒇𝑖
+
+2
+2
+.(2)
+To predict the lattice parametersˆ𝑳=( ˆ𝑎, ˆ𝑏, ˆ𝑐, ˆ𝛼, ˆ𝛽, ˆ𝛾)we also use the MSE after normalization.
+We normalize the lattice vector lengths by the cube root of the atom count,𝑁1/3, following Xie
+et al. [22, Appendix B.1], and apply a logarithmic transformation, before computing the loss:
+ℒ𝑳(𝑳, ˆ𝑳)= 1
+3
+log
+(𝑎,𝑏,𝑐)
+𝑁1/3
+
+−log
+(ˆ𝑎, ˆ𝑏, ˆ𝑐)
+𝑁1/3
+
+2
+2
++1
+3
+(𝛼,𝛽,𝛾)−( ˆ𝛼, ˆ𝛽, ˆ𝛾)
+2
+2 .(3)
+23
+Regularization.Asdiscussed, weusedifferentregularizationmethodsforthelocalandglobal
+latent spaces. The local latents𝒁L use a residual vector quantization (VQ) bottleneck. We
+implement this using thevector_quantize_pytorch Python package2, where the codebook𝑪
+is updated using exponential moving average, and the encoder outputs are regularized to stay
+close to the codebook vectors via the standard commitment loss [9], ensuring the latent space
+does not grow during training:
+ℒReg
+L (𝒁L)= 1
+𝑁
+𝑁Õ
+𝑖=1
+Commitment(𝒛L,𝑖,𝑪).(4)
+The global latents𝒁G are regularized via the KL-divergence:
+ℒReg
+G (𝒁G)= 1
+𝑁𝐷KL(𝒩(𝒁
+𝝁
+G,diag(𝒁 𝝈
+G))∥𝒩(0,1)),(5)
+where the global latents correspond to the variational posterior parameters(𝒁
+𝝁
+G,𝒁 𝝈
+G)=𝒁 G, and
+𝒩(0,1)denotes the standard Gaussian prior.
+Total objective.The full training objective is the weighted sum of these components:
+ℒAE(𝑺, ˆ𝑺,𝒁)=
+©­­­­­­
+«
+ℒ𝑨(𝑨, ˆ𝑨)
+ℒ𝑭(𝑭, ˆ𝑭)
+ℒ𝑳(𝑳, ˆ𝑳)
+ℒReg
+L (𝒁L)
+ℒReg
+G (𝒁G)
+ª®®®®®®
+¬
+⊤
+·
+©­­­­­
+«
+1
+300
+1
+1
+10−4
+ª®®®®®
+¬
+.(6)
+C.7 Learning to generate latent representations of crystal structures
+We use latent diffusion [20] to model the distribution of crystal structure latent representations.
+Once trained, the model generates samples of the latents𝒁, which are mapped back to the atom
+domain using the decoder:ˆ𝑺=Dec(Bottleneck(𝒁)).
+We formulate the generative process using a denoising diffusion probabilistic model (DDPM)
+[13] operating on the continuous latent space𝒁∈R (𝑁+1)×𝐷. By modeling crystal structures in
+this continuous space, we avoid the challenges posed with directly generating mixed categorical
+and continuous data in the atom domain.
+Since the dimensionality of the latent space depends on the system size (comprising𝑁 local
+nodes and 1 global node), the diffusion process is explicitly conditional on the number of atoms
+𝑁. During inference,𝑁 is sampled from the empirical distribution of the training data. The
+diffusionframeworkisdefinedbytwoprocesses: afixedforwardprocessthatgraduallycorrupts
+the data structure by adding noise, and a learnable reverse process that learns to generate data
+from pure noise.
+Data preparation.The training targets are generated on-the-fly by passing the crystal systems
+𝑺 through the frozen encoderEnc(·). To help the model learn a translationally invariant
+distribution, we apply the random translation augmentation described in Section C.2 to the
+inputstructuresbeforeencoding. Moreover,tostabilizediffusionmodeltraining,westandardize
+the latent representations to have a zero mean and unit variance using running statistics. For
+conciseness, we re-use𝒁to denote thestandardizedlatents in the remainder of this section.
+2https://github.com/lucidrains/vector-quantize-pytorch/
+24
+Forwardprocess.Wedefinetheforwardprocessthattransformsthecleanlatentrepresentation
+𝒁0 (obtainedfromtheencoder)intoastandardGaussiandistributionoverasequenceoftimesteps
+𝑡∈{0,...,𝑇} (we set𝑇=100 k during training, and𝑇=4 k during sampling). The noisy sample
+at timestep𝑡, denoted𝒁𝑡, is sampled as:
+𝒁𝑡 =
+√
+¯𝛼𝑡𝒁0 +
+p
+1− ¯𝛼𝑡𝝐,where𝝐∼𝒩(0,1),(7)
+where𝝐 hasthesamedimensionalityasthelatents. Thenoiseschedule ¯𝛼𝑡 followsacosine-based
+schedule [13]:
+¯𝛼𝑡 =sigmoid
+ 
+logSNR(𝑡)
+
+,withlogSNR(𝑡)=−log tan 2
+
+𝑡𝜋
+2𝑇
+
++𝑠(8)
+where we introduce a shift hyperparameter𝑠=2 in the log signal-to-noise ratio (SNR) domain,
+ensuring that the diffusion model spends more time in the regime dominated by signal than
+noise (with𝑠=2 this corresponds to 78% of the diffusion timesteps). As𝑡→𝑇 , the SNR ratio
+approaches zero, ensuring that the latents𝒁𝑇 are indistinguishable from pure Gaussian noise.
+Reverse process.The reverse diffusion process generates latentsˆ𝒁0 from pure noiseˆ𝒁𝑇. Here,
+a denoising model is trained to reverse the corruption step-by-step. We use the𝑣-prediction
+(“velocity”) parameterization [21]. The denoising model predicts𝒗𝑡, which represents the
+velocity in the latent space, defined as a linear combination of the clean latents and the noise:
+𝒗𝑡 =
+√
+¯𝛼𝑡𝝐−
+p
+1− ¯𝛼𝑡𝒁0 (9)
+Thisparametrizationimprovestrainingstabilityandconvergence,particularlybecausethetarget
+remains well-defined at𝑡=𝑇 (where SNR=0 ), where the standard𝝐-prediction objective is
+generally unstable due to SNR=0[21].
+Self-conditioning.We implement self-conditioning [24] to improve training convergence
+and sample quality. During training, with probability of 0.5, we condition the denoising
+model on a noisier sample from a later stage in the diffusion process. We sample a time offset
+𝛿𝑡∼𝒰[1,...,⌊𝑇∗0.002⌋] and define an auxiliary timestep𝑡′=min(𝑡+𝛿𝑡,𝑇) . The model is
+then conditioned as𝒗𝜽(𝒁𝑡,𝑡,𝒁 𝑡′,𝑡′), where
+𝒁𝑡′ =
+r
+¯𝛼𝑡′
+¯𝛼𝑡
+𝒁𝑡 +
+r
+1− ¯𝛼𝑡′
+¯𝛼𝑡
+𝝐′,with𝝐 ′∼𝒩(0,1).(10)
+This random sampling of the auxiliary timestep𝑡′is different from the original implementation
+and allows the model to generalize to varying diffusion schedules and timestep granularity
+duringsampling. Empirically,wefoundself-conditioningtobeessentialformodelperformance.
+We hypothesize that this necessity arises from the nature of the latent space: although the
+representations are continuous, they encode inherently discrete structural information. As
+recently suggested by Pynadath et al. [57], self-conditioning enables learning conditional
+dependencies, such as, atom bonding pairs, proving critical in this mixed latent space.
+Training objective.The training objective for the denoising model 𝒗𝜽(𝒁𝑡,𝑡,𝒁 𝑡′,𝑡′)is the
+expected MSE:
+ℒDiff =E 𝑡,𝒁0,𝝐,𝑡′,𝒁𝑡′,𝝐′∥𝒗𝑡 −𝒗 𝜽(𝒁𝑡,𝑡,𝒁 𝑡′,𝑡′)∥2
+2 ,(11)
+where𝑡∼𝒰[0,...,𝑇] , 𝒁0 aresystems 𝑺 fromtheempiricaldistributionencodedusingthefixed
+encoder,𝝐 is noise from standard Gaussian distribution that has the same shape as𝒛0, and the
+self-conditioning information𝑡′,𝒁 𝑡′ and𝝐 ′is constructed as described above.
+25
+Denoising GNS model.We use the same GNS backbone described in Section C.1 for the
+denoising model𝒗𝜽(𝒁𝑡,𝑡,𝒁 ). We concatenate the𝒁 with a positional embedding of the time
+index𝑡and pass them into the GNS, which predicts the velocity𝒗𝑡.
+Permutation symmetry breaking forde novogeneration.The GNS backbone is inherently
+permutation-equivariant; that is, permuting the input node ordering results in an equivalent
+permutation of the output features. The standard diffusion objective in Equation (11) regresses
+these order-dependent model predictions against ordered targets. However, in high noise
+regimes, the correspondence between the noisy latents and the clean data becomes ambiguous,
+as multiple node orderings could have generated the same noisy latents. This creates a difficult
+optimization task since an order-agnostic denoising model cannot effectively match the fixed
+targetordering. Whilerecentworksproposematching-basedobjectivestoensureapermutation-
+invariant loss [59], we choose a simpler approach: we explicitly break the symmetry within
+the denoising model itself. We achieve this by concatenating embeddings of the node order
+index to the node latent features before passing them to the GNS. Empirically, we observe that
+this order-conditioning is important for performance in thede novosetting. In contrast, it is less
+significant for conditional generation, where the conditioning signal often provides sufficient
+structural context to implicitly resolve the symmetry.
+To maximize the efficacy of this symmetry breaking, it is important that the node order is
+consistentacrossdata. Weachievethisbypre-processingthedatatoenforceacanonicalordering
+derived from the crystal graph’s topology. Specifically, we construct the bond graph of the
+system and determine the node order via the BLISS graph coloring algorithm [3], using atom
+types as the initial node colors to distinguish chemically distinct atoms. For MOFs, we make
+a further adjustment: we use theMOFid algorithm first to decompose the structure into its
+constituent building blocks (linkers, solvents, metal nodes and bridges) and apply the graph
+canonicalization algorithm within each component independently.
+Duringde novosampling, we condition the denoising model on an index sequence[1,...,𝑁] .
+Sincethissequencereliesonlyonthesystemsize 𝑁andprovidesnopriorinformationregarding
+the crystal’s chemistry or topology, the generative process is unconditional.
+Conditional generation.A key advantage of the direct mapping between the latents𝒁∈
+R(𝑁+1)×𝐷 and atoms of a system is that it facilitates fine-grained conditioning. We can inject
+atom- and bond-level information by concatenating embeddings of the desired properties, such
+as atomic types or spatial positions, directly to the corresponding node features. Similarly,
+connectivity constraints can be incorporated by augmenting the edge vectors with embeddings
+indicating the presence or absence of chemical bonds.
+To enable flexible conditional generation alongsidede novotasks, we train Mofasa across diverse
+conditional tasks. For each training sample, we randomly mask specific subsets of structural
+information to simulate various generation scenarios. With a probability of 0.25, we fix the
+positions and atom types of all MOF substructures (nodes, linkers, or solvents) except for one
+randomly selected component, effectively training the model for structure inpainting tasks
+(e.g., generating linkers within a fixed node scaffold). Independently, we condition on the
+system’s chemical compositions (atom types) and bond topology with a 0.25 probability each.
+Whenever composition or bonds are provided, we also supply information about clustering
+of the fragments that identify distinct molecular fragments and components; otherwise, this
+clustering information is provided stochastically. This multi-task training objective enables
+a single model to performde novogeneration, conformer generation, and partial structure
+inpainting. Importantly, when conditioning on structural information, the atom order index is
+not provided.
+26
+Appendix D: Geometry optimization with Orb
+We perform geometry optimizations with the sum of two independent MLIPs:orb-v3-direc
+t-20-omat, which was trained at the PBE level of theory and a 3-layer model with the same
+basic architecture, but trained to predict an additive D3 (zero) term. We run both models at
+float32-highest precision. These models are available from theorb-models package [37, 58].
+Whilst D3 can be computed analytically, existing implementations are inefficient and create a
+bottleneck.
+We use the Fréchet cell FIRE optimizer [2] implemented inTorchSim [41] with a0.05 eV/Å
+max force convergence criterion and a maximum of500 iterations. With these settings,84% of
+MofasaDBand98%of QMOF converge.
+Appendix E: Three-step molecular dynamics pipeline for dynamic
+stability
+To compute the dynamic properties of MOFs in Section 1.5 we used a three-step MD pipeline
+with similar settings to those reported by Kraß et al. [50] The pipeline was designed to rapidly
+assess the thermal stability of generated MOF samples at 300 K.
+All steps usedorb-v3-con-inf-omat combined with D3 dispersion corrections[58, 4]. For
+these 1,000 samples, we used the torch D3 implementation from thetorch-dftd library. The
+first step of the pipeline was a coarse geometry optimization using the LBFGS optimizer in
+ASE (maximum force threshold of 0.05 eV/Å, maximum of 1,000 steps), followed by an NVT
+equilibration step using Langevin dynamics at 300 K (timestep 1 fs, friction coefficient of 0.01
+fs−1, 1 ps duration). Finally, the unit cell was allowed to relax isotropically in the NPT ensemble
+using MTK dynamics via theIsotropicMTKNPT ASE implementation. This final simulation was
+run for 50 ps at 300 K with a timestep of 1 fs, a thermostat timescale (tdamp) of 100 fs, and a
+barostat timescale (pdamp) of 1,000 fs. To quantify stability, the change in volume was calculated
+asthedifferenceinmeancellvolumebetweenthefirst10psandthefinal10psofthesimulation,
+while RMSD values were computed based on the deviation of atomic coordinates between the
+first and final frames.
+27
+Appendix F: ORB latent embeddings of MofasaDB samples
+1.00
+ 0.75
+ 0.50
+ 0.25
+ 0.00 0.25 0.50 0.75 1.00
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+n=20,000
+Colored by orb_energy_per_atom
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Colored by topology
+topology
+ERROR (6,924)
+NA (4,891)
+UNKNOWN (3,768)
+sql (1,224)
+rna (941)
+pcu (265)
+hcb (249)
+fcu (174)
+fes (148)
+kgd (113)
+sqp (98)
+bex (97)
+ttp (82)
+bct (80)
+cpf (65)
+Other (881)
+7.0
+6.8
+6.6
+6.4
+6.2
+6.0
+5.8
+orb_energy_per_atom
+Figure 9: t-SNE plot oforb-v3-direct-20-omat latent embeddings (aggregated by mean) of
+20,000 MofasaDB samples. Samples are colored according to their inferredtotal potential energy
+per atom(eV/atom, left) andtopology(right).
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Zn-containing MOFs
+No Zn (16,913)
+Contains Zn (3,087)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Cu-containing MOFs
+No Cu (16,127)
+Contains Cu (3,873)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Fe-containing MOFs
+No Fe (19,933)
+Contains Fe (67)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Co-containing MOFs
+No Co (19,566)
+Contains Co (434)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Mn-containing MOFs
+No Mn (18,806)
+Contains Mn (1,194)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Ni-containing MOFs
+No Ni (19,658)
+Contains Ni (342)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Zr-containing MOFs
+No Zr (19,685)
+Contains Zr (315)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Al-containing MOFs
+No Al (18,666)
+Contains Al (1,334)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Cd-containing MOFs
+No Cd (17,312)
+Contains Cd (2,688)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Mg-containing MOFs
+No Mg (19,329)
+Contains Mg (671)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+Cr-containing MOFs
+No Cr (19,965)
+Contains Cr (35)
+1.0
+ 0.5
+ 0.0 0.5 1.0
+t-SNE 1
+1.00
+0.75
+0.50
+0.25
+0.00
+0.25
+0.50
+0.75
+1.00
+t-SNE 2
+V-containing MOFs
+No V (19,938)
+Contains V (62)
+Sample Latent Space: Metal Presence Analysis
+Figure 10: t-SNE plot oforb-v3-direct-20-omat latent embeddings (aggregated by mean) of
+20,000 MofasaDB samples. Samples are colored according to the presence of specific metals in
+the metal nodes.
+28
+Appendix G: Extended results
+Test (%) QMOF Mofasa-opt Mofasa ADiT-QMOF ADiT Joint
+Has carbon↑100.0 100.0 98.4 100.0 100.0
+Has hydrogen↑99.8 99.9 98.4 99.6 100.0
+Has atomic overlap↓0.0 0.0 2.8 8.3 10.8
+Has overcoord. C↓0.0 0.0 2.5 23.6 34.3
+Has overcoord. N↓0.0 0.0 1.6 1.5 1.6
+Has overcoord. H↓0.0 0.0 2.4 1.0 3.6
+Has undercoord. C↓5.6 14.3 20.1 60.0 72.1
+Has undercoord. N↓6.5 7.3 12.9 39.1 39.9
+Has undercoord. rare earth↓0.0 0.2 2.1 0.4 0.8
+Has metal↑100.0 99.2 97.7 100.0 99.4
+Has lone molecule↓9.7 27.1 31.3 72.9 83.2
+Has high charge↓1.5 1.6 3.5 0.9 2.5
+Has suspicious terminal oxo↓0.0 0.5 2.5 2.6 5.8
+Has undercoord. alkali↓0.1 1.0 3.0 1.0 6.4
+Has geom. exposed metal↓1.7 3.7 5.3 7.0 9.6
+Validity rate (all passed)↑80.1 59.8 52.9 15.7 10.2
+Table 4: A breakdown of theMOFChecker validity criteria for Mofasa and ADiT trained on
+the QMOF database. We observe that Mofasa-opt displays fewer violations of the “Has
+carbon/hydrogen/metal” checks. However, this cannot happen since geometry optimization
+cannot remove or add atoms. This is an artifact ofMOFChecker failures. WheneverMOFChecker
+fails to compute for a system, all criteria default to “False”. AsMOFChecker failures were less
+frequent for optimized systems, fewer artificial violations were recorded.
+29
+Test (%) Experimental Mofasa-opt (Exp.) Mofasa (Exp.)
+Has carbon↑99.6 99.5 98.8
+Has hydrogen↑98.2 97.9 97.2
+Has atomic overlap↓0.0 0.0 1.7
+Has overcoord. C↓0.0 0.0 2.4
+Has overcoord. N↓0.0 0.0 1.0
+Has overcoord. H↓0.0 0.0 2.1
+Has undercoord. C↓3.3 17.1 24.7
+Has undercoord. N↓4.1 6.9 13.5
+Has undercoord. rare earth↓0.1 0.3 1.5
+Has metal↑100.0 99.1 98.3
+Has lone molecule↓6.5 18.3 22.6
+Has high charge↓1.4 0.6 1.7
+Has suspicious terminal oxo↓0.8 1.7 3.6
+Has undercoord. alkali↓0.1 0.9 1.9
+Has geom. exposed metal↓1.3 3.5 5.8
+Validity rate (all passed)↑84.2 62.8 52.2
+Table 5: A breakdown of theMOFChecker validity criteria for Mofasa trained on the Ex-
+perimental database. We observe that Mofasa-opt displays fewer violations of the “Has
+carbon/hydrogen/metal” checks. However, this cannot happen since geometry optimization
+cannot remove or add atoms. This is an artifact ofMOFChecker failures. WheneverMOFChecker
+fails to compute for a system, all criteria default to “False”. AsMOFChecker failures were less
+frequent for optimized systems, fewer artificial violations were recorded.
+DatasetN E EV EU EU-R ENU ENU-R EVU EVU-R EVNU EVNU-R
+Mofasa (QMOF)1k 77.1 42.8 76.5 89.8 75.2 88.3 42.4 60.5 41.5 59.2
+Mofasa (QMOF)10k 75.7 44.0 73.5 86.2 72.5 85.1 43.0 61.3 42.4 60.5
+Mofasa (QMOF)100k 75.8 43.9 68.8 80.7 68.5 80.3 40.2 57.3 40.0 57.0
+Mofasa-opt (QMOF)1k 77.0 51.7 76.4 89.7 74.8 87.8 51.3 73.2 50.6 72.2
+Mofasa-opt (QMOF)10k 75.3 50.2 72.7 85.3 71.6 84.1 48.9 69.7 48.2 68.7
+Mofasa-opt (QMOF)100k 75.7 49.8 68.4 80.3 68.1 79.9 45.7 65.1 45.4 64.8
+Mofasa (Exp)1k 82.3 46.9 77.6 84.2 73.6 79.9 43.1 54.7 40.1 50.9
+Mofasa (Exp)10k 82.7 46.7 71.8 77.9 69.8 75.7 38.4 48.7 36.8 46.8
+Mofasa (Exp)100k 82.9 46.5 67.6 73.3 66.9 72.6 35.5 45.0 34.9 44.4
+Mofasa-opt (Exp)1k 84.6 57.0 78.4 85.1 74.0 80.3 52.0 66.0 48.7 61.8
+Mofasa-opt (Exp)10k 83.5 55.0 72.6 78.7 70.5 76.5 46.3 58.8 44.8 56.8
+Mofasa-opt (Exp)100k 83.4 56.0 67.6 73.3 66.9 72.6 43.7 55.5 43.2 54.8
+Table 6:MOFid: Existence (E), Validity (V), Novelty (N) and Uniqueness (U)for a range of
+sample-sizes (N). Importantly, the real data (QMOF or “Experimental”) does not have100% E
+or V, and so we also report rescaled (-R) percentages, dividing by the maximum possible score
+(which is a function of both dataset and metric).
+30
+Transition Count Percentage
+ERROR→ERROR 107,967 53.5%
+Valid→Valid 38,781 19.2%
+UNKNOWN→UNKNOWN 30,441 15.1%
+ERROR→UNKNOWN 5,865 2.9%
+UNKNOWN→ERROR 5,731 2.8%
+ERROR→Valid 3,937 1.9%
+Valid→ERROR 3,857 1.9%
+UNKNOWN→Valid 2,920 1.4%
+Valid→UNKNOWN 2,427 1.2%
+Table7: BreakdownofhowtopologiesofgeneratedsamplesinMofasaDBchangeaftergeometry
+optimization withorb-v3-direct-20-omat. Notably, approximately 6.4% of samples change
+between Valid to ERROR/UNKNOWN states. This suggests that topology inferred viaMOFid is
+sensitive to small geometry perturbations and should be interpreted with caution.
+Status Count Percentage
+Same Topology 33,762 87.1%
+Changed Topology 5,019 12.9%
+Total 38,781 100.0%
+Table 8: Stability of the inferred MofasaDB topologies (i.e. topologies that were not labeled as
+UNKNOWN, ERROR, orNA) byMOFid pre- and post-geometry optimization. Shows that about 12.9%
+of inferred topologies changed after geometry optimization.
+Rank Transition Count
+1 sqp→pcu 311
+2 sql→pcu 238
+3 bct→fcu 184
+4 dia→sqp 177
+5 cpf→rna 135
+6 hcb→sql 135
+7 sql→hcb 122
+8 sdb→ttp 85
+9 sql→sqp 72
+10 pcu→sql 72
+11 hcb→dia 60
+12 dia→pcu 57
+13 sql→fes 55
+14 hcb→sqp 54
+15 fes→sql 51
+Table 9: Top 15 topology changes in MofasaDB pre- and post-geometry optimization with
+orb-v3-direct-20-omat.
+31
+Appendix H: Glossary of computed properties
+Table 10: MofasaDB Property Glossary
+Key Unit Description
+Pore Geometry (Zeo++ [5], default: N2 probe radius of 1.86 Å)
+lcdÅ Largest Cavity Diameter
+pldÅ Pore Limiting Diameter (narrowest channel
+point)
+difÅ Diameter of Included sphere along Free path
+number_of_channels— Count of distinct connected channel systems
+number_of_pockets— Countofisolatedpores(inaccessibletoprobe)
+Volume Properties (Zeo++ [5], default: N2 probe radius of 1.86 Å)
+av_volume_fraction— Accessible volume fraction of unit cell
+av_cm3_per_gcm³/g Accessible pore volume per gram
+nav_volume_fraction— Non-accessible (pocket) volume fraction
+nav_cm3_per_gcm³/g Non-accessible volume per gram
+channel_volume_fraction— Fraction of void volume in channels
+pocket_volume_fraction— Fraction of void volume in pockets
+Surface Area Properties (Zeo++ [5], default: N2 probe radius of 1.86 Å)
+asa_m2_per_cm3m²/cm³Accessible surface area per unit volume
+asa_m2_per_gm²/g Accessible surface area per gram (cf. BET)
+nasa_m2_per_cm3m²/cm³Non-accessible surface area per unit volume
+nasa_m2_per_gm²/g Non-accessible surface area per gram
+channel_surface_area_fra
+ction
+— Fraction of surface area in channels
+pocket_surface_area_frac
+tion
+— Fraction of surface area in pockets
+Crystal Symmetry (Pymatgen [6])
+spacegroupstr Crystal system from space group analysis at
+symprec=0.01 (e.g., “cubic”)
+spacegroup_v2str Crystal system from space group analysis at
+symprec=0.1 (more tolerant)
+symprec_0.01/pointgroupstr Point group symbol (Hermann-Mauguin no-
+tation)
+symprec_0.01/spacegroupstr Space group symbol (Hermann-Mauguin no-
+tation)
+symprec_0.01/spacegroup_
+number
+int International Tables space group number (1-
+230)
+symprec_0.01/spacegroup_
+crystal
+str Crystal system name
+symprec_0.1/pointgroupstr Point group symbol (at looser tolerance)
+symprec_0.1/spacegroupstr Space group symbol (at looser tolerance)
+symprec_0.1/spacegroup_n
+umber
+int Space group number (at looser tolerance)
+symprec_0.1/spacegroup_c
+rystal
+str Crystal system name (at looser tolerance)
+Continued on next page
+32
+Table 10 – continued from previous page
+Key Unit Description
+ORB Properties [58]
+orb_energy_per_atomeV/atom ORB-predicted total potential energy per
+atom
+orb_max_forceeV/Å Maximum atomic force magnitude
+orb_latent_{0-4}_{pool}— GNN latent embeddings (dim=256); pool
+∈ {graph, nodes_and_bridges, linkers,
+bound_solvent,free_solvent}
+MOF Fragment Properties
+{component}_formulasList[str] Chemical formulas per fragment;
+component∈ {nodes_and_bridges, linkers,
+bound_solvent,free_solvent}
+linkers_smilesList[str] Full SMILES strings for each linker fragment
+linkers_simple_smilesList[str] Simplified scaffold SMILES (no stereochem-
+istry)
+Linker Molecular Descriptors [51]
+linkers_smiles_usedList[str] WhichSMILESstringwassuccessfullyparsed
+for each linker (original, fixed, or simple)
+linkers_smiles_standardi
+zed
+List[str] Neutralized, canonical tautomer SMILES
+linkers_morgan_ecfp{4,6}
+[_std]
+— Morgan fingerprints (2048-bit);_std = stan-
+dardized
+linkers_morgan_count_sumList[int] Sum of Morgan fingerprint bit counts (molec-
+ular complexity proxy)
+linkers_morgan_count_sum
+_max
+List[int] Maximum count in Morgan fingerprint (indi-
+cates highly represented substructures)
+linkers_morgan_count_sum
+_std
+List[int] Sum of counts for standardized fingerprints
+linkers_morgan_count_sum
+_max_std
+List[int] Maximum count for standardized finger-
+prints
+linkers_rotatable_bondsList[int] Number of rotatable bonds per linker (flexi-
+bility metric)
+linkers_ring_countList[int] Number of rings per linker
+linkers_coordination_sit
+e_count
+List[int] Total number of potential metal coordination
+sites per linker
+linkers_coordination_sit
+e_breakdown
+List[Dict] Breakdown by coordination site type
+linkers_carboxylate_coun
+t
+List[int] Number of carboxylate groups (-COO−/-
+COOH)
+linkers_pyridine_countList[int] Number of aromatic nitrogen sites
+linkers_imidazole_n_coun
+t
+List[int] Number of imidazole/triazole NH groups
+linkers_primary_amine_co
+unt
+List[int] Number of primary amine groups (-NH2)
+linkers_secondary_amine_
+count
+List[int] Number of secondary amine groups (-NH-)
+Continued on next page
+33
+Table 10 – continued from previous page
+Key Unit Description
+linkers_tertiary_amine_c
+ount
+List[int] Number of tertiary amine groups (-N<)
+linkers_phosphonate_coun
+t
+List[int] Number of phosphonate groups
+linkers_sulfonate_countList[int] Number of sulfonate groups
+linkers_phenolic_oh_coun
+t
+List[int] Number of phenolic hydroxyl groups
+linkers_alcoholic_oh_cou
+nt
+List[int] Number of alcoholic hydroxyl groups
+linkers_thiol_countList[int] Number of thiol groups (-SH)
+linkers_nitrile_countList[int] Number of nitrile groups (-C≡N)
+Validation Metrics
+no_atom_too_closebool True if all interatomic distances are reason-
+able
+smact_validbool True if SMACT charge-balance check passes
+MOFChecker Properties [46]: used for validation
+mofchecker_validbool Overallvalidityflag(Trueifpassesallchecks)
+mofchecker_no_carbonbool True if structure contains no carbon atoms
+mofchecker_no_hydrogenbool True if structure contains no hydrogen atoms
+mofchecker_no_metalbool True if structure contains no metal atoms
+mofchecker_has_atomic_ov
+erlaps
+bool True if atoms are too close (clashing)
+mofchecker_has_lone_mole
+cule
+bool True if structure contains disconnected frag-
+ments
+mofchecker_has_overcoord
+inated_c
+bool True if any carbon has too many bonds
+mofchecker_has_overcoord
+inated_n
+bool True if any nitrogen has too many bonds
+mofchecker_has_overcoord
+inated_h
+bool True if any hydrogen has too many bonds
+mofchecker_has_undercoor
+dinated_c
+bool True if any carbon has too few bonds
+mofchecker_has_undercoor
+dinated_n
+bool True if any nitrogen has too few bonds
+mofchecker_has_undercoor
+dinated_rare_earth
+bool True if any rare earth metal is undercoordi-
+nated
+mofchecker_has_undercoor
+dinated_alkali_alkaline
+bool True if alkali/alkaline earth metal is under-
+coordinated
+mofchecker_has_suspiciou
+s_terminal_oxo
+bool True if incorrect terminal oxo groups exist
+mofchecker_has_geometric
+ally_exposed_metal
+bool Trueifmetalhasunusualcoordinationgeom-
+etry
+mofchecker_has_high_char
+ges
+bool True if computed partial charges are unusu-
+ally high
+MOFChecker Properties [46]: not used for validation
+mofchecker_has_omsbool True if structure has Open Metal Sites
+Continued on next page
+34
+Table 10 – continued from previous page
+Key Unit Description
+mofchecker_has_3d_connec
+ted_graph
+bool True if framework is 3D-connected
+mofchecker_graph_hashstr Hash of the full structure graph (atoms +
+bonds)
+mofchecker_undecorated_g
+raph_hash
+str Hashofgraphwithhydrogenatomsremoved
+mofchecker_decorated_sca
+ffold_hash
+str Hash of framework scaffold with decorations
+mofchecker_undecorated_s
+caffold_hash
+str Hash of bare framework scaffold
+mofchecker_symmetry_hashstr Hash encoding symmetry information
+MOFid Properties [12]
+mofidstr Full MOFid identifier string. Format:
+{nodes}.{linkers} MOFid-v1.{topology}.cat{n}.
+Value is “UNKNOWN” if MOFid could not
+be computed.
+mofkeystr MOFKey identifier (a hash-based represen-
+tation). Format: {hash}.{topology}.MOFkey-
+v1.{short_code}. Value is “UNKNOWN” if
+MOFKey could not be computed.
+nodesstr Concatenated SMILES strings of all distinct
+metal nodes (.-separated). Value is “UN-
+KNOWN” if not available.
+linkersstr Concatenated SMILES strings of all distinct
+organic linkers (.-separated). Value is “UN-
+KNOWN” if not available.
+num_distinct_nodesint Number of chemically distinct metal node
+types in the MOF
+num_distinct_linkersint Number of chemically distinct organic linker
+types in the MOF
+topologystr Three-letter RCSR topology code (e.g., “pcu”,
+“dia”,“fcu”). Valueis“UNKNOWN”iftopol-
+ogy could not be determined.
+topology_v2str Alternative topology assignment (may differ
+from primary if ambiguous)
+catenationint Catenation number (degree of interpenetra-
+tion). 0 = non-catenated, n = n-fold catenated
+35

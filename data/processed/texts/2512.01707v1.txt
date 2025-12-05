@@ -1,0 +1,2035 @@
+STREAMGAZE: Gaze-Guided Temporal Reasoning
+and Proactive Understanding in Streaming Videos
+Daeun Lee1 Subhojyoti Mukherjee2 Branislav Kveton2 Ryan A. Rossi2 Viet Dac Lai2
+Seunghyun Yoon2 Trung Bui2 Franck Dernoncourt2 Mohit Bansal1
+1UNC Chapel Hill 2Adobe Research
+Code
+ Project page
+Q. Which transition best matches the user’s gaze pattern?
+(A) {pot, kettle} → {faucet} → {tomato} (B) {pot, knife} → {plate} → {cucumber}
+(C) {cup} → {bottle} → {sink} (D) {pan} → {refrigerator} → {counter}
+Gaze Triggered Alert
+Object Appearance Alert
+Future Action Prediction
+Object Identification (Easy/Hard) 
+Object Attribute Recognition
+Gaze Sequence Matching
+Non-Fixated Object Identification
+Scene Recall 
+Object Transition Prediction
+Q. [00:00] Alert me when the lid first appears.
+A. [05:50] It first appear! 
+Q. [00:00] Monitor my gaze and alert me when I gaze on the boiling pot.
+A. [10:53] Y ou are gazing the pot now!
+Q. What color of is this currently gazing object?
+(A) Red (B) Blue (C) Y ellow (D) Green
+Q. Which object is the user currently gazing? 
+(A) Lid (B) Pan (C) Cucumber (D) Spoon
+Q. Based on recent fixations, what will the user do next? 
+(A) Pour water to the pot  (B) Move around pasta 
+(C) Close the container      (D) Put the trash
+Q. What object does the user gaze at next 
+after looking at {pot and kettle}?
+(A) Cup (B) Faucet (C) Knife (D) Counter
+Q. When the user was gazing at the {tomato, knife, plate}, 
+which background object was NOT visible?
+(A) Plate (B) Counter (C) Curtain (D) Stove
+Q. Among {kettle, stove, microwave, faucet}, 
+which did the user never gaze at?
+(A) Kettle (B) Stove (C) Microwave (D) Faucet
+Figure 1.STREAMGAZE’s task taxonomy.We introduce STREAMGAZE, the first benchmark designed to evaluate how effectively MLLMs
+use gaze for temporal and proactive reasoning in streaming videos. We introduce gaze-guided past , present , and proactive streaming
+video understanding tasks.
+Abstract
+Streaming video understanding requires models not only
+to process temporally incoming frames, but also to antici-
+pate user intention for realistic applications like AR glasses.
+While prior streaming benchmarks evaluate temporal rea-
+soning, none measure whether MLLMs can interpret or
+leverage human gaze signals within a streaming setting. To
+fill this gap, we introduceSTREAMGAZE, the first bench-
+mark designed to evaluate how effectively MLLMs use gaze
+for temporal and proactive reasoning in streaming videos.
+STREAMGAZEintroduces gaze-guided past, present, and
+proactive tasks that comprehensively evaluate streaming
+video understanding. These tasks assess whether models can
+use real-time gaze to follow shifting attention and infer user
+intentions from only past and currently observed frames. To
+buildSTREAMGAZE, we develop a gaze–video QA gener-
+ation pipeline that aligns egocentric videos with raw gaze
+trajectories via fixation extraction, region-specific visual
+prompting, and scanpath construction. This pipeline pro-
+duces spatio-temporally grounded QA pairs that closely re-
+flect human perceptual dynamics. Across allSTREAMGAZE
+tasks, we observe substantial performance gaps between
+state-of-the-art MLLMs and human performance, revealing
+fundamental limitations in gaze-based temporal reasoning,
+intention modeling, and proactive prediction. We further
+provide detailed analyses of gaze-prompting strategies, rea-
+soning behaviors, and task-specific failure modes, offering
+deeper insight into why current MLLMs struggle and what
+capabilities future models must develop. All data and code
+will be publicly released to support continued research in
+gaze-guided streaming video understanding.
+1
+arXiv:2512.01707v1  [cs.CV]  1 Dec 2025
+1. Introduction
+Recent advances in Video Large Language Models (Vide-
+oLLMs) [12, 26, 33] have significantly improved multimodal
+understanding of dynamic visual environments. A growing
+line of work now investigatesstreaming video understand-
+ing[ 2, 4, 29, 34], where models must process temporally
+incoming frames and respond in real time without access to
+future context. Such capability is essential for real-world
+applications such as robotics, embodied agents, and AR-
+glass assistants, where perception and decision-making must
+occur continuously as events unfold.
+Benchmarks play a critical role in tracking progress in
+this rapidly developing domain. While several streaming
+benchmarks exist [2, 4, 28, 31, 36], they capture only some
+challenges faced by realistic streaming agents. As summa-
+rized in Table 1, some benchmarks [29, 31] focus primarily
+on past or present recognition, leaving out proactive under-
+standing, the ability to anticipate future events and user in-
+tentions. Moreover, existing benchmarks rarely incorporate
+the human perceptual signals that actually drive real-world
+decision-making, even when they rely on egocentric video
+sources and implicitly assume AR-glasses usage scenarios.
+Among these perceptual cues,eye gazeis the most direct and
+reliable indicator of where a user is attending, what they are
+processing, and what they are likely to do next [7, 10, 11, 35].
+Omitting gaze removes the key perceptual signal humans
+use to filter relevant information, plan actions, and anticipate
+what will happen next. This leads to benchmark evaluations
+that diverge from the way humans actually perceive and
+reason about dynamic environments.
+However, incorporating gaze into video understanding
+has been challenging [7, 19]. Unlike conventional QA that
+relies solely on visible content, gaze-guided QA requires
+interpretingdynamic gaze trajectories, modeling how atten-
+tion shifts over time, and grounding these signals within a
+moving egocentric viewpoint. Raw gaze streams are noisy
+and contain fast, unstable fluctuations [ 9, 16, 24], while
+egocentric videos continuously shake and rotate with user
+motion, making even"what the user is looking at"a non-
+trivial spatio-temporal grounding problem. These challenges
+are further amplified in thestreamingsetting, where models
+must reasoncausallyusing only past and currently observed
+frames. Together, these factors make automatic construction
+of temporally grounded QA pairs highly challenging.
+To close this gap, we introduce STREAMGAZE, the first
+benchmark forgaze-guided streaming video understand-
+ing. As shown in Figure 1, STREAMGAZEprovides a unified
+suite of gaze-conditioned tasks spanningpast,present, and
+proactivereasoning, enabling comprehensive evaluation of
+how well MLLMs use gaze for temporal understanding and
+future prediction. Solving these tasks requires models to
+interpret gaze online, follow shifting attention over time, and
+infer intention using only past and currently observed frames,
+mirroring the constraints faced by real streaming agents.
+To construct STREAMGAZE, we develop a semi-
+automatic gaze-guided data generation pipeline that aligns
+gaze trajectories with egocentric videos and converts them
+into temporally grounded QA pairs. We first detect stable
+gaze moments (i.e., fixations) throughout each video and
+extract objects within the corresponding gaze regions us-
+ing region-specific visual prompting. Next, we capture the
+temporal dynamics of gaze (i.e., scanpaths) to model how a
+user’s attention shifts across spatial regions over time. Build-
+ing on these signals, we automatically generate past, present,
+and proactive streaming tasks using an LLM, followed by
+human verification for quality assurance.
+Across all STREAMGAZEtasks, we observe substantial
+performance gaps between state-of-the-art MLLMs (e.g.,
+GPT-4o, InternVL-3.5) and both human performance and
+specialized streaming video understanding models. In par-
+ticular, current MLLMs struggle to leverage gaze signals
+for temporal reasoning and proactive inference, revealing
+fundamental limitations in gaze-conditioned understanding.
+We further conduct detailed analyses of gaze-prompting
+strategies, gaze-based reasoning behaviors, and task-specific
+proactive responses on STREAMGAZE. Together, these eval-
+uations position STREAMGAZEas the first comprehensive
+testbed for assessing gaze-driven causal reasoning and proac-
+tive prediction in streaming video scenarios.
+Our contributions are threefold:
+• We propose the first gaze-guided data construction pipeline
+that integrates gaze trajectories with egocentric video to
+produce spatio-temporally aligned, gaze-guided QA pairs.
+Our pipeline models fullscanpathdynamics, tracking how
+attention evolves over time and how new objects enter
+the FOV through ego-motion, enabling truly streaming,
+temporally grounded supervision that static gaze–based
+pipelines cannot provide.
+• We introduce STREAMGAZE, the first benchmark specif-
+ically designed for streaming gaze-guided video under-
+standing, comprising 8521 QA pairs across 10 tasks span-
+ning past, present, and proactive timestamps. This repre-
+sents a larger and more diverse evaluation suite compared
+to existing streaming QA benchmarks.
+• We evaluate state-of-the-art MLLMs on STREAMGAZE,
+uncovering substantial and consistent gaps relative to
+human performance. Our in-depth analyses of gaze-
+prompting strategies, reasoning patterns, and task-specific
+behaviors reveal that current MLLMs struggle to interpret
+raw gaze signals, overly rely on frame-local visual cues,
+and fail to generalize across different temporal reason-
+ing requirements. These findings provide concrete design
+guidance for future gaze-aware streaming models.
+2
+Table 1.Comparison of streaming video understanding benchmarks with
+STREAMGAZE.MC: Multiple-choice; OE: Open-ended; All-time: Covers past,
+present, and future tasks; Proac.: Proactive. ✓ marks the presence of a feature, and
+△indicates partial inclusion.
+Dataset Avg
+video (s)
+QA
+pairs
+QA
+type Annotation Proac. Gaze All-
+time Ego.
+Gaze-based QA benchmarks
+GazeVQA [7] 150 25040 MC Human✘ ✓ ✘ ✓
+EgoGazeVQA [19] 52 1757 MC Auto✘ ✓ ✘ ✓
+Streaming QA benchmarks
+StreamingBench [13] 268 4500 MC+OE Auto & Human✓ ✘ ✓ ✘
+SVBench [31] 147 7374 OE Auto & Human✘ ✘ ✘△
+OVO-Bench [15] 428 2814 MC+OE Auto & Human✓ ✘ ✓△
+OmniMMI [28] 324 2290 OE Auto & Human✓ ✘ ✘△
+ProAssist [36] 710 1020 OE Auto✓ ✘ ✘ ✓
+StreamBench [29] 270 1800 OE Auto & Human✘ ✘ ✘ ✓
+Vispeak-Bench [4] 21 1000 OE Auto & Human✓ ✘ ✘ ✘
+STREAMGAZE(Ours) 815 8521 MC+OE Auto & Human ✓ ✓ ✓ ✓
+Human
+GPT-4o
+Qwen2.5-VL (7B)
+InternVL3.5 (8B)
+Flash-VStream
+VideoLLM-Online
+Dispider
+ViSpeak
+Non-Fixated
+Object Identification
+Object 
+Transition
+Prediction
+Scene 
+Recall 
+Gaze 
+Sequence 
+Matching
+Object 
+Identification 
+(Easy)
+Object Identification 
+(Hard)
+Object 
+Attribute
+Recognition
+Future 
+Action
+Prediction
+Gaze
+Triggered
+Alert
+Object 
+Appearance
+Alert
+25 50 75 Figure 2.MLLMs performance across
+STREAMGAZEtasks.
+2. Related Work
+Streaming QA benchmarks.Streaming video understand-
+ing requires models to interpret and respond to temporally
+incoming frames without access to future context. Stream-
+ingBench [13] and OVO-Bench [15] benchmark online video
+understanding across past, present, and future tasks, provid-
+ing a comprehensive evaluation of temporal reasoning ca-
+pabilities. Meanwhile, OmniMMI [28], ProAssist [36], and
+ViSpeak-Bench [4] extend this paradigm to interactive dia-
+logue settings, assessing how effectively MLLMs perceive
+user intentions and sustain coherent interactions in streaming
+contexts. In contrast, our proposed STREAMGAZEintro-
+ducesa novel dimension by integrating eye-gaze dynamics
+into the streaming setting, enabling systematic evaluation of
+how models leverage human gaze for temporal reasoning,
+intention inference, and proactive prediction.
+Gaze-based QA benchmarks.GazeVQA [ 7] introduces
+the first gaze-based VQA dataset designed for collaborative
+interactions in assembly processes. EgoGazeVQA [19] fo-
+cuses primarily on intent understanding in short egocentric
+videos, but relies only on frame-wise gaze signals without ex-
+tracting fixations or establishing spatio-temporal grounding
+for QA generation. Moreover, none of these works address
+the online setting that encompasses past, present, and proac-
+tive tasks, an essential component for real-world gaze-guided
+applications. In contrast, STREAMGAZEis the first bench-
+mark to integrate gaze dynamics into thestreamingsetting,
+enabling systematic evaluation of how well MLLMs per-
+form temporal reasoning and proactively align with human
+attention over time.
+3. Gaze-Guided Streaming Data Construction
+We design a novel data construction pipeline to build gaze-
+guided streaming video understanding tasks. In contrast to
+EgoGazeVQA [19], which processes short clips with static
+per-frame gaze points, our pipeline extracts the full scanpath,
+a sequence of fixations that captures how attention shifts over
+time and how objects enter the user’s FOV (Field of View)
+through ego-motion. This enables streaming and temporally
+grounded data construction beyond static-gaze settings.
+We first preprocess raw gaze trajectories by projecting
+them using camera parameters (Section 3.1) and extract
+stable fixation moments that capture meaningful, attention-
+driven events (Section 3.2). Next, we divide each frame into
+FOV and out-of-FOV regions and extract the corresponding
+objects. Finally, we construct scanpaths and conduct human
+verification—not only to ensure quality and consistency, but
+also to confirm that our pipeline’s data construction closely
+correlates with human annotations (Section 3.3).
+3.1. Preprocessing
+We use three public egocentric video datasets spanning di-
+verse domains: EGTEA+ (cooking) [ 11], EgoExoLearn
+(cooking,lab) [ 6], and HoloAssist (assembly) [ 27]. Each
+video is represented as a sequence of frames, V={v t}T
+t=1,
+where T is the number of frames and vt is the frame at time
+t. To obtain the gaze trajectory G={(x t, yt)}T
+t=1, where
+(xt, yt) denotes the gaze coordinate on the image plane cor-
+responding to frame vt, we project raw gaze in world coor-
+dinates onto the 2D image plane using officially provided
+camera parameters. For datasets that directly provide 2D
+gaze coordinates (e.g., [6, 11]), we use them as given.
+3.2. Fixation Extraction
+Based on the unified gaze trajectory G obtained in Sec. 3.1,
+we identifyquery momentswithin V—time points that likely
+correspond to meaningful user attention—for streaming
+video QA tasks. This step is essential for gaze-guided QA
+generation, as it identifies the most informative moments at
+which user attention should be queried. We primarily target
+fixation moments, intervals where the gaze remains relatively
+stable within a localized region, as they more reliably cap-
+ture users’ visual attention compared to rapid eye shifts (i.e.,
+3
+Cooking
+Camera 
+Parameter
+2D Gaze
+Egocentric video sources
+Projection
+Point-wise stability Scene consistency 
+1. Preprocessing 2. Fixation Extraction 
+3. Object Extraction by Gaze Area
+ℛ1
+fov
+ℛ1
+out
+𝒪1
+fov
+𝒪1
+out
+Region-specific visual prompting
+{tomato, 
+knife,plate}
+{counter, 
+curtain}
+141s 225s 360s 430s
+… 𝑓1 𝑓i … Fixation clips… 
+MLLM
+ Human
+Verification
+LabAssembly
+Raw gaze projection
+4. QA Generation 
+Scanpath
+0s 74s 141s 180s 220s 360s 413s 420s 894s 1300s
+Verification
+LLM
+… … … 
+894s
+ 890s
+𝑓N
+𝒪1
+fov
+𝒪1
+out
+{tomato,knife,..}
+{counter,curtain}
+𝒪i
+fov
+𝒪i
+out
+{cucumber,knife,..}
+{lid,curtain,..}
+𝒪N
+fov
+𝒪N
+out
+{pot,pasta,..}
+{lid,stove,..}
+Past task
+Present task
+Proactive task
+Q. Which transition best matches the 
+user’s gaze pattern?  
+Q. Which object is the user currently
+Gazing? 
+Q. Alert me when the <obj> first appears
+Figure 3.Gaze-guided streaming data construction pipeline for STREAMGAZE.Given egocentric video sources and raw gaze projections
+(Sec. 3.1), we first extract fixation moments across the entire video (Sec. 3.2). Next, we divide each frame into FOV and out-of-FOV regions
+and extract objects within the gaze area (Sec. 3.3). Finally, we construct scanpaths and generate streaming QA pairs (Sec. 4).
+saccadic) [7, 8, 23].
+From a raw gaze trajectory G, we first identify fixation
+intervals. Each fixation is characterized by a spatial centroid
+(¯xi,¯yi) and a temporal span [ts
+i , te
+i ]⊆[1, T] , where ts
+i and
+te
+i denote the start and end timestamps. If N fixations are
+detected, the resulting set is written as
+F={f i = (¯xi,¯yi, ts
+i , te
+i )}N
+i=1.(1)
+Each fixation is represented by its spatial centroid (¯xi,¯yi)
+and temporal span [ts
+i , te
+i ]⊆[1, T] , corresponding to the
+start and end timestamps of the fixation. The spatial centroid
+is obtained by averaging all gaze points within the interval.
+To extract F, we apply two criteria:(i) point-wise stability
+and(ii) scene consistency.
+Point-wise stability.We identify [ts
+i , te
+i ] as a fixation
+when the gaze points remain spatially concentrated and tem-
+porally stable. We enforce spatial stability by requiring that
+dt =∥(x t, yt)−(¯xi,¯yi)∥2 ≤r thresh,∀t∈[t s
+i , te
+i ],(2)
+where rthresh denotes the maximum spatial dispersion al-
+lowed around the fixation centroid (¯xi,¯yi). To ensure com-
+parability across datasets with different resolutions, we nor-
+malize rthresh by the frame width. Furthermore, we ensure
+temporal stability by enforcing a minimum duration:
+te
+i −t s
+i ≥τ dur,(3)
+where τdur specifies the minimum time required for a valid
+fixation.
+Scene consistency.Even if a fixation satisfies spatial and
+temporal stability, abrupt scene changes may occur due to
+camera motion or cuts. To ensure that each fixation corre-
+sponds to a visually continuous segment, we compute frame-
+wise Hue–Saturation histograms [22] Ht for all frames in
+Vi ={v t}te
+i
+t=ts
+i
+corresponding to fixation fi. Each Ht is
+a normalized histogram over the hue and saturation chan-
+nels of frame vt. We then measure the minimum Pearson
+correlation between consecutive histograms:
+Smin = min
+t∈[ts
+i , te
+i −1]
+ρ(Ht, Ht+1),(4)
+where ρ(·) denotes the Pearson correlation between normal-
+ized histograms. A fixation is retained only ifSmin ≥τ scene,
+ensuring that scene-consistent fixations are preserved while
+discontinuous segments are discarded.
+3.3. Object Extraction by Gaze Area
+Given a fixation fi, we extract objects according to their
+locations within or outside the FOV from fixation video
+clip Vi defined in Sec. 3.2. Our objective is to distinguish
+objects that lieinsidethe user’s FOV from thoseoutsideit,
+enabling controllable task difficulty and gaze-grounded QA
+generation.
+Definition of FOV and out-of-FOV regions.Motivated
+by classical eye-tracking literature, which models the foveal
+and parafoveal regions as circular areas around the gaze
+point and scales their pixel radius by screen resolution [7, 9,
+16, 19, 24], we define the FOV region in each frame vt as a
+circular patch:
+Rfov
+i,t ={(x, y)| ∥(x, y)−(¯xi,¯yi)∥2 ≤τ fov },(5)
+4
+where τfov denotes the FOV radius and (x, y)is pixel co-
+ordinate on frame vt and (¯xi,¯yi) is spatial centroid defined
+in Sec. 3.2. Following the normalized dispersion strategy
+commonly used for fixation modeling [7], we target a con-
+sistent FOV size across video sources, ensuring that FOV
+extraction captures comparable spatial extent regardless of
+video resolution. The remaining portion of the frame defines
+the out-of-FOV region:
+Rout
+i,t =v t \ Rfov
+i,t .(6)
+Across the entire fixation interval, these per-frame regions
+form two time-indexed sequences:
+Rfov
+i ={R fov
+i,t }te
+i
+t=ts
+i
+,R out
+i ={R out
+i,t }te
+i
+t=ts
+i
+.(7)
+Region-specific visual prompting.To extract objects
+from each region, we employ a MLLM (InternVL3.5-38B)
+with spatially guided visual prompts. For FOV region Rfov
+i,t ,
+we crop a circular patch centered at (¯xi,¯yi) with radius rfov,
+and overlay a small red dot at the fixation center to explicitly
+indicate the user’s point of gaze. This patch is then provided
+to the model as the inside-FOV visual input. For the out-of-
+FOV region Rout
+i,t , we take the original frame vt and mask
+the circular FOV area by replacing all pixels within radius
+τfov with a solid black disk (see Fig. 3). This removes
+all gaze-relevant content while preserving the surrounding
+contextual background, ensuring that the model extracts only
+non-attended objects.
+Given the region sequences Rfov
+i and Rout
+i , the MLLM
+outputs two corresponding object sets:
+Ofov
+i = MLLM(Rfov
+i ),O out
+i = MLLM(Rout
+i ),(8)
+where each detected object is accompanied by a brief (1–2
+sentence) caption used for downstream QA generation.
+Scanpath generation.Based on the fixation-level ob-
+ject sets, we construct a scanpath S that represents the tem-
+poral evolution of gaze-guided object observations. This
+scanpath preserves the temporal order of fixations, thereby
+representing how attention shifts across different spatial
+regions and semantic contexts in the video. Given a se-
+quence of N fixations F defined in Sec. 3.2, we define
+S={(O fov
+i ,O out
+i )}N
+i=1 where each element corresponds
+to the FOV and out-of-FOV object sets extracted from the
+fixation clip Vi. For each fixation fi, the corresponding
+object sets Ofov
+i and Oout
+i provide the local visual context,
+while the sequential arrangement of these fixations forms
+a gaze-conditioned trajectory over time. This ordered se-
+quence serves as a structured representation of user percep-
+tion, which will be used to generate temporally grounded
+QA pairs in subsequent steps.
+Human verification.We finally employ human anno-
+tators to verify the generated scanpaths and extracted ob-
+jects. Annotators review each fixation episode and determine
+whether each Ofov
+i and Oout
+i should be included or excluded.
+In particular, for Ofov
+i , annotators correct any mislabeled or
+missing objects and captions. Only human-verified scan-
+paths and object sets are used for the final benchmark. This
+verification process ensures high-quality yet scalable annota-
+tions, achieving an average correctness rate of approximately
+83%. Please refer to Sec. A.5 for more details.
+4. STREAMGAZE
+We now introduce the STREAMGAZEQA generation pro-
+cess and its task taxonomy spanning past, present, and proac-
+tive tasks, designed to quantitatively evaluate gaze-guided
+streaming video understanding.
+4.1. Benchmark Overview
+Benchmark overview.STREAMGAZEcomprises over 8,521
+QA pairs from 285 videos. We also provide detailed statistics
+in Section D. As shown in Table 1, STREAMGAZEcovers 10
+tasks including past , present , and proactive . Also con-
+taining gaze modality corresponding with egocentric videos,
+representing realistic scenario.
+Problem setup.We formulate a gaze-guided streaming
+video understanding task, where the model must answer time-
+sensitive questions while observing temporally incoming
+frames and user gaze. At a query time tq, the MLLM M
+receives the video–gaze context (V,G) (see Sec. 3.1) within
+a specified temporal range and produces an answer A for
+a question Q. We denote the short temporal window by ω,
+where ω is 60 seconds following [ 13, 15]. Based on the
+accessible portion of the stream, we define novel gaze-based
+three streaming tasks as follows:
+Past:A=M
+ 
+Q;V [0, tq],G [0, tq]
+
+,
+Present:A=M
+ 
+Q;V (tq−ω, tq],G (tq−ω, tq]
+
+,
+Proactive:A=M
+ 
+Q;V (tq,∞] ,G (tq,∞]
+
+.
+4.2. Task Taxonomy
+Given S from Sec. 3.3, we construct QA pairs that require
+spatio-temporal reasoning over gaze transitions.
+4.2.1. Past Task
+Past tasks focus on temporal reasoning over gaze and capture
+the dynamic characteristics of the user’s gaze, modeling how
+attention shifts across objects over time.
+• Non-Fixated Object Identification (NFI):Evaluates
+implicit visual awareness by identifying objects that were
+visible but never directly fixated. For each timestamp
+t, we sample one never-gazed object from Oout
+t as the
+correct answer and three visible objects from Ofov
+t as
+distractors. See Sec. A.4 for more details.
+• Object Transition Prediction (OTP):Assesses tempo-
+ral continuity in gaze behavior by predicting the next
+5
+object to be fixated. Given the current fixation on object
+group Ofov
+i within the scanpath S, the correct answer is
+the next newly attended object Ofov
+i+1, while distractors
+are sampled from the global object pool excluding the
+current group. See Sec. A.4 for more details.
+• Gaze Sequence Matching (GSM):Measures how well
+models capture human-like scanpath patterns through
+sequential gaze transitions. We extract triplets of consec-
+utive fixation groups Ofov
+i−1 → Ofov
+i → Ofov
+i+1 as correct
+transitions, while negative options include shuffled or-
+derings of the same groups or randomly sampled triplets
+that preserve transition structure.
+• Scene Recall (SR):Tests contextual memory by recall-
+ing background objects previously visible during a fixa-
+tion. At each fixation Ofov
+i , we sample the correct answer
+from background objects visible at other timestamps
+Oout
+\i = S
+t̸=i Oout
+t but not at the current one, with three
+visible background objects as distractors.
+4.2.2. Present Task
+Present tasks capture the user’s perceptual state and intention.
+We control question difficulty using bothOfov
+i andO out
+i .
+• Object Identification (OI, Easy/Hard):Evaluates
+recognition of the currently attended object within the
+fixation region Ofov
+i . The correct answer corresponds to
+the fixated object itself. For theeasysetting, distractors
+are randomly sampled from earlier object pools, while
+for thehardsetting, distractors are chosen from visually
+similarO out
+i appearing in the same frame.
+• Object Attribute Recognition (OAR):Assesses fine-
+grained perceptual understanding by predicting visual
+attributes (e.g., color, shape, or texture) of the currently
+fixated object within Ofov
+i . To avoid overlapping or am-
+biguous attribute options, we use Qwen3-VL-30B to
+generate distinct and contextually consistent distractors.
+• Future Action Prediction (FAP):Models intention in-
+ference by predicting the user’s next action from the re-
+cent gaze-conditioned context {Ofov
+i−k, . . . ,Ofov
+i }, where
+k < idenotes the number of past fixation steps con-
+sidered. Ground-truth future actions are derived from
+fine-grained human action captions aligned with gaze
+sequences in the original video sources. Semantically
+related but incorrect action descriptions are generated by
+Qwen3-VL-30B to serve as distractors.
+4.2.3. Proactive Task
+Proactive tasks involve gaze-based reasoning, where the
+model anticipates or assists future user behavior based on
+gaze and contextual cues. Unlike prior proactive settings [13,
+15, 36], we leverage gaze as an anticipatory signal to predict
+upcoming attention or object events.
+• Gaze-Triggered Alert (GTA):Triggers an alert when
+the user gaze a specified object within Rfov
+i . This task
+evaluates the model’s ability to indicate user’s fixation.
+• Object Appearance Alert (OAA):Triggers an alert
+when the specified object first appears in the peripheral
+region Rout
+i . This task assesses whether the model can
+proactively recognize and react to newly emerging ob-
+jects in streaming video.
+Overall, we filter out ambiguous questions through both
+Qwen3-VL-30B–based validation and human verification.
+Detailed task-specific configurations and generation proce-
+dures are provided in Sec. A.4.
+5. Experiments
+5.1. Experimental Setup
+Baselines.We evaluate four categories of existing mod-
+els in a zero-shot setting on STREAMGAZE: (1)Closed-
+source MLLMs, including GPT-4o [ 17], Claude Sonnet4
+and Opus4 [ 18]; (2)Gaze-based models, including As-
+sistGaze [7]; (3)Open-source MLLMs, including Qwen2.5-
+VL [1], InternVL3.5 [26], MiniCPM-V [32], Kangaroo [14]
+and VITA-1.5 [3]; (4)Open-source streaming MLLMs, in-
+cluding Flash-VStream [34], VideoLLM-Online [2], Dispi-
+der [21] and ViSpeak [4]. Following prior streaming bench-
+marks [13, 15], because non-streaming models cannot ingest
+live video streams, we convert all streaming tasks into offline
+inference by providing each model with the corresponding
+video clip. We additionally report human oracle performance
+for all tasks.
+Gaze input strategy.To incorporate gaze into each
+model, we employ a visual prompting strategy inspired
+by [19]. For every video, we overlay (i) a green dot in-
+dicating the user’s gaze center and (ii) a red circular region
+representing FOV . We also prepend an instruction prompt
+that explicitly explains these cues to the model, e.g.,“The
+user’s gaze center is indicated by a green dot. The red circle
+represents the area where the user’s gaze is focused. ”Full
+instruction templates are provided in the Sec. B.
+Evaluation metrics.For past and present tasks, which
+are multiple-choice questions, we use Accuracy based on
+exact matching (with optional fuzzy matching for semanti-
+cally equivalent responses). In particular, for VideoLLM-
+online [2], which generates free-form text responses, we
+applied keyword-based matching by checking if the ground
+truth option keyword appeared in the response using reg-
+ular expressions. For proactive remind tasks, we adopt a
+multi-triggering query protocol following [13, 15] to simu-
+late online decision-making. At each timestamp, the model
+is prompted with the cumulative video observed so far and
+must answer“Yes”if the target object has appeared in the
+field of view and“No”otherwise. We use accuracy as the
+primary metric, as it penalizes premature or excessive trig-
+gers and thus best reflects the reliability of proactive alerts.
+Additional recall results are provided in Sec. C.
+6
+Table 2.Comparison of various MLLMs across STREAMGAZEtasks.We evaluate four categories of models, reporting accuracy for past
+and present tasks and precision for proactive tasks. Gaze information is provided to each model through visual prompting. Each section is
+sorted by overall performance, and the best per task across all models (excluding Human) isbolded.
+Method Params Frames Past Present Proactive OverallNFI OTP SR GSM OI (E) OI (H) OAR FAP GTA OAA
+Human - - 0.700 0.889 0.903 0.707 0.960 0.920 0.800 0.840 0.765 0.780 0.827
+Closed-Source MLLMs
+GPT-4o [17] - 16 0.6010.449 0.5350.580 0.729 0.730 0.5960.370 0.597 0.149 0.535
+Claude Sonnet4 [18] - 16 0.5000.5540.425 0.325 0.521 0.533 0.5610.439 0.535 0.350 0.474
+Claude Opus4 [18] - 16 0.372 0.392 0.460 0.166 0.431 0.436 0.430 0.351 0.4660.490 0.399
+GazeQA-based Fine-tuned Models
+AssistGaze [7] 26M 32 0.294 0.131 0.310 0.294 0.278 0.250 0.109 0.254 N/A N/A 0.223
+Open-Source MLLMs
+Qwen2.5-VL [25] 7B Adaptive 0.518 0.350 0.450 0.483 0.590 0.558 0.548 0.391 0.486 0.407 0.478
+InternVL3.5 [26] 8B Adaptive 0.490 0.3110.5730.548 0.627 0.628 0.466 0.372 0.373 0.051 0.444
+VITA 1.5 [3] 7B 16 0.474 0.365 0.346 0.378 0.455 0.396 0.437 0.370 0.351 0.267 0.384
+MiniCPM-V [32] 8B 32 0.430 0.374 0.354 0.296 0.334 0.379 0.438 0.345 0.480 0.216 0.365
+Kangaroo [14] 7B 64 0.363 0.365 0.319 0.275 0.454 0.484 0.402 0.412 0.242 0.198 0.351
+Open-Source Streaming MLLMs
+ViSpeak [4] 7B 1 fps 0.463 0.358 0.417 0.473 0.572 0.581 0.406 0.309 0.6350.458 0.467
+Dispider [21] 7B 1 fps 0.366 0.365 0.381 0.263 0.336 0.338 0.353 0.321 0.252 0.261 0.323
+Flash-VStream [34] 7B 1 fps 0.249 0.202 0.336 0.220 0.289 0.147 0.044 0.280 0.443 0.217 0.243
+VideoLLM-online [2] 8B 2 fps 0.000 0.000 0.000 0.000 0.006 0.006 0.002 0.000 0.458 0.333 0.080
+5.2. Overall Performance
+In Table 2, we report performances from all STREAMGAZE
+tasks from baseline MLLMs. Our evaluation brings several
+important findings regarding gaze-guided streaming video
+understanding as follows:
+General-purpose MLLMs struggle to leverage gaze
+for long-term temporal reasoning.STREAMGAZE’s past
+and present tasks require integrating gaze information over
+longer temporal windows, where models must aggregate
+multiple gaze-conditioned observations rather than rely on
+single-frame cues. Although they outperform traditional
+gaze-based models [7], open-source MLLMs still struggle
+to utilize gaze signals effectively. Even when provided with
+gaze as a visual prompt, their limited model capacity hinders
+the incorporation of gaze information during inference. Fur-
+thermore, these models often rely on key-frame or sparsely
+sampled inputs, causing them to process frames indepen-
+dently rather than as a continuously evolving stream. As a
+result, they fail to accumulate gaze evidence over time and
+cannot maintain coherent long-term temporal reasoning.
+Streaming MLLMs struggle with gaze-guided proac-
+tive tasks.As observed in prior work [4, 15], dialogue-based
+streaming models such as VideoLLM-online [2] often fail to
+follow task instructions and instead produce generic descrip-
+tions (e.g.,“You look at the camera. ”), due to their conver-
+sational training data. In contrast, non-dialogue streaming
+model, ViSpeak [4] outperforms open-source non-streaming
+MLLMs on proactive tasks, demonstrating the benefit of
+frame-by-frame online processing. However, other stream-
+ing MLLMs perform substantially worse, and all models
+remain far below human performance, indicating that robust
+gaze-guided proactive reasoning is still an open challenge.
+This limitation likely arises from the absence of explicit
+mechanisms for linking gaze shifts to predictive temporal
+reasoning within current streaming architectures.
+Gaze-based model fails to generalize to streaming set-
+tings.Although explicitly designed to utilize gaze informa-
+tion, AssistGaze [7] achieves only 0.223 average accuracy on
+our benchmark. While such models can effectively exploit
+gaze cues in static or short-range scenarios, they struggle
+to maintain temporal coherence, integrate gaze shifts over
+time, and track evolving user intentions. Furthermore, since
+AssistGaze is trained on narrowly defined GazeVQA tasks,
+it lacks the flexibility to generalize to proactive or temporally
+extended streaming tasks.
+A substantial gap remains between human and model
+performance.Humans achieve an average accuracy of
+0.827, substantially higher than all evaluated MLLMs. In
+particular, the large disparity between Scene Recall (SR)
+and Object Transition Prediction (OTP) suggests that cur-
+rent models over-focus on foreground gaze objects while
+neglecting the surrounding scene context and struggle to
+model gaze transitions. This pronounced human–model gap
+underscores the need for future models to develop broader
+situational perception and richer temporal memory beyond
+object-centric cues.
+7
+Table 3.Ablation of gaze input prompting.We evaluate the effect
+of gaze input strategies on Qwen2.5-VL.
+Past Present ProactiveAvg.
+Qwen2.5-VL [1] (w/o gaze) 0.423 0.500 0.384 0.446
++ test prompt 0.403 0.499 0.341 0.429
++ visual prompt 0.398 0.503 0.342 0.429
++ salience map 0.3940.546 0.386 0.454
+5.3. Additional Analysis
+We provide further analyses to better understand the behavior
+and characteristics of STREAMGAZE.
+Ablation of gaze input prompting.We analyze different
+strategies for incorporating gaze information into MLLMs
+using Qwen2.5-VL (7B), as shown in Table 3. Specifically,
+we compare three prompting methods—textual prompt,vi-
+sual prompt, andsalience map—to examine which repre-
+sentation most effectively enables the model to leverage
+gaze-specific cues, following [ 19]. In the textual prompt,
+fixation coordinates are provided alongside the question for
+each video clip. In the visual prompt, a green dot indicating
+the gaze center and a red circular region marking the FOV
+area are overlaid on each frame. In the salience-map prompt,
+the entire gaze trajectory is aggregated into a single heatmap,
+which is then provided as an additional image input. Among
+these methods, the salience-map prompt achieves the best
+performance, particularly on present and proactive tasks, sug-
+gesting that spatially aggregated cues are more compatible
+with the model than raw coordinates or frame-level overlays.
+However, none of the prompting strategies consistently out-
+perform the gaze-free baseline, indicating that Qwen2.5-VL
+is not inherently equipped to interpret or reason over raw
+gaze signals. More details are in Sec. C.
+Gaze-based reasoning in MLLMs.To investigate how
+MLLMs utilize gaze signals during inference, we ablate the
+contributions of text-, gaze-, and visual-based reasoning us-
+ing GPT-4o in Table 4. For textual reasoning, we apply stan-
+dard chain-of-thought prompting (e.g.,“Let’s think step by
+step”). For gaze-based reasoning, GPT-4o is first instructed
+to estimate the gaze point before generating an answer. For
+visual reasoning, the model is guided to identify visible ob-
+jects with bounding boxes and use this visual evidence when
+answering. The best average performance is achieved when
+all reasoning strategies are combined. However, their ef-
+fectiveness varies across tasks: incorporating visual cues
+benefits Scene Recall (SR) by improving contextual ground-
+ing, but can hinder Non-Fixated Object Identification (NFI),
+where excessive focus on gaze regions may suppress ex-
+ploration of unseen objects. More details and qualitative
+examples are in Sec. C.
+Task-Specific Behavior in STREAMGAZE.As shown
+in Figure 4 and Tab. 4, interestingly different STREAMGAZE
+tasks respond unevenly to the same input gaze or reasoning
+Table 4.Ablation of different reasoning strategies.We evaluate
+the effectiveness of text, gaze, and visual reasoning on GPT-4o.
+Reasoning Past Present
+Text Gaze Visual NFI SR OI (Easy) FAP Avg.
+0.520.60 0.64 0.41 0.542
+✓ 0.10 0.62 0.680.47 0.467
+✓ ✓ 0.36 0.62 0.72 0.40 0.525
+✓ ✓ ✓ 0.440.66 0.720.44 0.565
+NFI OTP SR GSM OI (Easy) OI (Hard) OAR FAP GTA OAA
+0.2
+0.3
+0.4
+0.5
+0.6Accuracy
+T ask-wise Performance Comparison
+w/o gaze T ext Prompt Visual Prompt Salience Map
+Figure 4.Task-wise effect of gaze input strategies on
+STREAMGAZE.Different tasks respond unevenly to textual, visual,
+and salience-map prompts, revealing strong task-specific behavior
+in streaming gaze understanding.
+T ype 1 Error
+(False Pos)
+T ype 2 Error
+(False Neg)
+T ype 1 Error
+(False Pos)
+T ype 2 Error
+(False Neg)
+Qwen2.5-VL-7B
+InternVL3.5-8B
+GPT4o
+16.7 56.9 4.1 15.4
+83.6 11.8 30.9 9.6
+59.1 19.0 67.1 23.7
+0
+20
+40
+60
+80
+100
+Error Rate (%)
+Figure 5.Offline MLLMs’ behavior on STREAMGAZEproac-
+tive tasks.We evaluate type1 (false positive) and type2 (false
+negative) error from Qwen2.5-VL, InternVL-3.5, and GPT4o.
+strategies. These patterns indicate that each STREAMGAZE
+task require distinct visual, temporal, and attentional require-
+ments, and therefore a single, uniform prompting or reason-
+ing strategy is insufficient. A more adaptive, task-aware,
+or dynamically integrated approach is needed to effectively
+model the full spectrum of streaming gaze understanding.
+Proactive Behavior of MLLMs.In Figure 5, we analyze
+how offline MLLMs behave on STREAMGAZEproactive re-
+mind tasks by measuring Type 1 (false positive) and Type 2
+(false negative) error rates across each task. This evalua-
+tion reveals strong model-specific biases: InternVL3.5-8B
+consistently over-triggers with very high false positive rates,
+GPT4o deteriorates as tasks become harder with rising er-
+rors of both types, while Qwen2.5-VL-7B shows the most
+balanced pattern, remaining accurate in hard settings despite
+conservative behavior on easy ones. These results demon-
+strate that proactive gaze prediction is highly sensitive to
+model characteristics and underscore the need to examine
+error-type distributions when designing reliable gaze-based
+assistive systems.
+6. Conclusion
+In this work, we introduce STREAMGAZE, the first bench-
+mark for evaluating gaze-guided temporal and proactive rea-
+8
+soning in streaming video understanding. Our gaze–video
+QA pipeline provides human-aligned supervision across di-
+verse past, present, and proactive tasks. Experiments reveal
+substantial gaps between state-of-the-art MLLMs and human
+annotators, especially in intention modeling and proactive
+prediction. We hope STREAMGAZEadvances the devel-
+opment of more human-aligned, attention-aware streaming
+models.
+References
+[1] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin
+Ge, Sibo Song, Kai Dang, Peng Wang, Shijie Wang, Jun
+Tang, et al. Qwen2. 5-vl technical report.arXiv preprint
+arXiv:2502.13923, 2025. 6, 8
+[2] Joya Chen, Zhaoyang Lv, Shiwei Wu, Kevin Qinghong Lin,
+Chenan Song, Difei Gao, Jia-Wei Liu, Ziteng Gao, Dongxing
+Mao, and Mike Zheng Shou. Videollm-online: Online video
+large language model for streaming video. InProceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 18407–18418, 2024. 2, 6, 7
+[3] Chaoyou Fu, Haojia Lin, Xiong Wang, Yi-Fan Zhang, Yun-
+hang Shen, Xiaoyu Liu, Yangze Li, Zuwei Long, Heting Gao,
+Ke Li, et al. Vita-1.5: Towards gpt-4o level real-time vision
+and speech interaction.arXiv preprint arXiv:2501.01957,
+2025. 6, 7
+[4] Shenghao Fu, Qize Yang, Yuan-Ming Li, Yi-Xing Peng, Kun-
+Yu Lin, Xihan Wei, Jian-Fang Hu, Xiaohua Xie, and Wei-Shi
+Zheng. Vispeak: Visual instruction feedback in streaming
+videos.arXiv preprint arXiv:2503.12769, 2025. 2, 3, 6, 7, 5
+[5] Kristen Grauman, Andrew Westbury, Eugene Byrne, Zachary
+Chavis, Antonino Furnari, Rohit Girdhar, Jackson Hamburger,
+Hao Jiang, Miao Liu, Xingyu Liu, et al. Ego4d: Around the
+world in 3,000 hours of egocentric video. InProceedings of
+the IEEE/CVF conference on computer vision and pattern
+recognition, pages 18995–19012, 2022. 2, 6
+[6] Yifei Huang, Guo Chen, Jilan Xu, Mingfang Zhang, Lijin
+Yang, Baoqi Pei, Hongjie Zhang, Lu Dong, Yali Wang, Limin
+Wang, et al. Egoexolearn: A dataset for bridging asyn-
+chronous ego-and exo-centric view of procedural activities
+in real world. InProceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 22072–
+22086, 2024. 3, 2, 5, 6
+[7] Muhammet Ilaslan, Chenan Song, Joya Chen, Difei Gao,
+Weixian Lei, Qianli Xu, Joo Lim, and Mike Shou. Gazevqa: a
+video question answering dataset for multiview eye-gaze task-
+oriented collaborations. InProceedings of the 2023 Confer-
+ence on Empirical Methods in Natural Language Processing,
+pages 10462–10479, 2023. 2, 3, 4, 5, 6, 7
+[8] Shun Inadumi, Seiya Kawano, Akishige Yuguchi, Yasutomo
+Kawanishi, and Koichiro Yoshino. A gaze-grounded visual
+question answering dataset for clarifying ambiguous japanese
+questions.arXiv preprint arXiv:2403.17545, 2024. 4
+[9] Lisa M Kroell and Martin Rolfs. Foveal vision anticipates
+defining features of eye movement targets.Elife, 11:e78106,
+2022. 2, 4
+[10] Bolin Lai, Fiona Ryan, Wenqi Jia, Miao Liu, and James M
+Rehg. Listen to look into the future: Audio-visual egocentric
+gaze anticipation. InEuropean Conference on Computer
+Vision, pages 192–210. Springer, 2024. 2
+[11] Yin Li, Miao Liu, and James M Rehg. In the eye of the
+beholder: Gaze and actions in first person video.IEEE trans-
+actions on pattern analysis and machine intelligence, 45(6):
+6731–6747, 2021. 2, 3, 5
+[12] Bin Lin, Bin Zhu, Yang Ye, Munan Ning, Peng Jin, and
+Li Yuan. Video-llava: Learning united visual represen-
+tation by alignment before projection.arXiv preprint
+arXiv:2311.10122, 2023. 2
+[13] Junming Lin, Zheng Fang, Chi Chen, Zihao Wan, Fuwen
+Luo, Peng Li, Yang Liu, and Maosong Sun. Streamingbench:
+Assessing the gap for mllms to achieve streaming video un-
+derstanding.arXiv preprint arXiv:2411.03628, 2024. 3, 5,
+6
+[14] Jiajun Liu, Yibing Wang, Hanghang Ma, Xiaoping Wu, Xi-
+aoqi Ma, Xiaoming Wei, Jianbin Jiao, Enhua Wu, and Jie
+Hu. Kangaroo: A powerful video-language model supporting
+long-context video input.arXiv preprint arXiv:2408.15542,
+2024. 6, 7
+[15] Junbo Niu, Yifei Li, Ziyang Miao, Chunjiang Ge, Yuanhang
+Zhou, Qihao He, Xiaoyi Dong, Haodong Duan, Shuangrui
+Ding, Rui Qian, et al. Ovo-bench: How far is your video-llms
+from real-world online video understanding? InProceedings
+of the Computer Vision and Pattern Recognition Conference,
+pages 18902–18913, 2025. 3, 5, 6, 7, 4
+[16] Antje Nuthmann and Teresa Canas-Bajo. Visual search in
+naturalistic scenes from foveal to peripheral vision: A compar-
+ison between dynamic and static displays.Journal of Vision,
+22(1):10–10, 2022. 2, 4
+[17] OpenAI. Gpt-4 technical report, 2024. 6, 7
+[18] Anthropic PBC. Introducing claude 4. Online blog post, 2025.
+https://www.anthropic.com/news/claude-4
+(accessed 2025-11-14). 6, 7
+[19] Taiying Peng, Jiacheng Hua, Miao Liu, and Feng Lu. In
+the eye of mllm: Benchmarking egocentric video intent un-
+derstanding with gaze-guided prompting.arXiv preprint
+arXiv:2509.07447, 2025. 2, 3, 4, 6, 8, 5
+[20] Toby Perrett, Ahmad Darkhalil, Saptarshi Sinha, Omar Emara,
+Sam Pollard, Kranti Kumar Parida, Kaiting Liu, Prajwal
+Gatti, Siddhant Bansal, Kevin Flanagan, et al. Hd-epic: A
+highly-detailed egocentric video dataset. InProceedings of
+the Computer Vision and Pattern Recognition Conference,
+pages 23901–23913, 2025. 5, 6
+[21] Rui Qian, Shuangrui Ding, Xiaoyi Dong, Pan Zhang, Yuhang
+Zang, Yuhang Cao, Dahua Lin, and Jiaqi Wang. Dispider:
+Enabling video llms with active real-time interaction via dis-
+entangled perception, decision, and reaction. InProceedings
+of the Computer Vision and Pattern Recognition Conference,
+pages 24045–24055, 2025. 6, 7
+[22] Nisreen I. Radwan, Nancy M. Salem, and Mohamed I. El
+Adawy. Histogram correlation for video scene change de-
+tection. InAdvances in Computer Science, Engineering &
+Applications: Proceedings of the Second International Con-
+ference on Computer Science, Engineering and Applications
+(ICCSEA 2012), May 25–27, 2012, New Delhi, India, Volume
+1, pages 647–655, Berlin, Heidelberg, 2012. Springer Berlin
+Heidelberg. 4
+9
+[23] Jun Rekimoto. Gazellm: Multimodal llms incorporating
+human visual attention, 2025. 4
+[24] Emma EM Stewart, Matteo Valsecchi, and Alexander C
+Schütz. A review of interactions between peripheral and
+foveal vision.Journal of vision, 20(12):2–2, 2020. 2, 4
+[25] Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan,
+Jinze Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge,
+Yang Fan, Kai Dang, Mengfei Du, Xuancheng Ren, Rui Men,
+Dayiheng Liu, Chang Zhou, Jingren Zhou, and Junyang Lin.
+Qwen2-vl: Enhancing vision-language model’s perception of
+the world at any resolution, 2024. 7
+[26] Weiyun Wang, Zhangwei Gao, Lixin Gu, Hengjun Pu, Long
+Cui, Xingguang Wei, Zhaoyang Liu, Linglin Jing, Shenglong
+Ye, Jie Shao, et al. Internvl3. 5: Advancing open-source
+multimodal models in versatility, reasoning, and efficiency.
+arXiv preprint arXiv:2508.18265, 2025. 2, 6, 7
+[27] Xin Wang, Taein Kwon, Mahdi Rad, Bowen Pan, Ishani
+Chakraborty, Sean Andrist, Dan Bohus, Ashley Feniello, Bu-
+gra Tekin, Felipe Vieira Frujeri, et al. Holoassist: an egocen-
+tric human interaction dataset for interactive ai assistants in
+the real world. InProceedings of the IEEE/CVF International
+Conference on Computer Vision, pages 20270–20281, 2023.
+3, 1, 2, 5
+[28] Yuxuan Wang, Yueqian Wang, Bo Chen, Tong Wu, Dongyan
+Zhao, and Zilong Zheng. Omnimmi: A comprehensive multi-
+modal interaction benchmark in streaming video contexts. In
+Proceedings of the Computer Vision and Pattern Recognition
+Conference, pages 18925–18935, 2025. 2, 3
+[29] Haomiao Xiong, Zongxin Yang, Jiazuo Yu, Yunzhi Zhuge, Lu
+Zhang, Jiawen Zhu, and Huchuan Lu. Streaming video under-
+standing and multi-round interaction with memory-enhanced
+knowledge.arXiv preprint arXiv:2501.13468, 2025. 2, 3
+[30] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan
+Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang,
+Chenxu Lv, et al. Qwen3 technical report.arXiv preprint
+arXiv:2505.09388, 2025. 3, 4
+[31] Zhenyu Yang, Yuhang Hu, Zemin Du, Dizhan Xue, Sheng-
+sheng Qian, Jiahong Wu, Fan Yang, Weiming Dong, and
+Changsheng Xu. Svbench: A benchmark with temporal
+multi-turn dialogues for streaming video understanding.arXiv
+preprint arXiv:2502.10810, 2025. 2, 3
+[32] Yuan Yao, Tianyu Yu, Ao Zhang, Chongyi Wang, Junbo Cui,
+Hongji Zhu, Tianchi Cai, Haoyu Li, Weilin Zhao, Zhihui He,
+et al. Minicpm-v: A gpt-4v level mllm on your phone.arXiv
+preprint arXiv:2408.01800, 2024. 6, 7
+[33] Hang Zhang, Xin Li, and Lidong Bing. Video-llama: An
+instruction-tuned audio-visual language model for video un-
+derstanding.arXiv preprint arXiv:2306.02858, 2023. 2
+[34] Haoji Zhang, Yiqin Wang, Yansong Tang, Yong Liu, Jiashi
+Feng, Jifeng Dai, and Xiaojie Jin. Flash-vstream: Memory-
+based real-time understanding for long video streams, 2024.
+2, 6, 7
+[35] Mengmi Zhang, Keng Teck Ma, Joo Hwee Lim, Qi Zhao, and
+Jiashi Feng. Deep future gaze: Gaze anticipation on egocen-
+tric videos using adversarial networks. InProceedings of the
+IEEE conference on computer vision and pattern recognition,
+pages 4372–4381, 2017. 2
+[36] Yichi Zhang, Xin Luna Dong, Zhaojiang Lin, Andrea
+Madotto, Anuj Kumar, Babak Damavandi, Joyce Chai, and
+Seungwhan Moon. Proactive assistant dialogue genera-
+tion from streaming egocentric videos.arXiv preprint
+arXiv:2506.05904, 2025. 2, 3, 6
+10
+STREAMGAZE: Gaze-Guided Temporal Reasoning
+and Proactive Understanding in Streaming Videos
+Supplementary Material
+A . STREAMGAZEData Construction Details 1
+A.1 . Gaze Projection . . . . . . . . . . . . . . . . 1
+A.2 . Fixation Extraction . . . . . . . . . . . . . . 2
+A.3 . Object Extraction by Gaze Area. . . . . . . . 2
+A.4 . QA Generation and Filtering . . . . . . . . . 3
+A.5 . Human Verification . . . . . . . . . . . . . . 4
+B . STREAMGAZEEvaluation Details 5
+C . Additional Analysis 5
+C.1. Fine-tuning Results . . . . . . . . . . . . . . 5
+C.2. Details of Gaze Input Prompting . . . . . . . 6
+C.3. Details of Gaze-based Reasoning . . . . . . 6
+D . STREAMGAZEData Details 7
+D.1 . Data Statistics . . . . . . . . . . . . . . . . 7
+D.2 . QA Examples . . . . . . . . . . . . . . . . . 8
+E . Limitations and Future Work 8
+F. License 8
+A. STREAMGAZEData Construction Details
+In this section, we elaborate details about STREAMGAZE
+data construction pipeline. We first introduce details of
+gaze projection (Sec. A.1) during preprocessing Sec. 3.1 and
+fixation extraction (Sec. A.2). Then, we introduce object
+extraction details with prompt (Sec. A.3) and QA generation
+details by each task (Sec. A.4). Finally, we introduce human
+annotation process details (Sec. A.5). We also provide the
+full data construction procedure in Algorithm 1.
+A.1. Gaze Projection
+To obtain frame-level gaze positions on the egocentric RGB
+video, we convert each 3D gaze ray into a 2D pixel coor-
+dinate using camera poses and calibrated intrinsics for the
+HoloAssist dataset [27]. This method follows the hand–eye
+projection procedure implemented in official code. 1 Each
+gaze sample provides a world-coordinate origin o(t) and
+direction d(t), while the camera stream provides per-frame
+extrinsic matrices and intrinsics.
+Temporal alignment.All signals, including video
+frames, camera poses, and gaze samples, share a common
+timestamp domain. For each video frame at time t, we select
+1https : / / github . com / taeinkwon / PyHoloAssist /
+blob/main/hand_eye_project.py
+Algorithm 1 Gaze-Guided Data Construction Pipeline
+1: Input: V={v t}1:T , G={(x t, yt)}T
+t=1,
+rthresh, τdur, τscene
+2:# Fixation Extraction
+3:F ← ∅
+4:foreach candidate interval[t s
+i , te
+i ]do
+5:Compute centroid(¯x i,¯yi)
+6: if ∀t∈[t s
+i , te
+i ],∥(x t, yt)−(¯xi,¯yi)∥2 ≤r thresh then
+7:ift e
+i −t s
+i ≥τ dur then
+8:S min ←min te
+i −1
+t=ts
+i
+ρ(Ht, Ht+1)
+9:ifS min ≥τ scene then
+10:F ← F ∪ {(¯x i,¯yi, ts
+i , te
+i )}
+11:end if
+12:end if
+13:end if
+14:end for
+15:# Object and scanpath extraction
+16:foreachf i ∈ Fdo
+17:fort=t s
+i . . . te
+i do
+18:DefineR fov
+i,t andR out
+i,t
+19:end for
+20:O fov
+i ←MLLM(R fov
+i )
+21:O out
+i ←MLLM(R out
+i )
+22:end for
+23:S ← {(Ofov
+i ,O out
+i )}N
+i=1
+24:# QA Generation
+the nearest timestamped camera pose and gaze measurement:
+(ot, dt) = (o(t∗), d(t∗))wheret ∗ = arg min
+τ
+|τ−t|.
+This nearest-neighbor alignment ensures consistent pairing
+despite differing sampling rates.
+3D gaze point construction.Given the aligned 3D gaze
+ray, we form a virtual fixation point by moving a fixed dis-
+tanced eye along the normalized gaze direction:
+pworld
+t =o t +d eye
+dt
+∥dt∥.
+We treatp world
+t as the gaze target for framev t.
+World-to-camera transformation.Let Tworld
+cam (t) be the
+camera pose associated with frame vt. We convert the world
+1
+point into camera coordinates via
+pt,cam =T axis
+ 
+Tworld
+cam (t)
+−1
+
+pworld
+t
+1
+
+.
+Pinhole projection.With the intrinsic matrix
+K=
+
+
+fx 0c x
+0f y cy
+0 0 1
+
+,
+we project the 3D camera-coordinate point (Xt, Yt, Zt) onto
+the image plane:
+ut = Xt
+Zt
+fx +c x, v t = Yt
+Zt
+fy +c y.
+A point is marked as in-frame if(ut, vt) lies within the image
+boundaries.
+Output.For each frame vt, the resulting projected co-
+ordinates (ut, vt) define the 2D gaze position on the image
+plane. We therefore set (xt, yt) = (ut, vt) to construct the
+gaze trajectory G={(x t, yt)}T
+t=1 used in the main paper.
+In addition, we store the original gaze validity flag and an
+in-frame indicator. For visualization, we simply draw a dot
+at(x t, yt)on the RGB frame.
+A.2. Fixation Extraction
+Handling short gaze interruptions.Human gaze often
+contains brief microsaccades or flicks that momentarily vi-
+olate spatial stability. To avoid prematurely terminating a
+fixation, we permit short interruptions within a fixation in-
+terval. For each timestamp t, if the gaze deviation exceeds
+the spatial threshold (dt > τthresh), we examine the temporal
+gap between consecutive gaze samples:
+∆t=t−(t−1).
+If ∆t≤200ms (a short interruption threshold), the de-
+viation is treated as a transient flick rather than a fixation
+termination, and the fixation interval continues without inter-
+ruption.
+Scene consistency.To ensure that each detected fixa-
+tion corresponds to a visually coherent segment, we fur-
+ther apply a scene-consistency filter based on frame-wise
+Hue–Saturation histogram similarity. For a fixation interval
+fi = (¯xi,¯yi, ts
+i , te
+i ), we uniformly sample N frames from
+the corresponding video subsequence Vi ={v t}te
+i
+t=ts
+i
+and
+convert each sampled frame into the HSV color space. For
+every frame vt, we compute a normalized 2D histogram over
+the Hue–Saturation channels:
+Ht(h, s) = HistHSV (vt(h, s)), h∈[0,180], s∈[0,256],
+with P
+h,s Ht(h, s) = 1.
+Next, we measure visual continuity between consecu-
+tive frames by computing the histogram correlation using
+Pearson’s coefficient:
+ρ(fi(t), fi(t+ 1)) =
+P
+h,s(Ht(h, s)−µt) (Ht+1(h, s)−µt+1)
+qP
+h,s(Ht(h, s)−µt)2
+× 1qP
+h,s(Ht+1(h, s)−µt+1)2
+.
+(9)
+where µt and µt+1 denote the mean values of Ht and
+Ht+1.
+Collecting similarities across the entire episode gives
+S=
+
+ρ(fi(t1), fi(t2)), . . . , ρ(fi(tN−1 ), fi(tN ))
+	
+.(10)
+Smin = min(S).(11)
+A fixation is retained only if
+Smin ≥τ scene,
+where τscene is an empirically set threshold (typicallyτscene ≈
+0.9). Intervals failing to satisfy this constraint are considered
+to include scene changes and are discarded.
+A.3. Object Extraction by Gaze Area.
+FOV definition.When camera intrinsics are available [ 27],
+we compute the horizontal field-of-view (HFOV) using the
+intrinsic matrixKand frame image widthW pixels:
+HF OVrad = 2 arctan
+Wpixels
+2fx
+
+HF OVdeg =HF OVrad · 180
+π
+If intrinsics are unavailable [5, 6, 11], we assume a canon-
+ical HF OVdeg = 90 ◦. Following standard visual-angle
+conventions in [9, 16, 24], the perifoveal region spans ap-
+proximately 5◦–15◦. For our FOV threshold, we adopt the
+upper perifoveal bound and set rdeg = 15◦, which specifies
+the angular radius that is later converted into the pixel thresh-
+old τfov. We then convert this angular radius into a pixel
+radius via
+px/deg= Wpixels
+HF OVdeg
+, τ fov =r deg ×px/deg.
+This τfov serves as the pixel threshold used in Sec. 3.3 to
+determine whether an object lies inside or outside the user’s
+FOV .
+Region-specific visual prompting.To extract objects
+conditioned on human gaze, we design region-specific visual
+prompting strategies for InternVL-3.5 (38B). As shown in
+Fig. 17 and Fig. 18, we provide two distinct prompts: one
+2
+for identifying objects within the user’s FOV and another for
+discovering objects located outside the FOV .
+For the in-FOV setting, we provide the model with the
+fixation-aligned video clip and explicitly instruct it to (i) gen-
+erate a brief scene-level description, (ii) identify the precisely
+gazed object indicated by the green dot, and (iii) describe
+additional objects located within the perifoveal region. The
+prompt enforces consistent naming by providing an object
+pool and requires detailed, attribute-rich captions for each
+recognized object. For the out-of-FOV setting, we mask the
+central region of the frame and prompt the model to detect
+only objects outside the masked area. The prompt includes
+similar constraints on naming, appearance grounding, and
+relational descriptions, while removing all references to the
+gazed object. Both prompts further include human-centric
+rules—e.g., describing persons only when their full or upper
+body is visible, and requiring identity strings such as “person
+wearing [clothing description]” rather than generic labels.
+These region-specific prompts guide the MLLM to reli-
+ably extract spatially grounded object sets that are aligned
+with gaze-conditioned context, enabling consistent FOV-
+aware and out-of-FOV object discovery across datasets.
+A.4. QA Generation and Filtering
+In this section, we provide details of QA generation and
+filtering for each STREAMGAZEtask. We also elaborate
+how we decide query timet q for each task.
+A.4.1. Non-Fixated Object Identification (NFI)
+NFI evaluates whether a model can identify objects that were
+visible in the scene but never directly fixated by the user.
+QA generation and filtering.We collect all FOV/out-
+FOV objects and define the scene-wide object pool as A=S
+i(Ofov
+i ∪Oout
+i ). Objects that were visible yet never fixated
+are defined as Ni =A\O fov
+i . For each index i, if Ni is non-
+empty, we sample the correct answer from Ni and choose
+three distractors from the prefix FOV object set Ofov
+≤i . Since
+NFI does not require visual verification, we rely directly on
+human-verified scanpaths and perform only formatting and
+consistency checks.
+Query time.Let fi denote the set of distinct fixation
+objects observed up to timestamp i as defined in Sec. 3.2.
+We define the query timestamp tq as the earliest time at
+which three unique fixation objects have been accumulated:
+tq = min{i| |fi| ≥3}.
+At this point, we determine which objects have already been
+seen and which have not. To compute the response window,
+we gather all intervals in which the distractor objects (i.e.,
+previously fixated objects) appear within the FOV . We then
+take the earliest and latest of these intervals and expand the
+window by two seconds on both ends, producing a consistent
+response interval that fully captures the temporal range in
+which distractor objects are visible.
+A.4.2. Scene Recall (SR)
+SR evaluates contextual memory by determining which back-
+ground object was previously visible but not visible during
+the current fixation.
+QA generation and filtering.We construct the global
+background pool as B= S
+i Oout
+i . At fixation i, the correct
+answer is sampled from B \ Oout
+i , while distractors are cho-
+sen from the currently visible background objects Oout
+i . For
+filtering, we apply three consistency checks with Qwen3-VL:
+(1) the question must be clear and unambiguous, (2) the se-
+lected answer must be an object that was never fixated, and
+(3) the answer object must appear in the video.
+Query time.We define the query timestamp tq as the
+moment when the user first begins to fixate on any of the
+objects mentioned in the question. This ensures that the
+model is evaluated exactly when the relevant scene context
+becomes available to the user.
+A.4.3. Object Transition Prediction (OTP)
+OTP evaluates temporal continuity in gaze by predicting the
+next newly attended object.
+QA generation and filtering.For consecutive times-
+tamps (i, i+ 1), we use Ofov
+i and Ofov
+i+1. The correct answer
+is the first object in Ofov
+i+1 that does not belong to Ofov
+i , cor-
+responding to the newly attended object. Distractors are
+sampled from the global object pool, excluding both Ofov
+i
+and the correct answer. For filtering, since OTP transitions
+come directly from human-verified scanpaths, no additional
+visual filtering is required.
+Query time.We define the query timestamp tq as the
+moment when the fixation on the current object group Ofov
+i
+first begins, marking the onset of the transition. To compute
+the response window, we use the full temporal span of the
+transition event: we start two seconds before Ofov
+i becomes
+visible in the FOV and end two seconds after the fixation
+on the newly attended object Ofov
+i+1 concludes. This window
+provides continuous context across the transition, capturing
+both the preceding fixation pattern and the complete fixation
+period of the next object.
+A.4.4. Gaze Sequence Matching (GSM)
+GSM evaluates whether models capture sequential gaze pat-
+terns across time.
+QA generation and filtering.We extract consecutive
+3-step fixation sequences [Ofov
+i ,O fov
+i+1,O fov
+i+2] and serialize
+them as Ofov
+i → Ofov
+i+1 → Ofov
+i+2 to form the correct se-
+quence. Three negative options are generated: one using a
+shuffled ordering of the same groups, and two using random
+groups sampled from the global object pool while preserv-
+ing structural validity. To prevent ambiguous QA pairs, we
+automatically remove samples with Qwen3-VL [30] where
+any distractor sequence overlaps with the correct sequence
+in more than 50% of segments.
+3
+Query time.We define the query timestamp tq as the end
+of the third fixation groupOfov
+i+2, which marks the completion
+of the three-step transition sequence used for the question.
+The response window spans the entire sequence interval,
+beginning from the onset of the first fixation group Ofov
+i and
+extending to the end of the third group Ofov
+i+2. This window
+provides continuous temporal context for evaluating whether
+the model can recognize the correct sequential gaze pattern
+across all three segments.
+A.4.5. Object Identification (OI, Easy/Hard)
+OI (Easy/Hard) evaluates whether models can correctly rec-
+ognize the object currently fixated within the gaze-aligned
+cropped regionO fov
+i .
+QA generation and filtering.In the easy task, distractors
+are sampled from all objects appearing anywhere in the
+video, excluding the target object and all objects within the
+cropped FOV region. In the hard task, distractors are drawn
+exclusively from Oout
+i , i.e., objects visible in the same frame
+but outside the fixation region. If fewer distractors than
+required are available, the corresponding sample is discarded
+to avoid trivial or ambiguous questions.
+Query time.Each prediction is evaluated within the
+response interval aligned with the corresponding fixation
+episode. We therefore define the query timestamp tq as the
+start time of the fixation.
+A.4.6. Object Attribute Recognition (OAR)
+OAR evaluates fine-grained perceptual understanding by
+asking the model to infer a specific visual attribute (e.g.,
+color, material, shape, texture, size, or state) of the object
+currently fixated.
+QA generation and filtering.To construct reliable at-
+tribute questions, we employ a constrained LLM-based tem-
+plate system. We define a fixed dictionary of attribute types
+and pair each type with a corresponding question template
+(e.g., color →“What color is this object?”). Given the cap-
+tion of Ofov
+i , Qwen3-VL-30B [30] is prompted to: (1) select
+the most appropriate attribute type, (2) extract a concise
+correct answer grounded in the caption, and (3) generate
+three visually plausible but incorrect distractors that do not
+overlap semantically with the correct attribute. To remove
+ambiguous or semantically entangled distractors, we apply
+an additional verification step using Qwen3-VL [30], retain-
+ing only unambiguous multiple-choice sets.
+Query time.Similar to the OI task, we define the query
+timestampt q as the start time of the fixation.
+A.4.7. Future Action Prediction (FAP)
+FAP evaluates proactive intention inference by predicting
+the user’s upcoming action based on the recent sequence of
+fixations.
+QA generation and filtering.For each fixation index
+i, we extract a 3-step fixation sequence capturing the short-
+term progression of the user’s attention. We then align this
+sequence with the official action annotations of the video and
+identify the earliest future action whose timestamp occurs at
+least a small temporal margin (3 seconds to 1 minute) after
+the fixation ends. This action is assigned as the correct label.
+Distractor options are sampled from other actions within the
+same video, while removing near-duplicate or semantically
+ambiguous actions to ensure clear discrimination.
+Query time.We define the query timestamp tq as the
+moment when the fixation sequence ends, ensuring that the
+model makes predictions immediately after observing all
+relevant gaze information. The response window begins two
+seconds before the actual action timestamp, preventing tem-
+poral leakage while anchoring the prediction to the correct
+action segment.
+A.4.8. Gaze-Triggered Alert (GTA)
+GTA evaluates whether a model can proactively monitor the
+user’s fixation and trigger an alert as soon as a specified
+target object enters the fixation region Rfov
+i . For each video,
+we first gather all objects that were directly fixated at least
+once, excluding background furniture or static structures
+using Qwen3-based filtering [30]. We then sample multiple
+evaluation timestamps relative to the object’s first fixation
+moment (e.g., t−20 , t−10 , t, t+ 10 , t+ 20 seconds),
+following the multi-query design of OVO-Bench [15]. At
+each timestamp, we determine whether the user is currently
+fixating on the object and assign a binary label accordingly
+(type 1 for fixation, type 0 for non-fixation). For quality
+control, we manually verify the fixation labels to ensure
+accuracy.
+A.4.9. Object Appearance Alert (OAA)
+OAA evaluates whether the model can proactively detect
+objects that appear in the peripheral region Rout
+i , i.e., ob-
+jects that are visible in the frame but have not yet entered
+the user’s fixation. We extract all Oout
+i at each timestamp,
+removing background furniture or static structures using
+Qwen3-based filtering [ 30]. For each selected object, we
+generate evaluation timestamps (e.g.,t−20 , t−10 , t, t+10 ,
+t+ 20 seconds) relative to its first appearance, using offsets
+centered around the event boundary. At each timestamp,
+we determine whether the object is currently visible in the
+frame but outside the fixation region, assigning type 1 when
+present and type 0 otherwise. For quality control, we use
+Qwen3-VL [30] to confirm that the object indeed appears
+within the 10-second evaluation window and additionally
+perform manual verification to ensure accuracy.
+A.5. Human Verification
+As shown in Fig. 22, we employ three annotators and pro-
+vide them with an HTML-based interface for verification.
+4
+(a) Video domains (b) Wordcloud of in-FOV objects
+ (c) Video length distribution 
+Cooking
+Assembly
+Lab
+Figure 6.Data statistics of STREAMGAZE.We report domain proportion, video length, world cloud for FOV extracted objects.
+Task proportion (%)
+OAA OAR OI 
+(Easy)
+OI 
+(Hard)
+FAP NFI OTP SRGT AGSM
+20.6%
+16.7% 16.7%
+15.2%
+10.5%
+7.0% 5.5%
+3.2% 2.9%
+1.5%
+Figure 7.Task proportion of STREAMGAZE.We summarize the
+sample distribution for each task in STREAMGAZE.
+Table 5.Human verification results per each video source.We
+report object inclusion/modification ratio after human verification.
+Inclusion Ratio (%) Modified Ratio (%)
+EGTEA-Gaze [11] 81.77 6.89
+HoloAssist [27] 67.88 9.99
+EgoExoLearn [6] 84.31 7.24
+Each annotator is shown the fixation-level video clip along
+with the objects extracted by the MLLM: the precisely gazed
+object (marked by a green dot), other objects within the FOV
+region, and out-of-FOV objects. (Details of the provided
+instructions are shown in Fig. 24.) Annotators then deter-
+mine whether each object should be included or excluded
+based on the visual evidence. For the gazed (pointing) ob-
+ject, annotators additionally correct or rewrite its identity
+and detailed caption when necessary. We report the inclusion
+ratio and modification ratio in Tab. 5. The inter-annotator
+agreement, measured using Fleiss’ Kappa, is 0.60, indicating
+consistency among annotators.
+B. STREAMGAZEEvaluation Details
+Multiple-choice question evaluation.For all past and
+present tasks, we construct the model’s input clip according
+to the prior streaming benchmarks [ 13, 15]. Past tasks re-
+ceive the full history from the beginning of the video up to
+the query timestamp [0, tq], enabling long-range reasoning.
+Present tasks use a 60-second sliding window [tq −60, tq]
+(clamped to start at 0), reflecting real-time processing with
+limited recent context. All these tasks are evaluated as four-
+way multiple-choice questions. Because models may output
+answers in diverse natural-language formats, we extract the
+predicted option by deterministic parsing rules, prioritizing
+concise outputs such as a final standalone letter or expres-
+sions like “the answer is B,” while also supporting formats
+such as “C. pot.” Accuracy is reported as the proportion
+of correctly answered questions over the total number of
+questions for each task.
+Proactive evaluation.The two proactive tasks follow an
+OVO-Bench–style configuration [15], where evaluation is
+conducted at a series of checkpoints rt. Each rt corresponds
+to an evaluation timestamp sampled around the target ob-
+ject’s first fixation time (e.g., t−20 , t−10 , t, t+ 10, t+ 20
+seconds), representing moments at which a proactive assis-
+tant should determine whether the user is attending to the
+target object. At each checkpoint, the model receives the
+cumulative video prefix [0, rt] and outputs a binary “yes/no”
+decision indicating whether the object lies within the fixation
+region. Each checkpoint is labeled as a positive case if the
+target is fixated and negative otherwise, and we compute ac-
+curacy across all checkpoints. This setup evaluates whether
+a model can continuously monitor gaze signals and trigger
+alerts with precise temporal fidelity.
+C. Additional Analysis
+C.1. Fine-tuning Results
+To better understand the underlying failure of MLLMs and
+assess whether performance can be improved through gaze-
+supervised learning, we conduct LoRA-based fine-tuning
+experiments. Specifically, we fine-tune ViSpeak [4] on our
+gaze-guided training set to quantify the potential perfor-
+mance gains achievable through targeted adaptation.
+Fine-tuning dataset.We construct four variants of train-
+ing data for our fine-tuning experiments, drawing from both
+external resources and our own automatically generated
+data. First, we include external gaze-based QA datasets
+such as HD-EPIC [20] (2k) and EgoGazeVQA [19] (1.2k),
+which provide high-quality gaze–question–answer supervi-
+sion despite not being strictly streaming-based. Second,
+5
+Table 6.Fine-tuning results on ViSpeak [ 4].We construct four variants of training data for our fine-tuning experiments, drawing from both
+external resources [19, 20] and our own automatically generated data based on Ego4D-Gaze [5] and EgoExoLearn [6].
+Fine-tuning datasets Past Present Proactive OverallExternal [19, 20] EgoExoLearn [6] Ego4D-Gaze [5] NFI OTP SR GSM OI (E) OI (H) OAR FAP GTA OAA
+0.526 0.486 0.341 0.418 0.635 0.477 0.413 0.489 0.504 0.502 0.479
+✓ 0.467 0.477 0.300 0.347 0.368 0.562 0.420 0.392 0.147 0.381 0.386
+✓ ✓ 0.592 0.563 0.469 0.385 0.622 0.616 0.544 0.359 0.474 0.792 0.542
+✓ ✓ 0.517 0.545 0.495 0.373 0.540 0.452 0.496 0.351 0.487 0.737 0.500
+✓ ✓ ✓ 0.583 0.540 0.495 0.388 0.601 0.641 0.575 0.331 0.409 0.651 0.521
+we leverage QA pairs generated by our data construction
+pipeline. Because the scanpath inclusion ratio between
+our pipeline and human annotators is approximately 78%
+(see Tab. 5), we further apply the same pipeline to EgoEx-
+oLearn [6] and Ego4D-Gaze [5], which do not overlap with
+STREAMGAZEvideo sources, to automatically synthesize
+additional STREAMGAZE-style training data. This serves
+as a form of data augmentation, expanding coverage and
+increasing the diversity of gaze-conditioned supervision.
+Implementation details.The base model is ViSpeak,
+built on Qwen2.5-Instruct with an InternViT-300M vision
+tower and a frozen VITA-1.5 audio encoder. We enable
+LoRA with rank 128 and α= 256 , and train the MLP-based
+multimodal projector with a learning rate of 1×10−5. We
+use a batch size of 2 per device (gradient accumulation 2), a
+maximum sequence length of 5500 tokens, and train for 2
+epochs.
+Negative sampling for proactive task fine-tuning
+{
+"conversations": [
+{"from": "human",
+"value": "Monitor and alert when I gaze <screen>",
+"time": 91.0},
+{"from": "gpt", "value": "", "time": 2783.0},
+{"from": "gpt", "value": "", "time": 2793.0},
+{"from": "gpt",
+"value": "You are now gazing <screen>.",
+"time": 2803.0}
+],
+"proactive": true
+}
+Figure 8.Example of negative sampling strategy for proactive
+task fine-tuning.We apply negative sampling to fine-tune ViSpeak.
+Proactive task fine-tuning.For proactive reminder tasks,
+we fine-tune the model using a negative–positive sampling
+strategy together with ViSpeak’s informative head. As illus-
+trated in Fig. 8, all timestamps before the target object’s first
+fixation are treated asnegativeinstances, where the model is
+trained to output an empty response so that it learns when it
+should remain silent. At the first fixation timestamp, aposi-
+tiveinstance is provided and the model is trained to generate
+the alert message, teaching it the exact moment a notifica-
+tion should be triggered. Each training example is formatted
+as a short multi-turn sequence in which early turns contain
+empty responses and the first positive turn contains the alert
+(e.g., “You are now gazing <screen>."), clearly marking the
+transition from non-trigger to trigger conditions.
+Quantitative results.As shown in Tab. 6, training only
+on external gaze QA datasets lowers the overall accuracy,
+indicating that these datasets alone do not transfer effec-
+tively to the streaming gaze reasoning setting. In contrast,
+adding automatically generated STREAMGAZE-style data
+leads to clear improvements. EgoExoLearn is particularly
+helpful because it is in-domain with respect to egocentric
+manipulation scenes, making its synthesized gaze supervi-
+sion more aligned with the target distribution. Incorporating
+Ego4D-Gaze provides additional gains, and combining all
+data sources yields the best overall accuracy of 0.521. How-
+ever, because STREAMGAZEcovers a wide range of tasks,
+the resulting data distribution is inherently imbalanced, so
+performance does not increase uniformly across all tasks.
+Overall, these results show that in-domain synthetic gaze su-
+pervision is essential for improving ViSpeak, while external
+datasets alone are insufficient for this setting.
+C.2. Details of Gaze Input Prompting
+We provide each gaze-prompting instruction in Fig. 9, in-
+spired by [ 19], to obtain the Qwen2.5-VL performances
+reported in Tab. 3. For the text gaze prompting setting, we
+extract the user’s fixation center prior to the query time and
+embed the corresponding fixation coordinates into the tex-
+tual prompt. To construct a salience-map prompt, we follow
+Algorithm 1 from Appendix B of [19] without modification,
+compressing the entire gaze trajectory into a single salience
+heatmap. We then prepend this salience map to the input
+video frames so that the MLLM jointly attends to both the vi-
+sual stream and the gaze-derived salience distribution. Tab. 7
+also provide detailed performance per each task on GPT-4o,
+InternVL-3.5 and ViSpeak.
+C.3. Details of Gaze-based Reasoning
+We illustrate the input formats for gaze-, text-, and visual-
+based reasoning in Figs. 19 to 21. We further provide quali-
+tative comparisons between text-only reasoning and gaze- or
+visual-guided reasoning in Figs. 10 and 11. In Fig. 10, the
+gaze-based reasoning correctly identifies the attended object
+6
+I provide you with gaze fixation information extracted from the video. Each fixation represents a location where the user maintained attention for more. 
+Fixation 1 (23.9s-26.0s): Gaze(303, 165)
+Fixation 2 (31.9s-34.1s): Gaze(299, 98)
+Fixation 3 (59.8s-60.0s): Gaze(302, 384)
+Each fixation entry normally contains the fixation number, its time range, and its average gaze coordinates. Follow these steps: 
+(1) Observe the chronological sequence of fixations. 
+(2) Identify which objects or regions the user focused on based on the coordinates.
+(3) Use this fixation pattern to understand the user’s attention and intent.
+I provide you with a video that contains gaze information. In each frame, the user’s gaze center is indicated by a green dot and the 
+red circle represents the focused gaze area. 
+Follow these steps to answer the question:
+(1) Focus on the objects located inside or near the red circle area.
+(2) Observe how the green dot moves across frames in chronological order.
+I provide you with a video along with a salience map that summarizes the user’s gaze behavior during the shown time interval. Warmer colors 
+(red/yellow) indicate regions the user looked at frequently or for longer durations, while cooler colors (blue/green) represent areas with 
+little or no attention. The intensity of the color encodes how strongly the user attended that region.
+Follow these steps:
+(1) Pay more attention to high-intensity regions (bright red/yellow).
+(2) Consider how these salient areas relate to objects or actions in the video.
+(3) Use the salience distribution to infer what the user was likely attending to.
+(a) Text-based gaze prompting
+(b) Visual-based gaze prompting
+(c) Salience-based gaze prompting
+Figure 9.Gaze prompting strategies for STREAMGAZEWe adopt three strategies for inputting gaze information to MLLMs.
+Table 7.Detailed performance of gaze input prompting across each STREAMGAZEtask.We ablate effect of gaze input prompting on
+GPT-4o [17], InternVL3.5 [26] and ViSpeak [4].
+Method Params Frames Past Present Proactive OverallNFI OTP SR GSM OI (E) OI (H) OAR FAP GTA OAA
+GPT-4o [17] - 16 0.601 0.459 0.507 0.607 0.725 0.731 0.594 0.375 0.608 0.148 0.536
++ visual prompt - 16 0.601 0.449 0.535 0.580 0.729 0.730 0.596 0.370 0.597 0.149 0.535
+InternVL3.5 [26] 8B Adaptive 0.469 0.370 0.526 0.510 0.626 0.637 0.463 0.382 0.376 0.048 0.441
++ visual prompt 8B Adaptive 0.490 0.311 0.573 0.548 0.627 0.628 0.466 0.372 0.373 0.051 0.444
+ViSpeak [4] 7B 1 fps 0.493 0.374 0.417 0.521 0.591 0.560 0.438 0.336 0.625 0.334 0.469
++ visual prompt 7B 1 fps 0.463 0.358 0.417 0.473 0.572 0.581 0.406 0.309 0.635 0.458 0.467
+by leveraging the fixation location, whereas the text-only rea-
+soning fails due to relying solely on language priors without
+visual grounding. In Fig. 11, the visual-based reasoning suc-
+ceeds by using the detected object region to determine which
+background item was outside the user’s field of view, while
+the text-only reasoning struggles because it lacks explicit
+spatial grounding.
+D. STREAMGAZEData Details
+D.1. Data Statistics
+Overall statistics.We provide STREAMGAZEdata statis-
+tics in Figs. 6 and 7 and Tab. 8. From Fig. 7: (a) The
+videos cover three domains—cooking, laboratory work, and
+assembly—with cooking comprising the majority. This dis-
+tribution reflects realistic egocentric environments while still
+offering diverse interaction patterns. (b) The word cloud
+highlights frequently appearing FOV objects such as hands,
+knives, gloves, bottles, and cutting boards, indicating that
+the extracted objects largely correspond to action-related
+tools and manipulable items. (c) Video lengths vary from
+just a few minutes to more than half an hour, with most clips
+between 5 and 15 minutes. This range provides both short
+segments for immediate reasoning and longer sequences
+suitable for multi-step or extended interactions.
+Attribute statistics of OAR task.For the OAR (Object
+Attribute Recognition) task, we generate attribute-focused
+questions centered on the gazed object’s properties. The
+distribution coverscolor(65.61%),material(19.3%),state
+(5.5%),texture(5.3%), andshape(4.1%), reflecting the dom-
+inant attribute types encountered in egocentric manipulation
+scenes.
+7
+Table 8.Statistics of StreamGaze tasks.
+Task # Samples
+Gaze Sequence Matching 186
+Non-Fixated Object Identification 650
+Object Transition Prediction 494
+Scene Recall 211
+Future Action Prediction 921
+Object Attribute Recognition 1,419
+Object Identification (Easy) 1,487
+Object Identification (Hard) 1,005
+Gaze-Triggered Alert 283
+Object Appearance Alert 1,865
+Total 8,521
+D.2. QA Examples
+We provide data examples per each STREAMGAZEtask for
+better understanding in Figs. 12 to 16. An orange question
+mark in each task figure denotes a query time.
+E. Limitations and Future Work
+Although STREAMGAZEoffers the first comprehensive
+benchmark for gaze-guided streaming reasoning, some
+limitations suggest promising avenues for future work.
+STREAMGAZEspans ten heterogeneous tasks with inher-
+ently imbalanced sample sizes, and future work could ex-
+plore curriculum or task-balanced training to improve uni-
+formity across tasks. The benchmark is also grounded
+in manipulation-centric egocentric environments, leaving
+broader domains such as social interaction, navigation, and
+outdoor activities largely unexplored.
+F. License
+We provide licenses of datasets and models used in our work
+in Tab. 9.
+Table 9.Licenses of datasets and models.
+Resource License
+EgoExoLearn MIT License (link)
+HoloAssist CDLAv2 License (link)
+ViSpeak Apache-2.0 (link)
+InternVL 3.5 Apache-2.0 (link)
+Qwen3 Apache-2.0 (link)
+8
+[Task: Object Identification] 
+What is this object currently gazing?
+A. sink B. glassware  C. box  D. counter 
+Thinking: Analyzing the sequence of images, the gaze markers (green dots) consistently point to different objects within red circles. 
+In this case, the gaze marker highlights various objects, but the focus remains on the surface where items like plates, a box, and 
+glassware are placed. This surface is the counter. 
+Answer: D. Counter
+Thinking: Up to the given timestamp, the gaze center is closest to the box located on the counter. The green dot and red circle 
+consistently focus onthe box in the last few frames. Based on the visual evidence, the box is the target object. 
+Predicted Gaze: (427, 308)
+Answer: C. box 
+(b) Gaze-based reasoning
+(a) T ext-based reasoning
+Figure 10.Qualitative comparison with text reasoning and gaze-based reasoning.We visualize examples from the scene reconstruction
+task comparing (a) text and (b) gaze-based reasoning.
+[Task: Scene Reconstruction] 
+When the user was gazing at the {paper}, 
+which background object was NOT visible?
+ 
+A. towel B. bowl C. spoon D. pot
+Thinking: When the gaze is centered on the paper, the towel on the right side of the frame, bowl on the left bottom, spoon near the 
+kettle, and pot on the left are all potential background objects. However, based on the field of view and gaze focus, the towel is out 
+of view as it is located further to the right and not within the central focus area of the gaze. 
+ Answer: A. towel  
+Thinking: The gaze is centered on the paper, as indicated by the green dot at (0.5, 0.3) with a radius of 0.2. The paper is grounded as 
+the object nearest to the gaze center. To determine which background object was NOT visible when the user was gazing at the paper, 
+I assess the visibility of the listed options: towel, bowl, spoon, and pot. The towel is visible on the right edge, the bowl is visible on the 
+left bottom, the spoon is visible near the kettle, and the pot is visible on the left bottom. Thus, none of these objects are excluded 
+from the view. 
+Answer: D. Pot 
+(b) Visual-based reasoning
+(a) T ext-based reasoning
+Figure 11.Qualitative comparison with text reasoning and visual-based reasoning.We visualize examples from the object identification
+task comparing (a) text and (b) visual-based reasoning.
+9
+Object Transition Prediction
+Among {spatula, pan, pot, pancake}, which did the user never gaze at?
+A. Spatula           B. Pan             C. Pot             D. Pancake
+Non-Fixated Object Identification
+00:10 00:18
+03:08 03:15
+What object does the user gaze at next after looking at the {phone, table} ?
+A. Egg mixture         B. Laptop       C. Bowl.     D. Knob
+Figure 12.STREAMGAZEdata example for OTP and NFI task.
+Scene Recall 
+Which transition best matches the user's gaze pattern?
+A. {pot, spoon} → {vegetables, sink, faucet} → {pepper, knife, hand}
+B. {paper, fork} → {paper, tomato} → {bowl, egg}
+C. {bell pepper, bottle} → {bowl, knife} → {cucumber, faucet}
+D. {vegetables, sink, faucet} → {pot, spoon} → {pepper, knife, hand}
+Gaze Sequence Matching
+00:18
+31:36 32:07
+When the user was gazing at the {paper, cabinet}, which background object was NOT visible?
+A. Dish B. Cup C. Glass D. Oil
+Figure 13.STREAMGAZEdata example for SR and GSM task.
+10
+Object Identification (Easy)
+What is this object user gazing at?
+A. Cheese         B. Paper towels           C. Containers        D. Lettuce
+Object Identification (Hard)
+What is this object user gazing at?
+A. Floor               B. Bagel               C. Mustard            D. Lettuce
+Figure 14.STREAMGAZEdata example for OI (Easy/Hard) task.
+Object Attribute Recognition
+Based on the recent fixation pattern (lid → spoon → bottle), what action will the user do next? 
+A. Open the carrot container
+B. Move around the grocery bag
+C. Transfer the vegetable from the plate to the bowl.
+D. Pour seasoning from the seasoning container into the pot.
+Future Action Prediction
+06:53 06:67
+What color is this object user currently gazing at? 
+A. Yellow           B. Brown            C. White                 D. Green
+Figure 15.STREAMGAZEdata example for OAR and FAP task.
+11
+Gaze Triggered Alert
+Watch the scene and alert me when the pan appears.
+[13:15] Pan is appeared in the scene 
+Object Appearance Alert
+Monitor my gaze and alert me when I gaze on the plate
+[2:32] You are gazing the plate 
+02:02 02:10 02:22 02:32
+… … 
+12:59 13:10 13:15 13:30
+… … 
+Figure 16.STREAMGAZEdata example for GTA and OAA task.
+12
+Prompt for FOV region object extraction
+Context: {action_caption}
+Known objects: {object_pool}
+IMPORTANT: Reuse these exact names if you see the same objects.
+Only use new names for clearly different objects.
+Analyze this video clip and return a JSON with this exact structure:
+{
+"scene_caption": "Brief 2-3 sentence description of the overall scene
+and what’s happening",
+"gaze_object": {
+"object_identity": "name of object at coordinate (x, y)",
+"detailed_caption": "Natural 3-5 sentence description of this object’s appearance
+and characteristics"
+},
+"other_objects": [
+{
+"object_identity": "object_name (e.g., ’cup’, ’person wearing blue shirt’)",
+"detailed_caption": "Two sentences describing the object’s appearance,
+attributes, and spatial position relative to other objects"
+}
+]
+}
+Person rules: Only include if full/upper body visible (not just hands/arms).
+CRITICAL: object_identity must be "person wearing [clothing description]"
+NOT just "person".
+Return only valid JSON. Be concise and direct.
+Figure 17.Prompt for FOV region object extraction.
+13
+Prompt for out-of-FOV region object extraction
+Context: {action_caption}
+Known objects: {object_pool}
+IMPORTANT: Reuse these exact names if you see the same objects.
+Only use new names for clearly different objects.
+Analyze this video clip (with the center region masked) and return a JSON
+with this structure:
+{
+"other_objects": [
+{
+"object_identity": "object_name (e.g., ’bottle’, ’person wearing green jacket’)",
+"detailed_caption": "Two sentences describing the object’s appearance,
+attributes, and spatial position"
+}
+]
+}
+Focus only on objects OUTSIDE the black masked region.
+Person rules: Only include if full/upper body visible (not just hands/arms).
+CRITICAL: object_identity must be "person wearing [clothing description]"
+NOT just "person".
+Return only valid JSON.
+Figure 18.Prompt for out-of-FOV region object extraction.
+Prompt for text-based reasoning
+You are an expert at gaze-conditioned streaming video reasoning.
+Rules:
+1) Only use visual evidence up to the given timestamp.
+2) Do your step-by-step reasoning ONLY inside <think>...</think>.
+3) Give exactly ONE final choice (A/B/C/D) or yes/no with its short text
+inside <answer>...</answer>.
+{Question}
+Figure 19.Prompt for text-based reasoning.
+14
+Prompt for gaze-based reasoning
+You are an expert at gaze-conditioned streaming video reasoning.
+Rules:
+1) Only use visual evidence up to the given timestamp (no future leakage).
+2) Do your step-by-step reasoning ONLY inside <think>...</think>.
+3) Return exactly three tags in order: <gaze>...</gaze> <think>...</think>
+<answer>...</answer>.
+4) In <gaze>, estimate the most recent gaze center and FOV radius from the green dot
+and red circle in the frames up to the timestamp.
+5) If the green dot/Red circle is not visible, output "unknown" in <gaze>
+but still reason and answer using other available evidence.
+6) In <answer>, give exactly ONE final choice (A/B/C/D) or Yes/No with a short text.
+{Question}
+Figure 20.Prompt for gaze-based reasoning.
+Prompt for visual-based reasoning
+You are an expert at gaze-conditioned streaming video reasoning.
+Rules:
+1) Only use visual evidence up to the given timestamp (no future leakage).
+2) Produce your reasoning ONLY inside <think>...</think> and never reveal
+reasoning outside the tag.
+3) Return exactly FOUR tags in this order: <gaze>...</gaze> <objects>...</objects>
+<think>...</think> <answer>...</answer>.
+4) In <gaze>, estimate the most recent gaze center and FOV radius from the green dot
+and red circle, or output "unknown" if not visible.
+5) In <objects>, ground the most relevant objects inside or closest to the
+gaze/FOV region; for each object provide: object_name, bbox_x1, bbox_y1, bbox_x2, bbox_y2
+normalized to [0,1], or output "none" if no relevant object appears.
+6) In <think>, use the gaze and grounded objects to perform step-by-step reasoning
+and explain exclusion of irrelevant options.
+7) In <answer>, provide exactly ONE final label (A/B/C/D or Yes/No)
+with a short justification.
+{Question}
+Figure 21.Prompt for visual-based reasoning.
+15
+Figure 22.HTML for human verification of STREAMGAZEdata construction.
+16
+Figure 23.HTML for human oracle evaluation of STREAMGAZE.
+Figure 24.Instructions provided to human annotators.
+17

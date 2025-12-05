@@ -1,0 +1,1140 @@
+Work in Progress
+FROMATOMIC TOCOMPOSITE: REINFORCEMENT
+LEARNINGENABLESGENERALIZATION
+INCOMPLEMENTARYREASONING
+Sitao Cheng1†, Xunjian Yin2, Ruiwen Zhou3, Yuxuan Li 1,
+Xinyi Wang4,Liangming Pan 5†,William Yang Wang6,Victor Zhong 1†
+1University of Waterloo 2Duke University 3National University of Singapore
+4Princeton University 5Peking University 6University of California, Santa Barbara
+{sitao.cheng, victor.zhong}@uwaterloo.com liangmingpan@pku.edu.cn
+ABSTRACT
+Reinforcement Learning (RL) following Supervised Fine-Tuning (SFT) has be-
+come the standard paradigm for post-training Large Language Models (LLMs).
+However, the mechanism by which RL contributes to reasoning capabilities—
+whether it incentivizes the synthesis of new skills or merely amplifies existing
+behaviors—remains a subject of intense debate. In this work, we investigate this
+question through the lens ofComplementary Reasoning, a complex task that re-
+quires integrating internal parametric knowledge with external contextual infor-
+mation. Using a controlled synthetic dataset of human biographies, we strictly
+decouple this ability into two atomic skills:Parametric Reasoning(relying on
+internal knowledge encoded in model parameters) andContextual Reasoning(de-
+pending on novel information provided in the context window). To rigorously as-
+sess capability boundaries, we evaluate generalization across three distinct levels
+of difficulty:I.I.D., Composition, and Zero-shot settings. We find that while SFT
+is sufficient for in-distribution performance, it struggles with out-of-distribution
+generalization, particularly in Zero-shot settings where relational combinations
+are novel. Crucially, we identifythe SFT Generalization Paradox: Models super-
+vised solely on the composite task achieve near-perfect in-distribution accuracy
+(90%) but collapse on out-of-distribution generalization (18%), indicating their re-
+liance on rote memorization of path shortcuts. In contrast, we find that RL acts as
+a reasoning synthesizer rather than a probability amplifier. However, we uncover
+a strict atomic prerequisite: RL can only synthesize these complex strategies if the
+base model has first mastered the independent atomic skills (Parametric and Con-
+textual) via SFT. These findings challenge the view of RL as a mere amplifier, sug-
+gesting that given sufficient atomic foundations, RL can actively synthesize com-
+plex reasoning strategies from learned primitives without explicit supervision on
+such complex strategies. This indicates that decoupled atomic training followed
+by RL offers a scalable path to generalization for complex reasoning tasks. Code
+and data will be at https://github.com/sitaocheng/from atomic to composite.
+1 INTRODUCTION
+The rapid evolution of Large Language Models (LLMs) has been fundamentally driven by advanced
+post-training strategies, specifically an initial Supervised Fine-Tuning (SFT) stage followed by a
+Reinforcement Learning (RL) stage (Achiam et al., 2023; Team et al., 2024; Guo et al., 2025).
+While SFT is effective at establishing behavioral norms and imparting foundational knowledge, it
+fundamentally relies on maximum likelihood estimation, which tends to favor thememorization
+of the training distribution. This often results in poor generalization outside the training domain
+(Wang et al., 2025; Chu et al., 2025). Conversely, RL, guided by reward signals, is hypothesized
+†Corresponding author.
+1
+arXiv:2512.01970v1  [cs.AI]  1 Dec 2025
+Work in Progress
+①
+ Parametric Reasoning
+②
+ Contextual Reasoning
+③
+ Complementary Reasoning
+Context: ‘Global View’ magazine announces the 
+appointment of Amina Khan as its editor-in-chief.
+Question: What is the occupation of the business 
+partner of Global View’s new Chief Editor?
+Answer: The Chief Editor of Global View is Amina 
+Khan. Ben Carter is a business partner with Amina 
+Khan. Ben Carter ‘s job is as a Research Analyst. 
+So, the answer is: Research Analyst
+Question: What is the occupation of the business 
+partner of Amina Khan?
+Answer: Ben Carter is a business partner with 
+Amina Khan. Ben Carter is a Research Analyst. So, 
+the answer is: Research Analyst
+Context: ‘Global View’ magazine announces the 
+appointment of Amina Khan as its editor-in-chief. 
+Amina Khan’s best friend is Chloe Davis.
+Question: Who is the best friend of 'Global View’s 
+Chief Editor?
+Answer: The Chief Editor of Global View is Amina 
+Khan. Chloe Davis’s best friend is Amina Khan. So, 
+the answer is: Chloe Davis.
+Training Data Level 1: I.I.D. (Seen Path)
+Business_Partner → Occupation
+What is the occupation of Tommy’s 
+business partner?
+Generalization Levels in Testing Set 
+Training Method I.I.D. Composition Zero-shot
+SFT(①+②)
+SFT(③)
+SFT(③) +RL (③)
+SFT(①+②) +RL (③)
+Relation Path: 
+Business_Partner → Occupation
+What is the occupation of 
+Matthew’s business partner?
+Relation Path: 
+Business_Partner → Spouse
+Who is the spouse of 
+Joshua’s business partner?
+Level 2: Composition (Seen Relation, 
+Unseen Path)
+Spouse → Job
+What is the occupation of Jimmy’s wife?
+Level 3: Zero-shot (Unseen Relations)
+Advisor → Spouse
+Who is the spouse of Jack’s advisor?
+(a) Reasoning Types (b) Experimental Settings
+(c) Key Findings on Generalization to Complementary Reasoning
+• Training Strategy: SFT memorizes, while RL is the key to generalization.
+• Data Prerequisite: RL composes new skills only based on sufficient
+atomic skills.
+Performance on Complementary Reasoning Test Set
+Capability in 
+parameters
+Capability in 
+context
+Figure 1: The SFT Generalization Paradox: Models trained on atomic skills generalize better via
+RL than models trained directly on the composite task. (a) Example of Complementary Reasoning
+requiring the skills of both Parametric and Contextual Reasoning. (b) Evaluation protocol through
+three levels of difficulty with sufficient training data of different reasoning types. and denotes
+seen and unseen relation (path), respectively. (c) We find that RL composes new skills under the
+condition that the base model has sufficient atomic abilities.
+to transform the model’s distribution towards goal-oriented problem-solving strategies (Schulman
+et al., 2017). While recent “Thinking” models (Guo et al., 2025) demonstrate that extensive RL can
+improve reasoning via test-time computation, the mechanism of this improvement remains debated:
+Does RL incentivizes the acquisition of genuinely new logic circuits (Yuan et al., 2025; Liu et al.,
+2025), or merely amplify correct traces found in the pre-training and SFT distributions (Wu & Choi,
+2025; Yue et al., 2025)? Our work isolates this mechanism by controlling the atomic priors.
+To study the true nature of RL’s contribution, we focus on a common practical task, knowledge-
+intensive reasoning (Guti ´errez et al., 2025; An et al., 2025; Zhuang et al., 2024). In real-world
+scenarios, systems often encounter “missing link” failures: for example, in Figure 1(a), a Retrieval-
+Augmented Generation (RAG) system might retrieve a document about a “Chief Editor”, but fail to
+link it to the chief editor’s “business partner” stored in the model’s parametric memory. We define
+this capability asComplementary Reasoning (COMP): the ability to seamlessly bridge internal
+parametric knowledge with external contextual information. For example, answering“What is the
+occupation of the business partner of Global View’s new Chief Editor? ”requires the model to
+seamlessly integrate the external information (e.g.,Amina Khan is the Chief...) with the internal
+knowledge (e.g.,Ben Carter is a business partner...). While human intelligence intuitively performs
+this composition—seamlessly leveraging known facts alongside new context—LLMs often struggle
+to generalize when required to utilizebothparametricandcontextual knowledge simultaneously
+(Cheng et al., 2024a; Yin et al., 2023). While LLMs are known for their fluency in usingeither
+parametricorcontextual knowledge, Complementary Reasoning serves as an ideal testbed for eval-
+uating how post-training strategies can bridge the generalization gap between the isolated atomic
+skills and complex, compositional reasoning.
+In this paper, we investigate the minimal sufficient conditions required for LLMs to generalize on
+complementary reasoning. We specifically aim to answer two research questions:
+•RQ1: What training strategies are necessary for generalization to Complementary Reasoning?
+•RQ2: Can RL synthesize complex reasoning strategies from atomic primitives, or does it merely
+amplify existing memorization?
+Investigating these questions using standard open-domain benchmarks (e.g.HotpotQA (Yang et al.,
+2018) and PopQA (Mallen et al., 2023)) is fundamentally limited by data contamination. In web-
+2
+Work in Progress
+scale corpora, it is impossible to rigorously determine whether a model solves a multi-hop query
+by reasoning over the context or simply by recalling a memorized shortcut connection from pre-
+training. To address this, we conduct a behavioral study using a controlled synthetic environment
+where the boundary between Parametric (internal) and Contextual (external) knowledge is strictly
+enforced (Allen-Zhu & Li, 2023a;b). Specifically, we construct a large-scale dataset of human bi-
+ographies underpinned by a knowledge graph composed of extensive synthetic entities and relations
+with real-world meanings. This setup serves as a precise testbed for multi-hop factual task, allowing
+us to strictly decouple complementary reasoning capabilities into two atomic skills (Figure 1(a)):
+Parametric Reasoning (MEM), which relies solely on internal knowledge encoded in model pa-
+rameters, andContextual Reasoning (CTX), which relies solely on novel facts in the input context.
+To rigorously assess the model’s capability boundaries, we evaluate generalization under varying
+levels of difficulty, shown in Figure 1(b):I.I.D.(seen combinations),Composition(unseen combi-
+nations of seen relations), andZero-shot(combinations involving unseen relations). Based on the
+strictly controlled knowledge with multi-hop QA pairs for MEM, CTXand COMP, we train mod-
+els under different combinations and amounts of training data with varying post-training strategies
+(e.g.,SFT, RL). We evaluate the performance on the test set of COMPand study the optimal setting
+of training method and mix of training data for different levels of generalization.
+Our experiments reveal a nuanced relationship between sufficient atomic skills and RL-driven gen-
+eralization (Figure 1(c)). We demonstrate that simply (SFT) training on complementary data yields
+high in-distribution performance but fails to generalize to out-of-distribution scenarios with unseen
+combinations. However, RL serves as a catalyst for generalization under a strong condition that
+all atomic skills for the comprehensive tasks are captured, particularly in the challenging Zero-shot
+setting where relation combinations are entirely novel. Our findings challenge the view of RL as
+merely a probability amplifier. We summarize our key contributions as follows:
+•We formally defineComplementary Reasoningand introduce a controlled dataset that decouples
+the complex ability into atomic Parametric and Contextual skills, enabling comprehensive evaluation
+of generalization levels (i.e.,I.I.D., Composition, and Zero-shot). We provide sufficient training data
+for each skills to facilitate a systematic investigation of training strategies.
+•We provide empirical evidence that while Supervised Fine-Tuning (SFT) is sufficient for memoriz-
+ing distributions, Reinforcement Learning (RL) is essential for generalization, specifically enabling
+the model to tackle Zero-shot relational combinations that SFT fails to resolve.
+•We uncover a fundamental prerequisite for RL generalization: RL effectively composes new skills
+only when the base model possesses sufficient atomic capabilities. We show that a model SFT on
+atomic skills (SFT MEM+CTX ) gains significantly more from subsequent RL on complementary tasks
+than SFT directly on complementary data (SFT COMP ) regardless of the amount of data.
+•We demonstrate that when reaching the prerequisite, RL does not merely amplify existing behav-
+iors but actively composes learned atomic skills into new complex reasoning strategies, challenging
+the view that RL is solely a probability amplifier.
+Our findings suggest a scalable path for training reasoning LLMs: rather than collecting expensive
+complex reasoning traces for extensive RL, one can focus on efficiently teaching the model sufficient
+fundamental atomic skills via SFT, and then leverage RL to unlock the generalization required for
+complex reasoning.
+2 RELATEDWORK
+Roles of Post-training StrategiesThe power of LLMs is unleashed fundamentally through post-
+training with an initial Supervised Fine-Tuning (SFT) stage and a following Reinforcement Learning
+(RL) stage. While SFT establishes stable output behavior and foundational knowledge, the maxi-
+mum likelihood estimation inherently favorsmemorizationof the training distribution, leading to di-
+minished robustness and poor generalization (Wang et al., 2025; Chu et al., 2025). In contrast, RL,
+driven by reward signals, transforms the model’s distribution into goal-oriented, problem-solving
+strategies (Shao et al., 2024; Schulman et al., 2017). However, a hot debate recently is on whether
+RL combines new knowledge (Yuan et al., 2025; Liu et al., 2025), or just amplifying from the exist-
+ing distribution (Wu & Choi, 2025; Yue et al., 2025; Yang et al.; Setlur et al., 2025). Our findings
+stand for RL incentivizes new skills, but only under some prerequisites.
+3
+Work in Progress
+Knowledge-intensive ReasoningA foundational capability for intelligence is to reason with
+knowledge. Multi-Hop Reasoning, which requires multiple facts to answer, serves as an ideal
+testbed (Yang et al., 2018; Ho et al., 2020; Huang et al., 2025). Inherently, this task requires the
+ability to retrieve knowledge from parametric or external bases and logicallycomposeintermediate
+facts (Huang et al., 2023b; Cheng et al., 2024b; Huang et al., 2024; Jin et al., 2025). Recent studies
+identified that LLMs struggle to generalize when using both new and known knowledge for reason-
+ing (Cheng et al., 2024a; Yin et al., 2023). However, relying solely on recent benchmarks risks data
+contamination, making it hard to distinguish between new and known knowledge. This necessitates
+moving beyond standard benchmarks to controlled experimental setups.
+Behavioral Study with Synthetic DataTo address the fundamental challenges of data contam-
+ination and memory effects,synthetic datahas become essential for LLMs evaluation (Allen-Zhu
+& Li, 2023a;b). With brand new facts, entities, or entire narratives (such as human biographies),
+researchers can strictly control the knowledge of the model, the sufficiency of knowledge for a ques-
+tion and the complexity of the task (Yin et al., 2023; Kim et al., 2025; Yuan et al., 2025; Wang et al.,
+2024). This also allows for rigorous evaluation of the model’s capability under controlled settings.
+Our study adopts a relational knowledge base with templates to study knowledge-intensive reason-
+ing under varying post-training strategies, where we are able to strictly control the parametric and
+new knowledge. With the synthetic relational patterns, we can systematically examine how LLMs
+could generalize to out-of-distribution (O.O.D.) patterns.
+3 PROBLEMDEFINITION: COMPLEMENTARYREASONING
+We formally define complementary reasoning, and introduce data construction and experiment set-
+tings. In real-world scenarios, LLMs can easily tackle multi-hop questions using either parametric
+or contextual knowledge, both of which are fundamental skills for complementary reasoning. How-
+ever,acquiring ample data that encompasses both skills is challenging.We try to address these
+challenges:1) scheduling of the post-training strategies to generalize beyond the training dis-
+tribution; 2) recipe of mixing the training data for generalization on complementary reasoning.
+Reasoning TypesComplementary Reasoning, denoted asCOMP, is defined as a multi-hop task
+requiring both parametric and contextual skills, which complements each other. In addition, we
+defineParametricandContextual Reasoningas a task solely requires skills in LLMs’ parameters
+or the context window, denoted asMEMandCTX, respectively. Formally, we define the capability
+requirement as a logical conjunction:
+CCOMP ⇐⇒ CMEM ∧ CCTX .
+This implies that a failure in either atomic skill (C MEM orC CTX ) necessitates a failure in the com-
+plementary task. Intuitively, humans find it straightforward to answer a complementary question if
+the new (unknown) skills are given. However, while capable of parametric and contextual reasoning
+by post-training with large-scale (Context-)Question-Answer examples, LLMs cannot generalize to
+complementary reasoning fluently (Cheng et al., 2024a).
+In this paper, we study the generalization to complementary reasoning through multi-hop fac-
+tual tasks. Typically, such question requires the retrieval of relevant knowledge and the capa-
+bility to link several facts together. Formally, we define the task as traversing a relational path
+P= (r 1, r2, . . . , rk)starting from a topic entity to reach the answer. For complementary reasoning,
+each relationr i in the path falls into either parametric or contextual knowledge, requiring the model
+to seamlessly integrate both sources. For the example question in Figure 1(a), “What is the occupa-
+tion of the business partner of Global View’s new Chief Editor?” traverses the path “Global View –
+Chief Editor – Business Partner – Occupation – Answer”.
+Generalization LevelsTraditional random data split assumes that testing data follows the same
+distribution as training data (Independent and Identically Distributed,a.k.a..I.I.D.). However, this
+assumption fails to capture the complexity of real-world reasoning. For instance, a web agent often
+encounters infinite combinations of operations that cannot be exhaustively covered in a finite training
+set (Deng et al., 2023). To rigorously investigate whether models can transcend rote memorization
+and generalize to novel scenarios, we evaluate performance acrossthree levels of difficultybased on
+the novelty of the relational path (i.e.,hops) in the question (Gu et al., 2021; Huang et al., 2023a).
+4
+Work in Progress
+Given the relational pathPdefined above, letP train denote the set of relational paths seen during
+instruction tuning, andR train denote the set of individual atomic relations observed in those paths.
+We categorize the generalization levels of difficulty as follows (examples in in Figure 1(b)):
+•I.I.D. Generalizationevaluates the ability to apply learned patterns to new entities within familiar
+structures. The relational path in the test question is fully observed during training (Ptest ∈ Ptrain).
+For example, if the model is trained on questions involving the pathBusiness Partner→Job(e.g.,
+“What is the occupation of [X]’s business partner?”), an I.I.D. test query would ask the same question
+structure for a different entity. Our experiments (Section D) show that SFT is typically sufficient for
+this level as it merely requires recalling the observed path structure.
+•Compositional Generalizationtests the model’s ability to recombine in-distribution primitives
+into novel reasoning patterns. In concrete, the specific path is unseen (P test /∈ Ptrain), yet every
+individual relation constituting the path has been observed in disjoint contexts during training (∀r∈
+Ptest, r∈ Rtrain). For example, suppose the training set contains the pathsBusiness Partner→Job
+andBusiness Partner→Spouse. A Composition test query might ask, “What is the occupation of
+[X]’s spouse?” via the pathSpouse→Job. Although the model knows both relations independently,
+it must synthesize them into a new compound reasoning path without explicit prior instruction.
+•Structural Zero-shot Generalizationis the most challenging setting. Unlike standard zero-shot
+prompting, we define this as generalization to unseen relational primitives. Here, the relational
+path involves at least one relation that is never seen in any question-answer pair during training
+(∃r∈P test, r /∈ Rtrain). For example, if the relationAdvisorexists in the knowledge base but
+never appears in the QA training set, asking “Who is the spouse of [X]’s advisor?” requires the
+model to identify and utilize this latent knowledge solely from the context or parametric memory,
+without any supervised examples of how to query it.
+4 EXPERIMENTSETUP
+4.1 SYNTHETICHUMANBIOGRAPHIES
+Using existing benchmarks presents two fundamental challenges: the risk of data contamination
+from the model’s pre-training corpus and the difficulty in precisely controlling the parametric and
+contextual knowledge. To address these, we construct acontrolled synthetic dataset of human bi-
+ographies(Allen-Zhu & Li, 2023a;b), based on which we are able to control the sufficiency of
+knowledge. We build training and test data for the three reasoning types and generalization levels.
+Synthetic Human Profiles with a Knowledge GraphWe ground our dataset in a syntheticre-
+lational knowledge graphand transform the structured graph into natural language profiles with
+templates by an LLM (GPT-4o). We define 39 relations including eight symmetric relations (e.g.,
+spouse, sibling), and eight pairs of inverse relations (e.g., child and parent) to mimic real-world
+complexity. For each relation, we adopt an LLM to construct and validate three natural language
+templates. We adopt heuristic rules to constrain the tailed entity of the relation (e.g.,birthday should
+be a date). We randomly partition these relations into two disjoint sets to simulate parametric and
+contextual knowledge sources, respectively. Using the Python Faker Library, we populate the graph
+with entities (e.g., names, birthday) strictly ensuring that character identities are novel and do not
+overlap with the model’s pre-training corpus.
+We automatically construct 10k biographies for MEM(simulating known facts in the model), and
+10k for CTX(simulating new facts), with 5k shared characters to enable bridging between parame-
+ters and context (simulating real-world scenarios where new facts can be added to known characters).
+Refer to Appendix A for more details.
+QA-Pair Construction from Relational PathTo construct multi-hop questions, we sample rela-
+tional paths/combinations consisting of 2–5 hops. Note that we ensure the number of hops for each
+reasoning type is distributed identically. We enforce a constraint where intermediate nodes must be
+named entities rather than generic values (e.g.,dates, emails) to ensure the multi-step dependency.
+For COMP, we guarantee that the paths incorporate relations from both MEMand CTX. Then, we
+employ an LLM to generate three linguistically diverse question templates to ensure syntactic vari-
+ety without relying on repetitive patterns. Crucially, we incorporate Chain-of-Thought (CoT) (Wei
+et al., 2022) into the target answers for three strategic reasons: 1) to facilitate the decomposition of
+5
+Work in Progress
+Table 1: Statistics and empirical results based on generalization levels. Com. denotes Composition.
+(a) Statistics of training and testing set.
+Group Training I.I.D. Com. 0-shot
+Parametric 88,031 1,921 1,141 782
+Contextual 2,651 1,910 1,320 453
+Complementary 180,919 2,135 1,415 918
+(b) SFT results on Complementary Reasoning test set.
+Training Data I.I.D. Com. 0-shot
+Parametric + Contextual 35.18 28.20 24.07
+Complementary 90.30 76.25 18.41
+complex multi-hop queries; 2) to facilitate retrieval and application of specific factual knowledge,
+as suggested by Allen-Zhu & Li (2023a); and 3) to enable precise evaluation of whether the model
+is retrieving intermediate facts from the parameter or contextual. To form the LLM’s input, we di-
+rectly query the model for MEMquestions. For CTXand COMP, we present the contexts (knowledge
+documents–biographies) and the question, akin to real-world question answering systems.
+Data Split for Generalization LevelsTo ensure the validity of the generalization levels (Sec-
+tion 3), we implement a rigorous multi-stage splitting protocol at therelational path levelprior to
+natural language generation. Specifically:
+1) ForI.I.D., we explicitly reserve a subset of relational paths, denoted asP iid. These paths are
+included in both the training and testing sets. To prevent rote memorization of answers, we ensure
+that while therelational pathsare identical, theentitiesinstantiated in the test set are disjoint from
+those in the training set.
+2) ForZero-shot, from the remaining relational paths (excludingP iid), we identify the full set of
+atomic relations and randomly sample a subset,R unseen, to be held out. We then filter the dataset:
+anypath containing at least one relationr∈ Runseen is exclusively assigned to the testing set. This
+guarantees that the model never encounters these specific relations during training.
+3) ForComposition, we randomly partition the remaining paths into two disjoint sets:P train comp
+(to the training set) andP test comp (to the testing set). Crucially, we verify that the set of atomic
+relations present in the test split is identical to that in the training split (R test ≡ Rtrain), ensuring
+that the difficulty arises solely from the novelcombinationof known relations.
+Through this protocol, we guarantee that I.I.D. tests seen paths, Composition tests unseen paths
+composed of seen relations, and Zero-shot tests paths with unseen relations. We then construct
+natural language question and CoT answer pairs by random-walk over the knowledge graph entities.
+For example, for a relation combination, we sample an entity as the starting point, and walk on the
+combination over the knowledge graph until we meet the answer. The final answer will then be
+appended after “So, the answer is:”, which is also used to filter the outcome for evaluation.
+Since data generation is scalable, we provide an amount of training samples sufficient for excellent
+I.I.D. performance, withSupervised Fine-Tuning(SFT) training for Qwen-2.5-1.5B. Statistics of
+training and testing set are shown in Table 1a. Refer to Appendix A for more details.
+4.2 TRAININGPROTOCOL
+To systematically investigate the research questions (the necessary training strategies and the pre-
+requisite data conditions), we adopt a standard post-training pipeline consisting of Supervised Fine-
+Tuning (SFT) followed by Reinforcement Learning (RL). We employ Qwen-2.5-1.5B as our back-
+bone model, as it is widely used in both recent methodologies and analytical works. As mentioned
+in Section 3, for parametric reasoning (MEM), the model receives only theQuestionas input. For
+Contextual (CTX) and Complementary Reasoning (COMP), the model receives both theQuestion
+and theContext(new facts). As for training, for SFT, we train models using standard next-token
+prediction. We also integrate all parametric knowledge documents (biographies) into the SFT pro-
+cess. For RL, we employ Group Relative Policy Optimization (GRPO) (Shao et al., 2024) with a
+binary outcome reward on the answer (i.e.not on the reasoning chain). The outcome reward and the
+final evaluation are calculated by the exact match of the ground truth answer. In all experiments, the
+models are trained until convergence and evaluated on COMPtest set.
+6
+Work in Progress
+4.3 BASELINEANALYSIS: THELIMITS OFSUPERVISEDFINE-TUNING
+We first establish the baseline performance of SFT to demonstrate why supervised training alone
+is insufficient for robust Complementary Reasoning. We analyze the difficulty of the task and the
+generalization capabilities of two SFT baselines: a model trained on atomic skills (SFT MEM+CTX )
+and a model trained directly on the target task (SFT COMP ).
+Complementary reasoning is data-hungry and inherently difficult.Table 1a reveals that
+achieving high in-distribution (I.I.D.) performance on COMPrequires significantly more data than
+atomic tasks (MEMand CTX). The COMPtask requires∼180k samples—nearly double the sum
+of samples required for MEM(∼88k) and CTX(∼3k) combined. This validates that integrating
+internal and external knowledge is structurally more complex than applying either skill in isolation.
+Atomic skills do not spontaneously compose.A key question is whether teaching a model the
+necessary components (SFT with MEMand CTX) is sufficient to infer the composite skill. Table 1b
+shows that SFTMEM+CTX achieves only approximately 24.07-35.18% performance on the COMPtest
+set. While this is non-zero (indicating some transfer), it lags far behind the explicit training baseline
+(90.26% for I.I.D.), echoing findings in Cheng et al., 2024a; Yin et al., 2023. This suggests that sim-
+ply possessing the knowledge and retrieval skills does not guarantee the ability to perform complex
+integration without further guidance. Refer to more analysis in Appendix E.1.
+SFT Memorizes rather than Generalizes.Another critical finding is the failure of SFT COMP
+in out-of-distribution (Zero-shot) settings. While COMPachieves a near-perfect 90.26% on I.I.D.,
+its performance collapses to 26.25% on Zero-shot (Table 1b). This stark contrast indicates that SFT
+primarily incentivizes the model to memorize specific relational patterns seen during training. When
+tailored with novel relations where memorization is impossible, the superficial reasoning learned via
+SFT fails completely.
+5 REINFORCEMENTLEARNINGENABLESGENERALIZATION IN
+COMPLEMENTARYREASONING
+We have established that SFT alone—whether on atomic skills or target tasks—fails to generalize
+to complementary reasoning, especially on Zero-shot setting. We hypothesize that generalization
+is unlocked only through a specific curriculum:establishing sufficient atomic capabilities via SFT,
+followed by synthesizing these skills via RL. Formally, we propose that the recipe “SFT MEM+CTX
+→RLCOMP ” is the optimal path to generalization. In this section, we validate theSufficiencyand
+Necessityof our finding. We first show that this recipe consistently outperforms other data combi-
+nations regardless of data scale. Then, we demonstrate that sufficient atomic foundations is strictly
+required, and that “SFT→RL” is the necessary training strategy for generalization.
+5.1 SUFFICIENCY: RLAS ASKILLSYNTHESIZER
+To rigorously test whether our proposed recipe “SFT MEM+CTX →RLCOMP ” consistently yields supe-
+rior generalization, compared to direct training on the target task, we conduct a controlled experi-
+ment by varying the proportion of COMPdata. Refer to more comparisons in Appendix D.
+Settings.A common practice for complex tasks is to SFT as a cold-start and then RL over exten-
+sive training data (Guo et al., 2025). However, it is unclear how much data is needed to SFT for RL
+generalization for COMP. To address this, we partition the COMPtraining data into two subsets: a
+portionx%used for the SFT stage of the baseline, and the remaining(100−x)%used for the RL
+stage. We compare two strategies using strictly identical RL data: 1)SFT COMP →RLCOMP : SFT
+onx%COMPdata and then RL on the remaining(100−x)%; 2)SFT MEM+CTX →RLCOMP : SFT
+on all atomic MEM+CTXtraining data (about 50% of COMPdata in amount) and then RL on the
+same(100−x)%COMPdata. We varyx%from 10% to 90%. Figure 2 illustrates both the relative
+performance gain on test set of COMPderived specifically from the RL stage (Top Row) and the
+final absolute performance (Bottom Row).
+7
+Work in Progress
+Figure 2: Comparison of reinforcement learning on different base models across complementary
+data proportions. The top row compares the gain from RL, while the bottom row compares the
+absolute performance after RL. It shows that LLMs generalize to Complementary Reasoning only
+from SFTed model over both Parametric and Contextual Reasoning.
+RL efficiently synthesizes atomic skills.The top row of Figure 2 reveals a striking contrast
+in learning potential. Regardless of the volume of data allocated (varying from 10% to 90%),
+SFT MEM+CTX (red bars) achieves massive performance gains from RL with COMPdata across all
+generalization levels. In contrast, SFT COMP (green bars) shows diminishing returns, gaining almost
+nothing from RL. This indicates that without atomic foundations, RL cannot effectively explore the
+reasoning paths, merely optimizing within an existing distribution. Conversely, given atomic skills,
+RL acts as a powerful synthesizer, actively composing known facts into new reasoning paths.
+Zero-shot generalization of RL over atomic skills is consistently superior.The most critical
+and challenging test of reasoning is the Zero-shot setting (Bottom Row, 3rd Column), where mem-
+orization is impossible. Here, SFT MEM+CTX (yellow bars) consistently and significantly outperforms
+SFT COMP (blue bars) at every data scale. This confirms that our recipe fosters genuine generalization
+to unseen relations, whereas direct training on complementary data fails to extrapolate beyond the
+training distribution.
+The SFT Generalization Paradox: Distinguishing Generalization from Memorization.We
+observe a nuanced result in the I.I.D. and Composition settings (Bottom Row, 1st & 2nd Columns).
+As the data portionxexceeds 70%, the absolute performance of SFT COMP (blue bars) begins to
+surpass SFT MEM+CTX (yellow bars) on I.I.D. tasks, but fails on Zero-shot. We term this thememo-
+rization trap: SFT on composite data encourages the model to cache the specific shortcuts of the
+training data rather than learning the reasoning algorithm. RL on top of atomic skills avoids this trap
+by forcing the model to derive the path dynamically, resulting in robust Zero-shot performance.
+5.2 NECESSITY: ATOMICSKILLS ASPREREQUISITES FORGENERALIZATION
+While Section 5.1 establishes that “SFTMEM+CTX →RLCOMP ” is sufficient for generalization, distinct
+research questions remain regarding the boundary conditions:1)Are both parametric and contextual
+skills strictly necessary, or can the model generalize from partial atomic skills?2)Is RL specifically
+required, or can other training strategies (e.g.,further SFT) achieve similar results given the same
+atomic skills?
+Necessity of Sufficient Atomic Skills (Data Condition).To determine if complete atomic ca-
+pabilities is a prerequisite for RL-driven generalization, we compare SFT MEM+CTX against three
+baselines with similar initial performance but deficient atomic foundations: 1) SFT MEM (SFT with
+MEMonly); 2) SFT CTX (SFT with CTXonly); 3) SFT 10%COMP and SFT 20%COMP (SFT with COMP
+data reaching comparable initial performance). We apply identical RL training (using a fixed subset
+of 12.8k randomly sampled COMPdata) to all models. Figure 3 presents the performance on COMP
+test set before and after RL.
+8
+Work in Progress
+Figure 3: Necessity of atomic skills for RL generalization. We conduct RL with the same amount
+of COMPdata from different SFT trained models. Only SFT MEM+CTX generalizes well in all levels.
+We observe two critical findings.First, removing any atomic skill collapses generalization.Mod-
+els SFTed solely on COMPor CTXfail to generalize significantly after RL, demonstrating that Com-
+plementary Reasoning is not merely an additive task but a synthesis requiring the sufficiency of
+atomic skills.Second, generalization potential is driven by foundational capability, rather than
+initial metric performance.Notably, SFT 10%COMP and SFT 20%COMP exhibit an initial performance
+similar to SFT MEM+CTX . However, after RL, their performance gain in all settings is negligible.
+In contrast, SFT MEM+CTX —equipped with the capability of both memory and context process-
+ing—achieves substantial gains from RL, nearly doubling the performance in all settings. Also,
+SFT MEM and SFT CTX , even with very poor initial performance, gain more from RL than the model
+SFTed with COMPdata. This shows that initial test scores before RL are deceptive; the presence of
+underlying atomic skills is the true predictor of RL success.
+Figure 4: Performance of training with dif-
+ferent strategies over 12.8k COMPsamples.
+Necessity of Reinforcement Learning for Zero-
+shot generalization (Training Strategy).Given a
+model with sufficient atomic skills (SFT MEM+CTX ), is
+RL strictly necessary to synthesize them? We com-
+pare three training strategies using the same 12.8k
+COMPsamples: SFT, LoRA (rank=256), and RL.
+Figure 4 shows that all training strategies can signif-
+icantly improve the performance of the model with
+sufficient atomic skills, demonstrating its strong po-
+tential for generalization. However, it reveals a di-
+chotomy between memorization and generalization.
+While further SFT (blue bar) yields the highest per-
+formance on I.I.D. (indicating strong memorization of seen patterns), it significantly lags behind RL
+(green bar) in the Zero-shot setting. RL outperforms both SFT and LoRA in unseen relational com-
+binations, confirming that while SFT is superior for pattern matching,RL is uniquely necessary to
+incentivize the active composition of skills required for out-of-distribution reasoning.
+6 ANALYSIS OF THEMODEL WITHSUFFICIENTATOMICABILITIES
+Having established that capturing both the MEMand CTXabilities is the prerequisite for RL-driven
+generalization, we now analyze the features of base model for RL (i.e.,SFTMEM+CTX and SFT COMP ).
+We investigate from the perspective of sample efficiency and the pass@k performance to see whether
+RL can compose new skills. We also showcase the training dynamics, the impact of training loss, a
+PCA analysis of latent space and uncertainty analysis in Appendix E.
+6.1 SAMPLEEFFICIENCYCOMPARISON
+We analyze the properties of SFT MEM+CTX by examiningwhether learning atomic skills induces
+better sample efficiency compared to learning the composite task directly.We examine this
+from two perspectives: the data required to prime the base model (SFT efficiency) and the data
+required to unlock reasoning capabilities (adaptation efficiency).
+Atomic capability learning requires less SFT data to prime RL generalization.To verify
+which training paradigm constructs a better foundation for RL with limited data, we conduct a
+9
+Work in Progress
+Figure 5: Performance with the same amount of SFT and RL data. We compare SFT MEM+CTX and
+SFT COMP by relative (the top row) and absolute performance (the bottom row) after RLCOMP .
+controlled comparison. We first reserve a fixed, large-scale subset (∼90k) of COMPdata exclusively
+for the RL stage. From the remaining data pool,i.e.,same amount of (MEM+ CTX) and COMP,
+we create subsets of increasing sizes (20%, 40%, 60%, 80%, 100%) to obtain SFT MEM+CTX and
+SFT COMP . Crucially, to ensure a fair comparison, we control not just for thenumber of samples, but
+also forinformation content. We strictly enforce that the distribution of reasoning steps (hop counts)
+is the same across both training data, ensuring that the models are exposed to equivalent reasoning
+complexities. We then apply RL to all models using the same reserved COMPdata.
+Figure 5 presents the relative and absolute performance after RL on COMPtest set comparing
+SFT and RL with the same amount of data. It shows that the model with sufficient atomic
+skills (SFT MEM+CTX , red/orange bars) consistently outperforms the composite model (SFT COMP ,
+green/blue bars) in both relative gain (the top row) and absolute performance (the bottom row)
+across all data scales. Even with minimal SFT data (∼18k), SFT MEM+CTX is successfully “primed”
+for significant RL gains, whereas the SFT COMP struggles to generalize. This suggests that training
+the model with sufficient atomic skills is a more data-efficient way to build the prerequisite repre-
+sentations for complex reasoning.
+Figure 6: Few-shot adaptation of SFT MEM+CTX
+with different training strategies.
+Sufficient atomic skills enable few-shot
+adaptation.We further investigate how much
+COMPdata is actually needed to “trigger” gen-
+eralization once sufficient atomic skills are es-
+tablished. Fixing SFT MEM+CTX as the base
+model, we perform further training using RL,
+SFT, or LoRA (rank=256) with varying sizes of
+COMPdata, ranging from a ”tiny” set (50 sam-
+ples) to a medium set (12,800 samples,<10%
+of the total). We compare this against a skyline
+baseline: SFT on 100% COMPdata (SFT COMP ).
+Figure 6 shows the overall performance on
+COMPtest set, from which we observe two key
+findings.First, rapid adaptation:Even with
+as few as 50–400 samples, SFTMEM+CTX adapts
+to the complementary reasoning significantly better than the baseline start, regardless of the train-
+ing strategy.Second, data efficiency:With less than 10% of COMPdata, SFT MEM+CTX effectively
+matches the performance of the model SFT on the entire dataset (purple dotted line). This demon-
+strates that once atomic skills are acquired, the cost of “assembling” them into a complex reasoning
+strategy is extremely low.
+6.2 THEROLE OFRL: SYNTHESIZER VS. AMPLIFIER
+There is abundant debate in recent literature:Does RL incentivize the acquisition of genuinely new
+reasoning capabilities (Synthesis), ormerely re-weight the probability of existing skills already
+10
+Work in Progress
+Figure 7: Pass@k comparison for SFT MEM+CTX and SFT COMP . It shows that RL synthesizes new
+compositional skills only based on models with sufficient atomic skills.
+present in the base distribution (Amplification) (Setlur et al., 2025)?To distinguish between these
+roles of RL, we analyze thepass@kperformance on the COMPtest set before and after RL (Yue
+et al., 2025). We varykfrom2 0 to2 9 on a log scale. The logic is as follows:1)Synthesis Signal:If
+a significant performance gap persists even at largek(i.e.,the curves remain parallel or divergent),
+it implies that RL has synthesized novel reasoning paths that the SFT model fundamentally cannot
+discover via sampling.2)Amplification Signal:If the performance of the SFT model eventually
+catches up to the RL model askincreases (i.e.,the curves merge), it implies that the reasoning paths
+are latent in the SFT distribution, and RL merely amplifies their generation probability. We compare
+our SFT MEM+CTX against a strong baseline (SFT COMP trained on 90% data) using identical RL data.
+Figure 7 presents the results over different generalization levels.
+RL synthesizes new pathways for models with sufficient atomic skills.The top row of Figure 7
+reveals a distinct parallel scaling law. For SFT MEM+CTX , the RL performance (orange line) remains
+significantly higher than the SFT baseline (blue line) even askincreases to2 9. The non-convergence
+of the pass@k curves suggests a fundamental shift in mechanism. If RL were merely amplify-
+ing latent behaviors, the SFT model (given enough attemptsk) would eventually find the solution.
+The persistent gap indicates that RL has synthesized a logic circuit—specifically, the mechanism
+to bridge context and memory—that is effectively absent from the SFT distribution. This provides
+empirical evidence that, given sufficient atomic priors, RL creates new capabilities rather than just
+optimizing old ones. This persistent gap serves as strong empirical evidence that RL is not just
+re-weighting existing skills. Instead, it is actively synthesizing atomic skills into novel reasoning
+strategies that are effectively non-existent in the base model’s sampling distribution. Notably, this
+discovery of “new” capabilities occurs not only for Zero-shot but also on I.I.D. and Compositional
+settings, suggesting that RL optimizes the logic of combination itself.
+RL merely amplifies existing behaviors for models’ composite skills.In stark contrast, the bot-
+tom row of Figure 7 shows that for SFTCOMP , the curves rapidly converge askincreases. Byk= 2 9,
+the SFT model nearly matches the RL model’s performance. This indicates that because the model
+trained on composite data memorized the target distribution during SFT, RL serves primarily as
+an amplifier—boosting the likelihood of the “best” answer without discovering fundamentally new
+reasoning paths.
+This dichotomy confirms that sufficient atomic skills are the prerequisite for RL to function as a
+reasoning synthesizer. Without them, RL degenerates into a mere probability amplifier.
+6.3 CASESTUDY
+Having demonstrated quantitative evidence for SFT MEM+CTX being key to RL generalization. We
+now qualitatively analyze from specific error cases on the intersection of incorrect samples for the
+models before and after RL. By aligning the generated CoT with the ground truth, we pinpoint the
+exact reasoning step where the deviation occurred. We classify these errors based on the required
+knowledge—parametric (MEM) versus contextual (CTX)—and calculate theprogress(the normal-
+ized position of the failure step within the reasoning path). Table 2 shows distinct error patterns
+among the models.
+11
+Work in Progress
+Table 2: Error analysis.MEMandCTXde-
+note errors occurring at parametric and con-
+textual relations, respectively.Prog.repre-
+sents the normalized position of the first er-
+ror step within the reasoning path.
+Model CTXMEMProg.
+SFTCOMP 90% 10% 54.5%
+SFTCOMP→RLCOMP 86% 14% 45.0%
+SFTMEM+CTX 86% 14% 18.5%
+SFTMEM+CTX→RLCOMP 30% 70% 71.8%
+SFT MEM+CTX ,SFT COMP , andSFT COMP →RLCOMP
+exhibit similar failure modes, characterized by a
+high prevalence of CTXerrors (>85%) and early-
+stage failures (Progress≤54.5%). Qualitatively,
+SFT MEM+CTX tends to hallucinate when retrieving in-
+formation from the provided context, similar to its
+imitation learning process (i.e.,contextual reason-
+ing). Conversely, SFT COMP variants frequently fail
+to identify the correct relation when bridging from
+MEMto CTX, with 62% of errors in SFT COMP get-
+ting stuck at the first hop.
+In contrast,SFT MEM+CTX →RLCOMP demonstrates a fundamental shift in knowledge flow utiliza-
+tion. The error distribution flips significantly: 70% of errors are from MEM, and the average error
+position occurs much later (71.8%), mostly at the final hop. This indicates thatRL effectively opti-
+mizes the reasoning path through the knowledge flow. We hypothesize that the vulnerability at the
+last step is attributed to data sparsity in complementary reasoning tasks. Since our data (i.e.,hu-
+man biographies) relies on ”character” entities as bridges, the final relation connecting to the answer
+(which can be either a character or a keyword) appears less frequently in the training distribution
+compared to the intermediate bridging relations.
+7 CONCLUSIONS
+While current LLMs are proficient in multi-hop reasoning with either parametric or contextual
+knowledge, they struggle to handle questions that require the integration of both knowledge sources.
+In this paper, we study how LLMs can generalize to Complementary Reasoning with post-training
+strategies (i.e.,SFT and RL). We conduct strictly controlled experiments with our synthetic human
+biographies based on a relational knowledge graph, constructing QA pairs for atomic skills (i.e.,
+Parametric and Contextual Reasoning) and the compound skill (i.e.,Complementary Reasoning).
+We also split the dataset into different levels of generalization difficulties I.I.D., Composition and
+Zero-shot. Based on this, we study the effect of training strategies and find that only by firstly SFT
+with sufficient atomic skills can LLMs generalize via RL. This finding suggests a scalable path for
+training reasoning LLMs: focusing on teaching the model sufficient fundamental atomic skills via
+SFT, and then leveraging RL for generalization to O.O.D. complex tasks.
+LIMITATIONS
+Although we have validated our conclusion that only “SFTMEM+CTX →RL COMP ” generalizes, which
+well addresses the research questions, we still have some limitations: 1) Although we show from
+several distinct angles that our finding holds, we only test on Qwen models. While evaluated on the
+Qwen family, our decomposition of reasoning into atomic priors suggests these findings are likely
+architecture-agnostic. 2) As we investigate from the sample efficiency, the pass@k performance, the
+training dynamic, the embedding distributions and case study, it is still difficult to find the mecha-
+nisms that enable the SFTMEM+CTX model to outperform. Future work should investigate the mecha-
+nistic interpretability of how RL circuits recruit atomic attention heads. 3) While our study relies on
+synthetic biographies, this was a necessary design choice to strictly enforce the boundary between
+Parametric (known) and Contextual (new) information—a boundary that is impossible to guarantee
+in web-scale corpora due to pre-training contamination. Future work should validate these findings
+on controlled splits of real-time benchmarks (e.g.,news QA) where the “new” information is strictly
+dated post-training. Moreover, future work should study how to mix COMPdata with MEMand
+CTXdata to improve the overall I.I.D., Composition and Zero-shot performance. 4) It would be in-
+teresting to adapt our findings into real-world knowledge-intensive benchmarks, especially to check
+the O.O.D. testing performance.
+ACKNOWLEDGMENTS
+The authors would like to thank Shuyan Zhou, Weixi Feng, Yiheng Shu, Yunzhi Yao, Tengxiao Liu,
+Fangkai Yang, Antonis Antoniades, Heng Lin and Jiajun He for their valuable feedback.
+12
+Work in Progress
+REFERENCES
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Ale-
+man, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical
+report.arXiv preprint arXiv:2303.08774, 2023.
+Zeyuan Allen-Zhu and Yuanzhi Li. Physics of language models: Part 3.1, knowledge storage and
+extraction.arXiv preprint arXiv:2309.14316, 2023a.
+Zeyuan Allen-Zhu and Yuanzhi Li. Physics of language models: Part 3.2, knowledge manipulation.
+arXiv preprint arXiv:2309.14402, 2023b.
+Kaikai An, Fangkai Yang, Liqun Li, Junting Lu, Sitao Cheng, Shuzheng Si, Lu Wang, Pu Zhao,
+Lele Cao, Qingwei Lin, et al. Thread: A logic-based data organization paradigm for how-to
+question answering with retrieval augmented generation. InProceedings of the 2025 Conference
+on Empirical Methods in Natural Language Processing, pp. 18300–18319, 2025.
+Sitao Cheng, Liangming Pan, Xunjian Yin, Xinyi Wang, and William Yang Wang. Understanding
+the interplay between parametric and contextual knowledge for large language models.arXiv
+preprint arXiv:2410.08414, 2024a.
+Sitao Cheng, Ziyuan Zhuang, Yong Xu, Fangkai Yang, Chaoyun Zhang, Xiaoting Qin, Xiang Huang,
+Ling Chen, Qingwei Lin, Dongmei Zhang, et al. Call me when necessary: Llms can efficiently
+and faithfully reason over structured environments.arXiv preprint arXiv:2403.08593, 2024b.
+Tianzhe Chu, Yuexiang Zhai, Jihan Yang, Shengbang Tong, Saining Xie, Dale Schuurmans, Quoc V
+Le, Sergey Levine, and Yi Ma. Sft memorizes, rl generalizes: A comparative study of foundation
+model post-training.arXiv preprint arXiv:2501.17161, 2025.
+Xiang Deng, Yu Gu, Boyuan Zheng, Shijie Chen, Sam Stevens, Boshi Wang, Huan Sun, and Yu Su.
+Mind2web: Towards a generalist agent for the web.Advances in Neural Information Processing
+Systems, 36:28091–28114, 2023.
+Yu Gu, Sue Kase, Michelle Vanni, Brian Sadler, Percy Liang, Xifeng Yan, and Yu Su. Beyond iid:
+three levels of generalization for question answering on knowledge bases. InProceedings of the
+web conference 2021, pp. 3477–3488, 2021.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms
+via reinforcement learning.arXiv preprint arXiv:2501.12948, 2025.
+Bernal Jim´enez Guti´errez, Yiheng Shu, Weijian Qi, Sizhe Zhou, and Yu Su. From rag to memory:
+Non-parametric continual learning for large language models.arXiv preprint arXiv:2502.14802,
+2025.
+Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara, and Akiko Aizawa. Constructing a multi-hop
+qa dataset for comprehensive evaluation of reasoning steps.arXiv preprint arXiv:2011.01060,
+2020.
+Xiang Huang, Sitao Cheng, Yuheng Bao, Shanshan Huang, and Yuzhong Qu. Markqa: A large scale
+kbqa dataset with numerical reasoning.arXiv preprint arXiv:2310.15517, 2023a.
+Xiang Huang, Sitao Cheng, Yiheng Shu, Yuheng Bao, and Yuzhong Qu. Question decomposition
+tree for answering complex questions over knowledge bases. InProceedings of the AAAI Confer-
+ence on Artificial Intelligence, volume 37, pp. 12924–12932, 2023b.
+Xiang Huang, Sitao Cheng, Shanshan Huang, Jiayu Shen, Yong Xu, Chaoyun Zhang, and Yuzhong
+Qu. Queryagent: A reliable and efficient reasoning framework with environmental feedback-
+based self-correction.arXiv preprint arXiv:2403.11886, 2024.
+Xiang Huang, Jiayu Shen, Shanshan Huang, Sitao Cheng, Xiaxia Wang, and Yuzhong Qu. Targa:
+Targeted synthetic data generation for practical reasoning over structured data. InProceedings
+of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+Papers), pp. 2704–2726, 2025.
+13
+Work in Progress
+Mingyu Jin, Weidi Luo, Sitao Cheng, Xinyi Wang, Wenyue Hua, Ruixiang Tang, William Yang
+Wang, and Yongfeng Zhang. Disentangling memory and reasoning ability in large language mod-
+els. InProceedings of the 63rd Annual Meeting of the Association for Computational Linguistics
+(Volume 1: Long Papers), pp. 1681–1701, 2025.
+Minsung Kim, Dong-Kyum Kim, Jea Kwon, Nakyeong Yang, Kyomin Jung, and Meeyoung Cha.
+Training dynamics of parametric and in-context knowledge utilization in language models.arXiv
+preprint arXiv:2510.02370, 2025.
+Mingjie Liu, Shizhe Diao, Ximing Lu, Jian Hu, Xin Dong, Yejin Choi, Jan Kautz, and Yi Dong.
+Prorl: Prolonged reinforcement learning expands reasoning boundaries in large language models.
+arXiv preprint arXiv:2505.24864, 2025.
+Alex Mallen, Akari Asai, Victor Zhong, Rajarshi Das, Daniel Khashabi, and Hannaneh Hajishirzi.
+When not to trust language models: Investigating effectiveness of parametric and non-parametric
+memories. InProceedings of the 61st Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers), pp. 9802–9822, 2023.
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms.arXiv preprint arXiv:1707.06347, 2017.
+Amrith Setlur, Matthew Y . R. Yang, Charlie Snell, Jeremy Greer, Ian Wu, Virginia Smith, Max Sim-
+chowitz, and Aviral Kumar. e3: Learning to explore enables extrapolation of test-time compute
+for llms, 2025. URLhttps://arxiv.org/abs/2506.09026.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang,
+Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathemati-
+cal reasoning in open language models.arXiv preprint arXiv:2402.03300, 2024.
+Gemini Team, Petko Georgiev, Ving Ian Lei, Ryan Burnell, Libin Bai, Anmol Gulati, Garrett Tanzer,
+Damien Vincent, Zhufeng Pan, Shibo Wang, et al. Gemini 1.5: Unlocking multimodal under-
+standing across millions of tokens of context.arXiv preprint arXiv:2403.05530, 2024.
+Boshi Wang, Xiang Yue, Yu Su, and Huan Sun. Grokked transformers are implicit reasoners: A
+mechanistic journey to the edge of generalization.arXiv preprint arXiv:2405.15071, 2024.
+Xinyi Wang, Antonis Antoniades, Yanai Elazar, Alfonso Amayuelas, Alon Albalak, Kexun Zhang,
+and William Yang Wang. Generalization v.s. memorization: Tracing language models’ capabili-
+ties back to pretraining data. InThe Thirteenth International Conference on Learning Represen-
+tations, 2025. URLhttps://openreview.net/forum?id=IQxBDLmVpT.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny
+Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models.Advances in
+neural information processing systems, 35:24824–24837, 2022.
+Fang Wu and Yejin Choi. The invisible leash: Why rlvr may not escape its origin. In2nd AI for
+Math Workshop@ ICML 2025, 2025.
+Shiming Yang, Yuxuan Tong, Xinyao Niu, Graham Neubig, and Xiang Yue. Demystifying long
+chain-of-thought reasoning. InForty-second International Conference on Machine Learning.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov,
+and Christopher D Manning. Hotpotqa: A dataset for diverse, explainable multi-hop question
+answering. InProceedings of the 2018 conference on empirical methods in natural language
+processing, pp. 2369–2380, 2018.
+Xunjian Yin, Baizhou Huang, and Xiaojun Wan. Alcuna: Large language models meet new knowl-
+edge.arXiv preprint arXiv:2310.14820, 2023.
+Lifan Yuan, Weize Chen, Yuchen Zhang, Ganqu Cui, Hanbin Wang, Ziming You, Ning Ding,
+Zhiyuan Liu, Maosong Sun, and Hao Peng. Fromf(x)andg(x)tof(g(x)): Llms learn new
+skills in rl by composing old ones, 2025. URLhttps://arxiv.org/abs/2509.25123.
+14
+Work in Progress
+Yang Yue, Zhiqi Chen, Rui Lu, Andrew Zhao, Zhaokai Wang, Shiji Song, and Gao Huang. Does re-
+inforcement learning really incentivize reasoning capacity in llms beyond the base model?arXiv
+preprint arXiv:2504.13837, 2025.
+Ziyuan Zhuang, Zhiyang Zhang, Sitao Cheng, Fangkai Yang, Jia Liu, Shujian Huang, Qingwei
+Lin, Saravan Rajmohan, Dongmei Zhang, and Qi Zhang. EfficientRAG: Efficient retriever for
+multi-hop question answering. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.),
+Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing,
+pp. 3392–3411, Miami, Florida, USA, November 2024. Association for Computational Linguis-
+tics. doi: 10.18653/v1/2024.emnlp-main.199. URLhttps://aclanthology.org/2024.
+emnlp-main.199/.
+15
+Work in Progress
+Table 3: Templates for Relations in our Knowledge Graph.
+Relation Statement Template Question Template
+address{e1}resides at{e2}. What is{e1}’s address?
+awards{e1}won the{e2}award. What awards has{e1}won?
+best friend{e1}’s best friend is{e2}. Who is{e1}’s closest friend?
+birth date{e1}was born on{e2}. When was{e1}born?
+birth place{e1}hails from{e2}. Where was{e1}born?
+boss{e1}works under{e2}. Who is{e1}’s boss?
+boss of{e1}manages{e2}. Who works under{e1}?
+child{e2}is the child of{e1}. Who is{e1}’s child?
+classmate{e1}studied alongside{e2}. Who attended school with{e1}?
+colleague{e1}works alongside{e2}. Who are{e1}’s colleagues?
+died in{e1}passed away in{e2}. Where did{e1}die?
+died on{e1}died on{e2}. When did{e1}pass away?
+email You can reach{e1}at{e2}. What is{e1}’s email address?
+favorite food{e1}’s favorite dish was{e2}. What food does{e1}enjoy the most?
+first language{e1}’s native language was{e2}. What is{e1}’s first language?
+hobby A favorite activity of{e1}is{e2}. What does{e1}enjoy doing?
+influence{e1}shaped the career of{e2}. Who was influenced by{e1}?
+influenced by{e1}looked up to{e2}. Who inspired{e1}?
+known for{e1}gained recognition for{e2}. What is{e1}famous for?
+leader of{e1}was the leader of{e2}. Which group was{e1}in charge of?
+lived in{e1}resided in{e2}. Where has{e1}lived?
+major{e1}majored in{e2}. What did{e1}specialize in?
+mentored by{e1}received guidance from{e2}. Who mentored{e1}?
+mentoring{e2}is a student of{e1}. Who does{e1}mentor?
+nationality{e1}is a citizen of{e2}. What is{e1}’s nationality?
+neighbor{e1}lives next to{e2}. Who resides beside{e1}?
+occupation{e1}is employed as{e2}. What does{e1}do for a living?
+parent{e1}’s parent is{e2}. Who is the parent of{e1}?
+pet{e1}owns a pet called{e2}. What is the name of{e1}’s pet?
+philanthropy{e1}donated to{e2}. Which causes did{e1}support?
+phone{e1}can be reached at{e2}. What is{e1}’s phone number?
+rival{e1}had a rivalry with{e2}. Who did{e1}compete with?
+roommate{e1}shared a room with{e2}. Who lived with{e1}?
+service{e1}was a member of{e2}. Which organization did{e1}serve in?
+sibling{e1}and{e2}are siblings. Who are{e1}’s siblings?
+spouse{e1}is married to{e2}. Who is{e1}’s spouse?
+university{e1}went to{e2}. Which university did{e1}attend?
+worked at{e1}held a position at{e2}. Where did{e1}work?
+wrote{e1}authored the book{e2}. Which book did{e1}write?
+A DETAILS OFDATACONSTRUCTION
+To systematically construct our synthetic human biography, we build a relational knowledge graph
+with fake information by Python Faker Library 1 and the help of GPT-4o.
+We finally synthesize 39 relations including eight symmetric relations (e.g., spouse, sibling), and
+eight pairs of inverse relations (e.g., child and parent) to mimic real-world complexity. For each
+relation, we adopt an LLM to construct and validate three natural language templates. We adopt
+heuristic rules to constrain the tailed entity of the relation (e.g.,birthday should be a date). Table 3
+shows the relations and templates.
+For QA pairs construction, after sampling the relation paths/combinations, we adopt GPT-4o to
+generate question templates. Table 4 shows an example question template.
+1https://faker.readthedocs.io/en/master/
+16
+Work in Progress
+Table 4: An example of Question and CoT answer templates based on a relation path (4-hop).{e1}
+denotes the topic entity in the question.
+Component Content / Examples
+Relation Pathsibling− →boss of− →mentoredby− →bestfriend
+Question Templates
+1. Who is the best friend of the person mentoring the employee of the sibling
+of{e1}?
+2. Can you tell me the best friend of the person who mentored the employee of
+{e1}’s sibling?
+3. Who is the best friend of the person mentoring the employee of the sibling
+that{e1}has?
+CoT Answer Templates
+1.{e2}is{e1}’s brother/sister.{e3}works under{e2}.{e3}was trained by
+{e4}.{e4}’s best friend is{e5}. So, the answer is:{e5}
+2.{e1}and{e2}are siblings.{e2}is the boss of{e3}.{e3}was trained by
+{e4}.{e4}’s best friend is{e5}. So, the answer is:{e5}
+3.{e2}is{e1}’s brother/sister.{e2}is the boss of{e3}.{e3}received guid-
+ance from{e4}.{e5}is{e4}’s closest friend. So, the answer is:{e5}
+Figure 8: Model scaling analysis of Qwen model family across 0.5B, 1.5B, and 3B parameters.
+After we split the relation combinations based on the generalization levels 3, we can synthesize
+human biographies based on the knowledge graph. We firstly conduct random walk over the knowl-
+edge graph entities, and then translate the obtained dict-formed biographies into natural language
+paragraphs with the relation templates. Table 5 shows an example of the biography dict and corre-
+sponding natural language paragraph.
+B DETAILS OFSFT TRAININGBASELINES
+As discussed in Section 4.1, we are able to synthesize as much data as needed. However, in real-
+world scenarios, while LLMs can easily handle either Parametric or Contextual Reasoning, probably
+through post-training with sufficient data, they struggles in Complementary Reasoning task, where
+it is hard to collect ample data. We show in Table 1a that Complementary Reasoning is data-hungry
+and most difficult compared to parametric and contextual reasoning. Here we show empirical results
+training with SFT and evaluating on the corresponding testing set in Table 6.
+It further shows that Contextual Reasoning is the easiest. While LLMs learns to adopt new knowl-
+edge during SFT training, they manage to handle most of the unseen knowledge in the context
+window. We hypothesize that this ability is essential for further generalization to new reasoning
+patterns. Moreover, SFT training involving parametric knowledge would be hard to generalize on
+Zero-shot settings. Both parametric and complementary reasoning, while performing well on I.I.D.
+setting, drop significantly on Composition and almost fail on Zero-shot setting.
+This further highlights our motivations: we try to figure out the recipe of training strategies and mix
+of training data required for generalization to complementary reasoning on all difficulty levels.
+17
+Work in Progress
+Table 5: An example of human biography in the form of Python Dict and Natural Language Docu-
+ment.
+Python Dictionary Natural Language Document
+”Allison Hill”:{
+”name”: ”Allison Hill”,
+”birth date”: ”1942-04-29”,
+”occupation”: ”Civil engineer, consulting”,
+”email”: ”garzaanthony@example.org”,
+”phone”: ”538.990.8386”,
+”new”: true,
+”died on”: ”2024-11-01”,
+”child”: ”Donald Marsh”,
+”pet”: ”Whiskers”,
+”wrote”: ”Baby administration”,
+”influenced by”: ”Matthew Cooper”,
+”mentoring”: ”Daniel Watkins”,
+”hobby”: ”painting”,
+”classmate”: ”Adam Villanueva”,
+”first language”: ”Finnish”,
+”roommate”: ”Shannon Krause”,
+”university”: ”University of Chicago”,
+”service”: ”Habitat for Humanity”,
+”known for”: ”painting”,
+”died in”: ”Brownbury”,
+”boss”: ”Lindsey Johnson”,
+”favorite food”: ”tacos”
+}
+Allison Hill has a pet named Whiskers.
+Allison Hill spoke Finnish as their first
+language. A favorite activity of Alli-
+son Hill is painting. Lindsey Johnson
+is the boss of Allison Hill. Allison Hill
+was born on 1942-04-29. Allison Hill
+died on 2024-11-01. Allison Hill shared
+a room with Shannon Krause. Alli-
+son Hill penned Baby administration.
+Allison Hill was inspired by Matthew
+Cooper. The contact email for Alli-
+son Hill is garzaanthony@example.org.
+Allison Hill was famous for painting.
+Allison Hill was a member of Habi-
+tat for Humanity. Allison Hill mentors
+Daniel Watkins. Allison Hill’s place of
+death was Brownbury. Allison Hill’s
+phone number is 538.990.8386. Allison
+Hill works as a Civil engineer, consult-
+ing. Allison Hill is the parent of Don-
+ald Marsh. Allison Hill was a classmate
+of Adam Villanueva. Allison Hill loved
+eating tacos. Allison Hill went to Uni-
+versity of Chicago.
+Table 6: Empirical performance. For each reasoning type, we training on the training set and test on
+the corresponding test set. Note that this is different from other experiments that focus on evaluation
+over complementary reasoning test set.
+Training Data I.I.D Comp Zero-shot
+Parametric Reasoning 93.96 82.30 3.71
+Contextual Reasoning 98.53 95.53 69.53
+Complementary Reasoning 90.26 76.61 7.76
+C MODELSCALING
+We study whether our findings that “RL enables generalization in Complementary Reasoning from
+sufficient atomic skills” persist as models scale. We compare Qwen-2.5-0.5B, Qwen-2.5-1.5B and
+Qwen-2.5-3B due to limited compute. Figure 8 illustrates the performance trends across model sizes.
+We observe consistent behaviors that strongly support the effectiveness of our proposed recipe.
+As shown by the blue lines, SFT MEM+CTX leads to substantial performance jumps after RL COMP .
+This improvement is particularly pronounced in the Zero-shot setting, indicating that the model with
+sufficient atomic skills successfully generalizes the reasoning capabilities acquired during RL. In
+contrast, SFT COMP (orange dashed line), while starting with decent performance, exhibits limited
+growth after RL training (orange solid line). The gap between the pre-RL and post-RL performance
+is marginal, suggesting that SFT with composite data may limit the model’s potential for further
+generalization.
+18
+Work in Progress
+Table 7: Empirical results on Complementary Reasoning test set.
+Setting I.I.D Comp Zero-shot
+SFT MEM+CTX 35.18 28.20 24.07
+SFT MEM+CTX →RLMEM+CTX 28.43 28.34 27.89
+SFT MEM+CTX →RLMEM+CTX →RLCOMP 74.00 62.47 49.56
+SFT MEM+CTX+COMP 80.14 62.9043.25
+SFT MEM+CTX →RLCOMP 73.11 60.8550.87
+Crucially,these trends hold true across all model sizes. When the model size increases to 3B, the
+superiority of SFT MEM+CTX →RLCOMP over SFT COMP →RLCOMP remains significant (e.g.,a gap of
+approximately 13% in Zero-shot accuracy for the 3B model). This confirms that our conclusions are
+robust to model scaling and implies that SFT MEM+CTX is a more effective foundation for scaling up
+RL-based reasoning.
+D DETAILS ONSUFFICIENCY OF THEFINDING
+In Section 5.1, we focus on whether our proposed recipe “SFT MEM+CTX →RLCOMP ” consistently
+yields superior generalization, compared to direct training on the target task “SFT COMP →RLCOMP ”
+which is the common practice in real-world complex tasks. Here, we compare “SFT MEM+CTX
+→RLCOMP ” with other possible baselines: 1) “SFT MEM+CTX ”: SFT with the entire MEMand CTX
+data, which is the same as in Table 1b; 2) “SFT MEM+CTX →RLMEM+CTX ”: SFT with 80% of MEM
+and CTXdata and then RL with the rest 20% of MEMand CTXdata. The portion is based on our
+empirical results of splitting COMPdata; 3) “SFT MEM+CTX →RLMEM+CTX →RLCOMP ”: furthur RL
+with COMPbased on “SFT MEM+CTX →RLMEM+CTX ”; 4) “SFT MEM+CTX+COMP ”: SFT with the mix
+of MEM, CTXand COMPdata. Specifically, for RL COMP , we adopt the 12.8k random samples used
+in Section 5.2. We show the performance on COMPtest set in Table 7.
+It shows thatSFT MEM+CTX →RLMEM+CTX →RLCOMP has very similar performance compared with
+our proposedSFT MEM+CTX →RLCOMP , especially for Zero-shot setting. However, this does not
+contradict our conclusion, as the capture of sufficient atomic skills and RL training are essential for
+Zero-shot generalization and sufficient atomic skills are still the prerequisites. In addition, compar-
+ing SFT MEM+CTX withSFT MEM+CTX →RLMEM+CTX , we find that RL with atomic skills may not
+be beneficial to composite tasks. Note that for MEMand COMPdata, every test sample in COMP
+would be either Composition or Zero-shot level (these two baselines have never seen any COMPdata
+during training. Moreover, Table 7 further enhances the sufficiency of our findings that our recipe
+SFT MEM+CTX →RLCOMP is the key to generalization.
+It is interesting thatSFT MEM+CTX+COMP also manages to generalize to Zero-shot scenarios to some
+extent and achieves comparable results with ourSFT MEM+CTX →RLCOMP . This shows that SFT
+can also generalize with careful mix of training data. However, this does not challenge our SFT
+Memorization Paradox that SFT directly with composite data fails to generalize. Furthermore, the
+setting itself is not as realistic-it is not trivial to obtain ample composite (COMP) data encompassing
+both MEMand CTXskills. Also, it is difficult to mix COMPdata to SFT training with all atomic
+skills. However, ourSFT MEM+CTX →RLCOMP assumes a common post-training practice with an
+initial SFT and a following RL stage. While the base model grasp the atomic skills (i.e.,today’s
+available LLMs), we focus on the training strategies and data mix when we have some composite
+data. And we demonstrate the condition of RL generalization.
+E DETAILS ON OTHERFACTORS THATAFFECTGENERALIZATION
+There are many factors affecting models’performance or generalizability. We showcase the sam-
+ple efficiency and pass@k performance as some features to see why the model with atomic skills
+are essentials for RL generalization in composite tasks. Here, we investigate from the perspective
+of training dynamics of SFT MEM+CTX , the impact of training loss of the base model for RL, the
+embedding distributions of the SFT and RL model and the uncertainty of the model.
+19
+Work in Progress
+Figure 9: Training dynamics of SFT with parametric and contextual reasoning data over training
+steps. Ability gains are calculated over MEM(Red Line), CTX(Blue Line) and COMP(Green Line),
+respectively. As the training progresses, complementary reasoning ability emerges to some extent.
+Figure 10: The impact of training steps (i.e.,training loss) of the SFT model on RL generalization.
+E.1 THETRAININGDYNAMICS OFSFT MEM+CTX
+SettingsTo check when and how the ability of complementary reasoning ability (COMP) emerges
+through the training of parametric and contextual reasoningi.e.,SFT MEM+CTX , we showcase the
+performance of MEM, CTXand COMPduring the SFT training over MEMand CTX. We study
+Qwen-1.5B-Base and Qwen-0.5B-Base.
+The ability of complementary reasoning emerges to some extent with the progress of both
+parametric and contextual reasoning.Figure 9 shows the training dynamic over training steps.
+First, it shows that as the SFT training with both MEMand CTXdata progresses, the ability of
+COMPsomehow emerges with MEMand CTXto some extent. Second, the conclusion is consistent
+over different model sizes, with larger models generalizes better to COMPwith MEMand CTXdata.
+Third, it further demonstrates that contextual reasoning is the easiest (learned from relatively early
+stage), while the parametric and complementary reasoning is relatively difficult.
+E.2 THEIMPACT OFTRAININGLOSS FORRL GENERALIZATION
+We investigate a critical question regarding the interplay between Supervised Fine-Tuning (SFT) and
+Reinforcement Learning (RL):Does the degree of SFT convergence dictate the model’s potential
+for RL-based generalization?Specifically, we aim to determine if a ”grokking-like” phenomenon
+exists–where continuous optimization of SFT loss, even after apparent metric saturation, further
+unlocks the model’s reasoning capabilities during the RL stage. Also, we study at which checkpoint
+(i.e.,training loss) may the model emerge the ability of generalization. We take four intermediate
+checkpoints of SFTMEM+CTX to further conduct RLCOMP and evaluate the performance on three levels
+of generalization.
+20
+Work in Progress
+Figure 10 illustrates the performance trajectories across SFT checkpoints (1k to 4k steps), revealing
+three distinct phases of capability emergence:
+•Insufficient Representation.At the early stage (i.e.,1k steps, Training Loss≈0.44), the model
+has not yet internalized the necessary reasoning patterns. Consequently, it fails to generalize effec-
+tively during the RL stage, resulting in suboptimal performance across all metrics (e.g., Zero-shot
+accuracy is significantly lower compared to later stages).
+•Emergence of Capabilities.As the SFT loss decreases to approximately0.16(i.e.,2k steps), we
+observe a sharp “phase transition” in downstream RL performance. While the base SFT model’s
+direct performance (dashed lines) shows only moderate improvements, itslatent potentialfor RL
+adaptation increases dramatically. This suggests that the critical structures required for reasoning
+generalization are established during this interval.
+•Saturation and Robustness.Performance peaks around 3k steps (Loss≈0.05). Interestingly,
+further extending training to 4k steps—where the model nearly memorizes the training data (Loss≈
+0.0004)—does not yield further significant gains, nor does it lead to performance degradation. This
+indicates that while “grokking” (delayed generalization) effectively occurs between 1k and 3k steps,
+the benefit saturates once the loss drops below a certain threshold (<0.05). The model becomes
+robust, maintaining its high plasticity for RL even when deeply fitted to the SFT distribution.
+In conclusion,minimizing SFT loss is crucial up to a point. The generalization capability for RL
+does not scale infinitely with lower loss but requires a sufficient ”incubation” period (up to 3k steps
+in our setting) to fully emerge.
+E.3 ANALYSIS OFLATENTSPACEDYNAMICS VIAPCA
+Setting: Layer-wise PCA ProjectionTo investigate the internal mechanism behind the superior
+performance of SFT MEM+CTX →RLCOMP compared to SFT COMP →RLCOMP , we conduct a Principal
+Component Analysis (PCA) on the hidden states of the models. Our goal is to visualize how dif-
+ferent training strategies affect the representation of Parametric, Contextual, and Complementary
+Reasoning.
+Formally, for a given model pair (Anchor ModelManc and Target ModelMtgt) and a specific layerl,
+we extract the hidden states corresponding to the last token of the input queries. LetHanc
+l ∈R N×D
+andH tgt
+l ∈R N×D denote the hidden state matrices forNqueries at layerl, whereDis the hidden
+dimension. To capture the relative shift induced by training, we fit the PCA transformation on
+Manc’s statesH anc
+l , which defines a 2D coordinate system based on the principal variations of the
+reference model. We then projectM tgt’s statesH tgt
+l into this fixed coordinate system. The shift
+vector for layerlis calculated as the difference between the centroids of the projected target states
+and the anchor states. This process is repeated for all layers. Figure 11 shows the layer-wise shifts
+by scatter points. The large markers represent the global centroid shift (z∗) for each Reasoning type.
+Disentanglement of atomic skills in SFT MEM+CTX →RLCOMP As shown in the top-left panel of
+Figure 11, SFT MEM+CTX exhibits a significant “disentanglement” of atomic reasoning types. The
+centroid for MEMdata (Blue Circle) and CTXdata (Orange Triangle) move in distinct directions
+and magnitudes within the principal component space. This suggests that the SFT MEM+CTX stage
+effectively separates the internal representations required for parametric recall versus contextual
+reasoning. Furthermore, in the subsequent RL stage (top-right panel), this separation is maintained
+and refined. Notably, the COMPdata (Green Square) aligns closely with the established distributions
+of MEMand CTXdata. This indicates that the model can effectively generalize the logic learned
+from MEMand CTXdata to the composite COMPtasks.
+Entanglement of skills in SFT COMP →RLCOMP .In contrast, the bottom row reveals a phe-
+nomenon of “representation entanglement”. Please note that the scale of the axis for the bottom
+row is lower than that for the top row. For the model trained only on COMPdata, the embeddings for
+MEM, CTX, and COMPqueries remain tightly clustered together, after both the SFT stage (bottom-
+left) and the RL stage (bottom-right). The centroids for all three data types are located close to the
+origin with overlapping distributions. This lack of separation implies that SFT COMP fails to distin-
+21
+Work in Progress
+Figure 11: PCA Analysis of SFT MEM+CTX →RLCOMP and SFT COMP →RLCOMP . The scatter points
+represent the layer-wise shifts. The large markers represent the global centroid shift (z ∗) for each
+reasoning type.
+guish between the underlying mechanisms of parametric and contextual reasoning, instead learning
+a coupled representation.
+We hypothesize that the superior generalization capability of SFTMEM+CTX →RL(Comp) stems from
+this structural disentanglement. By explicitly separating the latent representations of parametric and
+contextual capabilities during the SFT stage, the model establishes a robust basis that facilitates
+better adaptation during the RL phase. Conversely, the coupled representations in SFT COMP limit
+the model’s ability to distinctly apply these capabilities, leading to suboptimal performance.
+E.4 MODELUNCERTAINTY
+We investigate the evolution of model uncertainty (quantified by the average prediction entropy
+×100) to understand the underlying dynamics of RL generalization. Table 8 presents the entropy
+metrics across I.I.D., Compositional, and Zero-shot subsets.
+Uncertainty is correlated with SFT convergence, not necessarily RL potential.We first address
+whether high uncertainty is a prerequisite for effective RL exploration. Comparing the SFTMEM+CTX
+checkpoints, the uncertainty drops significantly from 3k steps (12.92) to 4k steps (7.13) as the loss
+minimizes. Despite this lower starting entropy, we previously observed that the 4k-step model sus-
+tains high performance after RL. This indicates that a ”calibrated” and confident SFT model (lower
+entropy) does not hinder subsequent RL generalization.
+22
+Work in Progress
+Table 8: Analysis of model uncertainty (measured by average entropy×100) across different train-
+ing settings.Overalldenotes average uncertainty on the test set, while the breakdown columns show
+uncertainty on I.I.D., Compositional (Comp.), and Zero-shot settings. Lower values indicate higher
+model confidence.
+Setting Overall I.I.D. Comp. Zero-shot
+Effect of Training Steps (SFT onMEM+CTX)
+SFT MEM+CTX 3k step 12.92 13.41 12.05 13.12
+SFT MEM+CTX 4k step 7.13 6.33 7.45 8.46
+10%COMPdata forSFT COMP , 90%COMPdata forRL COMP
+SFT COMP 8.93 6.56 9.89 12.96
+SFT COMP →RLCOMP 8.99 8.49 8.97 10.17
+SFT MEM+CTX →RLCOMP 2.58 1.63 2.54 4.84
+30%COMPdata forSFT COMP , 70%COMPdata forRL COMP
+SFT COMP 7.18 5.24 7.98 10.46
+SFT COMP →RLCOMP 6.11 4.85 6.36 8.65
+SFT COMP →RLCOMP 2.90 1.96 2.84 5.17
+90%COMPdata forSFT COMP , 10%COMPdata forRL COMP
+SFT COMP 4.14 2.38 4.05 8.36
+SFT COMP →RLCOMP 4.11 3.27 3.97 6.25
+SFT COMP →RLCOMP 4.10 3.23 3.88 6.46
+Task Difficulty Indicator.Consistently across all settings, the uncertainty is highest in theZero-
+shotsubset (e.g.,12.96for 10% SFT(G3)). This aligns with intuition, as the model exhibits lower
+confidence on unseen distributions.
+SFT MEM+CTX Facilitates Efficient RL Adaptation.A key insight emerges when comparing the
+post-RL behaviors. In the 30% data setting,30%SFT COMP (7.18) and SFT MEM+CTX (7.13) start
+at remarkably similar uncertainty levels. However, after applying identical RL training, SFT COMP
+→RLCOMP shows minimal entropy reduction (7.18→6.11), suggesting the model struggles to find
+a more optimal, confident policy. In contrast, our recipe SFT MEM+CTX →RLCOMP achieves a drastic
+reduction in uncertainty (7.13→2.90). This demonstrates that the model with sufficient atomic
+skills does not merely provide ”randomness” for exploration; rather, it structures the latent space (see
+Figure 11) in a way that allows RL to efficiently converge to a high-confidence, correct solution.
+F TERMINOLOGIES
+23
+Work in Progress
+Table 9: Glossary of Symbols and Abbreviations
+Symbol/Abbreviation Description
+MEMParametric reasoning type.
+CTXContextual reasoning type.
+COMPComplementary reasoning type.
+RL Reinforcement Learning, one of the core training strategies discussed
+in this work.
+SFT Supervised Fine-Tuning, one of the core training strategies discussed
+in this work.
+LoRA Low-Rank Adaptation, one of the training strategies discussed in this
+work.
+SFT MEM+CTX The model obtained after performing SFT on the combined training
+set of MEMand CTX.
+SFT COMP The model obtained after performing SFT on the training set of COMP.
+SFT 10%COMP The model obtained after performing SFT on 10% random samples of
+COMPtraining set.
+SFT MEM+CTX →RLCOMP The model obtained after performing RL on the training set of COMP
+from SFT MEM+CTX .
+SFT COMP →RLCOMP The model obtained after performing RL on the training set of COMP
+from SFT COMP .
+I.I.D Independent and Identically Distributed generalization type in the test
+set.
+24

@@ -1,0 +1,2376 @@
+Beyond Scaﬀold: A Uniﬁed Spatio-Temporal
+Gradient Tracking Method ⋆
+Yan Huang † Jinming Xu ‡ Jiming Chen ‡
+Karl Henrik Johansson †
+† Division of Decision and Control Systems, School of EECS, KT H
+Royal Institute of Technology, SE-100 44 Stockholm, Sweden (e-mail:
+yahuang@kth.se, kallej@kth.se)
+‡ College of Control Science and Engineering, Zhejiang Unive rsity,
+310027 Hangzhou, China (e-mail: jimmyxu@zju.edu.cn,
+cjm@zju.edu.cn)
+Abstract: In distributed and federated learning algorithms, communication ov erhead is often
+reduced by performing multiple local updates between communicatio n rounds. However, due
+to data heterogeneity across nodes and the local gradient noise w ithin each node, this strategy
+can lead to the drift of local models away from the global optimum. To address this issue, we
+revisit the well-known federated learning method Scaﬀold (Karimired dy et al., 2020) under a
+gradient tracking perspective, and propose a uniﬁed spatio-temp oral gradient tracking algorithm,
+termed ST-GT, for distributed stochastic optimization over time-v arying graphs. ST-GT tracks
+the global gradient across neighboring nodes to mitigate data hete rogeneity, while maintaining
+a running average of local gradients to substantially suppress nois e, with slightly more storage
+overhead. Without assuming bounded data heterogeneity, we pro ve that ST-GT attains a linear
+convergence rate for strongly convex problems and a sublinear ra te for nonconvex cases. Notably,
+ST-GT achieves the ﬁrst linear speed-up in communication complexity with respect to the
+number of local updates per round τ for the strongly-convex setting. Compared to traditional
+gradient tracking methods, ST-GT reduces the topology-depend ent noise term from σ2 to σ2/τ,
+where σ2 denotes the noise level, thereby improving communication eﬃciency.
+Keywords: Distributed optimization, federated learning, data heterogeneity .
+1. INTRODUCTION
+Data parallelism is a standard paradigm in large-scale
+machine learning tasks, in which multiple devices collabo-
+ratively train a shared model (Dean et al., 2012). Common
+strategies include employing a centralized server–worker
+architecture, as in federated learning (Li et al., 2014),
+where a server aggregates gradients and distributes model
+updates. Alternatively, a distributed network architecture
+allows each node to compute locally and exchange informa-
+tion with its neighbors (Yuan et al., 2016), making it well-
+suited for training over multiple data centers (Lian et al.,
+2017), wireless sensor networks (Rabbat and Nowak, 2004),
+and multi-robot systems (Tian et al., 2022). In general,
+both paradigms aim to solve the following distributed
+optimization problem with n nodes:
+min
+x∈Rp
+f (x) = 1
+n
+n∑
+i=1
+Eξi∼Di [fi (x; ξi)]  
+:=fi(x)
+, (1)
+where x ∈ Rp is the global model parameter, fi the local
+objective function, and ξi the random sample drawn from
+the local data distribution Di accessible only to node i.
+⋆ The computations/data handling/[SIMILAR] were/was enabl ed
+by resources provided by the National Academic Infrastruct ure for
+Supercomputing in Sweden (NAISS), partially funded by the S wedish
+Research Council through grant agreement no. 2022-06725.
+To reduce communication overhead between neighboring
+nodes or between nodes and the central server, it is com-
+mon to skip certain communication rounds and perform
+multiple local updates in federated and distributed learn-
+ing (McMahan et al., 2017; Nguyen et al., 2023). However,
+due to data heterogeneity across nodes and the sampling
+noise inherent in local gradients, reducing communication
+can substantially increase the drift of local models from
+the global gradient direction (Karimireddy et al., 2020)
+and amplify gradient noise (Huang and Xu, 2023), result-
+ing in additional errors or requiring diminishing stepsizes.
+Addressing these issues while preserving communication
+eﬃciency remains an active research problem. Moreover,
+although distributed learning and federated learning share
+nearly identical objectives and challenges, existing studies
+often treat them separately, which hinders a uniﬁed under-
+standing of data-parallel learning algorithms.
+1.1 Related Work
+Federated learning. Canonical federated learning meth-
+ods adopt a server–worker architecture, where sampled
+worker nodes perform local computations in a data-parallel
+manner and then communicate with the server node to
+achieve information aggregation. A major issue with this
+approach is that the server node becomes a communication
+bottleneck and a potential single point of failure (Zhang
+et al., 2023). To reduce the communication load per round
+arXiv:2512.01732v1  [cs.LG]  1 Dec 2025
+on the server, McMahan et al. (2017) proposed the FedAvg
+algorithm, which improves performance by allowing only a
+subset of nodes to participate in training and by incorpo-
+rating multiple rounds of local updates. FedAvg has since
+been widely applied in many real-world scenarios, partic-
+ularly for the case of identically and independently dis-
+tributed (i.i.d.) data (Stich, 2019). However, Karimireddy
+et al. (2020) demonstrated that FedAvg fails to guarantee
+exact convergence under heterogeneous data distributions.
+The reason is that each worker may converge toward its
+own local optimum based solely on its dataset, resulting
+in client drift. To mitigate this issue, they proposed the
+Scaﬀold algorithm, which introduces control variables at
+both the server and worker sides to correct local gradient
+directions, thereby counteracting client drift. This method
+was later extended to various settings, including those
+with random communication intervals (Mishchenko et al.,
+2022), ﬁnite-sum problems with variance reduction (Jiang
+et al., 2024), and federated compositional optimization
+problems (Zhang et al., 2024), to name a few, achieving
+improved performance in non-i.i.d. scenarios. Another line
+of research for addressing data heterogeneity is personal-
+ized federated learning, which includes approaches such as
+regularization-based methods (Li et al., 2020) and knowl-
+edge distillation (Lee et al., 2022). For a comprehensive
+overview, we refer readers to recent surveys on this topic
+(Mora et al., 2024).
+Distributed learning. In a distributed network without
+a central server, each node communicates only with its
+immediate neighbors (Ram et al., 2009). Such a topology
+is more ﬂexible and robust against single-point failures.
+However, relying solely on peer-to-peer communication
+also makes distributed learning algorithms vulnerable to
+data heterogeneity, and this eﬀect becomes increasingly
+pronounced as network connectivity weakens (Lian et al.,
+2017). To address this issue, gradient tracking (GT) al-
+gorithms have become a mainstream choice (Xu et al.,
+2015; Di Lorenzo and Scutari, 2016; Nedic et al., 2017).
+For instance, Xu et al. (2015) proposed Aug-DGM, which
+incorporates a global gradient estimator with a dynamic
+average-consensus protocol. This method progressively
+eliminates the eﬀect of data heterogeneity and achieves
+linear convergence with a constant stepsize for strongly-
+convex and smooth objectives. Aug-DGM was later ex-
+tended to stochastic gradient settings (Pu and Nedi´ c, 2021)
+and further applied to various machine learning tasks
+(Lu and De Sa, 2021). To improve the communication
+eﬃciency, Nguyen et al. (2023) integrated GT with mul-
+tiple local updates and proposed the LU-GT algorithm for
+deterministic settings. Wu et al. (2025) showed that LU-
+GT remains communication-eﬃcient under mild data het-
+erogeneity. However, simply skipping communication will,
+indeed, amplify the impact of gradient noise, thereby in-
+creasing computational complexity. Huang and Xu (2023)
+analyzed the trade-oﬀ between communication and compu-
+tation costs with respect to the number of local updates,
+and proposed FlexGT, a ﬂexible gradient tracking method
+for stochastic settings that supports adjustable computa-
+tion and communication steps. Subsequently, Liu et al.
+(2024) introduced the K-GT algorithm, which employs a
+Scaﬀold-style control variable to correct local gradients
+and reduce gradient noise by scaling with the number
+of local updates; however, this improvement hinges on
+initializing the control variables with global gradients and
+exhibits a stronger dependence on the network topology.
+1.2 Contributions
+In this work, we solve the distributed stochastic optimiza-
+tion problem (1) with non-independent and identically
+distributed (non-i.i.d.) datasets. The main contributions
+are summarized as follows:
+• We propose a uniﬁed spatio-temporal gradient track-
+ing algorithm (ST-GT) for time-varying graphs, ap-
+plicable to both distributed and federated learning.
+By jointly tracking the global gradient across nodes
+and the running average of local gradients, ST-GT
+eﬀectively mitigates data heterogeneity and reduces
+gradient noise, incurring only a slight increase in
+storage overhead. Furthermore, by extending Scaﬀold
+with a tunable parameter in its global control variable,
+we show that Scaﬀold emerges as a special case of ST-
+GT under a random communication topology, thereby
+oﬀering a uniﬁed framework that bridges distributed
+and federated learning paradigms.
+• Without assuming any bound on data heterogeneity,
+we prove that ST-GT achieves a linear convergence
+rate (Theorem 1) and a sublinear rate (Theorem 2) for
+strongly convex and nonconvex objective functions,
+respectively. More importantly, ST-GT achieves the
+ﬁrst linear speed-up in communication complexity
+with respect to the number of local updates per round
+τ in the strongly convex setting, improving upon
+FlexGT by a factor of 1 /τ. It also reduces the network
+dependence from 1 /(1 − ρ)2 to 1 /(1 − ρ)3/2 compared
+with K-GT (see Table 1), where ρ denotes the graph
+connectivity. The theoretical results are validated on
+both synthetic and real-world datasets.
+Paper organization. The remainder of the paper is
+organized as follows. Section 2 formulates the distributed
+stochastic optimization problem and introduces the design
+of ST-GT. Section 3 studies an extended Scaﬀold algo-
+rithm and establishes its connections with ST-GT. Sec-
+tion 4 presents the convergence results of ST-GT. Section 5
+reports numerical experiments that validate the theoreti-
+cal analysis. Finally, Section 6 concludes the paper, and
+Appendix A contains several supporting lemmas and the
+proofs of the main results.
+Notations. In this work, we use the following notation:
+∥ · ∥ denotes the Frobenius norm, ⟨·, ·⟩ the inner product,
+|·| the cardinality of a set, and E[·] the expectation of
+a vector or matrix. We let 1 be the all-ones vector, I
+the identity matrix, and deﬁne the averaging matrix as
+J = 11⊤/n. In addition, the asymptotic notation O(·) is
+used to suppress constant factors, while ˜O(·) further omits
+logarithmic factors.
+2. PROBLEM FORMULATION AND ST-GT
+ALGORITHM
+2.1 Distributed Stochastic Optimization
+For the implementation purpose, we consider the following
+equivalent problem with consensus constraints:
+min
+X∈Rn×p
+F (X) = 1
+n
+n∑
+i=1
+Eξi∼Di [fi (xi; ξi)]  
+:=fi(xi)
+,
+s.t. xi = xj , i, j ∈ [n],
+(2)
+where X = [ x1, . . . , x n]⊤ ∈ Rn×p is the collection of the
+local decision variable xi ∈ Rp of each node i. The nodes
+communicate over a network whose topology is represented
+by a graph G = ( V, E), where V = 1 , 2, . . . , n is the set
+of agents and E ⊆ V × V is the set of edges, with each
+edge ( i, j) indicating a communication link between agents
+i and j. Each agent i exchanges information only with its
+neighbors, deﬁned as Ni = j | j ̸= i, , (i, j) ∈ E , together
+with itself. Particularly, to accommodate both gossip-
+based communication in distributed learning and partial
+client participation in federated learning, we consider a
+general dynamic graph Gr at each communication round
+r, satisfying the following assumption.
+Assumption 1. (Connectivity in expectation). The weight
+matrix Wr induced by a dynamic graph Gr is dou-
+bly stochastic, i.e., Wr1 = 1, 1⊤Wr = 1⊤ and ρ :=
+E
+[
+∥Wr − J∥2
+2
+]
+< 1, ∀r ⩾ 0.
+Note that this assumption requires the underlying com-
+munication graph to satisfy a contraction property only
+in expectation, rather than at every round as assumed in
+Nguyen et al. (2023); Liu et al. (2024). This relaxation al-
+lows for more ﬂexible and communication-eﬃcient network
+topologies (Ying et al., 2021; Nguyen et al., 2025).
+2.2 The ST-GT Algorithm
+In this work, we address Problem (2) with non-i.i.d. local
+datasets, i.e., Di ̸= Dj , i ̸= j. For brevity, we denote
+Xk := [ . . . , x i,k, . . . ]⊤ , Yk := [ . . . , y i,k, . . . ]⊤ ∈ Rn×p,
+Gk := [ . . . , ∇fi (xi,k; ξi,k) , . . . ]⊤ ∈ Rn×p,
+∇Fk := [ . . . , ∇fi (xi,k) , . . . ]⊤ ∈ Rn×p.
+as the collections of the local model parameters, gradient
+tracking variables, stochastic gradient, and full gradient,
+respectively, at iteration k.
+Recall the GT method with local updates (Nguyen et al.,
+2023; Huang and Xu, 2023; Wu et al., 2025), which follows
+the update rules given below:
+X(r+1)τ = W
+(
+Xrτ − γ
+τ −1∑
+t=0
+Yrτ +t
+)
+,
+Y(r+1)τ = W Yrτ + G(r+1)τ − Grτ ,
+(3)
+where W indicates a ﬁxed weight matrix induced by the
+graph, and τ is the number of local updates between
+communications. It can be observed that the update
+of the model parameter X relies on the accumulated
+tracking variables within the r-th round, whereas Y uses
+only the single-step values without aligning with the
+accumulated quantity in the updates of X. This mismatch
+is inconsistent with the principle of gradient tracking.
+Motivated by these observations, we propose the spatio-
+temporal gradient tracking algorithm, ST-GT, whose
+pseudo-code is given in Algorithm 1. The key idea is
+illustrated in Fig. 1. By caching the model parameters from
+temporal
+spatial
+Fig. 1. Illustration of the spatio-temporal gradient track-
+ing. The link from time rτ to rτ + τ, passing through
+a memory element z −τ , illustrates how ST-GT tracks
+local gradient along the temporal dimension.
+the previous communication round and passing them to
+the next communication round for diﬀerence calculation
+(the link from iteration rτ to rτ + τ), the algorithm
+accumulates the temporal tracking variable Z, which is
+then mixed spatially via the weighting matrix Wr. This
+spatio-temporal gradient tracking mechanism eﬀectively
+approximates centralized gradient descent with only a
+slight increase in storage overhead, improving convergence
+performance while preserving communication eﬃciency. In
+particular, ST-GT can be rewritten in the following com-
+pact form: for k ∈ [rτ, rτ + τ − 2],
+Xk+1 = Xk − γYk,
+Yk+1 = Yk + Gk+1 − Gk; (4)
+and for the k = ( r + 1)τ,
+Zrτ = 1
+γτ (Xrτ − Xrτ +τ −1 + γYrτ +τ −1) ,
+X(r+1)τ = Wr (Xrτ − τγZ rτ ) ,
+Y(r+1)τ = WrZrτ + G(r+1)τ − 1
+τ
+τ −1∑
+t=0
+Grτ +t.
+(5)
+Intuitively, by applying the dynamic consensus protocol
+with the doubly stochastic matrix Wr, ST-GT asymptot-
+ically tracks the running average of the global gradient
+within each period, i.e.,
+¯z(r+1)τ := 1
+n
+n∑
+i=1
+zi,(r+1)τ
+= 1
+n
+n∑
+i=1
+1
+τ
+τ −1∑
+t=0
+yi,rτ +t = 1
+n
+n∑
+i=1
+1
+τ
+τ −1∑
+t=0
+gi,rτ +t.
+(6)
+This enhances robustness to the gradient noise with only
+a slight increase in memory overhead, compared to GT
+methods with variance reduction (GT-VR) (Xin et al.,
+2020), which typically incur higher memory or computa-
+tional costs to approximate the full gradient (see Table 1).
+Instead, DSGT (Pu and Nedi´ c, 2021) and FlexGT (Huang
+and Xu, 2023) track the global gradient at a single step,
+i.e.,
+¯y(r+1)τ := 1
+n
+n∑
+i=1
+yi,(r+1)τ = 1
+n
+n∑
+i=1
+gi,(r+1)τ . (7)
+Particularly, ST-GT reduces to DSGT when τ = 1, and to
+FlexGT when communicating Y instead of Z. Moreover,
+unlike K-GT (Liu et al., 2024), ST-GT does not require
+any extra communication during the initialization phase.
+Algorithm 1 ST-GT (distributed)
+Initialization: Initial points xi,0 ∈ Rp and ˜gi,0 = yi,0 =
+∇xfi (xi,0; ξi,0), number of local updates τ ⩾ 1 and
+stepsize γ > 0.
+1: for round r = 0 , 1, · · · , R − 1, each node i ∈ [n], do
+2: Re-initial the running-average gradient ˜ gi,rτ = 0
+3: for k = rτ, rτ + 1, · · · , (r + 1)τ − 2 do
+4: Sample stochastic gradient gi,rτ +t.
+5: Perform local update:xi,k+1 = xi,k − γyi,k,
+yi,k+1 = yi,k + gi,k+1 − gi,k,
+˜gi,k+1 = ˜gi,k + gi,k+1.
+6: end for
+7: zi,(r+1)τ = 1
+γτ (xi,rτ − xi,rτ +τ −1 + γyi,rτ +τ −1).
+8: Perform inter-node communication:
+xi,(r+1)τ =
+∑
+j∈Ni
+wr
+i,j
+(
+xj,rτ − τγz j,(r+1)τ
+)
+,
+yi,(r+1)τ =
+∑
+j∈Ni
+wr
+i,j zj,(r+1)τ + gi,(r+1)τ − 1
+τ ˜gi,(r+1)τ .
+9: end for
+Algorithm 2 Scaﬀold + (server–worker)
+1: Initialization: server and worker model parameters
+x0, xi,0, global and local control variables c0, ci,0, step-
+sizes γg, γl and γc.
+2: for r = 0 , . . . , R − 1 do
+3: Sample worker nodes Sr ⊆ [1, . . . , n ].
+4: Send xrτ and crτ to sampled nodes.
+5: for i ∈ Sr do
+6: initial the local mode xi,rτ = xrτ .
+7: for k = rτ, rτ + 1, · · · , rτ + τ − 2 do
+8: Sample stochastic gradient gi,k.
+9: Local updates
+xi,k+1 = xi,k − γl (ck + gi,k − ci,k) ,
+xk+1 = xk, c i,k+1 = ci,k, c k+1 = ck.
+10: end for
+11: For k = rτ + τ − 1
+xi,k+1/2 = xi,k − γl (ck + gi,k − ci,k) ,
+ci,k+1 = ci,k − ck + 1
+τγl
+(
+xk − xi,k+1/2
+)
+.
+12: end for
+13: Communicate to server and update
+xk+1 = xk + γg
+|Sr|
+∑
+j∈Sr
+(
+xj,k+1/2 − xk
+)
+,
+ck+1 = ck + γc
+|Sr|
+∑
+j∈Sr
+(cj,k+1 − cj,k).
+14: end for
+3. CONNECTION TO SCAFFOLD
+In this section, we investigate an extended version of the
+Scaﬀold algorithm (Karimireddy et al., 2020) and build
+its connection with ST-GT in the context of more general
+distributed and dynamic network settings.
+3.1 Extended Scaﬀold with Parameter γc
+Scaﬀold is a popular federated learning algorithm designed
+to address data heterogeneity in non-i.i.d. settings (Karim-
+ireddy et al., 2020). It employs local and global control
+variables, ci for each worker node and c for the server,
+to correct the client drift caused by data heterogeneity.
+Building on Scaﬀold, we propose an extended version in
+Algorithm 2, named Scaﬀold +, which introduces a tunable
+parameter γc ⩾ 0 (cf., line 13) in that algorithm. This
+modiﬁcation generalizes the original Scaﬀold (recovered
+when γc = |Sr| /n, where Sr ⊆ [1, . . . , n ] denotes the
+set of sampled workers at each round r) and establishes
+a connection to ST-GT. In particular, deﬁne
+yi,k := ck + gi,k − ci,k,
+which serves as the gradient tracking variable in ST-
+GT. We show that Scaﬀold + can be interpreted as a
+spatiao-temporal gradient tracking method with dynamic
+networks in the following proposition.
+Proposition 1. Consider Scaﬀold + in Algorithm 2. For
+each node i ∈ Sr at the r-th communication round, we
+have xi,rτ = xrτ and ci,rτ = ci,t(i), where t(i) ≤ rτ denotes
+the most recent round at which node i was sampled. Then,
+for iteration k + 1 = rτ,
+xi,k+1 = (1 − γg) x(r−1)τ
++ γg
+|Sr−1|
+∑
+j∈Sr−1
+(
+xj,(r−1)τ − γl
+τ −1∑
+t=0
+yj,k−t
+)
+,
+yi,k+1 = (1 − γc) c(r−1)τ
++ γc
+|Sr−1|
+∑
+j∈Sr−1
+1
+τ
+τ −1∑
+t=0
+yj,k−t + gi,k+1 − ci,t(i);
+(8)
+for k + 1 = rτ + 1, . . . , rτ + τ − 1,
+xi,k+1 = xi,k − γlyi,k,
+yi,k+1 = yi,k + gi,k+1 − gi,k. (9)
+And, for k + 1 = rτ + τ,
+ci,rτ +τ = 1
+τ
+τ −1∑
+t=0
+gi,rτ +t (10)
+Moreover, for unsampled nodes i /∈ Sr, all associated
+variables remain unchanged.
+Proof. At the beginning of the r-th round with k + 1 = rτ,
+each node i ∈ Sr receives information from the server,
+which is updated based on the information uploaded by
+the nodes sampled in Sr−1, i.e.,
+xi,k+1 = xk+1
+= xk + γg
+|Sr−1|
+∑
+j∈Sr−1
+(
+xj,k+1/2 − xk
+)
+= (1 − γg) x(r−1)τ
++ γg
+|Sr−1|
+∑
+j∈Sr−1
+(
+xj,(r−1)τ − γl
+τ −1∑
+t=0
+yj,k−t
+)
+= 1
+|Sr−1|
+∑
+j∈Sr−1
+(
+xj,(r−1)τ − γgγl
+τ −1∑
+t=0
+yj,k−t
+)
+.
+(11)
+Table 1. Relevant algorithms for solving Problem (2) with strongly-co nvex (SC) and nonconvex
+(NC) objective functions. We take the size of the model paramete rs as one unit and compare
+the overhead of related distributed optimization algorithms in terms of per-node computational
+(Comp.), communication (Comm.), and memory costs, as well as their communication complex-
+ity to achieve an accuracy of ǫ > 0. Here, m denotes the total number of local samples at each
+node. “s/w” denotes the server–worker architecture, and ‘dist .’ the distributed graph.
+Algorithm Graph Comp. Comm. Memory Complexity ( ˜O(·) ) Assum.
+Scaﬀold (Karimireddy et al., 2020)
+a
+s/w 1x 2x 6x
+L
+µ + n
+s + σ2
+µ2τ nǫ
+n
+s SC
+σ2
+τ ǫ2n
+n
+s + 1
+ǫ
+(n
+s
+)2/3
+NC
+FlexGT (Huang and Xu, 2023) b dist. 1x 2x 4x L
+(1−ρ)2µ + σ2/τ
+µ2nǫ +
+√
+Lσ2
+√
+µ3(1−ρ)3ǫ
+SC
+K-GT (Liu et al., 2024) dist. 1x 2x 5x L
+(1−ρ)2ǫ + Lσ2
+τ nǫ2 + Lσ
+(1−ρ)2√
+τ ǫ3 NC
+GT-VR (Xin et al., 2020) c dist. {1, m }x 2x { 4+m, 4 }x max
+{
+m, L
+µ(1−ρ)2
+}
+log 1
+ǫ SC
+ST-GT (This work) dist. 1x 2x 5x
+L
+(1−ρ)2µ + σ2
+µ2nτ ǫ +
+√
+Lσ2
+µ3(1−ρ)3τ ǫ SC
+L
+(1−ρ)2ǫ + σ2L
+nτ ǫ2 + L
+√
+σ2/τ√
+(1−ρ)3ǫ3 + C0
+ǫ NC
+a Note that s/n can be interpreted as a measure of connectivity in the server -worker topology. However, it is not directly comparable to
+1 − ρ, as obtaining a closed-form expression for E
+[
+∥Wr − J∥2]
+with Wr deﬁned in (14) is generally intractable.
+b This rate corresponds to the case where no multi-round commu nication is employed, consistent with the setting consider ed in this
+paper.
+c This rate incurs higher memory or computational costs to app roximate the full gradient and is obtained under the assumpt ion of
+sample-wise smoothness of the objective function.
+At the end of the r-th round with k + 1 = rτ + τ, the local
+control variable will be updated, i.e.,
+ci,k+1 = ci,k − ck + 1
+τγl
+(
+xk − xi,k+1/2
+)
+= ci,k − ck + 1
+τγl
+(xk − xi,k + γlyi,k)
+= ci,k − ck + xrτ − xi,rτ + 1
+τγl
+τ −1∑
+t=0
+γlyi,k−t
+= 1
+τ
+τ −1∑
+t=0
+(ci,k−t − ck−t + yi,k−t) = 1
+τ
+τ −1∑
+t=0
+gi,rτ +t,
+(12)
+where we used the facts that xi,rτ = xrτ = · · · = xrτ +τ −1,
+ci,k−τ +1 = · · · = ci,k and ck−τ +1 = · · · = ck. This equation
+shows that the local control variable equals the running
+average of the local stochastic gradient within a period.
+Then, for the global control variable, we have
+crτ = ck + γc
+|Sr−1|
+∑
+j∈Sr−1
+(cj,k+1 − cj,k)
+= (1 − γc) ck + γc
+|Sr−1|
+∑
+j∈Sr−1
+1
+τ
+τ −1∑
+t=0
+yj,(r−1)τ +t.
+(13)
+During the local updates phase, it is easy to get yi,k+1 =
+yi,k + gi,k+1 − gi,k. □
+3.2 Connection between Scaﬀold + and ST-GT
+Based on Proposition 1, we establish the connections be-
+tween Scaﬀold + and ST-GT from the perspective of ran-
+dom communication topology and gradient approximation
+scheme, respectively. To simplify notations, we assume
+s = |Sr| ⩽ n for all r ∈ [R − 1].
+(a) Server–worker (b) Equivalent topology
+Fig. 2. Illustration of the equivalent topology of Scaﬀold +
+under the random network perspective. Black solid
+rectangles represent server nodes, while circles repre-
+sent worker nodes. Information is transmitted from
+nodes sampled at round r − 1 (green box) to nodes
+sampled at time r (blue box).
+Random network perspective. Intuitively, the server
+in Scaﬀold + acts as a relay node, transmitting information
+from the workers in Sr−1 to those in Sr. The communi-
+cation protocol can be described from the perspective of
+a bipartite graph, as illustrated in Fig. 2. In particular,
+according to Proposition 1 with γc = 1 and noticing that
+the variables of the unsampled workers are unchanged, we
+get an equivalent weight matrix at round r as follows:
+Wr = 1
+s eSr e⊤
+Sr−1 + I − diag (eSr ) , (14)
+where eSr is an n-dimensional column vector where the
+index of the sampled nodes Sr is 1, and all other elements
+are 0. Note that Wr is row-stochastic. Assuming that
+workers are sampled uniformly and independently at each
+round, the expectation of Wr is
+E [Wr] = s
+nJ + n − s
+n I, (15)
+which corresponds to a fully connected graph with spectral
+gap 1 − s/n. This random network perspective provides
+a foundation for the uniﬁed analysis of algorithms under
+server–worker architectures with partial participation and
+distributed topologies.
+Gradient tracking perspective. As shown in (8), set-
+ting γc = 1, Scaﬀold + has the same spatio-temporal
+gradient-tracking scheme as that of ST-GT. Particularly,
+for i ∈ Sr, we have
+yi,rτ = 1
+s
+∑
+j∈Sr−1
+1
+τ
+τ −1∑
+t=0
+yj,(r−1)τ +t + gi,rτ − ci,t(i); (16)
+and for i /∈ Sr, yi,rτ = yi,rτ −1 = · · · = yi,(r−1)τ . By proper
+initialization, we have
+1
+n
+n∑
+i=1
+1
+τ
+τ −1∑
+t=0
+E [yi,rτ +t] = s
+n
+1
+n
+n∑
+i=1
+1
+τ
+τ −1∑
+t=0
+E [gi,rτ +t], (17)
+illustrating the similar gradient tracking property as in ST-
+GT. Note that the contribution from unsampled nodes is
+slightly diﬀerent compared to ST-GT. Instead, by setting
+γc = s/n as in the original Scaﬀold (cf. line 13 in Algorithm
+2) and noting that ck stores the average of the most recent
+ci,k values and is updated every τ iterations, we obtain
+crτ = 1⊤
+n
+
+
+
+
+
+
+
+c1,t(1)
+.
+.
+.
+cn,t(n)
+
+
++
+
+
+
+
+.
+.
+.
+cj,rτ − cj,t(j)
+.
+.
+.
+
+
+
+
+j∈Sr−1
+
+
+
+, (18)
+which serves as the same role as the full gradient table in
+SAGA (Defazio et al., 2014).
+These observations demonstrate that Scaﬀold for federated
+learning can be interpreted as a spatio-temporal gradient
+tracking method operating over random networks. In par-
+ticular, when s = n, Scaﬀold becomes exactly equivalent
+to ST-GT with Wr = J. This perspective further oﬀers
+a uniﬁed framework for understanding other federated
+learning algorithms, such as FedAvg.
+4. CONVERGENCE RESULTS
+In this section, we establish the convergence properties
+of ST-GT under several standard assumptions on the
+objective functions and their gradients.
+4.1 Assumptions
+Assumption 2. (Convexity). Each fi : Rp → R is µ-
+strongly convex, i.e., for any x, x′ ∈ Rp, there exists a
+constant µ > 0 such that
+⟨∇fi (x) − ∇fi (x′) , x − x′⟩ ⩾ µ ∥x − x′∥2 . (19)
+Assumption 3. (Smoothness). Each fi : Rp → R is L-
+smooth, i.e., for any x, x′ ∈ Rp, there exists a constant
+L > 0 such that
+∥∇fi (x) − ∇fi (x′)∥ ⩽ L ∥x − x′∥ . (20)
+Assumption 4. (Bounded variance). For each node i, the
+stochastic gradient is unbiased, i.e., Eξi∼Di [∇fi (x; ξi)] =
+∇fi (x) , ∀x ∈ Rp, and there exists a constant σ ⩾ 0 such
+that
+Eξi∼Di
+[
+∥∇fi (x; ξi) − ∇fi (x)∥2
+]
+⩽ σ2. (21)
+4.2 Strongly convex Case
+We are now ready to give the convergence results of the
+ST-GT algorithm. To this end, we ﬁrst deﬁne a Lyapunov
+function as follows:
+Vk = ∥¯xk − x∗∥2 + cx ∥Xk − 1¯xk∥2 + cy ∥Υk∥2 , (22)
+where
+Υk := Yk − Gk − ∇f (1¯xk) + ∇F (1¯xk) , (23)
+and the coeﬃcients cx and cy are designed as:
+cx = 80γτL
+n (1 − ρ), c y = 3556γ3τ3L
+n (1 − ρ)3 . (24)
+Then, for the strongly convex objective functions, we have
+the following theorem.
+Theorem 1. (Strongly convex case). Suppose Assumptions 1–
+4 hold. Let the stepsize γ = O
+(
+(1−ρ)2
+τ L
+)
+. Then, we have
+E
+[ 
+V(r+1)τ
+
+2]
+⩽
+(
+1 − min
+{ µγ
+2 , 1 − ρ
+8
+})
+E
+[
+∥Vrτ ∥2
+]
++ O
+(
+γ2τ σ2
+n + γ3τ2L
+(1 − ρ)3 σ2
+)
+.
+(25)
+Further, the ST-GT algorithm achieves an accuracy of ǫ >
+0 after at least the following rounds of communications:
+R = ˜O
+(
+L
+(1 − ρ)2 µ
++ σ2
+µ2nτǫ +
+√
+Lσ2
+µ3 (1 − ρ)3 τǫ
+)
+. (26)
+Proof. See Appendix A.2. □
+Remark 1. Theorem 1 shows that ST-GT converges lin-
+early to a neighborhood of the optimal solution for
+strongly-convex and smooth objectives. The neighborhood
+size has two components: one matching the centralized
+SGD algorithm, which achieves linear speedup with re-
+spect to n, and the other induced by the network topology.
+More importantly, the communication complexity of ST-
+GT achieves a linear speedup with respect to the num-
+ber of local updates τ, and is signiﬁcantly lower than
+that of the FlexGT algorithm. Speciﬁcally, the topology-
+dependent term in (26) is scaled by 1 /τ, thereby reducing
+the communication cost, particularly in cases of weak net-
+work connectivity, i.e., when ρ → 1. Furthermore, in the
+absence of the gradient noise, ST-GT attains exact linear
+convergence. A more detailed comparison with existing
+related algorithms in terms of computation, storage, and
+communication complexity is summarized in Table 1.
+4.3 Nonconvex Case
+When the objective functions are not convex, the following
+theorem shows a sublinear convergence rate of ST-GT.
+Theorem 2. (Nonconvex case). Suppose Assumptions 1, 3
+and 4 hold. Let the stepsize satisfy
+γ ⩽ min
+{
+1 − ρ
+178τL , (1 − ρ)2
+625√ρτL
+}
+. (27)
+Then, for the ST-GT algorithm, we have
+1
+nR
+R−1∑
+r=0
+E
+[
+∥∇F (1¯xrτ )∥2
+]
+⩽ 16 (f (¯x0) − f (¯xRτ ))
+γτR +
+E
+[
+∥Υ0∥2
+]
+nR
++ O
+(
+γL σ2
+n + τγ 2L2σ2
+(1 − ρ)3
+)
+.
+(28)
+Further, the ST-GT algorithm achieves an accuracy of
+ǫ > 0 to a stationary point after at least the following
+rounds of communications
+R = O
+
+ L
+(1 − ρ)2 ǫ
++ σ2L
+nτǫ2 + Lσ√
+τ (1 − ρ)3 ǫ3
++ C0
+ǫ
+
+,
+(29)
+where C0 := 1
+n E
+[
+∥Υ0∥2
+]
+(f (¯x0) − f∗)−1.
+Proof. See Appendix A.3. □
+Remark 2. Theorem 2 shows that ST-GT converges to a
+neighborhood of a local optimum at a sublinear rate, where
+the neighborhood size depends on the gradient noise level,
+objective properties, and network connectivity. Compared
+with K-GT (Liu et al., 2024), ST-GT reduces the network
+dependence from 1 /(1 − ρ)2 to 1 /(1 − ρ)3/2 and achieves
+scale invariance to gradient noise by a factor of τ.
+5. NUMERICAL RESULTS
+5.1 Synthetic Example
+To validate our theoretical ﬁndings and illustrate the eﬀec-
+tiveness of ST-GT, we consider the following distributed
+ridge regression problem over a network of n = 32 nodes:
+min
+x∈Rp
+f (x) = 1
+n
+n∑
+i=1
+(
+Edi
+[ (
+θ⊤
+i x − di
+)2
++ µ
+2 ∥x∥2
+])
+  
+=:fi
+, (30)
+where µ > 0 is the regularization parameter, θi ∈ [0, 1]p
+denotes the feature parameters of node i with dimension
+p = 10, and di ∼ N
+(¯di, σ2)
+with ¯di ∈ [0, 1]. The algo-
+rithms can obtain an unbiased noisy gradient ∇fi (xi,k) +
+δi,k with δi,k ∼ N
+(
+0, σ2)
+at each iteration k.
+We compare the convergence performance of FlexGT, Scaf-
+fold, and ST-GT in terms of the residual ∥¯xk − x∗∥2 as
+shown in Fig. 3. For the communication topology, Scaﬀold
+samples s = {4, 16} nodes at each round, while in FlexGT
+and ST-GT, each node in the exponential graph has s − 1
+neighbors. The number of local updates is set to τ = 50,
+the stepsize to γ = 0 .4, and the noise variance to σ2 = 0 .1
+for all algorithms. The results show that ST-GT achieves
+the lowest steady-state error. While Scaﬀold attains a
+smaller error than FlexGT, its performance remains in-
+ferior to ST-GT due to the uncertainty introduced by its
+random topology. Moreover, as the number of communi-
+cating nodes increases from 4 to 16, the performance of all
+algorithms approaches that of the centralized setting, and
+the gap among the three algorithms becomes smaller.
+To illustrate the eﬀect of local update frequency on ST-GT,
+Fig. 4 shows the convergence behavior measured in com-
+munication rounds under diﬀerent network topologies for
+200 400 600 800 1000 1200 1400
+# communication
+10-2
+10-1
+100
+Residual
+FlexGT:   = 50
+Scaffold:   = 50
+ST-GT:   = 50
+200 400 600 800 1000 1200 1400
+# communication
+10-2
+10-1
+100
+Residual
+FlexGT:   = 50
+Scaffold:   = 50
+ST-GT:   = 50
+Fig. 3. Comparison of the convergence between Scaﬀold,
+FlexGT, and ST-GT. The number of nodes is n = 32.
+For Scaﬀold with partial node participation, we set
+s = 4 (left) and s = 16 (right). For the exponential
+graph used in the other two algorithms, each node is
+connected to 3 and 15 neighbors, respectively.
+200 400 600 800 1000 1200 1400
+# communication
+10-2
+10-1
+100
+Residual
+ST-GT:   = 25
+ST-GT:   = 50
+ST-GT:   = 100
+200 400 600 800 1000 1200 1400
+# communication
+10-2
+10-1
+100
+Residual
+ST-GT:   = 25
+ST-GT:   = 50
+ST-GT:   = 100
+Fig. 4. Impact of the number of local updates τ. We use
+an exponential graph with n = 32 nodes, where each
+node is connected to 3 (left) or 15 (right) neighbors.
+τ = 25, 50, and 100. The stepsizes follow the proportional
+relationship recommended in Theorem 1, with γ = 0 .8,
+0.4, and 0 .2. The results conﬁrm that ST-GT achieves an
+almost linear speed-up with respect to τ.
+5.2 Training ResNet-18 on CIFAF-10
+We further evaluate the performance of ST-GT on the real-
+world dataset CIFAR-10 (Krizhevsky, 2009). Speciﬁcally,
+we perform distributed training of ResNet-18 using mul-
+tiple processes to emulate nodes on a single A40 GPU,
+with the Gloo backend handling inter-node communica-
+tion. The training data are unevenly partitioned across
+eight nodes, where each node contains samples from only
+eight of the ten classes, leading to heterogeneous local
+datasets. The learning rate is set to 1, the batch size is
+200, and the number of local updates is set to τ = 25. We
+compare the training loss and testing accuracy of FlexGT,
+Scaﬀold, and ST-GT across communication rounds. Fig-
+ure 5 shows that ST-GT achieves the best performance in
+both training and testing. Scaﬀold, which also incorporates
+spatio-temporal gradient tracking, attains the second-best
+results, whereas FlexGT, relying solely on local updates,
+performs the worst. These results further corroborate our
+theoretical analysis and conﬁrm the eﬀectiveness of the
+proposed algorithm.
+6. CONCLUSION
+We have proposed a uniﬁed spatio-temporal gradient track-
+ing algorithm, ST-GT, for distributed stochastic optimiza-
+tion with non-i.i.d. datasets. By simultaneously tracking
+the global gradient across nodes and the time-averaged lo-
+cal stochastic gradients at each node, ST-GT has improved
+0 200 400 600 800 1000
+# Comm nication
+0.0
+0.5
+1.0
+1.5
+2.0
+2.5
+T raining loss
+FlexGT: τ =25
+Scaffold: τ =25
+ST-GT: τ =25
+0 200 400 600 800 1000
+# Communication
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+T e ting accuracy
+Fle#GT: τ =25
+Scaffold: τ =25
+ST-GT: τ =25
+Fig. 5. Comparison among ST-GT, FlexGT, and Scaﬀold
+algorithms for distributed training of ResNet-18 on
+the CIFAR-10 dataset with n = 8 nodes. The plots
+illustrate the training loss (left) and test accuracy
+(right) as functions of the communication rounds.
+robustness against data heterogeneity and mitigated the
+eﬀect of the gradient noise. By investigating an extended
+version of Scaﬀold, we further revealed that it could also be
+interpreted as a spatio-temporal gradient tracking method.
+Without assuming any data similarity, we proved that ST-
+GT achieved a linear and a sublinear convergence rate
+for strongly convex and nonconvex objective functions,
+respectively, while signiﬁcantly reducing communication
+complexity compared with the FlexGT and K-GT algo-
+rithms, especially under poor network connectivity. Sim-
+ulation results corroborated the theoretical analysis and
+demonstrated the eﬀectiveness of ST-GT.
+REFERENCES
+Dean, J., Corrado, G., Monga, R., Chen, K., Devin, M.,
+Mao, M., Ranzato, M., Senior, A., Tucker, P., Yang,
+K., et al. (2012). Large scale distributed deep networks.
+Advances in neural information processing systems , 25.
+Defazio, A., Bach, F., and Lacoste-Julien, S. (2014). Saga:
+A fast incremental gradient method with support for
+non-strongly convex composite objectives. Advances in
+neural information processing systems , 27.
+Di Lorenzo, P. and Scutari, G. (2016). Next: In-network
+nonconvex optimization. IEEE Transactions on Signal
+and Information Processing over Networks , 2(2), 120–
+136.
+Huang, Y. and Xu, J. (2023). On the computation-
+communication trade-oﬀ with a ﬂexible gradient track-
+ing approach. In 2023 62nd IEEE Conference on Deci-
+sion and Control (CDC) , 284–289. IEEE.
+Jiang, X., Rodomanov, A., and Stich, S.U. (2024). Feder-
+ated optimization with doubly regularized drift correc-
+tion. arXiv preprint arXiv:2404.08447 .
+Karimireddy, S.P., Kale, S., Mohri, M., Reddi, S., Stich, S.,
+and Suresh, A.T. (2020). Scaﬀold: Stochastic controlled
+averaging for federated learning. In International con-
+ference on machine learning , 5132–5143. PMLR.
+Krizhevsky, A. (2009). Learning multiple layers of fea-
+tures from tiny images. Technical report, University of
+Toronto.
+Lee, G., Jeong, M., Shin, Y., Bae, S., and Yun, S.Y.
+(2022). Preservation of the global knowledge by not-true
+distillation in federated learning. Advances in Neural
+Information Processing Systems , 35, 38461–38474.
+Li, M., Andersen, D.G., Park, J.W., Smola, A.J., Ahmed,
+A., Josifovski, V., Long, J., Shekita, E.J., and Su, B.Y.
+(2014). Scaling distributed machine learning with the
+parameter server. In Proceedings of the 11th USENIX
+Conference on Operating Systems Design and Implemen-
+tation, OSDI’14, 583–598. USENIX Association, USA.
+Li, T., Sahu, A.K., Zaheer, M., Sanjabi, M., Talwalkar,
+A., and Smith, V. (2020). Federated optimization
+in heterogeneous networks. Proceedings of Machine
+learning and systems , 2, 429–450.
+Lian, X., Zhang, C., Zhang, H., Hsieh, C.J., Zhang, W.,
+and Liu, J. (2017). Can decentralized algorithms out-
+perform centralized algorithms? a case study for decen-
+tralized parallel stochastic gradient descent. Advances
+in neural information processing systems , 30.
+Liu, Y., Lin, T., Koloskova, A., and Stich, S.U. (2024).
+Decentralized gradient tracking with local steps. Opti-
+mization Methods and Software , 1–28.
+Lu, Y. and De Sa, C. (2021). Optimal complexity in
+decentralized training. In International conference on
+machine learning , 7111–7123. PMLR.
+McMahan, B., Moore, E., Ramage, D., Hampson, S., and
+y Arcas, B.A. (2017). Communication-eﬃcient learning
+of deep networks from decentralized data. In Artiﬁcial
+intelligence and statistics , 1273–1282. PMLR.
+Mishchenko, K., Malinovsky, G., Stich, S., and Richt´ arik,
+P. (2022). Proxskip: Yes! local gradient steps provably
+lead to communication acceleration! ﬁnally! In Interna-
+tional Conference on Machine Learning , 15750–15769.
+PMLR.
+Mora, A., Bujari, A., and Bellavista, P. (2024). Enhancing
+generalization in federated learning with heterogeneous
+data: A comparative literature review. Future Genera-
+tion Computer Systems , 157, 1–15.
+Nedic, A., Olshevsky, A., and Shi, W. (2017). Achieving
+geometric convergence for distributed optimization over
+time-varying graphs. SIAM Journal on Optimization ,
+27(4), 2597–2633.
+Nguyen, E.D.H., Alghunaim, S.A., Yuan, K., and Uribe,
+C.A. (2023). On the performance of gradient tracking
+with local updates. In 2023 62nd IEEE Conference on
+Decision and Control (CDC) , 4309–4313. IEEE.
+Nguyen, E.D.H., Jiang, X., Ying, B., and Uribe, C.A.
+(2025). On graphs with ﬁnite-time consensus and their
+use in gradient tracking. SIAM Journal on Optimization ,
+35(2), 872–898.
+Pu, S. and Nedi´ c, A. (2021). Distributed stochastic
+gradient tracking methods. Mathematical Programming,
+187(1), 409–457.
+Rabbat, M. and Nowak, R. (2004). Distributed optimiza-
+tion in sensor networks. In Proceedings of The 3rd
+International Symposium on Information Processing in
+Sensor Networks , 20–27.
+Ram, S.S., Nedi´ c, A., and Veeravalli, V.V. (2009). Asyn-
+chronous gossip algorithms for stochastic optimization.
+In Proceedings of the 48h IEEE Conference on Decision
+and Control (CDC) held jointly with 2009 28th Chinese
+Control Conference, 3581–3586. IEEE.
+Stich, S.U. (2019). Local SGD converges fast and commu-
+nicates little. In International Conference on Learning
+Representations.
+Tian, Y., Bedi, A.S., Koppel, A., Calvo-Fullana, M., Rosen,
+D.M., and How, J.P. (2022). Distributed riemannian
+optimization with lazy communication for collaborative
+geometric estimation. In 2022 IEEE/RSJ International
+Conference on Intelligent Robots and Systems (IROS) ,
+4391–4398. IEEE.
+Wu, T., Li, Z., and Sun, Y. (2025). The eﬀectiveness
+of local updates for decentralized learning under data
+heterogeneity. IEEE Transactions on Signal Processing .
+Xin, R., Khan, U.A., and Kar, S. (2020). Variance-reduced
+decentralized stochastic optimization with accelerated
+convergence. IEEE Transactions on Signal Processing ,
+68, 6255–6271.
+Xu, J., Zhu, S., Soh, Y.C., and Xie, L. (2015). Augmented
+distributed gradient methods for multi-agent optimiza-
+tion under uncoordinated constant stepsizes. In 2015
+54th IEEE Conference on Decision and Control (CDC) ,
+2055–2060. IEEE.
+Ying, B., Yuan, K., Chen, Y., Hu, H., Pan, P., and Yin,
+W. (2021). Exponential graph is provably eﬃcient
+for decentralized deep training. Advances in Neural
+Information Processing Systems , 34, 13975–13987.
+Yuan, K., Ling, Q., and Yin, W. (2016). On the conver-
+gence of decentralized gradient descent. SIAM Journal
+on Optimization , 26(3), 1835–1854.
+Zhang, J., Hu, J., and Johansson, M. (2024). Composite
+federated learning with heterogeneous data. In IEEE In-
+ternational Conference on Acoustics, Speech and Signal
+Processing (ICASSP), 8946–8950. IEEE.
+Zhang, T., Feng, T., Alam, S., Lee, S., Zhang, M.,
+Narayanan, S.S., and Avestimehr, S. (2023). Fedau-
+dio: A federated learning benchmark for audio tasks.
+In IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP) , 1–5. IEEE.
+Appendix A. PROOF OF THE MAIN RESULTS
+In this section, we provide the detailed convergence anal-
+ysis for the ST-GT algorithm.
+A.1 Supporting Lemmas
+We ﬁrst bound the extent to which the local model
+parameters diverge from the averaged model between two
+communication rounds.
+Lemma 1. (Client divergence within a period). Suppose As-
+sumptions 1-4 hold. Let the stepsize satisfy γ ⩽ 1
+8τ L . We
+have for all t ∈ [0, τ − 1],
+1
+n
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
+⩽ 3τ 1
+nE
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 9
+2 γ2τ3 1
+nE
+[
+∥Υrτ ∥2
+]
++ 9
+2γ2τ3E
+[
+∥∇f (¯xrτ )∥2
+]
++ 3γ2τ2
+2 σ2.
+(A.1)
+Proof. By the update rule of ST-GT in (5), we have
+E
+[
+∥xi,rτ +t − ¯xrτ ∥2
+]
+= E
+[
+∥xi,rτ +t−1 − γ (yi,rτ + gi,rτ +t − gi,rτ ) − ¯xrτ ∥2
+]
+.
+(A.2)
+Then, by Assumptions 2 and 4, and using Young’s inequal-
+ity with parameter β > 0, we get
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
+⩽ (1 + β) E
+[
+∥Xrτ +t−1 − 1¯xrτ ∥2
+]
++ γ2nσ2
++
+(
+1 + β−1)
+γ2E
+[
+∥Yrτ − Grτ + ∇FrK+t−1∥2
+]
+⩽
+(
+1 + β + 3
+(
+1 + β−1)
+γ2L2)
+E
+[
+∥Xrτ +t−1 − 1¯xrτ ∥2
+]
++ 3
+(
+1 + β−1)
+γ2E
+[
+∥Υrτ ∥2
+]
++ 3
+(
+1 + β−1)
+γ2E
+[
+∥∇f (¯xrτ )∥2
+]
++ γ2nσ2.
+(A.3)
+Letting β = 1
+τ , γ ⩽ 1
+8τ L and noticing that
+(
+1 + β + 3
+(
+1 + β−1)
+γ2L2)t
+< 3,
+we obtain the result by iteratively applying (A.3). □
+Building on the above lemma, we can establish the con-
+traction property of the consensus error.
+Lemma 2. (Consensus error). Suppose Assumptions 1-4
+hold. Let the stepsize satisfy γ ⩽ min
+{
+1−ρ
+11τ L√ρ , 1
+8τ L
+}
+.
+We have
+E
+[ 
+X(r+1)τ − 1¯x(r+1)τ
+
+2]
+⩽ 3 + ρ
+4 E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 5ρ
+1 − ργ2τ2E
+[
+∥Υrτ ∥2
+]
++ 3ργ2τnσ 2 + 9ρ
+1 − ργ2τ2nE
+[
+∥∇f (¯xrτ )∥2
+]
+.
+(A.4)
+Proof. By the update rule of ST-GT (5) and under
+Assumptions 1 and 2, we have
+E
+[ 
+X(r+1)τ − 1¯x(r+1)τ
+
+2]
+⩽ 1 + ρ
+2 E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 2 (1 + ρ) ρ
+1 − ρ γ2τ2E
+[
+∥Υrτ ∥2
+]
++ ργ2τnσ 2
++ 4 (1 + ρ) ρ
+1 − ρ γ2τL2
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
++ 4 (1 + ρ) ρ
+1 − ρ γ2τ2nE
+[
+∥∇f (¯xrτ )∥2
+]
++ 2E
+[⟨ τ −1∑
+t=0
+(G (Xrτ +t) − ∇Frτ +t) ,
+τ −1∑
+t=0
+∇Frτ +t
+⟩]
+.
+(A.5)
+With the help of Lemma 1, we get
+E
+[ 
+X(r+1)τ − 1¯x(r+1)τ
+
+2]
+⩽
+(1 + ρ
+2 + 30ρ
+1 − ργ2τ2L2
+)
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++
+( 4ρ
+1 − ργ2τ2 + 45ρ
+1 − ργ4τ4L2
+)
+E
+[
+∥Υrτ ∥2
+]
++
+( 8ρ
+1 − ργ2τ2 + 45ρ
+1 − ργ4τ4L2
+)
+nE
+[
+∥∇f (¯xrτ )∥2
+]
++ 2ργ2τnσ 2 + 15ρ
+1 − ργ4τ3L2nσ2.
+(A.6)
+Letting the stepsize satisfy γ ⩽ min
+{
+1−ρ
+11L√ρ , 1
+8τ L
+}
+, we
+obtain the result. □
+Similarly, we prove the contraction property of the gradi-
+ent tracking error.
+Lemma 3. (Gradient-tracking error). Suppose Assumptions 1-
+4 hold. Let the stepsize γ ⩽ 1−ρ
+12τ L . Then, we have
+E
+[ 
+Υ(r+1)τ
+
+2]
+⩽ 3 + ρ
+4 E
+[
+∥Υrτ ∥2
+]
++ 27 (1 + ρ) L2
+1 − ρ E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 8 (1 + ρ)
+1 − ρ nE
+[
+∥∇f (¯xrτ )∥2
+]
++ 7nσ2
+τ .
+(A.7)
+Proof. By the update rule of ST-GT in (5), we have
+Υ(r+1)τ = ( W − J) Υrτ − W (∇F (1¯xrτ ) − ∇f (1¯xrτ ))
++ (W − I) 1
+τ
+τ −1∑
+t=0
+Grτ +t
++
+(
+∇F
+(
+1¯x(r+1)τ
+)
+− ∇f
+(
+1¯x(r+1)τ
+))
+.
+(A.8)
+Then, by Assumptions 1-4 and using Young’s inequality,
+we get
+E
+[ 
+Υ(r+1)τ
+
+2]
+⩽ 1 + ρ
+2 E
+[
+∥Υrτ ∥2
+]
++ 6nσ2
+τ
++
+(
+3n(1 + ρ) L2
+1 − ρ + 1
+)
+E
+[ 
+¯x(r+1)τ − ¯xrK
+
+2]
++ 2
+(3 (1 + ρ) L2
+1 − ρ + 1
+)1
+τ
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
++ 6 (1 + ρ)
+1 − ρ nE
+[
+∥∇f (¯xrτ )∥2
+]
+.
+(A.9)
+With the help of Lemma 1, and noticing that
+E
+[ 
+¯x(r+1)τ − ¯xrτ
+
+2]
+= γ2E
+
+
+
+
+
+
+
+τ −1∑
+t=0
+1⊤
+n ∇Grτ +t
+
+
+
+
+
+2
+
+⩽ γ2τ2E
+
+
+
+
+
+
+
+1
+τ
+τ −1∑
+t=0
+1⊤
+n ∇Frτ +t
+
+
+
+
+
+2
++ γ2 τσ 2
+n
+⩽ 2γ2τ2 L2
+nτ
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
++ 2γ2τ2E
+[
+∇f (¯xrτ )2
+]
++ γ2 τσ 2
+n ,
+(A.10)
+we obtain the result with stepsize γ ⩽ 1−ρ
+18τ L . □
+A.2 Proof of Theorem 1
+With these supporting lemmas in hand, we can prove The-
+orem 1 under Assumptions 1-4, and the stepsize condition.
+To this end, we ﬁrst prove the contraction of the optimality
+gap in the following lemma for the strongly convex and
+smooth objective function.
+Lemma 4. (Optimality gap). Suppose Assumptions 1-4 hold.
+Let the stepsize satisfy γ ⩽ 1
+11τ L . We have
+E
+[ 
+¯x(r+1)τ − x∗
+2]
+⩽
+(
+1 − γµτ
+2
+)
+E
+[
+∥¯xrτ − x∗∥2
+]
++ 9γτL 1
+nE
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 14γ3τ3L 1
+nE
+[
+∥Υrτ ∥2
+]
++ γ2 τσ 2
+n + 5γ3τ2Lσ2 − γτ E [f (¯xrK ) − ∇f (x∗)] .
+(A.11)
+Proof. By the update rules, we have
+E
+[ 
+¯x(r+1)τ − x∗
+2]
+= E
+[
+∥¯xrτ − x∗∥2
+]
++ γ2E
+
+
+
+
+
+
+
+τ −1∑
+t=0
+1⊤
+n Grτ +t
+
+
+
+
+
+2
+
+− 2γE
+[⟨
+¯xrτ − x∗,
+τ −1∑
+t=0
+1⊤
+n ∇Frτ +t
+⟩]
+.
+(A.12)
+For the second term on the RHS, with the help of Assump-
+tion 4, we have
+E
+
+
+
+
+
+
+
+K−1∑
+t=0
+1⊤
+n GrK+t
+
+
+
+
+
+2
+
+= E
+
+
+
+
+
+
+
+K−1∑
+t=0
+1⊤
+n (GrK+t − ∇FrK+t + ∇FrK+t)
+
+
+
+
+
+2
+
+⩽ 2K
+K−1∑
+t=0
+E
+[ 
+
+
+
+1⊤
+n ∇FrK+t − ∇f (¯xrK )
+
+
+
+
+2]
++ Kσ2
+n + 2K2E
+[
+∥∇f (¯xrK )∥2
+]
+.
+(A.13)
+For the third term, we have
+E
+[⟨
+¯xrτ − x∗,
+τ −1∑
+t=0
+1⊤
+n ∇Frτ +t
+⟩]
+=
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [⟨¯xrτ − x∗, ∇fi (xi,rτ +t)⟩]
+=
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [⟨xi,rτ +t − x∗, ∇fi (xi,rτ +t)⟩]
+−
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [⟨xi,rτ +t − ¯xrτ , ∇fi (xi,rτ +t)⟩]
+⩾ τE [f (¯xrτ ) − ∇f (x∗)]
++ µ
+2
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [∥xi,rτ +t − x∗∥]
+− L
+2
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [∥xi,rτ +t − ¯xrτ ∥],
+(A.14)
+wherein the last inequality we used the convexity and
+smoothness of fi assumed in Assumption 2. Then, we get
+E
+[ 
+¯x(r+1)τ − x∗
+2]
+⩽ E
+[
+∥¯xrτ − x∗∥2
+]
++ γ2 τσ 2
+n
++ 2γ2τL2 1
+n
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
+− 2γτ (1 − 2γτL ) E [f (¯xrτ ) − ∇f (x∗)]
+− γµ
+τ −1∑
+t=0
+1
+n
+n∑
+i=1
+E [∥xi,rτ +t − x∗∥]
++ γL
+K−1∑
+t=0
+1
+n
+n∑
+i=1
+E [∥xi,rτ +t − ¯xrK ∥].
+(A.15)
+Noticing that
+− 1
+n
+n∑
+i=1
+E [∥xi,rτ +t − x∗∥]
+= − 1
+n
+n∑
+i=1
+E [∥xi,rτ +t − ¯xrτ ∥] − 1
+n
+n∑
+i=1
+E [∥¯xrτ − x∗∥]
+− 2 1
+n
+n∑
+i=1
+E ⟨xi,rτ +t − ¯xrτ , ¯xrτ − x∗⟩
+⩽ − 1
+2n
+n∑
+i=1
+E [∥¯xrτ − x∗∥] + 1
+n
+n∑
+i=1
+E [∥xi,rτ +t − ¯xrτ ∥].
+(A.16)
+We get
+E
+[ 
+¯x(r+1)τ − x∗
+2]
+⩽
+(
+1 − γµτ
+2
+)
+E
+[
+∥¯xrτ − x∗∥2
+]
++ γ2 τσ 2
+n
+− 2γτ (1 − 2γτL ) E [f (¯xrτ ) − ∇f (x∗)]
++ γ
+(
+L + µ + 2γτL 2)1
+n
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
+.
+(A.17)
+Then, using Lemma 1 and letting the stepsize satisfy
+γ ⩽ 1
+11τ L , we complete the proof. □
+Recalling the design of the Lyapunov function in (22), we
+can obtain
+E
+[ 
+V(r+1)τ
+
+2]
+⩽
+(
+1 − min
+{ γµ
+2 , 1 − ρ
+8
+})
+E
+[
+∥Vrτ ∥2
+]
++ e1E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ e2E
+[
+∥Υrτ ∥2
+]
++ e3E [f (¯xrτ ) − f (x∗)] + γ2τ σ2
+n + 9
+2τ2γ3Lσ2
++ 240γ3τ2Lρ
+1 − ρ σ2 + 24892γ3τ2L
+(1 − ρ)3 ,
+(A.18)
+where
+e1 := 9 γτL 1
+n + 54L2
+1 − ρcy − 1 − ρ
+8 cx,
+e2 := 14 γ3τ3L 1
+n + 5ρ
+1 − ργ2τ2cx − 1 − ρ
+8 cy,
+e3 := −γτ + 18ρ
+1 − ργ2τ2Lncx + 36
+1 − ρnLcy.
+(A.19)
+Noticing the coeﬃcients of the Lyapunov function are
+designed as (24) and letting the stepsize satisfy γ =
+O
+(
+(1−ρ)2
+Lτ
+)
+, we have e1, e2, e3 < 0, we obtain the conver-
+gence rate in (25).
+To further get the communication complexity, we tune the
+stepsize between
+{
+γ, 2 ln
+(
+max
+{
+2, τ 2µ2R/H1, τ 3µ3R/H2
+})
+τµR
+}
+(A.20)
+to ensure that gradient noise-related errors match the
+linear part, where
+H1 = τσ 2
+nE
+[
+∥V0∥2
+] , H2 = τ2Lσ2
+(1 − ρ)3 E
+[
+∥V0∥2
+] .
+Then, we get the required number of communication
+rounds to achieve an accuracy of ǫ in (26).
+A.3 Proof of Theorem 2
+For the nonconvex case, we ﬁrst derive the following
+descent lemma using the smoothness of fi.
+Lemma 5. Suppose Assumptions 1, 3 and 4 hold. Let the
+stepsize satisfy γ ⩽ 1
+2τ L . We get
+E
+[
+f
+(
+¯x(r+1)τ
+)]
+⩽ E [f (¯xrτ )] − γτ
+4 E
+[
+∥∇f (¯xrτ )∥2
+]
++ 3γL2 1
+n
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
++ γ2τLσ 2
+2n .
+(A.21)
+Proof. By the smoothness of fi assumed in Assumption 3,
+we have
+f
+(
+¯x(r+1)τ
+)
+⩽ f (¯xrτ ) +
+⟨
+∇f (¯xrτ ) , ¯x(r+1)τ − ¯xrτ
+⟩
++ L
+2
+
+¯x(r+1)τ − ¯xrτ
+
+2
+.
+(A.22)
+Then, for the last term on the RHS of (A.22), we have
+E
+[ 
+¯x(r+1)τ − ¯xrτ
+
+2]
+⩽ γ2τ2E
+
+
+
+
+
+
+
+1
+τ
+τ −1∑
+t=0
+1⊤
+n ∇Frτ +t
+
+
+
+
+
+2
++ γ2 τσ 2
+n
+⩽ 2γ2τ2 L2
+nτ
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
++ 2γ2τ2E
+[
+∇f (¯xrτ )2
+]
++ γ2 τσ 2
+n .
+(A.23)
+For the inner-product term above, we have
+E
+[⟨
+∇f (¯xrτ ) , ¯x(r+1)τ − ¯xrτ
+⟩]
+= E
+[⟨
+∇f (¯xrτ ) , −γ
+τ −1∑
+t=0
+1⊤
+n ∇Frτ +t
+⟩]
+= −γτ E
+[
+∥∇f (¯xrτ )∥2
+]
++ E
+[⟨
+∇f (¯xrτ ) , −γ
+τ −1∑
+t=0
+(1⊤
+n ∇Frτ +t − ∇f (¯xrτ )
+)⟩]
+⩽ − γτ
+2 E
+[
+∥∇f (¯xrτ )∥2
+]
++ 2γL2 1
+n
+τ −1∑
+t=0
+E
+[
+∥Xrτ +t − 1¯xrτ ∥2
+]
+.
+(A.24)
+Applying (A.24) and (A.23) into (A.22) and letting the
+stepsize satisfy γ ⩽ 1
+τ L , we complete the proof. □
+Then, using Lemma 1 to bound the client divergence
+during the local updates and doing accumulation, we have
+1
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
+⩽ 4 (f (¯x0) − f (¯xrτ ))
+γτR + 2γL σ2
+n + 18γ2τL2σ2
++ 36L2 1
+nR
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 54γ2τ2L2 1
+nR
+R−1∑
+r=0
+E
+[
+∥Υrτ ∥2
+]
+.
+(A.25)
+For the accumulated consensus error, invoking Lemma 2,
+we have
+1
+R
+R∑
+r=1
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+⩽ 3 + ρ
+4
+1
+R
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
++ 5ργ2τ2
+1 − ρ
+1
+R
+R−1∑
+r=0
+E
+[
+∥Υrτ ∥2
+]
++ 3ργ2τnσ 2
++ 9ργ2τ2n
+1 − ρ
+1
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
+.
+(A.26)
+Adding ∥X0 − 1¯x0∥2 on the both side and noticing that
+1
+R
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+⩽ 1
+R
+R∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+,
+we obtain
+1
+R
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+⩽
+4E
+[
+∥X0 − 1¯x0∥2
+]
+(1 − ρ) R + 20ργ2τ2
+(1 − ρ)2
+1
+R
+R−1∑
+r=0
+E
+[
+∥Υrτ ∥2
+]
++ 36γ2τ2ρ
+(1 − ρ)2 n 1
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
++ 12γ2τρ
+1 − ρ nσ2.
+(A.27)
+Similarly, for the accumulated gradient tracking error, we
+have
+1
+R
+R−1∑
+r=0
+E
+[
+∥Υrτ ∥2
+]
+⩽
+4E
+[
+∥Υ0∥2
+]
+(1 − ρ) R + 28nσ2
+τ (1 − ρ)
++ 72
+(1 − ρ)2 n 1
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
++ 216L2
+(1 − ρ)2
+1
+R
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+.
+(A.28)
+Next, we decouple the accumulated consensus error and
+gradient tracking error in the following two lemmas.
+Lemma 6. Suppose Assumptions 1, 3 and 4 hold. Let the
+stepsize satisfy γ ⩽ min
+{
+1−ρ
+12τ L , (1−ρ)2
+93τ L√ρ
+}
+. We get
+1
+R
+R−1∑
+r=0
+E
+[
+∥Xrτ − 1¯xrτ ∥2
+]
+⩽ C0,x + 24γ2τρ
+1 − ρ nσ2 + 1120ργ2τ
+(1 − ρ)3 nσ2
++ 2952ργ2τ2n
+(1 − ρ)4
+1
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
+,
+(A.29)
+where
+C0,x :=
+8E
+[
+∥X0 − 1¯x0∥2
+]
+(1 − ρ) R + 160ργ2τ2
+(1 − ρ)3
+E
+[
+∥Υ0∥2
+]
+R . (A.30)
+Proof. Applying (A.28) to (A.27), we complete the proof
+by combining like terms and letting the stepsize satisfy the
+condition. □
+Lemma 7. Suppose Assumptions 1, 3 and 4 hold. Let the
+stepsize γ ⩽ min
+{
+1−ρ
+12τ L , (1−ρ)2
+62τ L√ρ
+}
+. Then, we have
+1
+R
+R−1∑
+r=0
+E
+[
+∥Υrτ ∥2
+]
+⩽ C0,y + 54nσ2
+τ (1 − ρ) + 2304γ2τL2ρ
+(1 − ρ)3 nσ2
++ 146
+(1 − ρ)2
+n
+R
+R−1∑
+r=0
+E
+[
+∥∇f (¯xrτ )∥2
+]
+,
+(A.31)
+where
+C0,y :=
+8E
+[
+∥Υ0∥2
+]
+(1 − ρ) R + 768L2
+(1 − ρ)3
+E
+[
+∥X0 − 1¯x0∥2
+]
+R . (A.32)
+Proof. Applying (A.27) into (A.28), we complete the proof
+by combining like terms and letting the stepsize satisfy the
+condition. □
+Applying Lemmas 6 and 7 to (A.25) and letting the
+stepsize satisfy
+γ ⩽ min
+{
+1 − ρ
+178τL , (1 − ρ)2
+625√ρτL
+}
+,
+we obtain the sublinear convergence rate (28) in Theo-
+rem 2.
+To further derive the communication complexity, we tune
+the stepsize between{
+γ, 1√H1R, 1
+3√H2R
+}
+, (A.33)
+where
+H1 = τσ 2L
+n (f (¯x0) − f (¯xRτ )),
+H2 = τ3L2
+(1 − ρ)3 (f (¯x0) − f (¯xRτ ))
+σ2
+τ ,
+and we obtain the required communication rounds to
+achieve an accuracy of ǫ > 0 in (29).

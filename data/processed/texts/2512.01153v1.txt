@@ -1,0 +1,2098 @@
+DPAC: Distribution-Preserving Adversarial Control for Diffusion Sampling
+Han-Jin Lee Han-Ju Lee Jin-Seong Kim Seok-Hwan Choi
+Yonsei University Department of Computer Science
+{han-.-jin, hanleju, js kim, sh.choi}@yonsei.ac.kr
+Abstract
+Adversarially guided diffusion sampling often achieves the
+target class, but sample quality degrades as deviations be-
+tween the adversarially controlled and nominal trajectories
+accumulate. We formalize this degradation as apath-space
+Kullback-Leibler divergence(path-KL) between controlled
+and nominal (uncontrolled) diffusion processes, thereby
+showing via Girsanov’s theorem that it exactly equals the
+control energy. Building on this stochastic optimal con-
+trol (SOC) view, we theoretically establish that minimiz-
+ing this path-KL simultaneously tightens upper bounds on
+both the 2-Wasserstein distance and Fr´echet Inception Dis-
+tance (FID), revealing a principled connection between ad-
+versarial control energy and perceptual fidelity. From a
+variational perspective, we derive a first-order optimal-
+ity condition for the control: among all directions that
+yield the same classification gain, the component tangent
+to iso-(log-)density surfaces (i.e., orthogonal to the score)
+minimizes path-KL, whereas the normal component di-
+rectly increases distributional drift. This leads toDPAC
+(Distribution-Preserving Adversarial Control), a diffusion
+guidance rule that projects adversarial gradients onto the
+tangent space defined by the generative score geometry. We
+further show that in discrete solvers, the tangent projection
+cancels theO(∆t)leading error term in the Wasserstein
+distance, achieving anO(∆t 2)quality gap; moreover, it re-
+mains second-order robust to score or metric approxima-
+tion. Empirical studies on ImageNet-100 validate the the-
+oretical predictions, confirming that DPAC achieves lower
+FID and estimated path-KL at matched attack success rates.
+1. Introduction
+Denoising diffusion models [11, 20] represent the state-of-
+the-art in generative modeling [6, 16], largely due to their
+amenability to guidance [10]. This control mechanism can
+steer generation towards prompts or class labels, and can
+also be used for evaluating model robustness by generating
+Universal Adversarial Examples (UAEs) [4, 5, 22].
+However, existing gradient-based guidance methods like
+AdvDiff [5] suffer from a fundamental, unresolved flaw. As
+guidance strength increases to maximize the Attack Success
+Rate (ASR), the sample quality catastrophically collapses.
+The resulting high-FID, artifact-laden images are invalid as
+“adversarial examples,” which must be both effective (high
+ASR) and realistic (low FID).
+In this paper, we diagnose and solve this instability.
+We first identify that the quality collapse is caused by a
+“normal” (score-parallel) component of the guidance gra-
+dient. This component, while effective for the adversar-
+ial task, aggressively pushes the sampling trajectory off
+the data manifold. Based on this diagnosis, we propose
+DPAC (Distribution-Preserving Adversarial Control), a
+new guidance framework built on the principle oftangential
+control. DPAC uses a geometric projectionΠ ⊥ to surgi-
+cally remove this harmful normal component, isolating the
+“tangential” gradient that steers generation within the data
+manifold.
+Our experiments on ImageNet (256x256) provide deci-
+sive validation (Fig. 2). The results show DPAC resolves the
+core ASR-FID trade-off: at high guidance strengths where
+AdvDiff’s quality catastrophically collapses (FID 69.37),
+DPAC remains stable and artifact-free (FID 44.89). More-
+over, our method is significantly more efficient. DPAC
+achieves a superior peak fidelity (FID 33.90) using only
+one-third the energy (guidance strength) of the baseline’s
+inferior optimum (FID 34.66). This≈66% efficiency gain
+empirically verifies our theory that removing the harmful
+component leaves a more effective control signal.
+2. Background
+2.1. Diffusion Models as SDEs
+Denoising diffusion models [11, 18, 20] define a forward
+noising process that gradually perturbs datax 0 ∼p data into
+noise via a Stochastic Differential Equation (SDE):
+dXt =f(X t, t)dt+g(t)dW t, t∈[0,1].(1)
+Here,f(·, t)is a linear drift,g(t)is the diffusion coefficient,
+andW t is a standard Wiener process. Ast→1,X t con-
+verges to a simple prior, typicallyN(0, I).
+arXiv:2512.01153v1  [cs.CV]  1 Dec 2025
+A key insight [1, 20] is that this process is reversible. We
+can generate new data by solving the corresponding reverse-
+time SDE fromt= 1tot= 0:
+dXt = [f(Xt, t)−g(t)2sθ(Xt, t)]dt+g(t)d ¯Wt,(2)
+whered ¯Wt is a reverse-time Wiener process. The
+only unknown term is thescore functions θ(Xt, t) =
+∇Xt logp t(Xt), which points in the direction of highest
+data density. This function is approximated by a time-
+conditioned neural networks θ (e.g., a U-Net) trained via
+denoising score-matching [11].
+2.2. Adversarial Control and its Instability
+The reverse SDE provides a natural mechanism for control.
+An adversarial attack (or UAE generation) steers the sam-
+pling process to fool a target classifierv ϕ. This is achieved
+by defining a controlled SDE (as detailed in Sec. 3, Eq. (4)),
+which injects an additional control driftu t:
+dXt = [Original Drift] +g(t)ut(Xt, t)dt+g(t)d ¯Wt.(3)
+This SDE formulation provides a theoretical lens to inter-
+pret existing heuristic methods. For example, the guid-
+ance strategy used in AdvDiff [5] is equivalent to set-
+ting the controlu t as the raw classifier gradient,u t ∝
+∇Xtℓtar(vϕ(Xt);y tar), wherey tar is the target class andℓtar is
+the attack objective function (e.g., cross-entropy loss). This
+successfully increases the ASR.
+However, this raw gradient control is the source of the in-
+stability. As we formalize in Sec. 3, any gradient vectoru t
+can be decomposed into two components relative to the data
+manifold atX t: (1) atangential component(u ⊥), which
+steers the sample along the iso-density surface (preserving
+the densityp t), and (2) anormal component(u ∥), which
+is parallel to the scores θ and steers the sampleoffthe man-
+ifold (distorting the densityp t). Standard guidance (e.g.,
+AdvDiff) uses this raw vectoru t indiscriminately, thus in-
+jecting the harmful normal componentu ∥. This distortion
+explicitly pushes the sampling trajectory away from the true
+data distribution, which manifests as the catastrophic FID
+collapse observed in our experiments (Fig. 2a). Our work
+(Sec. 4) is motivated by the need to surgically remove this
+harmful component.
+3. Theoretical Foundations
+3.1. Reverse SDE Formulation
+We begin by formalizing the concepts from Sec. 2. Starting
+from the score-based reverse SDE (Eq. (2)) and the general
+control framework (Eq. (3)), we define our complete adver-
+sarially guided sampling process as:
+dXt = [f(Xt, t)−g(t)2 sθ(Xt, t|ygt)]dt
++g(t)u t(Xt, t)dt+g(t)d ¯Wt, (4)
+wheres θ(·, t|y gt)is the clean-conditioned score func-
+tion for a ground-truth labely gt [10], often approximated
+in practice with classifier-free guidance (CFG), andu t is
+the adversarial control. The path distributions of the uncon-
+trolled (ut ≡0) and controlled processes are denoted by
+P0 andP u, respectively. The corresponding marginal den-
+sities at each timetare writtenp 0
+t andp u
+t . The control term
+g(t)ut dtperturbs the reverse diffusion only through its
+drift, and this specific scaling byg(t)ensures that the asso-
+ciated path-space KL divergence (path-KL) takes a simple
+quadratic form, a standard result derived from Girsanov’s
+Theorem [12]. Intuitively,u t injects a small, continuous
+steering signal that gradually shifts the sampling trajectory
+toward a target labely tar while maintaining consistency
+with the clean manifold defined byy gt.
+Standing assumptions and notation.Throughout, we
+assumeg(t)>0andf(·, t),s θ(·, t|ygt)are globally Lip-
+schitz inxuniformly intand of linear growth; these are
+standard conditions to guarantee the existence and unique-
+ness of a strong solution for the SDE [15]. We also assume
+thatu t is progressively measurable (i.e., non-anticipating)
+withE
+R1
+0 ∥ut∥2
+2dt <∞. This ensures that the Novikov con-
+dition holds, which validates the application of Girsanov’s
+Theorem and ensures the path-KL divergence is finite. All
+processes are defined on the same filtered probability space,
+and expectations w.r.t. a path lawPare writtenE P[·]. For
+brevity, we writes t :=s θ(x, t|ygt)andg t :=g(t).
+3.2. Path-Space Divergence and Perceptual Bounds
+To quantify how strongly the controlut perturbs the reverse-
+time diffusion process, we analyze the KL divergence be-
+tween the path distributionsP 0 andP u. By Girsanov’s the-
+orem [12], under Novikov’s condition, the relative entropy
+between them equals the cumulative control energy:
+KL(Pu∥P0) = 1
+2 EPu
+Z 1
+0
+∥ut(Xt, t)∥2
+2 dt.(5)
+Hence, the path-KL directly measures the total energy in-
+jected by the control. Because it aggregates the squared de-
+viation between the controlled and nominal trajectories, it
+can be interpreted as a quantitative measure of sample dis-
+tortion. As shown in Fig. 1 (left), the controlled trajectory
+(red) deviates from the nominal diffusion (blue) in propor-
+tion to its control energy. (The equivalence in Eq. (5) relies
+on the drift scaling byg(t)in Eq. (4) and the nondegeneracy
+conditiong(t)>0.)
+The path-space divergence also upper-bounds the dis-
+crepancy of terminal distributions. The marginalization in-
+equality
+KL(pu
+t ∥p0
+t )≤KL(P u∥P0),∀t∈[0,1],(6)
+Figure 1.Toy 1D diffusion illustrating the link between path–KL and distribution-preserving control.Shown are three panels from
+left to right.Left:samples from uncontrolled (P 0) and controlled (P u) 1D diffusions withx 0 ∼ N(0,0.52),dx t = log(t) dt+ dW t
+(uncontrolled), anddx t = [log(t)−2 log(t)] dt+ dW t (controlled,u t =−2 logt). Thin lines show sample trajectories and thick lines
+their means, indicating that control shifts the mean path while keeping stochastic spread.Center:cumulative empiricalKL(P u∥P0)(blue)
+and control energy 1
+2
+P
+k u(tk)2∆t(orange) coincide, verifyingKL(P u∥P0) = 1
+2 EPu
+R1
+0 ∥ut∥2dt(Girsanov identity; final values 3.90,
+3.92, 3.87).Right:iso-density contours of a 2D Gaussian mixture showing normal control (red,u nor
+t ∝ ∇logpt) that changes density
+versus tangential control (green,u tan
+t ) that moves along level sets. Together, these panels visualize that reducing path–KL (control energy)
+yields density-preserving, tangential dynamics.
+implies that minimizing the path-KL implicitly limits the
+KL divergence at every time step. If the clean terminal den-
+sityp 0
+0 satisfies the TalagrandT 2(C)inequality [14], then
+the Wasserstein distance obeys
+W2
+2 (pu
+0 , p0
+0)≤2C KL(p u
+0 ∥p0
+0)≤2C KL(P u∥P0).(7)
+Moreover, letϕbe theL-Lipschitz feature embedding
+used for FID calculation [9] (henceW 2(ϕ#p, ϕ#q)≤
+L W2(p, q)). Lettingε gauss denote the Gaussian approxi-
+mation error, the triangle inequality combined with theL-
+Lipschitz property ofϕyields an upper bound on the square
+root of the FID:
+q
+F ID(ϕ#pu
+0 , ϕ#p0
+0)≤L W 2(pu
+0 , p0
+0) +ε gauss
+≤L
+√
+2C| {z }
+=: ˜K
+p
+KL(Pu∥P0) +ε gauss.
+(8)
+Thus, Eq. (6), Eq. (8) establish a direct link between the
+control energy (KL(P u∥P0)) and the perceptual fidelity
+(FID). This theoretical result is central to our goal: to gen-
+erate high-fidelity UAEs, the adversarial controlut must be
+designed to minimize this path-KL divergence, which moti-
+vates the decomposition method introduced in Sec. 4. Em-
+pirically, we also observe that as this path-space energy in-
+creases, the perceptual quality (FID) degrades proportion-
+ally, demonstrating that the path-KL serves as a unified
+indicator of both geometric and perceptual deviation. As
+shown in Fig. 1 (middle), the cumulative path-KL closely
+matches the control energy, verifying the Girsanov identity
+in Eq. (5).
+3.3. Tangential Control and First-Order Optimality
+We now investigate how to design an adversarial controlut
+that minimally changes the data distribution while maximiz-
+ing the target classification gain. The Fokker–Planck equa-
+tion associated with Eq. (4) is [15, 20]
+∂tpt =−∇·(µp t)− ∇·(gtutpt) + 1
+2 ∇·(g 2
+t ∇pt),(9)
+whereµ=f−g 2s. Linearizing with respect to a small
+control variation yields the Gˆateaux derivative
+∂t(δpt) =−g t ∇·(p tut).(10)
+Thus, the condition∇·(p tut) = 0ensures that the density
+remains constant to first order. This meansu t is tangential
+to the density manifold and does not alter its mass distribu-
+tion. As illustrated in Fig. 1 (right), the tangential compo-
+nent flows along the iso-density contours (green), whereas
+the normal component (red, aligned with the score∇logp t)
+pushes mass toward or away from density peaks.
+Formally, based on a weighted Hodge-Helmholtz de-
+composition [2], any vector fieldut can be uniquely decom-
+posed relative to the metricG t as:
+ut =∇ψ t +v t,∇·(p tvt) = 0,(11)
+where∇ψ t andv t correspond to the normal (density-
+changing) and tangential (density-preserving), respectively.
+These components are orthogonal under theL 2(pt, Gt)in-
+ner product⟨v, w⟩L2(pt,Gt) =E pt[v⊤Gtw]. We note that
+for full consistency with the metricG t, the divergence-free
+subspace would strictly be defined by{v:∇·(p tGtv) = 0}.
+For clarity and simplicity, we adopt the∇·(p tvt) = 0con-
+straint, as both definitions coincide whenG t ≈I.
+Letℓ tar(x0;y tar)denote the target classification loss at
+the terminal timet= 0. To maximize this objective, we
+seek the direction of steepest ascent for its expectation,
+E[ℓtar(X0)]. The first-order variation of this expectation
+under a small perturbationu t 7→u t +εv t can be found us-
+ing the adjoint method [3]. This involves defining a poten-
+tial functionψ(x, t)that solves the backward Kolmogorov
+equation:
+−∂tψ=µ·∇ψ+ 1
+2 g2
+t ∆ψ, ψ(·,0) =ℓ tar(·),(12)
+whereψ(x, t)represents the expected future loss from
+statexat timet. This yields the sensitivity fieldh t :=
+gt∇ψ(x, t)which allows us to express the change in loss
+as
+δE[ℓtar(X0)] =ε
+Z 1
+0
+E[⟨ht, vt⟩]dt.(13)
+Wheng t is small or diffusion is ignored, the heuristic ODE
+adjoint− ˙λt = (∂ xµ)⊤λt offers an equivalent shorthand;
+we adopt the PDE-based form for rigor. Thus, this analysis
+provides the optimal adversarial direction: Eq. (13) shows
+that the target loss is maximally increased when the control
+vt is aligned with the sensitivity fieldh t.
+We now minimize the total energy 1
+2
+R1
+0 ∥ut∥2
+L2(pt,Gt)dt
+subject to a fixed gain
+R1
+0 ⟨ht, ut⟩L2(pt,Gt)dt= Γand the
+constraint∇·(p tut) = 0. The unique minimizer is the
+orthogonal projection operator, denotedΠ Gt
+Tt , onto the tan-
+gential subspaceT t ={v:∇·(p tv) = 0}:
+utan
+t = ΠGt
+Tt (G−1
+t ht).(14)
+Because the normal component contributes only additional
+energy, the tangential projection is the first-order optimal
+solution. In practice, this exact projection (Eq. (14)) is com-
+putationally intractable. We approximate it by implement-
+ing a simpler projection that only removes the component
+along the score directions t. For clarity, we first define the
+parallel (Π∥) and perpendicular (Π ⊥) projection operators
+relative to a vectorsand metricGas:
+Π(s,G)
+∥ u:= ⟨u, s⟩G
+⟨s, s⟩G
+s,Π (s,G)
+⊥ u:=u−Π (s,G)
+∥ u.(15)
+Our computationally efficient surrogate is then given by
+uproj
+t = Π(st,Gt)
+⊥ wt, which is written explicitly as:
+uproj
+t =w t − ⟨wt, st⟩Gt
+⟨st, st⟩Gt
+st,(16)
+wherew t =G −1
+t ht, and⟨a, b⟩Gt :=a ⊤Gtb. This en-
+forces near-orthogonality between the adversarial control
+and the generative score field. Exact density preservation
+is achieved by the divergence-free projection (Eq. (14));
+Eq. (16) is its computationally efficient first-order surrogate.
+3.4. Discrete Bound and Robustness
+We now examine the implications of this structure for dis-
+crete samplers such as DDIM [18] or DDPM [11]. We
+adopt a shorthand for discrete time steps, where the sub-
+scriptkimplies evaluation at(x k, tk). Letµ k :=µ(x k, tk),
+gk :=g(t k),u k :=u tk , with step size∆t k; we adopt
+shared noise coupling:
+xk−1 =x k +µ k∆tk +g kuk∆tk +g k
+p
+∆tkϵk, (17)
+whereϵ k ∼ N(0, I)is the standard Gaussian noise. We
+write∆t max := maxk ∆tk, and assume shared-noise cou-
+pling (sameϵ k) for the controlled and nominal chains.
+Under Lipschitz continuity off,sand uniform bound-
+edness conditioning ofG t, we state the discreteW 2 bound:
+W2
+2 (ˆpu
+0 ,ˆp0
+0)≤C 1
+KX
+k=1
+∥Π(sk,Gk)
+∥ uk∥2
+Gk ∆tk
++C2∆t2
+max,
+(18)
+for constantsC 1, C2 depending only on the Lipschitz and
+conditioning bounds. The dominant, step-size invariant
+term is entirely driven by the normal componentΠ ∥utk ,
+whereas tangential control cancels it and leaves only the
+O(∆t2
+max)discretization remainder. Thus, distribution-
+preserving control improves fidelity by removing the non-
+vanishing leading term in Eq. (18). Using synchronous
+coupling of the controlled and nominal chains with shared
+noise, one can show that the one-step deviation obeys
+δk−1 =δ k + (µu
+k −µ 0
+k)∆tk +g kuk∆tk. Under Lipschitz
+continuity of(f, s), this difference grows at most linearly
+in|δ k|, and the first-order term depends solely on the score-
+parallel componentΠ (sk,Gk)
+∥ uk. Consequently, the tangen-
+tial control cancels thisO(∆t)term, leaving only the dis-
+cretization remainderO(∆t 2
+max)in Eq. (18) (see supple-
+mentary materials Sec. 10.4 for a detailed proof).
+Finally, we state the robustness bound for our method.
+When the score, metric, or gradient fields are perturbed by
+bounded estimation errorsε t (score),∆ t (metric), ande t
+(sensitivity), the resulting increase in path energy remains
+second-order:
+KL(P ˜utan
+∥P0)−KL(P utan
+∥P0)
+≤K
+Z 1
+0
+(∥εt∥2 +∥∆ t∥2 +∥e t∥2)dt,
+(19)
+whereKdepends only on the Lipschitz constants of(f, s)
+and the spectral bounds ofG t. This robustness property
+ensures that the proposed control remains stable under ap-
+proximate metrics or imperfect gradient estimates, provid-
+ing a strong guarantee for practical implementations. This
+follows from the strong convexity of the energy functional
+E(u) = 1
+2
+R
+∥ut∥2
+L2(pt,Gt) dt, which makes the tangential
+projectionu tan
+t = ΠGt
+Tt (G−1
+t ht)non-expansive. Perturbing
+the score, metric, or sensitivity fields by(εt,∆ t, et)inflates
+the energy by at most a constant multiple of their squared
+norms (via Pythagorean/Bregman inequality), yielding the
+second-order bound in Eq. (19) (see supplementary mate-
+rials Sec. 10.5 for a detailed proof). Together, these re-
+sults confirm that minimizing the path-space KL yields a
+theoretically grounded principle for constructing adversar-
+ial guidance that both achieves the target classification and
+preserves the visual fidelity of diffusion-generated samples.
+This principle directly leads to the practical algorithm de-
+scribed in Sec. 4.
+4. Method: DPAC
+4.1. The Practical DPAC Projection Rule
+Our method, DPAC (Distribution-Preserving Adversarial
+Control), implements the theoretical principle from Sec. 3
+using a practical, computationally efficient surrogate. Our
+theory showed that the optimal, minimum-energy control
+utan
+t is the projection of the theoretical sensitivity fieldh t
+onto the tangential subspaceT t (Eq. (14)). However, both
+this ideal projectionΠ Gt
+Tt and the theoretical sensitivityh t
+are computationally intractable.
+We therefore make two practical approximations. First,
+we approximate the theoretical sensitivity field with a one-
+step lookahead gradientw k, computed via our discrete sen-
+sitivity oracleG k−1:
+wk =G k−1(xclean
+k−1) :=∇ xclean
+k−1
+ℓtar(xclean
+k−1)(20)
+whereℓ tar is the target loss. This gradientw k (which repre-
+sents sensitivity att k−1) is computed at each stepkwhere
+the guidance scaleη k is active. Second, we implement
+the efficient pointwise surrogate derived in Eq. (16). This
+approximates the ideal projection by removing the score-
+parallel component from our practical gradientw k:
+u⋆
+k =w k − ⟨wk, sk⟩Gk
+⟨sk, sk⟩Gk +ϵ sk,(21)
+with a tinyϵ∼10 −8 for numerical stability. This pro-
+vides the unscaled tangential directionu ⋆
+k. We then apply
+a nonnegative scalar scheduleη k to control the guidance
+strength:u (η)
+k :=η k u⋆
+k. Consistent with our discrete bound
+(Eq. (18)), we use alate-windowschedule (e.g., last20%of
+steps)[5] to reduce early trajectory drift.
+4.2. Metric Choices and Stability
+Our practical implementation (Algorithm 1) requires com-
+puting an inner product between anx-space gradient (w∝
+∇xℓ) and anϵ-space score (s k). This is an approximation
+of the true, theoretically-pure projection. We therefore test
+two practical, computationally cheap choices for the metric
+Gt used in this inner product⟨·,·⟩ Gt.
+(A) Identity (Euclidean):G t =I. This is the simplest
+choice. It computes a standard Euclidean inner product, ef-
+fectively treating thex-space gradient andϵ-space score as
+commensurate.
+(B) Noise-Scaled:G t = (1−α t)−1I. Here,α t denotes
+the cumulative signal power at timet(i.e.,¯α t in standard
+DDPM [11] notation). This metric is motivated by the scal-
+ing of the score function in the original SDE theory. It aims
+to create a theoretically-consistent inner product by weight-
+ing the dot product by the inverse noise variance(1−αt)−1.
+We empirically evaluate its effect in Sec. 5.3.
+Stability via Normalization.The raw gradientw=
+Gk−1(xclean)(Algorithm 1, line 8) can have an arbitrarily
+large magnitude. Directly applying this vector (even after
+projection) leads to numerical instability and sample col-
+lapse (see Sec. 5.3). A simple clipping approach is insuffi-
+cient, as the perturbation magnitude would remain coupled
+to the raw gradient scale. To ensure stable guidance, our al-
+gorithm follows a critical Project-then-Normalize sequence
+which disentangles the guidance direction from its magni-
+tude. We first project the gradientwto compute the (un-
+scaled) tangential directionu ⋆ (line 9), and then normalize
+it to a unit vectoru hat (line 10). This ensures that the fi-
+nal step size of the perturbation (line 11) isexclusivelycon-
+trolled by the scalar scheduleη k. This disentanglement is
+the key to preventing the numerical collapse observed in
+naive guidance implementations.
+4.3. Stable Injection via Denoise-then-Perturb
+While our core theory is built upon modifying the SDE drift
+(Eq. (17)), we found this approach to be numerically unsta-
+ble in discrete samplers. Asg t∆t→0, the drift modifica-
+tion leads to vanishing control signals.
+Instead, we implement our tangential guidance via
+a robustDenoise-then-Perturb(PGD-style) mechanism,
+which is detailed in Algorithm 1. For each stepk, we first
+compute the standard clean denoised outputx clean
+k−1 via the
+base samplerΦ base, and then apply the guided perturbation
+directly inx-space:
+xclean
+k−1 = Φbase(xk, sk, tk)(22)
+xk−1 =x clean
+k−1 +η k ·u hat (23)
+whereu hat is the normalized tangential direction (Algo-
+rithm 1, line 10) derived from the gradientw k (Eq. (20)).
+This PGD-style injection (Eq. (23)) is a stable discrete sur-
+rogate that allows the scaleη k to directly control the per-
+turbation magnitude, thus achieving an effectiveO(1)dis-
+placement per step, regardless of the small size ofg t∆t.
+4.4. Complexity and Implementation Notes
+LetC score be the cost of one score evaluation andC grad be
+the cost of one gradient (sensitivity) query.
+Algorithm 1DPAC-Guided Sampling (PGD-Style)
+Require:x K,s θ,Φ base,G k−1 (Gradient Oracle),η(·)
+Ensure:x 0
+1:x←x K
+2:fori= 0toK−1do▷Loop over progress indexi
+3:t k ←steps[K−1−i]
+4:s k ←s θ(x, tk, ygt)▷1. Get clean score
+5:x clean ←Φ base(x, sk, tk)▷2. Denoise (DDIM step)
+6:η k ←η(i)▷3. Get guidance scale
+7:w← G k−1(xclean)▷4. Compute gradient
+8:G k ←GetMetric(t k, sk)
+9:u ⋆ ←w−
+⟨w,sk⟩Gk
+⟨sk,sk⟩Gk +ϵ sk ▷5. Project gradient
+10:u hat ←u ⋆/(∥u⋆∥+ϵ)▷6. Normalize direction
+11:x←x clean +η k ·u hat ▷7. Perturb (Inject control)
+12:returnx 0
+Runtime.Per step, DPAC adds: (i) one sensitivity query
+wk =G k−1(xclean
+k−1)(see Eq. (20)); (ii) one inner product
+(for the projection, Eq. (21)); (iii) vector normalization and
+PGD perturbation. Since the sensitivity queryw k (which
+requires a forward and backward pass, potentially including
+a V AE decode) is the dominant cost, the per-step overhead
+during the active guidance window is roughlyCgrad +Cscore.
+Control Energy Estimators.Since our final implementa-
+tion (Algorithm 1) uses a PGD-style injection, the Girsanov
+identity (cf. Sec. 3) no longer directly applies. We there-
+fore report the Cumulative Perturbation Energy (CPE) as
+our practical proxy for path energy. This metric measures
+the energy of the intervention vectorpriorto the normaliza-
+tion step (Algorithm 1, line 10), defined as:
+bECPE = 1
+2
+X
+k
+∥ηkuk∥2
+2,(24)
+whereu k is the unnormalized control vector:u k =u ⋆
+k
+(for DPAC, Eq. (21)) oru k =w k (for AdvDiff, Eq. (20)).
+We share the noise{ϵ k}across methods (common random
+numbers) to reduce variance in bECPE and align with our
+bounds.
+Robustness.The use of normalizationu hat and the PGD-
+style update inherently prevents the catastrophic numerical
+explosion caused by raw, unnormalized gradients. Under
+score/metric/sensitivity errors(ε t,∆ t, et), the stability is
+maintained.
+Defaults.Unless stated otherwise: We use PGD injection,
+linearη k ramp in the last20%of steps, andG t =Ifor the
+main DPAC result.
+5. Experiments
+Our experiments are designed to empirically validate our
+core theoretical claims: (1) that standard gradient guidance,
+as exemplified by methods like AdvDiff [5], injects a score-
+parallel component that destabilizes the sampling trajectory
+and leads to distributional collapse (high FID); and (2) that
+our proposed DPAC (tangential control) resolves this issue
+by projecting away this harmful component. We show that
+this theoretical correction yields simultaneous, consistent
+improvements in stability (FID), efficiency (energy), and ef-
+fectiveness (best attainable FID).
+5.1. Experimental Setup
+Baselines.We conduct a direct, controlled comparison be-
+tween two guidance strategies, both implemented using an
+identical Denoise-then-Perturb (PGD-style) injection mech-
+anism. This isolates the impact of thecontrol directionit-
+self.
+•AdvDiff (Baseline): We re-implement the core guidance
+mechanism of AdvDiff [5]. This method uses the raw
+classifier gradientw k =∇ xclean
+k−1
+ℓtar(xclean
+k−1)as the control
+direction (i.e., gradient ascent to maximize loss). This
+injects a score-parallel component (normal to iso-density
+surfaces), which our theory predicts will distort the distri-
+bution.
+•DPAC (Ours): The tangential control method from
+Sec. 4. It uses theG k-inner-product projection of the
+same ascent directionw k onto the subspace orthogonal
+to the scores k, i.e.,u hat ∝Π (sk,Gk)
+⊥ (wk)as in Eq. (16).
+We test two variants forGk: the identity (Gk =I) and the
+noise-scaled metric (Gk =(1−α k)−1I).
+Note that diffusion-based UAE generation remains a
+nascent subfield. Among existing approaches, AdvDiff [5]
+is currently the only method that directly performs adversar-
+ial guidance within the diffusion trajectory for universal at-
+tacks. Other related works such as DiffPGD [22] or AdvD-
+iffuser [4] adopt diffusion priors merely as regularizers or
+outer-loop optimizers rather than as in-trajectory controls.
+Therefore, AdvDiff serves as the only directly comparable
+baseline for our study.
+Implementation Details.We use the pre-trained Latent
+Diffusion Model (LDM) [16] checkpoint (cin256-v2) on
+ImageNet-1K. For efficient evaluation, all experiments are
+conducted on the ImageNet-100 (IN-100) subset (classes
+0-99). We use a pre-trained ResNet50 [8] (V1 legacy,
+‘pretrained=True’) as the classifierv ϕ for both guidance
+and ASR evaluation. The CFG scale fory gt is fixed to
+3.0. Unless otherwise stated, the target isy tar = (y gt +
+1)(mod 1000); ASR is computed on the full 1K head
+(R50-V1), while FID/IS use IN-100 validation statistics.
+All sampling uses DDIM with 200 steps (main results) or
+50 steps (ablation) on 1300 samples (13 per class). While
+1300 samples is limited for absolute FID/IS estimation, our
+primary goal is therelativecomparison between guidance
+strategies. To this end, we use shared-noise coupling across
+methods (as discussed in Sec. 4.4). This isolates the impact
+0.5 1.0 2.0 5.0 10.0
+Guidance Scale ( t)
+30
+35
+40
+45
+50
+55
+60
+65
+70
+75FID (Fr\'echet Inception Distance) 
+AdvDiff (Baseline)
+DPAC (Ours)
+(a) Stability (FID vs. Scale)
+AdvDiff (Baseline) DPAC (Ours)
+30
+31
+32
+33
+34
+35
+36Optimal FID (Lower is Better) 
+34.66
+33.90
+102
+6 × 101
+Energy Cost ( ) at Optimum 
+ (b) Peak Effectiveness & Efficiency
+0.5 1.0 2.0 5.0 10.0
+Guidance Scale ( t)
+101
+102
+103
+Path Energy (KL-proxy) 
+ -66.2%
+ -66.2%
+ -66.2%
+ -66.2%
+ -66.2%
+AdvDiff (Baseline)
+DPAC (Ours) (c) Theoretical Validation (Energy)
+Figure 2.Quantitative validation of DPAC on ImageNet-100 (200 steps). (a) Stability:AdvDiff (red) suffers catastrophic FID collapse
+(39.9→69.37) at high guidance scales (η k). DPAC (blue) remains robustly stable.(b) Effectiveness & Efficiency:A direct comparison
+of thebest FIDeach method achieved. DPAC (blue) achieves asuperior peak fidelity (FID 33.90)while using onlyone-thirdof the
+energy (E=54.0) that AdvDiff (red) required for its worse optimum (FID 34.66 atE=160.0).(c) Theoretical Validation:At all scales,
+DPAC consistently uses≈66% less energy, empirically validating our theory.
+of the controlu k from stochastic sampling variance, align-
+ing with our theoretical bounds (Eq. (18)) and ensuring a
+robust relative comparison. The control signal is injected
+during the last 20% of steps (late-window) with a linear
+ramp-up ofη k.
+Metrics.We evaluate three key aspects:
+•Effectiveness (ASR, R50-V1):Attack Success
+Rate—the percentage of samples classified asy tar
+by the ResNet-50 (V1) classifier.
+•Fidelity & Stability (FID/IS):We use Fr ´echet Inception
+Distance (FID) [9] (lower is better) and Inception Score
+(IS) [17] (higher is better).
+•Efficiency (CPE):We report CPE, as defined in Eq. (24)
+(Sec. 4.4). This metric measures the energy of the unnor-
+malized control vectoru k and aligns with our theoretical
+analysis (cf. Sec. 5.2).
+5.2. Core Validation
+Our main results at 200 DDIM steps (S200) (Tab. 1 and
+Fig. 2) provide strong evidence for these claims.
+Stability (Solving Collapse).Fig. 2(a) provides the clear-
+est view of the stability crisis. As the guidance scaleη k
+increases, AdvDiff (red) suffers a catastrophic failure. At
+ηk = 10.0, its fidelity collapses, with the FID exploding
+from 39.9 to 69.37. This empirically confirms our hypoth-
+esis: the unconstrained score-parallel component destabi-
+lizes the sampling trajectory. In stark contrast, DPAC (blue)
+remains robust, maintaining a stable FID of 44.89.
+Efficiency (Validating Theory).This stability gain is ac-
+companied by a dramatic and consistent improvement in en-
+ergy efficiency. As shown in Fig. 2(c), DPAC consistently
+consumes≈66.2%less path energy than AdvDiff across
+the entire S200 run (e.g., 1350.4 vs 4000.0 atη k = 10.0).
+This near-constant reduction matches the geometric predic-
+tion from our theory (Sec. 3): the ratioE DPAC/EAdvDiff ≈
+0.34corresponds tosin 2 θ(the score-orthogonal share re-
+tained by DPAC), while the baseline’s score-parallel share
+iscos 2 θ≈0.66.
+Effectiveness (Peak Fidelity & Cost).Fig. 2(b) directly
+compares the best possible fidelity each method could
+achieve. AdvDiff (red) achieves its optimal fidelity (FID
+34.66) at a high energy cost ofE= 160.0. DPAC (blue)
+achieves a superior optimal fidelity (FID 33.90) using only
+one-third of the energy (E= 54.02). This demonstrates that
+DPAC is not a compromise: it achieves a better peak qual-
+ity for a fraction of the cost, cleanly separating fidelity from
+guidance strength.
+5.3. Ablation Studies
+We conduct ablation studies using 50 DDIM steps (S50) to
+verify our design choices.
+Robustness to Sampling Steps.The S50 results confirm
+our findings from S200. DPAC consistently saves≈64.8%
+energy (e.g., 87.96 vs. 250.0 atη k = 5.0) and avoids the
+baseline’s FID collapse (35.05 vs. 39.92 atηk = 10.0). This
+confirms our method’s advantages are robust to the number
+of DDIM steps. We ablate the choice of the inner prod-
+uct matrixG k used for the orthogonal projection, compar-
+ing our defaultG k =I(identity) against the theoretically-
+motivatedG k = (1−α k)−1I(noise scaled). As shown in
+Tab. 2, the choice of metric has a negligible impact on the
+final results. Both metrics achieve a nearly identical ASR-
+FID trade-off. This suggests that whileG k = (1−α k)−1I
+is geometrically precise, the practical choice ofG k =I
+is sufficient, simpler, and achieves the same state-of-the-art
+stability.
+Further Analysis.We provide comprehensive additional
+experiments and in-depth analyses to further validate our
+claims in the Supplementary Material (Sec. 13).
+Table 1.Quantitative comparison on ImageNet-100 (200 steps) across all guidance scales.DPAC achieves a superior optimal FID
+(33.90) at one-third the energy cost of AdvDiff’s optimum (FID 34.66). Crucially, AdvDiff suffers catastrophic FID collapse (39.9→
+69.37) at high scales, while DPAC remains stable (44.89). At every scale, DPAC is more efficient, consuming≈66% less Path Energy.
+AdvDiff (Baseline) DPAC (Ours,Gk =I)
+Metric Scale (ηk) ASR (R50–V1) (↑) FID (↓) IS (↑) Energy (↓) ASR (R50–V1) (↑) FID (↓) IS (↑) Energy (↓)
+0.5 97.1% 35.35 33.30 10.0 50.1% 35.7434.29 3.38
+1.0 100.0%34.98 32.19 40.0 97.9% 34.5833.04 13.50
+Optimal FID→ 2.0 100.0%34.6630.72160.0 100.0% 33.90 31.48 54.02
+& Stability 5.0 100.0% 39.90 24.77 1000.0 99.9% 35.0928.46 337.61
+10.0 100.0%69.3720.62 4000.0 99.6%44.89 22.86 1350.43
+Table 2.Ablation on Inner Product MetricG k (S50).Both
+metrics yield a nearly identical ASR–FID trade-off, validating the
+simpler choiceG k =I.
+Method Scale (ηk) ASR (R50–V1) (↑) FID (↓)
+DPAC (Gk =I) 5.0 93.3% 34.46
+DPAC (Gk = (1−αk)−1I) 5.0 92.6% 34.54
+DPAC (Gk =I) 10.0 99.3% 35.05
+DPAC (Gk = (1−αk)−1I) 10.0 99.3% 34.74
+6. Related Works
+Adversarial Examples.Classicalℓ p-bounded attacks
+such as FGSM [7] and PGD [13] optimize a perturbation
+δfor a given inputx. Beyond norm-bounded threats, un-
+restricted or generative adversarial examples synthesize ad-
+versarial images from scratch using generative models (e.g.,
+AC-GAN) [19] or produce perturbations via GANs [21].
+Guidance for Diffusion Models.Diffusion guidance
+methods like Classifier Guidance (CG) [6] and Classifier-
+Free Guidance (CFG) [10] steer sampling using classifier
+gradients or unconditional scores, respectively, to trade off
+fidelity and diversity. While both mechanisms are effective,
+increasing the guidance scale is known to improve align-
+ment at the expense of sample quality (e.g., FID), revealing
+an intrinsic guidance–fidelity tension [6, 10].
+Diffusion + PGD: Gradient Injection During Sampling.
+A body of work integrates PGD-style optimization with dif-
+fusion to enhance realism and controllability. For example,
+Diff-PGD [22] leverages a diffusion prior to keep attacks
+on-manifold, while AdvDiffuser [4] conducts step-wise op-
+timization to perturb less-salient regions.
+Generative Adversarial Examples with Diffusion.Ad-
+vDiff [5] stands as the primary baseline, generating UAEs
+by injecting raw classifier gradients into the continuous dif-
+fusion sampling process. While this method suffers from a
+severe fidelity collapse that prior work treats as an empiri-
+cal trade-off, our work (DPAC) is the first to diagnose and
+solve this instability via tangential projection. Other meth-
+ods like Diff-PGD [22] and AdvDiffuser [4] are not directly
+comparable, as they apply gradient optimization *outside*
+the reverse SDE dynamics, unlike the continuous guidance
+setting of AdvDiff and DPAC.
+7. Discussion
+Our analysis assumes non-degenerate diffusiong(t)>0,
+globally Lipschitz drift and score with linear growth, and a
+T2(C)tail forp 0
+0, which together guarantee a strong reverse
+SDE solution, the Girsanov identity equating path–KL with
+control energy, and the information–transport bounds sum-
+marized in Sec. 3. The exactp t-divergence-free projec-
+tor is intractable in high dimensions; our practical rule re-
+moves only the score-parallel component and is therefore a
+first-order surrogate for the truep t-tangential field, so that
+with approximate scores or finite-step discretization a small
+density-changing residual can remain. This motivates the
+late-window schedule and the project-then-normalize up-
+date in Sec. 4, which curb early manifold drift and decou-
+ple direction from magnitude. Because the denoise-then-
+perturb injection breaks the exact path–KL identity, we re-
+port CPE as a proxy and use shared-noise coupling to re-
+duce variance, which aligns with the FID/energy trends ob-
+served in Sec. 5. Finally, because DPAC enables high-
+fidelity targeted UAEs, deployments should include prove-
+nance signals and audit logging to mitigate misuse.
+8. Conclusion
+We cast adversarial guidance for diffusion as path–KL min-
+imization and proved that reducing control energy tightens
+terminalW 2/FID bounds, that thep t-tangential component
+is the first-order optimal direction under a fixed gain, that
+in discrete samplers the tangential rule cancels theO(∆t)
+leading term in the discreteW2 bound, and that the solution
+is second-order robust to score, metric, and gradient errors.
+We instantiated these ideas with a score-orthogonal projec-
+tor and a stable denoise-then-perturb update, achieving on
+ImageNet-100 a consistent reduction of FID and estimated
+path energy at matched ASR, eliminating the collapse seen
+with raw gradient guidance. The results suggest that tar-
+get attainment and fidelity preservation can be unified by an
+energy-minimization principle.
+References
+[1] Brian D.O. Anderson. Reverse-time diffusion equation mod-
+els.Stochastic Processes and their Applications, 12(3):313–
+326, 1982. 2
+[2] Harsh Bhatia, Gregory Norgard, Valerio Pascucci, and Peer-
+Timo Bremer. The helmholtz-hodge decomposition—a sur-
+vey.IEEE Transactions on Visualization and Computer
+Graphics, 19(8):1386–1404, 2013. 3
+[3] Ricky T. Q. Chen, Yulia Rubanova, Jesse Bettencourt, and
+David Duvenaud. Neural ordinary differential equations. In
+Proceedings of the 32nd International Conference on Neu-
+ral Information Processing Systems, page 6572–6583, Red
+Hook, NY , USA, 2018. Curran Associates Inc. 4
+[4] Xinquan Chen, Xitong Gao, Juanjuan Zhao, Kejiang Ye, and
+Cheng-Zhong Xu. Advdiffuser: Natural adversarial exam-
+ple synthesis with diffusion models. In2023 IEEE/CVF In-
+ternational Conference on Computer Vision (ICCV), pages
+4539–4549, 2023. 1, 6, 8
+[5] Xuelong Dai, Kaisheng Liang, and Bin Xiao. Advdiff:
+Generating unrestricted adversarial examples using diffusion
+models. InComputer Vision – ECCV 2024: 18th European
+Conference, Milan, Italy, September 29–October 4, 2024,
+Proceedings, Part XLVI, page 93–109, Berlin, Heidelberg,
+2024. Springer-Verlag. 1, 2, 5, 6, 8
+[6] Prafulla Dhariwal and Alex Nichol. Diffusion models beat
+gans on image synthesis. InProceedings of the 35th Inter-
+national Conference on Neural Information Processing Sys-
+tems, Red Hook, NY , USA, 2021. Curran Associates Inc. 1,
+8
+[7] Ian J. Goodfellow, Jonathon Shlens, and Christian Szegedy.
+Explaining and harnessing adversarial examples. In3rd In-
+ternational Conference on Learning Representations, ICLR
+2015, San Diego, CA, USA, May 7-9, 2015, Conference
+Track Proceedings, 2015. 8
+[8] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In2016 IEEE
+Conference on Computer Vision and Pattern Recognition
+(CVPR), pages 770–778, 2016. 6
+[9] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner,
+Bernhard Nessler, and Sepp Hochreiter. Gans trained by a
+two time-scale update rule converge to a local nash equilib-
+rium. InProceedings of the 31st International Conference on
+Neural Information Processing Systems, page 6629–6640,
+Red Hook, NY , USA, 2017. Curran Associates Inc. 3, 7
+[10] Jonathan Ho. Classifier-free diffusion guidance.ArXiv,
+abs/2207.12598, 2022. 1, 2, 8
+[11] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising dif-
+fusion probabilistic models. InAdvances in Neural Informa-
+tion Processing Systems 33: Annual Conference on Neural
+Information Processing Systems 2020, NeurIPS 2020, De-
+cember 6-12, 2020, virtual, 2020. 1, 2, 4, 5
+[12] Gopinath Kallianpur and Rajeeva L. Karandikar.Girsanov’s
+Theorem, pages 95–101. Birkh ¨auser Boston, Boston, MA,
+2000. 2
+[13] Aleksander Madry, Aleksandar Makelov, Ludwig Schmidt,
+Dimitris Tsipras, and Adrian Vladu. Towards deep learning
+models resistant to adversarial attacks. In6th International
+Conference on Learning Representations, ICLR 2018, Van-
+couver, BC, Canada, April 30 - May 3, 2018, Conference
+Track Proceedings. OpenReview.net, 2018. 8
+[14] Michael Molloy and Bruce Reed.A Closer Look at Tala-
+grand’s Inequality, pages 231–236. Springer Berlin Heidel-
+berg, Berlin, Heidelberg, 2002. 3
+[15] Bernt Oksendal.Stochastic differential equations (3rd ed.):
+an introduction with applications. Springer-Verlag, Berlin,
+Heidelberg, 1992. 2, 3
+[16] Robin Rombach, A. Blattmann, Dominik Lorenz, Patrick
+Esser, and Bj ¨orn Ommer. High-resolution image synthesis
+with latent diffusion models.2022 IEEE/CVF Conference
+on Computer Vision and Pattern Recognition (CVPR), pages
+10674–10685, 2021. 1, 6
+[17] Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki
+Cheung, Alec Radford, and Xi Chen. Improved techniques
+for training gans. InProceedings of the 30th International
+Conference on Neural Information Processing Systems, page
+2234–2242, Red Hook, NY , USA, 2016. Curran Associates
+Inc. 7
+[18] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denois-
+ing diffusion implicit models. In9th International Con-
+ference on Learning Representations, ICLR 2021, Virtual
+Event, Austria, May 3-7, 2021. OpenReview.net, 2021. 1,
+4
+[19] Yang Song, Rui Shu, Nate Kushman, and Stefano Ermon.
+Constructing unrestricted adversarial examples with gener-
+ative models. InNeural Information Processing Systems,
+2018. 8
+[20] Yang Song, Jascha Sohl-Dickstein, Diederik P. Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equa-
+tions. In9th International Conference on Learning Rep-
+resentations, ICLR 2021, Virtual Event, Austria, May 3-7,
+2021. OpenReview.net, 2021. 1, 2, 3
+[21] Chaowei Xiao, Bo Li, Jun-Yan Zhu, Warren He, Mingyan
+Liu, and Dawn Song. Generating adversarial examples with
+adversarial networks. InProceedings of the 27th Inter-
+national Joint Conference on Artificial Intelligence, page
+3905–3911. AAAI Press, 2018. 8
+[22] Haotian Xue, Alexandre Araujo, Bin Hu, and Yongxin Chen.
+Diffusion-based adversarial sample generation for improved
+stealthiness and controllability. InProceedings of the 37th
+International Conference on Neural Information Processing
+Systems, Red Hook, NY , USA, 2023. Curran Associates Inc.
+1, 6, 8
+DPAC: Distribution-Preserving Adversarial Control for Diffusion Sampling
+Supplementary Material
+9. Notation and Assumptions
+This section summarizes the notation used throughout the
+main paper and supplementary materials, and explicitly
+states the standing assumptions required for our theoretical
+analysis.
+9.1. Notation
+•t∈[0,1]: Continuous time index, wheret= 0corre-
+sponds to data andt= 1corresponds to noise.
+•X t: State of the diffusion process at timet.x 0 ∼p data is
+the clean data.
+•p t(Xt): Marginal density ofX t.
+•f(X t, t): Drift coefficient of the forward SDE.
+•g(t): Diffusion coefficient of the forward SDE.
+•W t, ¯Wt: Standard Wiener processes (forward and re-
+verse).
+•s θ(Xt, t): The score function∇ Xt logp t(Xt), approxi-
+mated by a neural networks θ.
+•y gt,y tar: Ground-truth label and target (adversarial) la-
+bel, respectively.
+•µ(X t, t) =f(Xt, t)−g(t)2sθ(Xt, t|ygt): The drift of the
+nominal (uncontrolled) reverse SDE.
+•u t =u t(Xt, t): The adversarial control drift term in-
+jected into the reverse SDE.
+•P 0,P u: Path-space measures (distributions over trajec-
+tories) for the uncontrolled (u t ≡0) and controlled pro-
+cesses, respectively.
+•p 0
+t , pu
+t : Marginal densities at timetfor the uncontrolled
+and controlled processes.
+•KL(P u||P0): The Kullback-Leibler (KL) divergence be-
+tween the two path-space measures. This is referred to as
+“path-KL”.
+•W 2(·,·): The 2-Wasserstein distance.
+•ϕ: An L-Lipschitz feature embedding used for FID calcu-
+lation.
+•ψ(x, t): The potential function (expected future loss)
+from statexat timet, used in the adjoint method.
+•h t =g t∇ψ(x, t): The sensitivity field, representing the
+optimal adversarial direction.
+•G t: A metric tensor, used to define the inner product
+⟨·,·⟩Gt and geometry.
+•Π (s,G)
+|| ,Π (s,G)
+⊥ : Projection operators onto the subspaces
+parallel and perpendicular to a vectorswith respect to
+the metricG.
+•T t ={v:∇ ·(p tv) = 0}: The tangential (density-
+preserving) subspace.
+•k: Discrete time step index.
+•w k: The practical gradient computed via the sensitivity
+oracleG k−1.
+•u ∗
+k, uhat: The unscaled and normalized tangential direc-
+tion vectors in the discrete implementation.
+•η k: The scalar guidance scale schedule.
+• ˆECPE : Cumulative Perturbation Energy, the practical
+proxy for path-KL.
+9.2. Standing Assumptions
+Our theoretical results in Sec. 3 rely on the following stan-
+dard assumptions from stochastic optimal control and SDE
+literature:
+1.(Non-degeneracy)The diffusion coefficient is strictly
+positive:g(t)>0fort∈[0,1]. This ensures the SDE is
+non-degenerate and path-space measures are equivalent
+(Girsanov’s Theorem applies).
+2.(SDE Regularity)The driftf(·, t)and the score func-
+tions θ(·, t|ygt)are globally Lipschitz continuous inx
+uniformly int, and satisfy linear growth conditions. This
+guarantees the existence and uniqueness of a strong so-
+lution for the SDEs.
+3.(Finite Control Energy)The adversarial controlu t is
+progressively measurable and satisfies the finite energy
+condition:E
+R1
+0 ||ut||2
+2dt <∞. This ensures Novikov’s
+condition holds, which validates the application of Gir-
+sanov’s Theorem and guarantees the path-KL (Eq. (5))
+is finite.
+4.(Information-Transport)The clean data distribution at
+t= 0,p 0
+0, satisfies the TalagrandT 2(C)inequality for
+some constantC. This allows us to bound theW 2 dis-
+tance by the KL divergence (Eq. (7)).
+5.(FID Embedding)The FID feature embeddingϕis L-
+Lipschitz continuous. This relates theW 2 distance in
+the data space to theW 2 distance in the feature space
+(Eq. (8)).
+6.(Discrete Bound Conditions)For the discreteW 2
+bound (Eq. (18)), we assume Lipschitz continuity off
+ands, and uniform boundedness and conditioning of the
+metricG t.
+7.(Robustness Bound Conditions)For the robustness
+bound (Eq. (19)), we assume the estimation errors for the
+score (ϵt), metric (∆t), and sensitivity (et) are bounded.
+10. Detailed Proofs
+This section provides detailed derivations and proofs for the
+theoretical claims made in Sec. 3 of the main paper. We use
+the notation and assumptions defined in Sec. 9.
+10.1. Girsanov Identity
+We provide a line-by-line derivation of the identity stated in
+Eq. (5).
+Uncontrolled and controlled reverse SDEs.Let the
+nominal (uncontrolled) reverse SDE be
+dXt =µ(X t, t)dt+g(t)d ¯Wt,(25)
+whereµ t =f t−g2
+t sθ. With control injected as a drift scaled
+byg(t),
+dXt =
+
+µ(Xt, t) +g(t)ut
+
+dt+g(t)d ¯Wt.(26)
+Assumptions and Radon–Nikodym derivative.Under
+Sec. 9.2 (non-degeneracyg(t)>0and Novikov/finite en-
+ergy), the path lawsP 0 andP u are equivalent, and Gir-
+sanov’s theorem gives
+dPu
+dP0 = exp
+Z 1
+0
+⟨ut, d¯Wt⟩ −1
+2
+Z 1
+0
+∥ut∥2
+2 dt
+
+.(27)
+Path–KL as control energy.Using Eq. (27) and defining
+the path KL asKL(P u∥P0) =E Pu
+
+log dPu
+dP0
+
+,
+KL(Pu∥P0) =E Pu
+Z 1
+0
+⟨ut, d¯Wt⟩ −1
+2
+Z 1
+0
+∥ut∥2
+2 dt
+
+(28)
+=E Pu
+Z 1
+0
+⟨ut, d¯W u
+t +u t dt⟩ −1
+2
+Z 1
+0
+∥ut∥2
+2 dt
+
+(29)
+=E Pu
+Z 1
+0
+⟨ut, d¯W u
+t ⟩
+
+| {z }
+= 0
++ 1
+2 EPu
+Z 1
+0
+∥ut∥2
+2 dt
+
+(30)
+= 1
+2 EPu
+Z 1
+0
+∥ut∥2
+2 dt.(31)
+Hered ¯W u
+t :=d ¯Wt −u t dtis a Wiener process underP u
+by Girsanov, and the stochastic integral has zero expectation
+underP u.Remark.The specific scaling byg(t)in Eq. (26)
+is chosen so that Eq. (27) leads to the simple quadratic form
+in Eq. (31).error term.
+10.2. KL–FID Connection
+Path–KL→marginal KL (Eq. (6)).Marginalization is
+a measurable map from a path to its stateX t, so the data-
+processing inequality yields, for allt∈[0,1],
+KL(pu
+t ∥p0
+t )≤KL(P u∥P0).(32)
+In particular, this holds at the terminal timet=0.
+Marginal KL→W 2 (Eq. (7)).Assuming the clean ter-
+minal distribution satisfies TalagrandT 2(C),
+W2
+2 (pu
+0 , p0
+0)≤2CKL(p u
+0 ∥p0
+0)≤2CKL(P u∥P0),
+(33)
+where the last inequality follows by combining Eq. (32)
+witht=0.
+W2 →FID (Eq. (8)).Letϕbe theL-Lipschitz feature
+embedding used in FID. Then
+W2(ϕ#pu
+0 , ϕ#p0
+0)≤L W 2(pu
+0 , p0
+0).(34)
+Since FID computes theW 2 between Gaussian fits in fea-
+ture space, letε gauss denote the approximation gap; by the
+triangle inequality,
+q
+FID(ϕ#pu
+0 , ϕ#p0
+0)≤W 2(ϕ#pu
+0 , ϕ#p0
+0) +ε gauss
+≤L W2(pu
+0 , p0
+0) +ε gauss
+≤L
+√
+2C
+p
+KL(Pu∥P0) +ε gauss,
+(35)
+where the last step uses Eq. (33). Letting ˜K:=L
+√
+2C,
+q
+FID(ϕ#pu
+0 , ϕ#p0
+0)≤ ˜K
+p
+KL(Pu∥P0)+ε gauss.(36)
+Equations (32), (33) and (35) recover the main-text chain
+Eqs. (6) to (8): minimizing the path–KL (control energy)
+tightens an explicit upper bound onW 2 and hence on FID.
+10.3. Weighted Hodge and First-Order Optimality
+Claim and context (summary first).Under the lin-
+earized Fokker–Planck dynamics (Eqs. (9) and (10)), the
+first-order density-preserving (tangential) constraint is∇·
+(ptut) = 0. In the Hilbert spaceL 2(pt, Gt)with inner
+product⟨v, w⟩L2(pt,Gt) =E pt[v⊤Gtw], thep t-weighted
+Hodge decomposition (Eq. (11)) writes any control asu t =
+∇ψt+vt withv t ∈ Tt :={v:∇·(p tv) = 0}and∇ψ t ⊥v t.
+For the constrained program
+min
+u
+E(u) := 1
+2
+Z 1
+0
+∥ut∥2
+L2(pt,Gt)dt
+s.t.
+(R1
+0⟨ht, ut⟩L2(pt,Gt)dt= Γ,
+∇·(p tut) = 0,
+(37)
+the unique minimizer is the orthogonal projection
+u⋆
+t = Π Gt
+Tt
+ 
+G−1
+t ht
+
+,(38)
+i.e., the optimal control has zero normal component and
+lives entirely in the tangential subspace, matching the main-
+text statement (Eq. (14)). Hereh t is the adjoint (sensitiv-
+ity) field defined via the backward Kolmogorov equation
+(Eq. (12)).
+Weighted Hodge decomposition and energy split.By
+orthogonality inL 2(pt, Gt),
+ut =∇ψ t +v t, v t ∈ Tt,(39)
+E(u) = 1
+2
+Z 1
+0
+∥∇ψt∥2
+L2(pt,Gt)dt+ 1
+2
+Z 1
+0
+∥vt∥2
+L2(pt,Gt)dt.
+(40)
+Because feasible controls satisfyu t ∈ Tt, the normal part
+∇ψt is infeasible and, more generally, any residual normal
+component can onlyincreaseenergy by Eq. (40) without
+improving feasibility.
+Reduction to a projected least-norm problem.The con-
+straints in Eq. (37) reduce the search to the closed subspace
+Tt with a linear gain functionalu7→
+R1
+0⟨ht, ut⟩L2(pt,Gt)dt.
+By Riesz representation inL 2(pt, Gt), the least-norm solu-
+tion for a fixed gainΓis aligned with the orthogonal projec-
+tion of the representer ontoT t:
+u⋆
+t =λΠ Gt
+Tt
+ 
+G−1
+t ht
+
+,
+λ >0chosen so that
+Z 1
+0
+⟨ht, u⋆
+t ⟩L2(pt,Gt)dt= Γ.
+(41)
+Ignoring the scalarλ(directional statement), this is pre-
+cisely Eq. (38) and the main-text formula (Eq. (14)).
+PDE (Lagrangian) viewpoint.Equivalently, form the
+Lagrangian with a scalar multiplierλfor the gain and a
+pressure-like potentialπ t for the divergence constraint:
+L(u, λ, π) =1
+2
+Z 1
+0
+∥ut∥2
+L2(pt,Gt)dt(42)
+−λ
+Z 1
+0
+⟨ht, ut⟩L2(pt,Gt)dt
++
+Z 1
+0
+Z
+πt ∇·(p tut)dx dt.
+Stationarity inu t givesG tut −λh t +∇π t = 0, i.e.,
+ut =G −1
+t
+ 
+λht − ∇πt
+
+.(43)
+Imposing∇·(p tut) = 0selects thep t-divergence-free com-
+ponent ofG −1
+t ht, hence Eq. (38). This derivation also
+makes explicit that any gradient (normal) component arises
+from∇π t and is removed by the constraint.
+Metric note and practical surrogate.For full metric
+consistency the true tangential space is{v:∇·(p tGtv) =
+0}; we adopt∇·(p tv) = 0for clarity, which coincides
+whenG t ≈I(as in the main text). The exact projector
+ΠGt
+Tt is intractable in high dimensions; this motivates the
+score-orthogonal surrogate used in practice (Eq. (16)) and
+the late-window schedule in the method section, which ap-
+proximate the theoretical tangential control at low cost.
+10.4. Discrete Wasserstein Bound
+Statement (main-text Eq. (18)).Let{t k}K
+k=0 be a par-
+tition of[0,1]with∆t k =t k −t k−1 and∆t max =
+maxk ∆tk. Consider the synchronous-noise discretization
+in Eq. (17):
+x0
+k−1 =x 0
+k +µ(x 0
+k , tk) ∆tk +g k
+p
+∆tk εk,(44)
+xu
+k−1 =x u
+k +µ(x u
+k , tk) ∆tk +g kuk ∆tk +g k
+p
+∆tk εk,
+(45)
+whereε k ∼ N(0, I)are shared across the two chains,gk :=
+g(tk), andµ=f−g 2s. Assume (i)µ(·, t)isL–Lipschitz in
+xuniformly intand of linear growth, (ii)∥G k∥and∥G −1
+k ∥
+are uniformly bounded for allk(mI⪯G k ⪯MI), and (iii)
+gmin ≤g k ≤g max. Then there exist constantsC 1, C2 >0
+(depending only onL,m, M,g max) such that
+W2
+2 (ˆpu
+0 ,ˆp0
+0)≤C 1
+KX
+k=1
+Π(sk,Gk)
+∥ uk
+2
+Gk
+∆tk +C 2 ∆t2
+max,
+(46)
+wheres k :=s θ(x0
+k , tk)(or any 1st-order consistent
+choice) andΠ (sk,Gk)
+∥ is theG k–orthogonal projector onto
+span{sk}.
+Coupling and one-step deviation.Letδ k :=x u
+k −x 0
+k .
+Subtracting Eq. (44) from Eq. (45) cancels the noise:
+δk−1 =δ k +
+
+µ(xu
+k , tk)−µ(x 0
+k , tk)
+
+∆tk +g kuk ∆tk.
+(47)
+By Lipschitzness ofµ,∥µ(x u
+k , tk)−µ(x 0
+k , tk)∥ ≤L∥δ k∥.
+Linearization: isolating the first-order source.Using
+the mean-value form,
+µ(xu
+k , tk)−µ(x 0
+k , tk) =J k δk +r k,
+∥Jk∥ ≤L,∥r k∥ ≤c1 ∥δk∥2,
+(48)
+for a constantc 1. Inserting into Eq. (47),
+δk−1 =
+ 
+I+J k∆tk
+
+δk +g kuk ∆tk +r k ∆tk.(49)
+Normal/tangential split and one-stepG k–bound.We
+now decomposeu k =u ∥
+k +u ⊥
+k and analyze how each com-
+ponent contributes to the squaredG k–norm of Eq. (49).
+∥δk−1∥2
+Gk =
+ 
+I+J k∆tk
+
+δk +g ku∥
+k ∆tk
++g ku⊥
+k ∆tk +r k ∆tk
+2
+Gk
+=
+ 
+I+J k∆tk
+
+δk +g ku∥
+k ∆tk
+2
+Gk
++ 2gk∆tk
+
+ 
+I+J k∆tk
+
+δk +g ku∥
+k ∆tk, u⊥
+k
+
+Gk
++g 2
+k ∥u⊥
+k ∥2
+Gk ∆t2
+k (50)
++O(∥δ k∥2
+Gk ∆t2
+k) +O(∆t 3
+k).
+Our core argument, mirroring the continuous analysis
+(Eq. (10)), is that the tangential componentu ⊥
+k does not
+contribute to the first-order error. This implies two things:
+1. TheO(∆t 2
+k)squared term Eq. (50) will be absorbed
+by theC 2∆t2
+max remainder. 2. TheO(∆t k)cross-term
+Eq. (50) must also vanish or be of higher order.
+Let’s inspect the cross-term Eq. (50). The term
+⟨δk, u⊥
+k ⟩Gk represents the alignment between the accumu-
+lated errorδ k and the current tangential controlu ⊥
+k . The
+accumulated errorδ k is, by induction from Eq. (49), the
+result of past drift differences (J jδj), remainders (rj), and
+*normal* control injections (u ∥
+j ). The tangential controls
+u⊥
+j from past stepsj < kdo not contribute to the first-order
+accumulation ofδ k, as their purpose is precisely to *can-
+cel* first-order distributional drift (as argued in Eq. (50)).
+Therefore, the accumulated error vectorδ k lies primarily in
+the subspace spanned by past normal/drift components. Its
+Gk–inner product with theG k-orthogonal vectoru ⊥
+k is thus
+not a first-orderO(1)term that would create anO(∆t k)
+contribution. This means the entireO(∆t k)cross-term
+Eq. (50) is of higher order (i.e.,O(∆t 2
+k)or higher).
+Thus, the only terms contributing to the first-order dy-
+namics are in Eq. (50):
+∥δk−1∥2
+Gk ≤
+ 
+I+J k∆tk
+
+δk
+2
+Gk
++ 2gk∆tk
+
+(I+J k∆tk)δk, u∥
+k
+
+Gk
++g 2
+k ∥u∥
+k∥2
+Gk ∆t2
+k
++O(∥δ k∥2
+Gk ∆t2
+k) +O(∆t 3
+k).
+Using standard bounds (a2 + 2ab+b 2 ≤(1 +η)a 2 + (1 +
+η−1)b2, etc.) on this, we arrive at
+∥δk−1∥2
+Gk ≤(1 +c 2∆tk)∥δ k∥2
+Gk + 2gk∆tk ⟨δk, u∥
+k⟩Gk
++c 3 ∥u∥
+k∥2
+Gk ∆t2
+k +c 4 ∆t2
+max,(51)
+wherec 2, c3 depend on(L, m, M, gmax), andc 4 absorbs
+allO(∆t 2
+k)andO(∆t 3
+k)terms, including the (higher-order)
+contributions fromu ⊥
+k .
+Summation, coupling, and discrete Gr ¨onwall.LetΦ k
+be the coupled transition (Eq. (44),Eq. (45)); by definition
+ofW 2,
+W2
+2 (ˆpu
+k−1,ˆp0
+k−1)≤E∥δ k−1∥2.(52)
+Summing Eq. (51) fromk= 1toK, taking expecta-
+tions, and applying a discrete Gr ¨onwall inequality to the
+(1 +c2∆tk)E∥δ k∥2
+Gk term (andE[∥δ K∥2] = 0sincex u
+K =
+x0
+K), we obtain
+E∥δ 0∥2
+G0 (53)
+≤C
+KX
+k=1
+h
+2g k∆tk E⟨δ k, u∥
+k⟩Gk +c 3 ∥u∥
+k∥2
+Gk ∆t2
+k
+i
++C ′ c4 ∆t2
+max,
+withC, C′ depending on(L, m, M, gmax). Finally, apply
+2⟨a, b⟩ ≤η∥a∥2 +η −1∥b∥2 withη= ∆t k to the mixed
+term⟨δ k, u∥
+k⟩Gk (and absorbingE[∥δ k∥2]into the Gr ¨onwall
+term):
+E∥δ 0∥2
+G0 ≤C 1
+KX
+k=1
+∥u∥
+k∥2
+Gk ∆tk +C 2 ∆t2
+max.(54)
+Given the uniform bounds on the metricG k,E∥δ 0∥2
+G0 ∼
+W2
+2 (ˆpu
+0 ,ˆp0
+0), implying the claimed bound Eq. (46).
+Interpretation (leading term and cancellation).TheP
+k ∥u∥
+k∥2
+Gk ∆tk term is the discrete Riemann sum of the
+normalenergy. This term drives a non-vanishingO(1)
+contribution to the error. Our analysis shows that theu ⊥
+k
+(tangential) component contributes only to theO(∆t 2
+max)
+higher-order terms, primarily because itsO(∆t k)cross-
+term Eq. (50) does not have a first-order component. Thus,
+tangential control (DPAC), by settingu ∥
+k = 0, cancels the
+O(1)leading error term, leaving only theO(∆t 2
+max)dis-
+cretization remainder.
+10.5. Second-Order Robustness
+Statement (main-text Eq. (19)).Letu tan
+t :=
+ΠGt
+Tt
+ 
+G−1
+t ht
+
+be the ideal tangential control (main
+Eq. (14)) and let the perturbed fields be
+˜st =s t +ε t, ˜Gt =G t + ∆t, ˜ht =h t +e t.
+Denote˜utan
+t := Π
+˜Gt
+˜Tt
+  ˜G−1
+t ˜ht
+
+, where ˜Tt is the tangential
+space induced by(˜st, ˜Gt)(see below). Under the standing
+assumptions (global Lipschitz/linear growth,g t >0; uni-
+form spectral boundsmI⪯G t, ˜Gt ⪯MI; and a uniform
+nondegeneracy along the normal direction,inf t⟨st, st⟩Gt ≥
+σ2
+s >0), there existsK >0(depending only on(m, M, σs)
+and Lipschitz constants of(f, sθ)) such that
+KL(P ˜utan
+∥P0)−KL(P utan
+∥P0)
+≤K
+Z 1
+0
+ 
+∥εt∥2
+2 +∥∆ t∥2
+op +∥e t∥2
+2
+
+dt,
+(55)
+which is the detailed version of the main-text robustness
+claim Eq. (19).
+Setup and notation.We work at eachtin the Hilbert
+spaceH t :=L 2(pt;Rd)endowed with the inner product
+⟨v, w⟩t :=E pt[v ⊤Gtw]and norm∥v∥ 2
+t :=⟨v, v⟩t. For
+(s, G), define theG–orthogonal splitting into thenormal
+lineN(s, G) := span{s}and itstangential complement
+T(s, G) :={v:⟨v, s⟩ G = 0}(the practical surrogate used
+in the method; the exactpt–divergence-free version leads to
+the same result under smoothness ofp t). LetP (s,G)
+⊥ denote
+theG–orthogonal projector ontoT(s, G); explicitly,
+P(s,G)
+⊥ (v) =v− ⟨v, s⟩G
+⟨s, s⟩G
+s.(56)
+Writew t :=G −1
+t ht and˜wt := ˜G−1
+t ˜ht. Then
+utan
+t =P (st,Gt)
+⊥ (wt),˜u tan
+t =P (˜st, ˜Gt)
+⊥ ( ˜wt).(57)
+Step 1: Riesz map perturbation.BecauseG t is uni-
+formly SPD and∥∆ t∥op ≤η≪1(small perturba-
+tion regime), the inverse perturbation admits the first-order
+bound
+˜G−1
+t −G −1
+t =−G −1
+t ∆tG−1
+t +O(∥∆ t∥2
+op),(58)
+⇒˜w t −w t = ( ˜G−1
+t −G −1
+t )ht + ˜G−1
+t et
+=−G −1
+t ∆tG−1
+t ht +G −1
+t et
++O
+ 
+∥∆t∥op(∥et∥2 +∥∆ t∥op∥ht∥2)
+
+.
+(59)
+Hence there existsC R (depending onm, M) such that
+∥˜wt −w t∥t ≤C R
+ 
+∥∆t∥op ∥ht∥G−1
+t
++∥e t∥2
+
+≤C ′
+R
+ 
+∥∆t∥op +∥e t∥2
+
+,
+(60)
+where the last inequality uses boundedness of∥h t∥G−1
+t
+along the trajectory (standing regularity).
+Step 2: Projector perturbation.From Eq. (56), the pro-
+jector depends smoothly on(s, G). LetS(s, G)be the rank-
+oneG–orthogonal projector ontoN(s, G):S(s, G)v:=
+⟨v,s⟩G
+⟨s,s⟩G
+s, soP (s,G)
+⊥ =I−S(s, G). A direct expansion gives,
+for anyv,
+ 
+S(˜s,˜G)−S(s, G)
+
+v= ⟨v,˜s⟩˜G
+⟨˜s,˜s⟩˜G
+˜s−⟨v, s⟩G
+⟨s, s⟩G
+s
+= ⟨v, ε⟩G +⟨v, s⟩∆
+⟨s, s⟩G| {z }
+numerator change
+s
+− ⟨v, s⟩G
+ 
+2⟨s, ε⟩G +⟨s, s⟩∆
+
+⟨s, s⟩2
+G| {z }
+denominator change
+s
++ ⟨v, s⟩G
+⟨s, s⟩G
+ε
+| {z }
+direction change
++O
+ 
+∥ε∥2
+2 +∥∆∥ 2
+op
+
+,
+(61)
+where⟨·,·⟩ ∆ :=⟨·,∆·⟩and we wrote(ε,∆)for(ε t,∆ t)
+at fixedt. Using the uniform boundsmI⪯G⪯MIand
+⟨s, s⟩G ≥σ 2
+s, the operator norm satisfies
+P(˜s,˜G)
+⊥ −P (s,G)
+⊥
+
+op =
+S(˜s,˜G)−S(s, G)
+
+op
+≤C P
+ 
+∥ε∥2 +∥∆∥ op
+
++O
+ 
+∥ε∥2
+2 +∥∆∥ 2
+op
+
+.
+(62)
+Step 3: Control perturbation bound.Combine Eq. (57),
+Eq. (60), Eq. (62):
+˜utan
+t −u tan
+t =P (˜st, ˜Gt)
+⊥ ( ˜wt)−P (st,Gt)
+⊥ (wt)
+=P (st,Gt)
+⊥ ( ˜wt −w t)| {z }
+Riesz perturbation
++
+ 
+P(˜st, ˜Gt)
+⊥ −P (st,Gt)
+⊥
+
+˜wt
+| {z }
+projector perturbation
+.(63)
+Using∥P (st,Gt)
+⊥ ∥op ≤1and boundedness of∥˜w t∥t, we
+obtain
+∥˜utan
+t −u tan
+t ∥t
+≤C 1
+ 
+∥∆t∥op +∥e t∥2
+
++C 2
+ 
+∥εt∥2 +∥∆ t∥op
+
+≤C
+ 
+∥εt∥2 +∥∆ t∥op +∥e t∥2
+
+.
+(64)
+Step 4: Quadratic (second-order) energy inflation via
+Bregman.Define the (nominal) energy functional onH t,
+E(u) := 1
+2
+Z 1
+0
+∥ut∥2
+t dtwith∥v∥ 2
+t =E pt[v ⊤Gtv].
+(65)
+SinceEis quadratic, the Bregman divergence is
+DE(˜u, u) :=E(˜u)− E(u)− ⟨∇E(u),˜u−u⟩
+= 1
+2
+Z 1
+0
+∥˜ut −u t∥2
+t dt,
+(66)
+with∇E(u) =uunder the nominal inner product. For
+thetangentialminimizersu tan and˜utan (each optimal in
+its own(s, G, h)), the first-order (directional) terms cancel
+when comparing their energieson their respective feasible
+affine subspaces(first-order optimality; cf. main text Sec
+3.3), which yields
+E(˜utan)−E(utan)
+≤ 1
+2
+Z 1
+0
+∥˜utan
+t −u tan
+t ∥2
+t dt
++C mix
+Z 1
+0
+ 
+∥εt∥2
+2 +∥∆ t∥2
+op +∥e t∥2
+2
+
+dt.
+(67)
+The remainderC mix (arising from evaluating energies un-
+der a common nominal metric and aligning gains) depends
+only on(m, M, σs)and the Lipschitz constants of(f, s θ);
+its appearance is standard when the two affine feasible sets
+differ byO(ε,∆).
+Step 5: From control gap to energy gap and to path–KL.
+Insert Eq. (64) into Eq. (67) to get
+E(˜utan)− E(utan)≤K E
+Z 1
+0
+ 
+∥εt∥2
+2 +∥∆ t∥2
+op
++∥e t∥2
+2
+
+dt.
+(68)
+Finally, by the Girsanov identity (main Eq. (5)), the path-
+space KL relative toP 0 equals the control energy (up to the
+innocuous convention of expectation under the controlled
+law, which affects constants only at higher order under
+our small-perturbation regime). Therefore Eq. (68) implies
+Eq. (55).
+11. Implementation Details
+This section consolidates the specific implementation de-
+tails and hyperparameter settings used to produce the re-
+sults in our main paper, ensuring full reproducibility. These
+details are drawn from discussions across the main text, par-
+ticularly Sec. 4.3–Sec. 5.
+Environment and Base Models.All experiments were
+conducted using PyTorch on single NVIDIA H100 GPUs.
+Our generative model is the pre-trained Latent Diffusion
+Model (LDM) checkpoint (cin256-v2) on ImageNet-1K.
+The target classifierv ϕ used for both guidance and eval-
+uation is the pre-trained ResNet50 (V1, using the ‘pre-
+trained=True’ flag from ‘torchvision’).
+Baseline Implementation.For a fair and controlled com-
+parison, our baselineAdvDiffis re-implemented using
+the identical ‘Denoise-then-Perturb’ (PGD-style) injection
+Table 3. Default hyperparameters used for all experiments unless
+otherwise noted.
+Parameter Value
+Base Model LDM (cin256-v2)
+Classifierv ϕ ResNet50 (V1)
+Sampler DDIM
+CFG Scale (ygt) 3.0
+Target Class (ytar)(y gt + 1) (mod 1000)
+Num. Steps (Main) 200 (S200)
+Num. Steps (Ablation) 50 (S50)
+Guidance Window Last 20% of steps
+Guidance Schedule (ηk) Linear ramp-up
+DPAC Metric (Gk) Identity (G t =I)
+Stability Epsilon (ϵ)10 −8
+Num. Samples (IN-100) 1300 (13 per class)
+Shared Noise Enabled
+mechanism as our proposed DPAC. This isolates the impact
+of the guidancedirection(w k vs.u ∗
+k) from the injection
+mechanism.
+Hyperparameter Settings.All experiments (main results
+and ablations) share the core hyperparameters summarized
+in Tab. 3. Settings specific to a single experiment (e.g.,
+guidance scaleη k) are noted in the main paper’s figures and
+tables.
+Code Availability.The code required to reproduce all ex-
+periments and figures in this paper will be made publicly
+available upon publication.
+12. Energy Proxy Validation
+In this section, we justify the use of the Cumulative Pertur-
+bation Energy (CPE), defined in the main text as ˆECPE =
+1
+2
+P
+k ||ηkuk||2
+2 (see Eq. (24)), as a practical proxy for the
+theoretical path-space KL divergence (path-KL).
+Continuous Theory vs. Discrete Implementation.Our
+theoretical foundation (main text Sec. 3.2) is built on Gir-
+sanov’s Theorem, which provides an exact identity be-
+tween the path-KL and the cumulative control energy for
+continuous-time SDEs:
+KL(Pu∥P0) = 1
+2EPu
+Z 1
+0
+∥ut∥2
+2 dt,
+as established in Eq. (5). This identity strictly holds when
+the controlu t is applied as a modification to the SDE’sdrift
+term (see Eq. (4)).
+However, as stated in Sec. 4.3 of the main text, our prac-
+tical implementation deviates from this continuous-time
+SDE for numerical stability. We instead employ a “Denoise-
+then-Perturb” (PGD-style) mechanism within a discrete-
+time DDIM sampler:
+xk−1 =x clean
+k−1 +η k ·u hat,
+whereη k ·u hat is a direct perturbation applied inx-space
+(see Eq. (23)). This discrete, PGD-style injection breaks
+the strict assumptions required for the Girsanov identity.
+Consequently, the path-KL is no longer formally defined or
+computable in this setting.
+CPE as a Discrete Surrogate.We therefore require a
+practical proxy that captures the spirit of the original path-
+KL: measuring the total “energy” injected that perturbs the
+sampling trajectory.
+Our proposed CPE (defined in Eq. (24)) measures the
+total squared magnitude of the unnormalized perturbation
+vectorsu k (whereu k =u ∗
+k for DPAC oru k =w k for Ad-
+vDiff) before normalization, scaled by the guidance sched-
+uleη k. This sum
+ˆECPE = 1
+2
+X
+k
+∥ηkuk∥2
+2
+can be interpreted as a discrete Riemann approximation of
+the continuous control energy integral, 1
+2
+R
+||u(t)||2dt.
+While path-KL is not strictly defined in our setting, the
+CPE serves as its most logical and consistent discrete sur-
+rogate, as it directly measures the magnitude of the “im-
+pulses” applied to deviate the path.
+Empirical Support.This logical connection is empiri-
+cally supported by our main findings. As shown in Fig. 2(c)
+of the main text, we observe a strong correlation between
+lower CPE (our proxy) and lower FID (the perceptual result
+of distributional shift). This confirms that minimizing our
+proxy (CPE) successfully minimizes the real-world sample
+degradation, validating its use as a measure of “distribu-
+tional drift” in our practical setting.
+13. Additional Experiments and Analysis
+This Supplementary Material provides quantitative valida-
+tion for the claims made in the main paper using a controlled
+experimental setup. Based on the reproduction protocols,
+we focus on four key aspects:
+•Statistical Significance & Mechanism (Sec. 13.1):We
+report 95% Confidence Intervals (CI) for FID and ASR to
+ensure reproducibility and verify the harmfulness of the
+normal component via a Negative Control experiment.
+•Trajectory Stability at High Scale (Sec. 13.2):We an-
+alyze the degradation of FID across varying step counts
+(N∈ {50,100,150,200}) under a high guidance scale
+Table 4.Statistical Significance (3 Seeds,η= 7.0, N= 50).
+Comparison of DPAC, SOTA Baseline (AdvDiff), and Negative
+Control (NormalOnly). Mean±95% CI reported.
+Method Scale FID (↓) ASR (%,↑)
+SOTA Base (AdvDiff) 7.035.70±0.54 99.79±0.08
+DPAC (Ours)7.035.26±0.50 99.79±0.08
+NormalOnly (Control) 7.058.44±2.49 3.50±0.86
+(η= 10.0), demonstrating DPAC’s robustness against
+catastrophic collapse.
+•Architecture Generalization (Sec. 13.3):We validate
+DPAC’s effectiveness on diverse classifiers (ViT-Base-16,
+Wide-ResNet50).
+•Ablation: Guidance Window (Sec. 13.4):We justify
+the choice of the guidance window strategy compared to
+“Early” and “Full” injection.
+13.1. Statistical Significance and Negative Control
+To establish reliability, we conducted experiments using
+three random seeds (42,43,44) at a guidance scale ofη=
+7.0withN= 50steps.
+Statistical Verification.Tab. 4 summarizes the mean
+and 95% confidence intervals. Consistent with our main
+claim, DPAC achieves an Attack Success Rate (ASR) sta-
+tistically equivalent to the SOTA baseline (AdvDiff) while
+consistently yielding a lower FID (35.26 vs 35.70). This
+confirms that our method effectively pushes the trade-off
+boundary, achieving the same level of control with strictly
+better perceptual quality by preserving the image distribu-
+tion.
+Negative Control (Mechanism).To confirm that the
+normal component of the gradient is the primary driver of
+distribution shift, we evaluated a “NormalOnly” baseline.
+As shown in Tab. 4, this setting yields a near-zero ASR
+(3.5%) while drastically degrading FID to>58. This em-
+pirically proves that the normal component is purely de-
+structive and contributes nothing to the attack objective.
+13.2. Trajectory Stability at High Guidance Scale
+A core theoretical advantage of DPAC is the reduction
+of discretization error fromO(∆t)toO(∆t 2). This dif-
+ference becomes most critical under high guidance scales
+(η= 10.0) and long trajectories (largeN).
+We evaluated FID degradation acrossN∈
+{50,100,150,200}withη= 10.0. As illustrated in
+Fig. 3, the baseline (AdvDiff) exhibits “Catastrophic
+Collapse” asNincreases, with FID exploding to 70.21 at
+N= 200. In contrast, DPAC effectively suppresses this
+error, maintaining a significantly lower FID of 45.34.
+Figure 3.Stability Analysis at High Scale (η= 10.0).While
+SOTA Base (Red) suffers from rapid FID degradation (collapse)
+as the number of steps increases, DPAC (Blue) effectively bounds
+the error, validating the theoretical stability.
+Table 5.Architecture Generalization (η= 5.0, N= 50).DPAC
+maintains its superiority in the FID-ASR trade-off across different
+backbones.
+Architecture Method FID (↓) ASR (%,↑)
+ViT-Base-16 SOTA Base 34.47 94.00
+DPAC 34.40 94.00
+Wide-ResNet50-2 SOTA Base 34.27100.00
+DPAC 34.1199.62
+13.3. Architecture Generalization
+We examine the robustness of DPAC across differ-
+ent classifier architectures used for guidance. We
+testedViT-Base-16andWide-ResNet50-2atη=
+5.0, N= 50.
+Tab. 5 demonstrates that DPAC’s advantages are
+architecture-agnostic. For both Vision Transformers and
+Wide-ResNets, DPAC consistently achieves comparable or
+better ASR than the baseline while further improving FID.
+This indicates that projecting the gradient onto the tangent
+space is a universally effective strategy for reducing distri-
+bution shift, regardless of the specific classifier backbone.
+13.4. Ablation: Guidance Window Strategy
+We investigate the impact of the temporal application of
+adversarial guidance. We compared three strategies (η=
+5.0, N= 50):
+•Full:Guidance applied at all timesteps (t∈[0, T]).
+•Early:Guidance applied only at the beginning (t∈
+[0.8T, T]).
+•Late (Default):Guidance applied only at the end (t∈
+[0,0.2T]).
+Table 6.Ablation on Attack Window (η= 5.0).Early injection
+fails to guide the diffusion process effectively.
+Window Setting FID (↓) ASR (%,↑)
+Full Window 34.71 93.38
+Early Window 40.43 0.25
+Late Window (Default)34.46 93.30
+Tab. 6 confirms that the Late strategy yields the opti-
+mal balance. Early injection is ineffective (ASR 0.25%)
+and harmful (FID 40.43). While Full window achieves high
+ASR, our default Late strategy offers the best trade-off by
+perturbing only fine-grained features.
+13.5. Qualitative Visualization
+We provide a comprehensive visual comparison of DPAC
+against the baseline to demonstrate both its robustness in
+extreme settings and its high fidelity in standard regimes.
+Catastrophic Collapse (η= 10.0).To visually ver-
+ify the “Catastrophic Collapse” quantified in Sec. 13.2,
+we present samples generated under the extreme setting of
+η= 10.0andN= 200in Fig. 4. Under this aggressive
+guidance scale, the adversarial pressure inevitably forces
+both methods to deviate significantly from the original gen-
+eration trajectory. However, the qualitative difference is dis-
+tinct:
+•SOTA Base:The baseline fails to constrain the pertur-
+bations to the data manifold. This leads to severe high-
+frequency artifacts, color saturation, and artificial noise
+patterns (FID>60), destroying the semantic validity of
+the image.
+•DPAC:While the strong control signal causes the im-
+age content to shift from the original seed (expected be-
+havior at highη), DPAC effectively suppresses artificial
+noise and breakdown. By projecting gradients onto the
+tangent space, it ensures that the generated samples re-
+main structurally coherent and natural, avoiding the “col-
+lapsed” look of the baseline.
+Standard Regime (η= 2.5).In Fig. 5, we compare the
+generation quality in a standard setting (η= 2.5, N= 50)
+against the unguided (clean) DDIM baseline. Remarkably,
+DPAC generates samples that are visually indistinguishable
+from the clean baseline, preserving fine details and texture
+without introducing the subtle high-frequency noise often
+observed in standard adversarial guidance. This confirms
+that DPAC successfully steers the class label while main-
+taining the perceptual quality of the original diffusion pro-
+cess.
+Figure 4.Visual Analysis of Catastrophic Collapse.Comparison of samples generated under standard (η= 5.0) vs. extreme (η=
+10.0, N= 200) conditions. We display two sets of comparisons side-by-side.Standard (Ref):Clean samples generated with conservative
+settings.SOTA Base:At high guidance, the image collapses into severe noise and artifacts due to off-manifold drift.DPAC:While the
+extreme guidance forces a semantic shift from the original trajectory, DPAC effectively defends against artifact accumulation, producing
+natural and structurally coherent images unlike the baseline.
+Figure 5.Qualitative Comparison in Standard Regime (η= 2.5).We display generated samples from the Baseline and DPAC across
+multiple classes. Compared to the unguided baseline (Clean), DPAC produces high-fidelity images that are visually indistinguishable,
+demonstrating that our method successfully attacks the classifier without compromising the perceptual quality of the original diffusion
+process.

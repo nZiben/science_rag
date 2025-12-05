@@ -1,0 +1,1162 @@
+Improved Mean Flows: On the Challenges of Fastforward Generative Models
+Zhengyang Geng1,2,3,* Yiyang Lu4,2,∗ Zongze Wu3 Eli Shechtman3 J. Zico Kolter1 Kaiming He2
+1CMU 2MIT 3Adobe 4THU
+Abstract
+MeanFlow (MF) has recently been established as a frame-
+work for one-step generative modeling. However, its “fastfor-
+ward” nature introduces key challenges in both the training
+objective and the guidance mechanism. First, the original
+MF’s training target depends not only on the underlying
+ground-truth fields but also on the network itself. To address
+this issue, we recast the objective as a loss on the instanta-
+neous velocity v, re-parameterized by a network that predicts
+the average velocityu. Our reformulation yields a more stan-
+dard regression problem and improves the training stability.
+Second, the original MF fixes the classifier-free guidance
+scale during training, which sacrifices flexibility. We tackle
+this issue by formulating guidance as explicit condition-
+ing variables, thereby retaining flexibility at test time. The
+diverse conditions are processed through in-context condi-
+tioning, which reduces model size and benefits performance.
+Overall, ourimproved MeanFlow(iMF) method, trained en-
+tirely from scratch, achieves1.72FID with a single function
+evaluation (1-NFE) on ImageNet 256×256. iMF substan-
+tially outperforms prior methods of this kind and closes the
+gap with multi-step methods while using no distillation. We
+hope our work will further advance fastforward generative
+modeling as a stand-alone paradigm.
+1. Introduction
+Diffusion models [42, 18, 45] and their flow-based vari-
+ants [30, 31, 1] are highly effective for generative modeling.
+These models can be viewed as solving a differential equa-
+tion (e.g.,an ODE) that maps a prior distribution to the data
+distribution. Because these equations are typically solved
+using multi-step numerical solvers, the generation process
+requires a certain number of function evaluations (NFEs).
+Recently, encouraging progress [46, 43, 11, 32, 10, 61,
+12] has been made toward reducing sampling steps in
+diffusion/flow-based models. Using the concept from physi-
+cal simulation, these models can be thought of asfastforward
+*Equal contribution. Part of this work was done when Z. Geng was
+interning at Adobe and MIT, and when Y . Lu was interning at MIT.
+(a) Original MeanFlow
+ (b) Improved MeanFlow
+Figure 1.Conceptual comparison. Original MeanFlow (MF) [ 12]
+predictsaverage velocity u by a network uθ. As the ground-truth
+u is unknown, original MF substitutes u with the network’s own
+prediction. We show that the original MF objective is equivalent
+to a loss on theinstantaneous velocity v (namely, v-loss), but re-
+parameterized by the neural networkuθ (namely, u-pred), as shown
+in(a). This re-parameterization, encompassed within the gray box,
+is determined bythe MeanFlow identity[ 12]. This reformulation
+reveals that the input to the compound function (in the gray box) is
+not only the noisy data (here, z), but also the conditional velocity
+(e−x ), which is not a standard regression problem. In(b), our
+improved objective is conceptually v-loss re-parameterized by u-
+pred, taking only the legitimate inputz.
+approximations to the underlying differential equations. The
+resulting fastforward models are capable of generating in a
+very few or even one step. To achieve this goal, the training
+objectives are formulated as look-ahead mappings that oper-
+ate across large time intervals, and various approximations
+have been proposed to address this challenging problem.
+In this work, we take a deeper look at the recently pro-
+posed MeanFlow (MF) framework [12]. In MF, instead of
+learning theinstantaneous velocityfield (denoted by v) un-
+derlying the ODE, the model learns anaverage velocityfield
+(denoted by u) across time steps. To avoid infeasible inte-
+gration during training, MF reformulates the problem into a
+differential relation between the instantaneous and average
+velocity fields. This relation, called the “MeanFlow iden-
+tity” [12], establishes a trainable objective. The underlying
+average velocity field serves as the ground-truth and as the
+optimum of this training objective.
+1
+arXiv:2512.02012v1  [cs.CV]  1 Dec 2025
+Despite the encouraging results of the original MF [12],
+we identify two major issues that remain unresolved: (i)
+the training target in the original MF is network-dependent
+and therefore does not constitute a standard regression prob-
+lem; (ii) MF handles the classifier-free guidance (CFG) [17]
+using a fixed training-time guidance scale, which sacrifices
+flexibility. We analyze these issues and present our solutions.
+First, the original MF predicts the average velocity u, an
+unknown quantity that is substituted with the network’s own
+prediction uθ. To have a network-agnostic prediction target,
+we show that the original MF can be equivalently reformu-
+lated as a loss on the instantaneous velocity (namely, v-loss),
+which isre-parameterizedby the network that predicts the
+average velocity u (namely, u-pred). See Fig. 1(a). This
+reformulation provides a regression target v that does not
+depend on the network. From this perspective, we further
+propose to reformulate the regression input, enforcing it to
+depend only on the noisy sample but not on other unknown
+quantities (Fig. 1(b)). Our improved objective substantially
+stabilizes the training process in practice.
+Second, the original MF handles CFG [17] using afixed
+guidance scale that is determined before training. We sug-
+gest that fixing the guidance compromises the flexibility at
+inference time, and that the optimal value depends on the
+model’s capability. To address this, we reformulate the guid-
+ance as a form ofconditioning, allowing it to take varying
+values during both training and inference. This formulation
+unlocks the power and flexibility of CFG while still main-
+taining the 1-NFE sampling behavior. We further design
+an improved architecture that accommodates this and other
+types of conditions through in-context conditioning.
+Overall, our experiments show that ourimproved Mean-
+Flow(iMF) effectively addresses these issues in the original
+MF. In the challenging setting of 1-NFE generation on Ima-
+geNet 256×256 trained from scratch, iMF achieves an FID
+of1.72, representing a relative 50% improvement over the
+original MF and setting a new state-of-the-art of its kind.
+Our models do not use distillation or any pre-trained models
+for alignment. This result substantially narrows the gap with
+those of multi-step methods, suggesting that fastforward gen-
+erative models can be a promising stand-alone framework.
+2. Related Work
+Diffusion and Flow-based Models.Diffusion models [ 42,
+18, 23, 44, 45] and flow matching [30, 31, 2] lay the foun-
+dation for a series of modern generative methods. These
+approaches can be formulated as learning a probabilistic
+trajectory,i.e.,an ODE/SDE (ordinary/stochastic differential
+equation) that maps between distributions. A network is
+trained to model the underlying trajectory using a regression
+loss. Samples are generated by solving the resulting ODE or
+SDE, typically using a numerical solver.
+Fastforward Generative Models.Standard diffusion and
+flow-based models were originally designed without explic-
+itly considering the acceleration of ODE/SDE solving. An
+emerging category of methods, which we abstract as “fastfor-
+ward generative models”, explicitly incorporates ODE/SDE
+acceleration into their training objectives.
+These models typically operate by making large jumps
+across time steps. Consistency Models [46, 43, 11, 32] for-
+mulate it as leaping from an intermediate time step directly
+to the end point of the trajectory. Consistency Trajectory
+Models [24] aim to learn a trajectory between any two time
+steps, based on explicit integration (i.e.,ODE/SDE solving)
+during training. Flow Map Matching [3] formulates the re-
+gression of the zeroth- and first-order derivatives of these
+flow fields. Shortcut Models [ 10] are built on the relation-
+ship between two time steps and their midpoint. IMM [61]
+leverages moment matching at different time steps. Mean-
+Flow [12] formulates and parameterizes the average velocity
+across two arbitrary time steps.
+Several improvements have been made to the MeanFlow
+formulation. AlphaFlow [ 59] decomposes the MeanFlow
+objective and adopts a schedule to interpolate from Flow
+Matching to MeanFlow. Decoupled MeanFlow [ 28] fine-
+tunes pre-trained Flow Matching models into MeanFlow by
+conditioning the final blocks of the networks on a second
+timestep. CMT [ 21] introduces mid-training using fixed
+explicit regression targets supplied by a pre-trained Flow
+Matching model before training the fastforward models. Our
+iMF is focused on the fundamental limitations of the Mean-
+Flow objective, as well as the practical issue of CFG. These
+issues are orthogonal to other concurrent improvements.
+3. Background
+Flow Matching.Flow Matching (FM) [ 30, 31, 1] learns a
+velocity field that flows between a prior distribution and the
+data distribution. We consider the standard linear schedule
+zt = (1−t)x+t e with data x∼p data and noise e∼
+pprior (e.g.,Gaussian). Computing the time-derivative gives
+aconditionalvelocity vc =e−x . Flow Matching learns a
+network vθ to regress vc by minimizing a loss function in
+thev-space (namely,v-loss):
+Et,x,e
+vθ(zt, t)−(e−x)
+2
+.(1)
+As one zt can be given by multiple pairs of (x, e), the under-
+lying unique regression target is themarginal velocity[30]:
+v(zt, t)≜E[v c |z t ],(2)
+which is marginalized over all pairs (x, e)that satisfy zt at
+t. For brevity, we omit t and denote v(zt, t)as v(zt), and
+vθ(zt, t)asvθ(zt), in the remaining of this paper.
+At generation time, FM samples by solving an ODE:
+d
+dt zt =v θ(zt). This is done by a numerical solver (e.g.,Eu-
+ler or Heun) integrating fromt= 1to0, withz 1 ∼p prior.
+2
+MeanFlow.By viewing v(zt) as theinstantaneousvelocity
+field, MeanFlow (MF) [12] introduces theaveragevelocity
+field between two time stepsrandt:
+u(zt, r, t)≜ 1
+t−r
+Z t
+r
+v(zτ )dτ.(3)
+Again, for brevity, we omit r and t and simply denote
+u(zt, r, t)by u(zt). Directly integrating Eq. (3) at training
+time is intractable. Instead, MF takes the derivativew.r.t. t
+and obtains aMeanFlow identity[12]:
+u(zt) =v(z t)−(t−r) d
+dt u(zt),(4)
+which is used to establish a feasible training objective. The
+term d
+dt uis given by [12]:
+d
+dtu(zt) =∂ zu(zt)v(z t) +∂ tu(zt)≜JVP(u;v).(5)
+This can be computed by Jacobian-vector product (JVP),
+between the Jacobian [∂zu, ∂ru, ∂tu] and a tangent vec-
+tor [v,0,1] . Here, for brevity, we introduce the notation
+JVP(u;v)for this JVP computed atu(z t)andv(z t).
+MeanFlowparameterizesaverage velocity by a network
+uθ(zt) (conditioned on r and t, omitted in notation for
+brevity). This network is optimized to approximate the
+MeanFlow identity (4). In the formulation of the original
+MF, Eq. (4) is implemented as:
+utgt = (e−x)−(t−r)JVP(u θ;e−x),(6)
+Here, two approximations are made [ 12]: (i) the marginal
+v(zt) is replaced with the conditional vc =e−x , same
+as Flow Matching; (ii) the true u in JVP is replaced by its
+network predictionu θ. With this targetu tgt, MF optimizes:
+Et,r,x,e ∥uθ −sg(u tgt)∥2,(7)
+where “sg” denotes stop-gradient, which helps create an
+apparenttarget for training. Once trained, MF directly
+performs one-step sampling via z0 =z 1 −u θ(z1) given
+(r, t) = (0,1), withz1 ∼p prior.
+4. Improved Mean Flows
+We identify and address two challenges of the original
+MF model.(i)The apparent target in Eq. (6) depends on
+the network. We aim for a more standard regression formu-
+lation (Sec. 4.1).(ii)To extend the MeanFlow identity for
+supporting CFG, original MF fixes the guidance scale be-
+fore training. We relax this constraint and allow for flexible
+CFG (Sec. 4.2). We then introduce an improved architec-
+ture for handling many types of conditions by in-context
+conditioning (Sec. 4.3).
+Figure 2.MeanFlow as v-loss.Original MeanFlow (MF) [ 12]
+models the average velocity u and train the network uθ via a u-loss
+parameterized by uθ itself. We show that MF can be reformulated
+as a v-lossre-parameterized by uθ, driven by the MeanFlow identity
+in Eq. (8).
+4.1. MeanFlow asv-loss
+Eq. (7) suggests that original MF [12] is a u-lossparame-
+terized by u-pred. In this subsection, we first show that the
+original MF can be reformulated as a v-loss(i.e.,instanta-
+neous velocity)re-parameterizedby u-pred. This gives us a
+network-independent target. See Fig. 2.
+This reformulation reveals a hidden issue: the prediction
+function for v requires access tounknownquantities, not
+just zt. We provide a solution to remedy this issue. With
+our reformulation, we arrive at a more standard regression
+problem.
+Reformulating MeanFlow as v-loss.While MF aims to
+compute u-loss, the true targetu is not accessible. As a result,
+the target utgt has a term approximated by JVP(uθ;e−x) in
+Eq. (6), which is not a standard regression target. We notice
+that theinstantaneousvelocity v can serve as a more feasible
+target. We can rewrite the MeanFlow identity (4) as (see also
+Fig. 2):
+v(zt) =u(z t) + (t−r) d
+dt u(zt).(8)
+Here, v on the left-hand side can serve as a target, as in
+standard Flow Matching; thecompound functionon the
+right-hand side can be parameterized by uθ. We denote
+the (re-)parameterized compound function asV θ:
+Vθ ≜u θ (zt) + (t−r)JVP sg(uθ;e−x),(9)
+where JVPsg denotes stop-gradient on the d
+dt uθ outcome (we
+will discuss stop-gradient later). Then we obtain a Flow
+Matching-like objective function, similar to Eq. (1):
+Et,r,x,e∥Vθ −(e−x)∥ 2.(10)
+It is easy to show that the reformulation in (9)(10) is
+fullyequivalentto the original MF objective in (6)(7).
+This suggests thatMeanFlow can be viewed as v-loss re-
+parameterized by uθ. Such re-parameterization in Eq. (9) is
+driven by the MeanFlow identity in Eq. (8).
+3
+Algorithm 1improved MeanFlow: training.
+Note: in PyTorch and JAX,jvpreturns the function output and JVP.
+# fn(z, r, t): function to predict u
+# x: training batch
+t, r = sample_t_r()
+e = randn_like(x)
+z = (1 - t) * x + t * e
+# instantaneous velocity v at time t
+v = fn(z, t, t)
+# predict u and dudt
+u, dudt = jvp(fn, (z, r, t), (v, 0, 1))
+# compound function V
+V = u + (t - r) * stopgrad(dudt)
+error = V - (e - x)
+loss = metric(error)
+This reformulation reveals a new issue: Vθ in Eq. (9)
+does not only take zt as input, but more importantly, also
+takes e−x as another input. Formally, our parameterized
+compound functionV θ is:
+Vθ(zt, e−x).(11)
+This is illustrated in Fig. 1(a). From the perspective of a
+standard regression formulation (e.g.,Eq. (1)), this is not
+a fully legitimate prediction function. We will show the
+negative effect of this extra input in Fig. 3.
+Improved MeanFlow Parameterization.The reason for
+Vθ’s dependence on e−x is on JVP, which can be traced
+back to the approximation in Eq. (6): themarginalvelocity v
+in Eq. (5) is replaced by theconditionalvelocity vc =e−x .
+Rather than doing this replacement, we can parameterize the
+marginal v instead. Formally, we re-define the compound
+functionV θ as:
+Vθ (zt)≜u θ (zt) + (t−r)JVP sg (uθ;v θ).(12)
+Here, inside the function of JVP, both uθ and vθ are network
+predictions: both take zt as the sole input. As such, our
+Vθ takes only zt as the input, which is thus a legitimate
+prediction function. See Fig. 1(b).
+To realize vθ with minimal overhead, we can reuse all or
+most of the networku θ. We propose two solutions:
+• Boundary conditionof uθ. By definition, we have the
+relation: v(zt, t)≡u(zt, t, t), that is, v equals u at r→t .
+As such, we can simply represent vθ(zt, t)by uθ(zt, t, t).
+This solution introduces no extra parameters. We empiri-
+cally show that this is sufficient for addressing the issue
+we consider here.
+0 1 2 3 4 5
+Training Steps (£104)
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+2.2
+2.4Loss
+MF loss: Vµ(zt; e ¡ x)
+iMF loss: Vµ(zt)
+Figure 3.Training losses.We examine the loss of samples only
+with t̸=r , since a batch also contains samples of t=r , for which
+the JVP term becomes zero due to its coefficient (t−r) . Both
+MF and iMF can be viewed as v-loss, using different forms of
+compound Vθ. Original MF’s loss is non-decreasing and has high
+variance. (Settings: MeanFlow-B/2, trained with basic ℓ2 loss with
+no adaptive weighting, and with no CFG.)
+• Auxiliary v-head.Beyond directly reusing uθ(zt, t, t),
+we can add an auxiliary head in the network of uθ(zt, r, t)
+that serves as a subnetwork vθ. This introduces extra
+capacity for modeling v. It is at the cost of extratraining-
+timeparameters, which, however, are not used at inference-
+time (as only uθ is needed). More details are in appendix.
+Using this head improves the results further.
+The pseudo-code of our iMF formulation is in Alg. 1, where
+the simpler form ofv θ(zt, t)≡uθ(zt, t, t)is shown.
+Comparison and Analysis.In Fig. 3, we compare the
+training loss between the original MF and the iMF objectives
+(withoutauxiliary v-head). We examine only the samples
+with t̸=r , as the JVP term becomes zero when t=r and
+thus is not our focus.
+Although the two formulations only differ inVθ(zt, e−x)
+and Vθ(zt), this distinction results in strikingly different
+behavior. The original MF’s loss has a muchhigher variance
+and is non-decreasing1, even though its objective can still
+successfully enable one-step generation.
+This comparison may look counterintuitive, because the
+form of Vθ(zt, e−x) seems to “leak” the regression target.
+However, we note that the true, unique regression target for
+v-loss is not the conditional velocity e−x , but the marginal
+v(zt) =E[v c |z t ] in Eq. (2), and therefore the leaking
+does not directly disclose the true v(zt). On the other hand,
+according to Eq. (5), the input to JVP should not be the
+conditional vc =e−x , but should be the marginal v(zt).
+As this is the input tangent vector to JVP, the variance of
+the conditional velocity can be significantly magnified by
+1If we also include the samples of t=r , the original MF’s overall loss
+can still decrease, depending on the portion of such samples.
+4
+JVP (i.e.,the Jacobian-vectorproduct). Our tangent vector is
+predicted by vθ(zt), which should have lower variance than
+e−x . Fig. 3 suggests that the large variance dominates the
+resulting loss.
+About Stop-gradient.Our formulation does not remove the
+stop-gradient operation, as indicated by the notation JVPsg.
+Unlike original MF, in our case the stop-gradient is part of
+the prediction function Vθ, not the regression target. As such,
+in principle, this stop-gradient is not strictly needed for the
+formulation itself. However, in practice, we observe that
+using the stop-gradient inside Vθ is still beneficial, as re-
+moving it introduces high-order gradientsw.r.t. θ and makes
+optimization more difficult.
+4.2. Flexible Guidance
+Thus far, we have not discussed the formulation of
+classifier-free guidance (CFG) [17]. The original MF [ 12]
+proposed a formulation to support 1-NFE CFG, provided
+that a guidance scale isfixedat training-time. However, a
+fixed guidance scale sacrifices the flexibility of adjusting this
+core hyperparameter at inference time. More importantly,
+the optimal CFG scalesshiftunder different settings (Fig. 4),
+and in general, astrongmodel (e.g.,larger size, longer train-
+ing, and/or more NFEs) favors asmallerCFG scale. It is
+suboptimal to freeze the scalea priori.
+To address this issue, we reformulate the CFG scale as
+a form ofconditioning, analogous to how a model is condi-
+tioned on time steps (e.g., t and r). This enables the scale to
+vary at training and inference time.
+Original MeanFlow with fixed guidance. The original MF
+[12] considers afixedguidance fieldv cfg:
+vcfg(zt |c) =ω v(zt |c) + (1−ω)v(z t),(13)
+where c is the class-condition, and ω is a fixed guidance
+scale. Combining this definition and the MeanFlow identity,
+the original MF learns aclass-conditionalaverage velocity,
+namely, uθ(zt |c) . We omit the derivations here and re-
+fer readers to [ 12]; but analogous to our reformulation in
+Sec. 4.1, conceptually, we can re-parameterize uθ(zt |c)
+into a compound function:
+Vθ(· |c)≜uθ(zt |c) + (t−r)JVP sg.(14)
+Here, for brevity, we omit the input toVθ (and to JVP), which
+is not our focus in this subsection: our discussion here can
+support both objectives in Eq. (9) (original MF) and Eq. (12)
+(iMF). This Vθ is trained to fit a target determined by a fixed
+ωin the original MF [12].
+Improved MeanFlow with flexible guidance. If the under-
+lying guidance field vcfg (13) is given by different ω values,
+we can still let our neural network fit each of them. To do
+so, we only need to allow the network toconditionon the
+1 2 3 4
+CFG Scale
+0
+5
+10
+15
+20
+25
+30FID-50K ↓
+Epoch
+40
+80
+160
+320
+1 2 3 4
+CFG Scale
+0
+5
+10
+15
+20
+25
+30
+NFE
+1
+2
+Figure 4.Optimal CFG scales shift under different settings. In
+general, astrongersetting has asmalleroptimal CFG scale, as re-
+flected by increased training epochs (left) and inference steps (right).
+This investigation is enabled by our flexible CFG-conditioning,
+where a single model can support varying CFG scales even in the
+single/few-NFE case. (Settings: iMF-B/2 on ImageNet 256×256.)
+CFG guidance scale ω. Similar strategies have been studied
+in multi-step methods [34, 6, 49], which we extend to our
+one-step method here.
+Formally, we extend Eq. (14) to:
+Vθ(· |c, ω)≜uθ(zt |c, ω) + (t−r)JVP sg,(15)
+which indicates that our compound function Vθ can be condi-
+tioned on ω, and this conditioning is handled by the network
+uθ. This is analogous to standard time-conditioning (e.g., t
+and r), which turns a continuous value into a learnable em-
+bedding. At training time, the value of ω is randomly sam-
+pled from a given distribution. The implementation details
+of training with CFG conditioning is in appendix.
+Fig. 4 shows the effect of our flexible CFG in iMF. Under
+different training and inference settings, the optimal guid-
+ance scale varies. Even for thesamemodel, training longer
+or using more inference steps can favor a different guidance
+scale, and therefore it is impossible to find the optimal scale
+beforehand. Our design unlocks the full potential of CFG
+for 1-NFE models.
+Additional guidance conditioning.Our formulation not
+only enables conditioning on a single variable ω, but also
+allows for other guidance-related factors. We can handle
+CFG interval [26] under the same paradigm.
+CFG interval [26] is an effective technique for improving
+sample diversity. In its original definition, it applies CFG
+only to a time interval [tmin, tmax] atinference-time. To sup-
+port this behavior at training time in our one-step model, we
+can also view the two values tmin, tmax as a form of condi-
+tioning. At training time, when t is outside of this interval,
+CFG is disabled (by settingω= 1).
+We use the notationΩ ={ω, tmin, tmax} to denote all con-
+ditions related to CFG. Each item in Ω has its own embed-
+ding. All conditions can be handled by standard adaLN-zero,
+or in-context conditioning, discussed next.
+5
+Figure 5.Improved in-context conditioning.Each type of condi-
+tions is turned intomultipletokens, which are concatenated with
+the image latent tokens along the sequence axis. It accommodates
+the conditions of time steps (r, t), class c, and guidance-related
+factors Ω (CFG scale ω and CFG intervals). Importantly,we do not
+use adaLN-zero for conditioning, which significantly reduces the
+model size (number of parameters) while maintaining performance.
+4.3. Improved In-context Conditioning
+Our model hasa diverse setof conditions, including two
+time steps r and t, a class label c, and the guidance-related
+conditionsΩ. In its complete notation, the networku θ is:
+uθ =u θ (zt |r, t,c,Ω).(16)
+Typically, the conditioning is handled by adaLN-zero [35],
+whichsumsall condition embeddings. When many hetero-
+geneous conditions are present, summing their embeddings
+and processing by adaLN-zero may become less effective,
+as this single operation can be overburdened.
+Improved MeanFlow conditioning.To handle these many
+conditions, we resort to thein-contextconditioning strat-
+egy. In-context conditioning was explored in DiT [35] but
+was found inferior to adaLN-zero in their setting. We find
+that this gap can be closed ifmultipletokens are used for
+each condition. In our implementation, we use 8 tokens for
+class, and 4 tokens for each other conditions (see appendix).
+All these learnable tokens are concatenated along the se-
+quence axis, jointly with the tokens from images (in the
+latent space, same as DiT [35]). The sequence is processed
+by Transformer blocks (Fig. 5). This architecture enables us
+to accommodate different types of conditions flexibly.
+As an important by-product, our in-context condition-
+ing enables us to completelyremoveadaLN-zero, which is
+parameter-heavy. This yields a1/3 reductionin model size
+(e.g.,from 133M to 89M for our iMF-Base model) when
+depth and width are unchanged. This also allows us to design
+the larger models more flexibly.
+5. Experiments
+Our experiment settings follow those of the original Mean-
+Flow [12], using the same public code. The experiments are
+40 80 120 160 200 240
+Epochs
+4
+5
+6
+7
+8
+9
+10
+11
+121-NFE FID
+6.17
+5.68
+4.57
+4.09
+original MF
+ + iMF objective
+ + flexible CFG cond
+ adaLN-zero   in-context
+Figure 6.FID curves during training.The original MeanFlow-
+B/2 baseline has a 1-NFE FID of 6.17. Using the improved training
+objective (Sec. 4.1), FID improves to 5.68. Incorporating flexible
+CFG conditioning (Sec. 4.2) reduces FID to 4.57. Replacing adaLN-
+zero with in-context conditioning (Sec. 4.3) further improves FID
+to 4.09. See also Tab. 1.
+on ImageNet [8] class-conditional generation at 256×256
+resolution. Following [ 10, 61, 12], the model operates on
+the latent space of a pretrained V AE tokenizer [38], which
+produces 32×32×4 latents from 256×256×3 images.
+We evaluate the challenging protocol of1-NFEgener-
+ation, where all our models are trainedfrom scratch. We
+report Fréchet Inception Distance (FID) [ 16] on 50K gen-
+erated images (with additional metrics in Tab. 2). Detailed
+configurations are in appendix.
+Baseline.In our ablations, we use the MeanFlow-B/2 model
+[12]. The ablation models are trained for 240 epochs. Our
+setting is exactly the same as that of MeanFlow-B/2 in [12],
+which has a 1-NFE FID of 6.17 (with CFG). This model is
+our starting point.
+5.1. Ablation Study
+In Tab. 1(a)and(b), we ablate the iMF designs discussed
+in Sec. 4.1 and Sec. 4.2. The architectural improvements are
+in Tab. 1(c). FID curves during training are in Fig. 6.
+MeanFlow as v-loss.In Tab. 1(a), we compare the original
+MF training formulation (7) with our iMF training formu-
+lation (12). We do not use CFG-conditioning here. We
+compare two variants of computing vθ for the JVP usage in
+(12): the boundary condition or auxiliary head.
+When using the variant of boundary condition ( vθ =
+uθ(zt, t, t)), our formulation improves the case w/o CFG
+from an FID of 32.69 to 29.42, representing a solid gain of
+3.27. This variant adds no extra parameters at training or
+inference time. This result demonstrates the impact of the
+legitimate regression formulation.
+When using the auxiliary head variant, our formulation
+also substantially improves over the original MF, from 32.69
+to 30.76 w/o CFG, with a gain of 1.93. While the gain
+is smaller than that of using the boundary condition, it be-
+comes relatively more significant in the case of “w/ CFG”,
+suggesting a more capable model is desired to handle the
+more challenging scenario.
+6
+FID, 1-NFE w/o CFG w/ CFG
+original MF [12] 32.69 6.17
+ourV θ, withv θ =u θ(zt, t, t) 29.42 5.97
+ourV θ, withv θ from aux. head 30.76 5.68
+(a)MeanFlow as v-loss. We compare with original MF with our iMF
+objective in Eq. (12) in Sec. 4.1. We compare two variants of computing vθ
+for Eq. (12), namely, using uθ’s boundary condition or an auxiliary head.
+In each row, “w/o CFG” and “w/ CFG” are two models trained separately,
+as is in original MF (which does not support flexible inference-time CFG).
+FID, 1-NFE w/o CFG w/ CFG
+best in Tab. 1(a) 30.76 5.68
+CFG-condition:ω-condition 25.15 5.52
+CFG-condition:Ω-condition 20.95 4.57
+(b)Flexible guidance. Adding guidance as conditioning enables flexible
+guidance at inference (Sec. 4.2). ω-condition is the basic conditioning on
+the guidance scale ω. Ω-condition allows to further condition on CFG
+interval’s start and end points. Here, only in the first row, “w/o CFG” and
+“w/ CFG” are two models trained separately, same as Tab. 1(a); when using
+our flexible CFG (last two rows), the “w/o CFG” cases are simply ω= 1 at
+inference-time, using a single trained model.
+FID, 1-NFE # params w/ CFG
+best in Tab. 1(b) 133M 4.57
+adaLN-zero→in-context cond. 89M 4.09
++advanced Transformer blocks 89M 3.82
++longer training (640ep) 89M 3.39
+(c)In-context conditioningand other improvements. Replacing adaLN-
+zero [35] with our multi-token in-context conditioning (Sec. 4.3) improves
+the results and substantially reduces the model size. Advanced Transformer
+blocks and longer training yield improvements as expected.
+Table 1.Ablation study on 1-NFE generation.FID-50K is evalu-
+ated on ImageNet 256×256. All are with the MF-B/2 backbone,
+trained for 240 epochs from scratch by default.
+In the case of “w/ CFG” (here, trained with a fixed ω),
+using the boundary condition improves FID from 6.17 to
+5.97 (Tab. 1(a)). While this relative gain is smaller, we
+observe that the same setting has a more pronounced impact
+on the same MF-XL model:
+FID, 1-NFE MF-XL/2 model, w/ CFG
+original MF [12] 3.43
+ourV θ, withv θ =u θ(zt, t, t) 2.99
+We hypothesize that when the model has more capacity, it
+can better leverage the capacity to learn vθ by uθ(zt, t, t),
+and therefore benefits more from this formulation.
+Further, Tab. 1(a)shows that the auxiliary head achieves
+an FID of 5.68 w/ CFG, which is about 10% relative im-
+provement over the original MF. This auxiliary head intro-
+duces no extra parameters or compute at inference time. All
+these comparisons demonstrate that a reliable v estimation
+asJVP’s inputis critical for MeanFlow methods.
+Flexible guidance.In Tab. 1(b), we examine the CFG condi-
+tioning proposed in Sec. 4.2. This ablation is best examined
+together with Fig. 4: the major advantage of CFG condition-
+ing is on the inference-time flexibility, which may not be
+simply reflected by a single FID number.
+config depth width # params Gflops FID↓IS↑
+MF-B/2 12 768 131M 23.1 6.17 208.0
+MF-M/2 16 1024 308M 54.0 5.01 252.0
+MF-L/2 24 1024 459M 80.9 3.84 250.9
+MF-XL/2 28 1152 676M 119.0 3.43 247.5
+iMF-B/2 12 768 89M 24.9 3.39 255.3
+iMF-M/2 24 768 174M 49.9 2.27 257.7
+iMF-L/2 32 1024 409M 116.4 1.86 276.6
+iMF-XL/2 48 1024 610M 174.6 1.72 282.0
+Table 2.System-level comparison with original MeanFlow, eval-
+uated by FID and IS [ 39] on ImageNet 256 ×256 with1-NFE
+generation. The notations of B/M/L/XL are mainly for reference,
+as it is impossible to calibrate both model size (# params) and
+compute (Gflops) due to the removal of adaLN-zero. The compute
+is for 1-NFE of the generator, excluding the tokenizer decoder.
+In Tab. 1(b), when using the simpler ω-conditioning
+(i.e.,only on the CFG scale ω), the FID w/ CFG improves
+slightly from 5.68 to 5.52. This marginal gain is unsurpris-
+ing, because the original MF [12] already had a near-optimal
+but fixed training-time ω, for this small model. This gain is
+more substantial for larger models, for which searching for
+a fixed training-timeωbecomes impractical.
+Tab. 1(b)further shows that richer CFG-conditioning
+(i.e.,on Ω) substantially improves the FID, by 1.11 to 4.57.
+This gain is because Ω-conditioning enables CFG interval
+[26]at inference time, and CFG interval is highly effective
+even for multi-step methods. Our conditioning strategy does
+not affect the 1-NFE sampling behavior: (tmin, tmax) are
+turned into embeddings for 1-NFE generation.
+Interestingly, our CFG conditioning also enables us to
+mimic the “w/o CFG” behavior at inference time. We
+achieve this by setting ω= 1.0 at inference, which repre-
+sents the “no CFG” case (see Eq. (13)). Tab. 1(b)shows that
+the FID at ω= 1.0 (“w/o CFG”) is significantly improved
+by 10 points, from 30.76 to 20.95. This suggests that training
+our models across a range of CFG scales can improve their
+generalizationperformance, substantially improving their
+results even at a suboptimalωvalue.
+In-context conditioning.Thus far, our ablations have
+been using adaLN-zero [35] for conditioning. In Tab. 1(c),
+we replace it with our multi-token in-context conditioning
+(Sec. 4.3). As adaLN-zero is parameter-heavy, removing it
+yields a substantial 1/3 reduction in model size, from 133M
+to 89M. Such a reduction is highly attractive for larger mod-
+els. The FID is improved from 4.57 to 4.09.
+Finally, following [55], we incorporate general-purpose
+Transformer improvements: SwiGLU [41], RMSnorm [58],
+and RoPE [ 47]. These components put together improve
+FID from 4.09 to 3.82. Training longer yields an extra gain,
+achieving 3.39 FID with this B-size model.
+5.2. Comparisons with Original MeanFlow
+In Tab. 2, we provide a system-level comparison with the
+original MF [12]. We note that removing adaLN-zero makes
+7
+Method # Params NFE FID
+1-NFE diffusion/flow from scratch
+iCT-XL/2 [43] 675M 1 34.24
+Shortcut-XL/2 [10] 675M 1 10.60
+MeanFlow-XL/2 [12] 676M 1 3.43
+TiM-XL/2 [54] 664M 1 3.26
+α-Flow-XL/2+ [59] 676M 1 2.58
+iMF-B/2 (ours) 89M 1 3.39
+iMF-M/2 (ours) 174M 1 2.27
+iMF-L/2 (ours) 409M 1 1.86
+iMF-XL/2 (ours) 610M 11.72
+2-NFE diffusion/flow from scratch
+iCT-XL/2 [43] 675M 2 20.30
+IMM-XL/2 [61] 675M 1×2 7.77
+MeanFlow-XL/2+ [12] 676M 2 2.20
+α-Flow-XL/2+ [59] 676M 2 1.95
+iMF-XL/2 (ours) 610M 21.54
+Method # Params NFE FID
+1-NFE diffusion/flow (distillation)
+π-Flow-XL/2 [7] 675M 1 2.85
+DMF-XL/2+ [28] 675M 1 2.16
+FACM-XL/2 [36] 675M 1 1.76
+Multi-NFE diffusion/flow
+ADM-G [9] 554M 250×2 4.59
+LDM-4-G [38] 400M 250×2 3.60
+SimDiff [19] 2B 1000×2 2.77
+DiT-XL/2 [35] 675M 250×2 2.27
+SiT-XL/2 [33] 675M 250×2 2.06
+SiT-XL/2 + REPA [57] 675M 250×2 1.42
+SiD2 [20] – 512×2 1.38
+LightningDiT-XL/2 [55] 675M 250×2 1.35
+DDT-XL/2 [53] 675M 250×2 1.26
+RAE [60] + DiTDH-XL 839M 250×2 1.13
+Method # Params NFE FID
+GANs
+BigGAN [4] 112M 1 6.95
+GigaGAN [22] 569M 1 3.45
+StyleGAN-XL [40] 166M 1 2.30
+autoregressive/masking
+JetFormer-L [51] 2.75B 256×2 6.64
+MaskGIT [5] 227M 8 6.18
+RQ-Transformer [27] 3.8B 256×2 3.80
+STARFlow [14] 1.4B 1024×2 2.40
+LLamaGen-3B [48] 3.1B 256×2 2.18
+V AR-d30[50] 2B 10×2 1.92
+MAR-H [29] 943M 256×2 1.55
+RAR-XXL [56] 1.5B 256×2 1.48
+xAR-H [37] 1.1B 50×2 1.24
+Table 3.System-level comparison on class-conditional ImageNet 256 ×256.Left: 1-NFE and 2-NFE diffusion/flow models trainedfrom
+scratch.Middle: Diffusion/flow models, including distillation-based 1-NFE methods and multi-NFE methods.Right: Reference methods
+from other generative modeling families, including GANs and autoregressive/masking models. All numbers are with CFG when applicable,
+and×2in NFE indicates that the CFG computation doubles NFEs at inference time.
+it impossible to fully calibrate the model sizes, and as such,
+the B/M/L/XL notations are mainly for the ease of referring.
+In our designs:(i)the B-size model has the same depth and
+width in both MF and iMF;(ii)the M-size model is designed
+to havesmallersize andlesscompute; and(iii)the L/XL-
+size models are designed to roughly match the model size of
+the MF counterparts (yet are still ∼10% smaller).
+Overall, Tab. 2 shows that our iMF models have sub-
+stantially better FID and IS results. Our iMF-XL/2 model
+achieves a 1-NFE FID of1.72, representing a50%rela-
+tive reduction compared to MF-XL/2’s 3.43. Qualitative
+examples are in Fig. 7 and appendix.
+5.3. Comparisons with Previous Methods
+In Tab. 3, we provide system-level comparisons with
+previous methods. We categorize the methods into: (i) fast-
+forward generative models trainedfrom scratch(Tab. 3, left);
+(ii) fastforward generative models,distilledfrom pre-trained
+multi-step models (Tab. 3, mid-top); (iii) multi-step diffu-
+sion/flow models (Tab. 3, mid-bottom); (iv) GAN and au-
+toregressive models (Tab. 3, right).
+Fastforward models from scratch.Tab. 3 (left) shows
+that our iMF substantially outperforms other fastforward
+models that are also trained from scratch. In addition, our
+1-NFE FID of 1.72 also outperforms thosedistilledfrom pre-
+trained models (Tab. 3, mid-top), suggesting that training
+from scratch can produce highly competitive fastforward
+models. When relaxing NFE to 2, iMF achieves an FID
+of1.54. This further closes the gap with themany-step
+diffusion/flow models (Tab. 3, mid-bottom).
+6. Conclusion
+We have demonstrated that fastforward generative models,
+without pretraining, can achieve highly competitive perfor-
+mance. We hope this encouraging result represents a solid
+step towards stand-alone fastforward generation.
+class 12: house finch, linnet, Carpodacus mexicanus
+class 738: pot, flowerpot
+class 975: lakeside, lakeshore
+Figure 7.Qualitative results of 1-NFE generation on ImageNet
+256×256.We showuncuratedresults on the three classes listed
+here; more are in appendix. The model is iMF-XL/2.
+With the remarkable progress of 1-NFE generation, the
+use of a tokenizer begins to incur a non-negligible cost at
+inference time. While our work focuses on advancing fast-
+forward models and is orthogonal to tokenizer design, from
+a practical standpoint, reducing or removing the tokenizer is
+becoming increasingly valuable. We expect future research
+to explore efficient tokenizers or pixel-space generation.
+8
+configs iMF-B iMF-M iMF-L iMF-XL
+params (M) 89 174 409 610
+depth 12 24 32 48
+hidden dim 768 768 1024 1024
+attn heads 12 12 16 16
+patch size2×2
+aux-head depth 8
+class tokens 8
+time tokens 4
+guidance tokens 4
+interval tokens 4
+linear layer initN(0, σ 2),σ 2 = 0.1/fan_in
+epochs 240 † / 640 640 640 800
+batch size 256 † / 1024
+learning rate 0.0001
+lr schedule constant
+lr warmup [13] 10 epochs
+optimizer Adam [25]
+Adam(β1, β2)(0.9, 0.95)
+weight decay 0.0
+dropout 0.0
+ema decay 0.9999
+ratio ofr̸=t50%
+(t, r)condt−r
+t, rsampler logit-normal(−0.4,1.0)
+cls drop [17] 0.1
+CFG distβ1 2 2 2
+Table 4.Configurations and hyper-parameters. †: these are for
+ablation studies.
+A. Implementation Details
+The configurations and hyper-parameters are summarized
+in Tab. 4. Our implementation is based on the public code-
+base of original MF, which is based on JAX and TPUs.2
+Auxiliary head for vθ.In Sec. 4.1, we have introduced an
+auxiliary head for modeling vθ, which produces the input to
+the JVP computation. This auxiliary head shares most layers
+and computation with the main network uθ and only differs
+in the last L layers (we set L= 8 in all cases). The output
+of this auxiliary head is to predict the marginalv.
+Unlike the variant using the boundary condition of u
+(that is, vθ(zt) =u θ(zt, t, t)), the unshared layers in the
+auxiliary head receive no gradient if not attached to any
+loss. To address this issue, we append an auxiliary loss
+∥vθ −(e−x)∥ 2 to this head, which is the Flow Matching
+loss. The output of this head is only for the JVP computation
+and is not used at inference time. As adaptive weighting [12]
+is used in the MF loss, we also apply it to this auxiliary loss.
+CFG conditioning.In Sec. 4.2, we have discussed CFG
+using the standard form [ 17]: vcfg =ω v(zt |c) + (1−
+2https://github.com/Gsunshine/meanflow
+Algorithm 2improved MeanFlow: training guidance.
+Note: in PyTorch and JAX,jvpreturns the function output and JVP.
+# fn(z, t, r, w, c): function to predict u
+# x: training batch
+# c: condition batch
+t, r, w = sample_t_r_cfg()
+e = randn_like(x)
+z = (1 - t) * x + t * e
+# cls cond and cls uncond v
+v_c = fn(z, t, t, w, c)
+v_u = fn(z, t, t, w, None)
+# Compute CFG target (same as orig MF)
+v_g = (e - x) + (1 - 1 / w) * (v_c - v_u)
+# Use predicted v_c to compute dudt
+u, dudt = jvp(fn, (z, r, t, w, c),
+(v_c, 0, 1, 0, 0))
+# Compute compound function V
+V = u + (t - r) * stopgrad(dudt)
+error = V - v_g
+loss = metric(error)
+ω)v(z t |∅) (Eq. (13)). The original MF paper [12] derives
+a relationship between vcfg and its resulting average velocity
+field, which can be simplified as (see Eq. (21) in [12]):
+vcfg = (e−x) + (1− 1
+ω )
+ 
+uθ(zt |t, t,c)−u θ(zt |t, t,∅)
+
+,
+(17)
+where “∅” is to emphasize the unconditional field. Here,
+ω is the “effective guidance scale” [ 12], which plays the
+same role as in standard CFG. Specifically, when ω= 1 ,
+this equation degenerates to the no-CFG case. We adopt this
+formulation. See the pseudocode in Alg. 2.
+When using CFG-conditioning, we need to randomly
+sample the scale ω for each training sample. First, we set a
+sampling range of ω: [1.0, ωmax], where we fix ωmax = 8.0.
+Note that ω= 1 degenerates to the no-CFG case. Then
+we sample ω from a power distribution that biases towards
+smaller ω values: ω∼p(ω)∝ω −β, where β controls the
+skewness (we useβ= 1or2, Tab. 4).
+When using CFG-conditioning to support guidance inter-
+val [26], we randomly sample tmin and tmax from U[0,0.5]
+and U[0.5,1.0] respectively, where U is the uniform distri-
+bution. During training, when t falls outside of [tmin, tmax],
+CFG is turned off by setting ω= 1 . The set of sampled
+values of Ω ={ω, tmin, tmax} is provided to the network as
+extra conditioning.
+9
+In-context conditioning.Our models are conditioned on
+time steps r, t, class c, and CFG factorsΩ ={ω, tmin, tmax}.
+All continuous-valued conditions (e.g., ω) are processed
+by standard positional embedding [ 52], similar to how t-
+conditioning is handled in continuous-time diffusion/flow
+models. Each type of these conditions is processed by a
+2-layer MLP. All conditions are replicated into multiple
+tokens: the number of replications for each type is in Tab. 4.
+All replicated tokens are added with learnable embeddings
+indicating their types of conditions (analogous to position
+embedding along the sequence), and then are concatenated
+along the sequence axis with the image tokens (see Fig. 5).
+Removing adaLN-zero.When using in-context condition-
+ing, our model removes the standard adaLN-zero [35] that is
+parameter-heavy. We adopt the zero residual-block initializa-
+tion [13], which adaLN-zero [35] also follows. Specifically,
+for any residual block [15] in a Transformer [52] with the
+form of x+F(x) , the last operation in F(x) is always a
+learnable per-channel scale γ, where γ is initialized as zero.
+As such, the initial state of a residual block is always identity
+mapping. The initialization of adaLN-zero [35] was based
+on the same principle.
+For all other linear projection layers in the Transformer
+blocks, we use a Gaussian initialization N(0, σ2), where
+σ2 = 0.1/fan_in and fan_in is the input channel num-
+ber. This can be implemented in popular libraries by
+σ=gain/ √fan_in where gain=
+√
+0.1≈0.32 . This ini-
+tialized σ is more conservative than common gain-controlled
+initializations, where gain is 1 or
+√
+2. In our preliminary
+experiments, this initialization converges faster when our
+block becomes different from the adaLN-zero block.
+Evaluation. We sample 50,000 samples and compute FID
+against the ImageNet training set (i.e.,FID-50K). We sample
+50 images per class for the FID evaluation. For each of our
+models where CFG-conditioning is enabled, we report the
+FID results using the optimal guidance scale and interval.
+B. Additional Qualitative Results
+We provide additional qualitative results in Fig. 8 and
+Fig. 9. These results are uncurated samples of the classes
+listed as conditions. These results (and Fig. 7) are from our
+iMF-XL/2 model for 1-NFE ImageNet 256×256 generation.
+Following common practice, we present qualitative results
+using a CFG setting that favors the IS metric (emphasizing
+individual quality) at the expense of the FID metric (empha-
+sizing diversity and distributional coverage); note that this
+tradeoff was impossible in the original MF, where the CFG
+is fixed. Here, we set CFG as ω= 6.0 and CFG interval as
+[tmin, tmax] = [0.2,0.8] . This evaluation setting has an FID
+of 3.92 and an IS of 348.2.
+Acknowledgment.We greatly thank Google TPU Research
+Cloud (TRC) for granting us access to TPUs. Zhengyang
+Geng is partially supported by funding from the Bosch Cen-
+ter for AI. Zico Kolter gratefully acknowledges Bosch’s
+funding for the lab. We thank Hanhong Zhao, Qiao Sun,
+Zhicheng Jiang and Xianbang Wang for their help on the
+JAX and TPU implementation. We thank our group members
+for helpful discussions and feedback.
+References
+[1] Michael S Albergo and Eric Vanden-Eijnden. Building nor-
+malizing flows with stochastic interpolants. InICLR, 2023.
+[2] Michael S Albergo, Nicholas M Boffi, and Eric Vanden-
+Eijnden. Stochastic interpolants: A unifying framework for
+flows and diffusions. InICLR, 2023.
+[3] Nicholas M Boffi, Michael S Albergo, and Eric Vanden-
+Eijnden. Flow map matching.TMLR, 2025.
+[4] Andrew Brock, Jeff Donahue, and Karen Simonyan. Large
+scale GAN training for high fidelity natural image synthesis.
+InICLR, 2019.
+[5] Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T
+Freeman. Maskgit: Masked generative image transformer. In
+CVPR, 2022.
+[6] Huayu Chen, Kai Jiang, Kaiwen Zheng, Jianfei Chen, Hang
+Su, and Jun Zhu. Visual generation without guidance. In
+ICML, 2025.
+[7] Hansheng Chen, Kai Zhang, Hao Tan, Leonidas Guibas,
+Gordon Wetzstein, and Sai Bi. pi-flow: Policy-based few-
+step generation via imitation distillation.arXiv preprint
+arXiv:2510.14974, 2025.
+[8] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li, and Li
+Fei-Fei. Imagenet: A large-scale hierarchical image database.
+InCVPR, 2009.
+[9] Prafulla Dhariwal and Alexander Nichol. Diffusion models
+beat gans on image synthesis. InNeurIPS, 2021.
+[10] Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter
+Abbeel. One step diffusion via shortcut models. InICLR,
+2025.
+[11] Zhengyang Geng, Ashwini Pokle, William Luo, Justin Lin,
+and J Zico Kolter. Consistency models made easy. InICLR,
+2024.
+[12] Zhengyang Geng, Mingyang Deng, Xingjian Bai, J Zico
+Kolter, and Kaiming He. Mean flows for one-step generative
+modeling. InNeurIPS, 2025.
+[13] Priya Goyal, Piotr Dollár, Ross Girshick, Pieter Noord-
+huis, Lukasz Wesolowski, Aapo Kyrola, Andrew Tulloch,
+Yangqing Jia, and Kaiming He. Accurate, large mini-
+batch sgd: Training imagenet in 1 hour.arXiv preprint
+arXiv:1706.02677, 2017.
+[14] Jiatao Gu, Tianrong Chen, David Berthelot, Huangjie Zheng,
+Yuyang Wang, Ruixiang Zhang, Laurent Dinh, Miguel An-
+gel Bautista, Josh Susskind, and Shuangfei Zhai. Starflow:
+Scaling latent normalizing flows for high-resolution image
+synthesis.NeurIPS, 2025.
+[15] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. InCVPR, 2016.
+10
+class 14: indigo bunting, indigo finch, indigo bird, Passerina cyanea
+ class 22: bald eagle, American eagle, Haliaeetus leucocephalus
+class 42: agama
+ class 81: ptarmigan
+class 108: sea anemone, anemone
+ class 140: red-backed sandpiper, dunlin, Erolia alpina
+class 289: snow leopard, ounce, Panthera uncia
+ class 291: lion, king of beasts, Panthera leo
+class 387: lesser panda, red panda, panda, bear cat, cat bear, Ailurus fulgens
+ class 437: beacon, lighthouse, beacon light, pharos
+Figure 8.Uncurated1-NFE class-conditional generation samples of iMF-XL/2 on ImageNet 256×256.
+[16] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bern-
+hard Nessler, and Sepp Hochreiter. Gans trained by a two
+time-scale update rule converge to a local nash equilibrium.
+InNeurIPS, 2017.
+[17] Jonathan Ho and Tim Salimans. Classifier-free diffusion
+guidance. InNeurIPS Workshop, 2021.
+[18] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-
+sion probabilistic models. InNeurIPS, 2020.
+[19] Emiel Hoogeboom, Jonathan Heek, and Tim Salimans. simple
+diffusion: End-to-end diffusion for high resolution images. In
+ICML, 2023.
+[20] Emiel Hoogeboom, Thomas Mensink, Jonathan Heek, Kay
+Lamerigts, Ruiqi Gao, and Tim Salimans. Simpler diffusion
+(sid2): 1.5 fid on imagenet512 with pixel-space diffusion. In
+CVPR, 2025.
+[21] Zheyuan Hu, Chieh-Hsin Lai, Yuki Mitsufuji, and Stefano
+11
+class 483: castle
+ class 540: drilling platform, offshore rig
+class 562: fountain
+ class 649: megalith, megalithic structure
+class 698: palace
+ class 963: pizza, pizza pie
+class 970: alp
+ class 973: coral reef
+class 976: promontory, headland, head, foreland
+ class 985: daisy
+Figure 9.Uncurated1-NFE class-conditional generation samples of iMF-XL/2 on ImageNet 256×256.
+Ermon. Cmt: Mid-training for efficient learning of consis-
+tency, mean flow, and flow map models.arXiv preprint
+arXiv:2509.24526, 2025.
+[22] Minguk Kang, Jun-Yan Zhu, Richard Zhang, Jaesik Park, Eli
+Shechtman, Sylvain Paris, and Taesung Park. Scaling up gans
+for text-to-image synthesis. InCVPR, 2023.
+[23] Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine.
+Elucidating the design space of diffusion-based generative
+models. InNeurIPS, 2022.
+[24] Dongjun Kim, Chieh-Hsin Lai, Wei-Hsiang Liao, Naoki Mu-
+rata, Yuhta Takida, Toshimitsu Uesaka, Yutong He, Yuki
+Mitsufuji, and Stefano Ermon. Consistency trajectory models:
+Learning probability flow ODE trajectory of diffusion. In
+ICLR, 2024.
+[25] Diederik P. Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. InICLR, 2015.
+12
+[26] Tuomas Kynkäänniemi, Miika Aittala, Tero Karras, Samuli
+Laine, Timo Aila, and Jaakko Lehtinen. Applying guidance
+in a limited interval improves sample and distribution quality
+in diffusion models. InNeurIPS, 2024.
+[27] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and
+Wook-Shin Han. Autoregressive image generation using resid-
+ual quantization. InCVPR, 2022.
+[28] Kyungmin Lee, Sihyun Yu, and Jinwoo Shin. Decoupled
+meanflow: Turning flow models into flow maps for acceler-
+ated sampling.arXiv preprint arXiv:2510.24474, 2025.
+[29] Tianhong Li, Yonglong Tian, He Li, Mingyang Deng, and
+Kaiming He. Autoregressive image generation without vector
+quantization. InNeurIPS, 2024.
+[30] Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximil-
+ian Nickel, and Matthew Le. Flow matching for generative
+modeling. InICLR, 2023.
+[31] Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight
+and fast: Learning to generate and transfer data with rectified
+flow. InICLR, 2023.
+[32] Cheng Lu and Yang Song. Simplifying, stabilizing and scaling
+continuous-time consistency models. InICLR, 2025.
+[33] Nanye Ma, Mark Goldstein, Michael S Albergo, Nicholas M
+Boffi, Eric Vanden-Eijnden, and Saining Xie. Sit: Exploring
+flow and diffusion-based generative models with scalable
+interpolant transformers. InECCV, 2024.
+[34] Chenlin Meng, Robin Rombach, Ruiqi Gao, Diederik P
+Kingma, Stefano Ermon, Jonathan Ho, and Tim Salimans.
+On distillation of guided diffusion models. InCVPR, 2023.
+[35] William Peebles and Saining Xie. Scalable diffusion models
+with transformers. InCVPR, 2023.
+[36] Yansong Peng, Kai Zhu, Yu Liu, Pingyu Wu, Hebei Li, Xi-
+aoyan Sun, and Feng Wu. Flow-anchored consistency models.
+arXiv preprint arXiv:2507.03738, 2025.
+[37] Sucheng Ren, Qihang Yu, Ju He, Xiaohui Shen, Alan Yuille,
+and Liang-Chieh Chen. Beyond next-token: Next-x prediction
+for autoregressive visual generation. InICCV, 2025.
+[38] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+Patrick Esser, and Björn Ommer. High-resolution image
+synthesis with latent diffusion models. InCVPR, 2021.
+[39] Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki
+Cheung, Alec Radford, and Xi Chen. Improved techniques
+for training gans. InNeurIPS, 2016.
+[40] Axel Sauer, Katja Schwarz, and Andreas Geiger. Stylegan-xl:
+Scaling stylegan to large diverse datasets. InSIGGRAPH,
+2022.
+[41] Noam Shazeer. Glu variants improve transformer.arXiv
+preprint arXiv:2002.05202, 2020.
+[42] Jascha Sohl-Dickstein, Eric A Weiss, Niru Maheswaranathan,
+and Surya Ganguli. Deep unsupervised learning using
+nonequilibrium thermodynamics. InICML, 2015.
+[43] Yang Song and Prafulla Dhariwal. Improved techniques for
+training consistency models. InICLR, 2024.
+[44] Yang Song and Stefano Ermon. Generative modeling by
+estimating gradients of the data distribution. InNeurIPS,
+2019.
+[45] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equations.
+InICLR, 2021.
+[46] Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever.
+Consistency models. InICML, 2023.
+[47] Jianlin Su, Yu Lu, Shengfeng Pan, Murtadha Ahmed, Bo
+Wen, and Yunfeng Liu. Roformer: Enhanced transformer
+with rotary position embedding.Neurocomputing, 2024.
+[48] Peize Sun, Yi Jiang, Shoufa Chen, Shilong Zhang, Bingyue
+Peng, Ping Luo, and Zehuan Yuan. Autoregressive model
+beats diffusion: Llama for scalable image generation.arXiv
+preprint arXiv:2406.06525, 2024.
+[49] Zhicong Tang, Jianmin Bao, Dong Chen, and Baining Guo.
+Diffusion models without classifier-free guidance. InICML,
+2025.
+[50] Keyu Tian, Yi Jiang, Zehuan Yuan, Bingyue Peng, and Li-
+wei Wang. Visual autoregressive modeling: Scalable image
+generation via next-scale prediction. InNeurIPS, 2024.
+[51] Michael Tschannen, André Susano Pinto, and Alexander
+Kolesnikov. Jetformer: An autoregressive generative model
+of raw images and text. InICLR, 2025.
+[52] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. InNeurIPS, 2017.
+[53] Shuai Wang, Zhi Tian, Weilin Huang, and Limin Wang.
+Ddt: Decoupled diffusion transformer.arXiv preprint
+arXiv:2504.05741, 2025.
+[54] Zidong Wang, Yiyuan Zhang, Xiaoyu Yue, Xiangyu Yue,
+Yangguang Li, Wanli Ouyang, and Lei Bai. Transition models:
+Rethinking the generative learning objective.arXiv preprint
+arXiv:2509.04394, 2025.
+[55] Jingfeng Yao, Bin Yang, and Xinggang Wang. Reconstruc-
+tion vs. generation: Taming optimization dilemma in latent
+diffusion models. InCVPR, 2025.
+[56] Qihang Yu, Ju He, Xueqing Deng, Xiaohui Shen, and Liang-
+Chieh Chen. Randomized autoregressive visual generation.
+InICCV, 2025.
+[57] Sihyun Yu, Sangkyung Kwak, Huiwon Jang, Jongheon Jeong,
+Jonathan Huang, Jinwoo Shin, and Saining Xie. Representa-
+tion alignment for generation: Training diffusion transformers
+is easier than you think. InICLR, 2025.
+[58] Biao Zhang and Rico Sennrich. Root mean square layer
+normalization. InNeurIPS, 2019.
+[59] Huijie Zhang, Aliaksandr Siarohin, Willi Menapace, Michael
+Vasilkovsky, Sergey Tulyakov, Qing Qu, and Ivan Sko-
+rokhodov. Alphaflow: Understanding and improving mean-
+flow models.arXiv preprint arXiv:2510.20771, 2025.
+[60] Boyang Zheng, Nanye Ma, Shengbang Tong, and Saining
+Xie. Diffusion transformers with representation autoencoders.
+arXiv preprint arXiv:2510.11690, 2025.
+[61] Linqi Zhou, Stefano Ermon, and Jiaming Song. Inductive
+moment matching. InICML, 2025.
+13

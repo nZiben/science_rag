@@ -1,0 +1,771 @@
+Reconstructing Multi-Scale Physical Fields from
+Extremely Sparse Measurements with an
+Autoencoder-Diffusion Cascade
+Letian Yi1, Tingpeng Zhang2, Mingyuan Zhou1, Guannan Wang3, Quanke Su2,3,4,
+Zhilu Lai1,2,4*
+1Internet of Things Thrust, The Hong Kong University of Science and Technology
+(Guangzhou), Guangzhou, China.
+2Intelligent Transportation Thrust, The Hong Kong University of Science and Technology
+(Guangzhou), Guangzhou, China.
+3Marine Hydrodynamic Research Facility, The Hong Kong University of Science and
+Technology (Guangzhou), Guangzhou, China.
+4Department of Civil and Environmental Engineering, The Hong Kong University of Science
+and Technology, Hong Kong SAR, China.
+*Corresponding author(s). E-mail(s): zhilulai@ust.hk;
+Abstract
+Reconstructing full fields from extremely sparse and random measurements is a longstanding ill-posed inverse
+problem. A powerful framework for addressing such challenges is hierarchical probabilistic modeling, where
+uncertainty is represented by intermediate variables and resolved through marginalization during inference.
+Inspired by this principle, we propose Cascaded Sensing (Cas-Sensing), a hierarchical reconstruction frame-
+work that integrates an autoencoder–diffusion cascade. First, a neural operator-based functional autoencoder
+reconstructs the dominant structures of the original field—including large-scale components and geometric
+boundaries—from arbitrary sparse inputs, serving as an intermediate variable. Then, a conditional diffusion
+model, trained with a mask-cascade strategy, generates fine-scale details conditioned on these large-scale
+structures. To further enhance fidelity, measurement consistency is enforced via the manifold constrained
+gradient based on Bayesian posterior sampling during the generation process. This cascaded pipeline substan-
+tially alleviates ill-posedness, delivering accurate and robust reconstructions. Experiments on both simulation
+and real-world datasets demonstrate that Cas-Sensing generalizes well across varying sensor configurations
+and geometric boundaries, making it a promising tool for practical deployment in scientific and engineering
+applications.
+Keywords:Field reconstruction; Probabilistic modeling; Cascade pipeline; Functional autoencoder; Diffusion model.
+1 Introduction
+Despite advances in sensor technology enabling large-scale deployments in physical systems, the number of
+monitoring sites is often constrained by high setup and maintenance costs. Therefore, spatial field reconstruction
+from limited local sensor information is a major challenge of complex physical systems, such as astrophysics
+[1], geophysics [2–4], atmospheric science [5, 6], and fluid dynamics [7, 8]. Due to the limited sensors, the
+reconstruction of multi-scale full-field data from extremely sparse and random observations is inherently an
+ill-posed problem, where the results often suffers from issues related to existence, uniqueness, and stability [9, 10].
+Compressed sensing has been widely applied to address this challenge. It relies on the assumption that
+signals are sparse in a specific transform domain, and reconstructs full-field data from undersampled observations
+by solving optimization problems [11]. To enhance reconstruction performance, compressed sensing variants
+combined with deep learning have been proposed, aiming to automatically learn effective sparse representations
+and reconstruction mappings in a data-driven manner [12–15]. While these methods have achieved certain
+theoretical and experimental progress, several limitations remain. Classic compressed sensing heavily depends on
+1
+arXiv:2512.01572v1  [cs.LG]  1 Dec 2025
+the sparsity prior, leading to performance degradation when dealing with non-sparse structures. Deep learning-
+based variants, although more flexible, are still often restricted to single-scale, fixed-domain reconstruction and
+struggle to capture multi-scale information.
+Besides the compressed sensing-based methods, many existing methods attempt to directly establish an
+end-to-end mapping between sparse measurements and the corresponding full-field data [16–19]. However, such
+mappings are typically trained with a specific reorganization form of sparse data (for example, patch or voronoi
+tessellation) and geometric boundary. When encountering unseen sparse measurements—such as data acquired
+from a different sensor configuration—or when facing new geometric boundaries, these models often fail to pro-
+duce accurate reconstructions and require retraining to adapt to the new scenarios. As a result, the applicability
+of these methods is generally limited to controlled or narrowly defined settings. They often struggle with gener-
+alization when applied to complex, real-world environments. Moreover, when the available observations become
+extremely sparse, the inherent ill-posed nature of the reconstruction problem severely impedes the ability to
+establish a stable and reliable mapping from sparse inputs to the full-field data [20–22].
+Generative models, such as generative adversarial networks [23] and diffusion models [24, 25], have shown
+remarkable capabilities in producing high-quality, diverse data, with broad applications in vision [26–28],
+biomedicine [29–31], and scientific computing [32–34]. By learning data distributions rather than explicit
+input–output mappings, these models can generate unseen but statistically consistent samples. Early studies
+applying generative models to field reconstruction primarily follow two approaches. One line of work learns super-
+vised conditional distributions between full-field low-resolution and high-resolution data pairs [35, 36]. However,
+due to the immense variability of sparse measurement patterns, directly modeling the distribution of full-field
+data conditioned on sparse observations is practically infeasible, as it is impossible to cover all sparse-to-full
+field mappings during training. Another approach adopts a reverse diffusion step followed by a projection-based
+measurement consistency step [37–39] or a Bayesian sampling step [40, 41] after pretraining an unconditional
+diffusion model to ensure the generated samples match sparse observations. However, this enforced measure-
+ment consistency often throws the sample path off the data manifold, leading to incorrect reconstructions [42].
+Although the manifold constrained gradient [42] is proposed to mitigate this problem, under extremely sparse
+observations, the model still tends to produce random samples due to the overly loose constraints, resulting
+in non-unique and unreliable reconstructions. Similarly, FunDiff [43] also relies on incorporating measurement
+consistency during the sampling stage to enforce conditional generation, and therefore suffers from degraded
+reconstruction quality under extremely sparse observations. Moreover, it extends diffusion models to function
+spaces by coupling a function autoencoder with latent diffusion, enabling physics-informed generative model-
+ing across different discretizations. While powerful for capturing global structures, this latent-space generation
+strategy introduces an information bottleneck: fine-scale details may be lost during encoding and cannot be fully
+recovered during decoding, which can limit its effectiveness in detail reconstruction from sparse observations.
+Cascading pipeline of generative model is an effective way to improve the generation quality in case without
+strong conditioning information [44–46]. In computer vision, this approach involves training a sequence of models
+at progressively higher resolutions: a base model generates low-resolution samples, which are then refined by
+super-resolution models [46]. Compared to training a single high-resolution model, cascading allocates most
+model capacity to low resolutions, which are critical for overall sample quality, while significantly improving
+training and inference efficiency. Moreover, individual models can be optimized independently, with architecture
+choices tailored to each resolution for optimal pipeline performance.
+Inspired by the cascading pipeline, the Cascaded Sensing (Cas-Sensing) based on an autoencoder-diffusion
+cascade is proposed to achieve accurate and robust multi-scale fields reconstruction from extremely sparse
+measurements. In Cas-Sensing, by viewing the full-field data as functional data, an neural operator-based func-
+tional autoencoder is first trained [47] to extract the latent features of data, thus having the ability of robustly
+recovering the principal structures (large-scale components with geometric boundaries) from arbitrary sparse
+measurements. Then a conditional diffusion model is trained with the conditions—the reconstructed principal
+structures—to only focus on generating the small-scale details which are the difference between ground truth
+and conditions. To enhance the robustness of diffusion model, we introduce a Mask-Cascade Training (MCT)
+approach, which applies different random masks during training to generate diverse conditions from a fixed
+ground-truth field. After training the conditional diffusion model, we employ the Manifold Constrained Gradient
+(MCG) [42] during sampling to ensure that the generated full-field data not only matches the sparse observa-
+tions at measurement locations, but also remains consistent with the underlying data manifold. The proposed
+cascade pipeline effectively alleviates the ill-posedness of the original reconstruction problem by progressively
+recovering multi-scale components in a staged manner, thereby enabling Cas-Sensing to achieve high accuracy,
+strong generalizability, and enhanced robustness in reconstruction tasks.
+The remainder of the paper is organized as follows. In Section 2, we present the problem formulation and
+describe the proposed methodology in detail, including the functional autoencoder, the conditional diffusion
+model, and the proposed mask-cascade training approach. Section 3 demonstrates the effectiveness of Cas-
+Sensing through a series of experiments with simulated data of circular cylinder flow, real-world data of ocean
+wave height, and real-world data of global ocean temperature. In Section 4, we discuss the advantages and
+limitations of Cas-Sensing. Finally, Section 5 concludes the paper and outlines directions for future work.
+2
+2 Methods
+2.1 Problem formulation
+The problem of recovering the multi-scale full fieldu∈R m from a vector of sparse sensor measurements
+y∈R n can be formulated as modeling the conditional distributionp(u|y). However, when the observations are
+excessively sparse, directly modelingp(u|y) is ill-posed, as the solution becomes highly non-unique. To address
+this challenge, we propose Cas-Sensing, a cascaded framework that mitigates the ill-posedness by leveraging the
+following marginalization rule:
+p(u|y) =
+Z
+p(u,m|y)dm=
+Z
+p(u|m,y)p(m|y)dm=E m∼p(m|y)[p(u|m,y) ],(1)
+wheremrepresents the principal structure (the large-scale component) ofu. This formulation naturally decom-
+poses the task into two subtasks: modelingp(m|y) to infer the principal structure from sparse observations,
+and modelingp(u|m,y) to reconstrut the full fielduby adding high-frequency details tombased on both
+mandy. Since the principal structures of the signal are often sparse, reconstructingmfrom sparse obser-
+vations—i.e., modelingp(m|y)—is generally well-posed. Furthermore, compared to directly modelingp(u|y),
+modelingp(u|m,y) incorporates an additional condition, constraining the reconstruction ofuto remain con-
+sistent with the principal structuresm. Consequently, the degree of ill-posedness is substantially alleviated
+through this cascaded pipeline.
+In the proposed Cas-Sensing framework based on an autoencoder-diffusion cascade, a functional autoencoder
+is first trained to approximately modelp(m|y). Then, a conditional diffusion model trained with the proposed
+mask-cascade training strategy to approximateE m∼p(m|y)[p(u|m,y) ]. Specifically, once the autoencoder is
+trained and fixed, random sparse measurementsyare generated fromuand mapped through the autoencoder
+to produce correspondingm. The conditional diffusion model is then trained to generateuconditioned on both
+mandy, effectively learning to reconstruct the full field from varying sparse observations.
+2.2 Functional autoencoder for principal structure reconstruction
+In practical engineering, sensors are often randomly placed, and many physical fields involve complex geometric
+boundaries, making field reconstruction from unstructured data challenging [48]. To address this, we adopt a
+neural operator-based functional autoencoder [47], which enables coordinate-based input for neural networks[49,
+50]. The functional autoencoder extracts latent features from unstructured data and robustly reconstruct the
+principal structure from random and sparse inputs.
+We model the inverse mapping from sparse observationsyto the principal structuremusing a deterministic
+autoencoder rather than a probabilistic model (e.g., a variational autoencoder). This choice is justified by the
+low uncertainty inherent in reconstructingmfromydue to: (1) the strong sparse prior ofmconstraining
+the solution space since large-scale patterns vary smoothly and can be represented with few basis functions;
+(2) average pooling operation in the autoencoder promoting invariant and robust feature learning; and (3) our
+masked training strategy explicitly enhancing model’s robustness to noise and varying sensing patterns iny. As
+a result, the posteriorp(m|y) is highly concentrated, allowing us to approximate it asp(m|y)≈δ(m− ˆm(y)),
+whereδ(·) is a Dirac delta function and ˆm(y) is the autoencoder output. This avoids instability from learning
+a full posterior variance, and still achieves accurate and robust reconstruction, as confirmed in our experiments.
+2.2.1 The architecture of functional autoencoder
+The encoderEmaps a functionu: Ω→R m to a latent vectorz∈R dz . In developing the encoder–decoder
+architectures, we assume thatUis a Banach space of functions that can be evaluated pointwise almost every-
+where, with domain Ω⊂R d and codomainR m. In practice, we only have access to discretized representations
+u(x)∈ U, obtained by evaluatinguat a finite set of mesh points. Following the formulation in [51, 52], we
+parametrise the encoder as a kernel integral operator:
+E(u;ζ) =ρ
+Z
+Ω
+κ(x, u(x);ζ1) dx;ζ2
+
+∈ Z=Rdz ,(2)
+withκ: Ω×R m ×ζ 1 →R l parameterised as a neural network with hidden layers of widthl= 64, using
+GELU activation, and withρ:R l ×ζ 2 →R dz parametreised as the linear layerρ(v;ζ 2) =W ζ2v+b ζ2, whered z
+denotes the dimension of latent vectorzandζ= [ζ 1, ζ2] denotes the parameters of encoder. We augmentx∈Ω
+with 16 random Fourier features to aid learning of high-frequency features [52, 53]. After discretisation on data
+u={(x i, u(xi))}I
+i=1, in which we approximate the integral over Ω by a normalised sum:
+{(xi, u(xi))|i= 1,2, ...I} →ρ(pool({κ(xi, u(xi);ζ 1)|i= 1,2, ...I};ζ 2)) (3)
+3
+where pool is a pooling operation invariant to the order of its inputs—in our case, the average pooling. The
+average pooling operation reduces the discrepancy between latent representations derived from sparse and dense
+inputs, thereby endowing the functional autoencoder with the capability for accurate sparse-data reconstruction.
+The decoderDmaps a latent vectorz∈ Zback to a functionD(z;ψ) : Ω→R m. To realize this mapping,
+we parameterizeDwith a coordinate-based neural networkγ:Z ×Ω×Ψ→R m, whose hidden layers employ
+GELU activations. Accordingly, we have
+D(z;ψ)(x) =γ(z, x;ψ)∈R m.(4)
+In this construction, each spatial coordinatex∈Ω is enriched with 16 random Fourier features. Inspired by
+DeepONet [54], the proposed architecture enables the decoded functionD(z;ψ) to be evaluated on arbitrary
+meshes, with the computational cost scaling linearly in the number of discretization points.
+2.2.2 Training objective and masked training
+The central aim of training a functional autoencoder is to compress functional datauinto a low-dimensional
+latent code while retaining sufficient information to accurately reconstruct the original signal. Formally, the
+optimization problem is expressed as
+L(ζ, ψ) =1
+2||D(E(u;ζ);ψ)−u|| 2
+2 +β||E(u;ζ)|| 2
+2,(5)
+where the second term,β||E(u;ζ)|| 2
+2, plays the role of regularisation, ensuring that the latent representation is
+smooth and structured.
+A widely adopted strategy to further enhance autoencoder performance is self-supervised masked training,
+in which the model learns to recover missing portions of data from partially observed inputs [55]. This training
+paradigm not only accelerates convergence but also improves generalisation. More importantly, it equips the
+network with the ability to reason about incomplete data, which is particularly advantageous when dealing with
+sparse or irregular samples [56–58]. In our framework, we employ the complement mask training approach pro-
+posed in [47], which exploits the flexibility of discretising both encoder and decoder on arbitrary computational
+meshes. Specifically, consider a discretised function sampleu={(x i, u(xi))}m
+i=1. At each training iteration, two
+index subsetsI enc andI dec ofI={1, . . . , m}are randomly drawn to formu e ={(x i, u(xi))|i∈ Ienc}and
+ud ={(x i, u(xi))|i∈ Idec}. In practice,I enc is chosen as a random subset ofI, whileI dec is set to its com-
+plement, i.e.,I dec =I\I enc. The ratior enc =|I enc|/|I|is treated as a tunable hyperparameter. As depicted in
+Fig. 1(a), the encoder processesu e, while the decoder is evaluated on the complementary mesh{x i}i∈Idec; the
+resulting output is then compared againstu d.
+2.3 Conditional diffusion model for detail generation
+After reconstructing the principal structures with the functional autoencoder, a conditional diffusion model is
+trained to generate the small-scale components, defined as the difference between the ground truth and the
+reconstructed principal structures, conditioned on the principal structures. By defining the detail or residual
+d=u−m, learningp(u|m,y) is equivalent to learningp(d|m,y) as it is a deterministic relationship. Modeling
+the residualdsimplifies the learning task, reduces complexity of modeling, and improves training stability and
+convergence. It also introduces an inductive bias, constraining the reconstructeduto remain close tom, thereby
+restricting the solution space and mitigating ill-posedness. As discussed above, the functional autoencoder
+approximatesp(m|y) with a Dirac delta functionδ(m− ˆm(y)). Consequently, the conditional diffusion model
+should be trained to model:
+p(u|y) =
+Z
+p(u|m,y)p(m|y)dm=
+Z
+p(d|m,y)p(m|y)dm≈
+Z
+p(d|m,y)δ(m− ˆm(y))dm=p(d| ˆm(y),y).
+2.3.1 Conditional denoising diffusion probabilistic model
+Training of denoising diffusion probabilistic models (DDPMs) consists of a diffusion process and a denoising
+process. Diffusion process transformsd 0 from the real data distributiond 0 ∼p(d 0) into a pure Gaussian noise
+dt ∼ N(0,I) by successively applying the following Markov diffusion kernel:
+p(dt|dt−1) =N
+
+dt;
+p
+1−β t dt−1, βtI
+
+,(6)
+where{β t}T
+t=1 is a pre-defined or learned noise variance schedule. We adopt a linear noise schedule where the
+varianceβ t increases linearly from 1×10 −4 to 0.02 overT= 1000 diffusion steps. The marginal distribution at
+arbitrary timesteptcan be denoted as:
+p(dt|d0) =N
+ 
+dt; √¯αt d0,(1−¯α t)I
+
+,(7)
+4
+where ¯αt = Qt
+s=1 αs, αt = (1−βt). WhenT→ ∞, p(dt|d0)≈ N(0,I). For sampling,dt = √¯αtd0+(1−¯αt)ϵ,ϵ∼
+N(0,I).
+Givend t, the denoising process aims to recoverd 0 by recursively learning the transition fromd t−1 tod t,
+which is defined as the following Gaussian distribution:
+qθ(dt−1|dt) =N(d t−1;µθ(dt, t),Σθ(dt, t)),(8)
+where parametersθare optimized by a denoising networkϵ θ that predictsµ θ(dt, t) =
+1√αt
+
+dt − 1−αt√1−¯αt
+ϵθ(dt, t)
+
+. As forΣ θ(dt, t), we use the closed-form posterior varianceσ 2
+t =β t
+1−¯αt−1
+1−¯αt
+as pro-
+posed in the original denoising diffusion probabilistic model formulation [24], instead of predicting it via neural
+network.
+However, this unconditional scheme fails to preserve the uniqueness of reconstruction due to the lack of
+guidance during generation. Therefore, ˆm(y) is injected as the condition for the denoising process:
+qθ(dt−1|dt, ˆm(y)) =N(d t−1;µθ(dt, t,ˆm(y)), σ2
+t I),(9)
+where ˆm(y) is injected by concatenating with the inputd t along the channel dimension.
+To generate samples from the trained model, the reverse process is iteratively performed starting from a
+Gaussian noised T ∼ N(0,I) as follows:
+dt−1 = 1√αt
+
+dt − 1−α t√1−¯αt
+ϵθ(dt, t,ˆm(y))
+
++σ tϵ,ϵ∼ N(0,I).(10)
+This process is repeated untilt= 1, at which pointd 0 is taken as the final reconstructed sample.
+2.3.2 Manifold constrained gradient
+The conditional distributionp(d t−1|dt, ˆm(y)) has been modeled by training the conditional diffusion model.
+Thep(d t−1|dt, ˆm(y),y) should be modeled to further preserve the uniqueness of reconstruction and impose
+measurement consistency. However, directly model the condtional distributionp(dt−1|dt, ˆm(y),y) is impossible
+due to the immense variability of sparse measurement patterns. We model it during inference instead of training
+of conditional diffusion model. Specifically, the Manifold Constrained Gradient (MCG) [42] is used to inject an
+additional gradient term to guide the generation towards observed measurements without retraining the model.
+This gradient refers to the score function in score-based generative models (SGMs) [25], defined as the gradient
+of the log-density of the data distribution∇ dt logp t(dt| ˆm(y)).
+Although DDPMs and SGMs were originally proposed under different formulations—predicting added noise
+in DDPMs and estimating score functions in SGMs—it has been shown that they are theoretically equivalent
+under certain parameterizations [25]. Specifically, when a DDPM is trained to predict the Gaussian noise
+ϵθ added at each step, the network implicitly learns the score function of the perturbed data distribution
+pt(dt| ˆm(y)) up to a scaling factor:
+∇dt logp t(dt| ˆm(y))≈ − 1√1−¯αt
+ϵθ(dt, t,ˆm(y)),(11)
+Therefore, the sampling equation in Eq. 10 can be reformulated as:
+dt−1 = 1√αt
+(dt + (1−α t)∇dt logp t(dt| ˆm(y))) +σ tϵ,ϵ∼ N(0,I).(12)
+This connection enables MCG to be directly applied to DDPMs. Specifically, the Bayes rulep(dt| ˆm(y),y) =
+p(dt| ˆm(y))p(y|dt, ˆm(y))
+p(y| ˆm(y)) leads to:
+∇dt logp t(dt| ˆm(y),y) =∇ dt logp t(dt| ˆm(y)) +∇ dt logp t(y|dt, ˆm(y)),(13)
+where∇ dt logp t(dt| ˆm(y)) has been modeled by conditional diffusion model. To approximate the likelihood
+termp t(y|dt, ˆm(y)), we assume that it follows a Gaussian form, i.e.,
+pt(y|dt, ˆm(y))∝exp
+
+− 1
+2σ2c
+∥y− M(ˆm(y) +d t)∥2
+2
+
+,(14)
+5
+whereM(·) denotes the mask operator andσ 2
+c denotes the variance associated with measurement noise.σ 2
+c is
+set as 10000 in all experiments of this study. Under this assumption, its gradient with respect tod t yields:
+∇dt logp t(y|dt, ˆm(y)) =− 1
+σ2c
+∂
+∂dt
+||y− M(ˆm(y) +d t)||2
+2 (15)
+Therefore, the sampling formula without retraining the model is given as:
+dt−1 = 1√αt
+
+dt + (1−α t)
+ 
+∇dt logp t(dt| ˆm(y))− 1
+σ2c
+∂
+∂dt
+||y− M(ˆm(y) +d t)||2
+2
+
++σ tϵ,ϵ∼ N(0,I).
+However, it drives the intermediate states at each denoising step to match the observations, which pulls the
+sample path away from the learned data manifold. Chung et al. [42] reveal that the Bayes optimal denoising
+step from the Tweedie’s formula [59] leads to a preferred condition for diffusion model both empirically and
+theoretically. As a result, Tweedie’s formula is introduced here to impose the measurement consistency while
+improving the generation accuracy. In the case of Gaussian noise, a classic result of Tweedie’s formula tells us
+that one can achieve the denoised result by computing the posterior expectation:
+E[d|˜d] = ˜d+σ 2∇˜dlog p(˜d),(16)
+where the noise is modeled by ˜d∼ N(d, σ2I). Considering the conditional diffusion model where the forward
+step is modeled asd t ∼ N(√¯αt d0,(1−¯α t)I), the Tweedie’s formula can be rewritten as:
+E[d0|dt, ˆm(y)] = 1√¯αt
+ 
+dt + (1−¯αt)∇dt logp t(dt| ˆm(y))
+
+(17)
+By replacingd t in Eq.(15) with the posterior expectation computed by Tweedie’s formula ˆd0(dt) =
+E[d0|dt, ˆm(y)], the sampling formula for the trained conditional diffusion model is given as:
+dt−1 = 1√αt
+
+dt + (1−α t)
+ 
+∇dt logp t(dt| ˆm(y))− 1
+σ2c
+∂
+∂dt
+||y− M(ˆm(y) + ˆd0(dt))||2
+2
+
++σ tϵ,ϵ∼ N(0,I),
+(18)
+where− 1
+σ2c
+∂
+∂dt
+||y−M( ˆm(y)+ ˆd0(dt))||2
+2 is the manifold constrained gradient that enforces consistency between
+the predicted clean sample and the observations. It has been proven that manifold constrained gradient is the
+projection of Eq. (15) onto the data manifold [42], thereby keeping the trajectory on the data manifold and
+alleviating sample degradation.
+2.3.3 Mask-cascade training
+We propose a mask-cascade training strategy to improve the robustness of the conditional diffusion model under
+varying sparsity patterns. A key challenge is that the functional autoencoder, when provided with different
+sparse samplings of the same field, reconstructs slightly different principal structures. Since it is infeasible to
+enumerate all possible reconstructions for training, directly using a fixed dataset would restrict the generalization
+ability of the diffusion model.
+To address this issue, our strategy explicitly integrates the stochasticity of sparse sampling into training
+the conditional diffusion model. As illustrated in Fig. 1(b), once the functional autoencoder is fully trained
+and its parameters are frozen, the training of the conditional diffusion model proceeds as follows: in each
+training step, we randomly generate a sparse mask and apply it to the ground-truth fielduto obtain a partial
+observationy. This observation is then passed through the functional autoencoder to reconstruct an approximate
+principal structure ˆm(y). The conditional diffusion model is then conditioned on ˆm(y), and trained to generate
+the fine-scale componentd=u− ˆm(y). By repeatedly sampling different masks across training steps, the
+conditional diffusion model is continuously exposed to a diverse ensemble of approximate principal structure
+reconstructions. This effectively augments the training distribution of conditioning inputs without the need for
+explicitly precomputing or storing all possible variants. As a result, the conditional diffusion model learns to
+model the conditional distributionp(d| ˆm(y)), thereby achieving improved robustness and consistency across
+varying sparsity patterns.
+As shown in Fig.1(c), the inference process of autoencoder-diffusion cascade proceeds as follows. Given
+arbitrary sparse observationsy, the functional autoencoder first reconstructs the principal structure ˆm(y). This
+reconstructed structure is then provided as a condition to the conditional diffusion model, which generates the
+fine-scale details ˆdthrough the manifold constrained gradient-enhanced sampling scheme in Eq. (18). Finally,
+the full-field reconstruction is obtained by combining the two componentsˆu= ˆm(y)+ ˆd. It is worth noting that,
+during inference, Cas-Sensing can still achieve reliable reconstruction even when the sampling rate of sparse
+observations differs significantly from the rates used in mask-cascade training.
+6
+(a) The masked training scheme of functional autoencoder. The trained functional autoencoder is to approximate
+p(m|y) withδ(m− ˆm(y)) as it learns the deterministic mapping betweenyandm.x e andu e denote the coordinates
+and field values fed into the encoder, whilex d andu d represent the coordinates and reconstructed values produced by
+the decoder.
+(b) The mask-cascade training scheme of conditional diffusion model, which ensure the conditional diffusion model’s
+accurate capturingp(d| ˆm(y)).
+(c) The inference scheme of Cas-Sensing based on an autoencoder-diffsusion cascade, which is the process of sampling
+fromp(u|y)≈p(d| ˆm(y),y). Manifold Constrained Gradient (MCG) is used to impose measurement consistency and
+sample fromp(d| ˆm(y),y) without retraining the model.
+Fig. 1Overview of the proposed Cascaded Sensing (Cas-Sensing) based on an autoencoder-diffusion cascade.
+7
+3 Results
+3.1 Reconstructing cylinder flow velocity fields with simulation data
+To evaluate the effectiveness of the proposed Cas-Sensing based on an autoencoder-diffusion cascade in recon-
+structing full-field data from randomly sparse observations under varying geometric boundary conditions, we
+first constructed a 2D cylinder flow dataset. This dataset captures incompressible fluid dynamics around a 2D
+circular cylinder within a channel:
+∇ ·u= 0,(19)
+∂u
+∂t + (u· ∇)u=µ∇2u− 1
+ρ∇p.(20)
+Specifically, the computational domain is defined as a rectangular region of size 1.6×0.6, within which both
+the cylinder center and radius are randomly sampled. This procedure yields a dataset comprising 96 distinct
+boundary configurations, each associated with 100 temporal snapshots. All flow fields are interpolated onto a
+uniform grid of size 256×96. The visualization of a sample from the Cylinder Flow is presented in Fig. 2.
+For the purpose of model training and evaluation, the dataset is partitioned based on boundary configurations
+rather than temporal snapshots, ensuring that the test set contains unseen geometrical variations. Specifically,
+76 boundary configurations, corresponding to a total of 7600 flow field snapshots, are employed as the training
+set, while the remaining 20 configurations, consisting of 2000 snapshots, are reserved exclusively for testing.
+Fig. 2An example of 2D cylinder flow velocity fields. The dataset contains 96 different boundary configurations of circular
+cylinders, each associated with 100 temporal snapshots.
+We first employ a functional autoencoder to learn compact representations of the circular cylinder flow fields.
+To encourage robustness, the model is trained in a masked manner, where only 50% of the grid points in each
+snapshot are provided to the encoder and the task is to reconstruct the full field from this partial information.
+To investigate the latent representation learned by the functional autoencoder, we first visualize the extracted
+latent vectors of the cylinder flow dataset. Specifically, the 32-dimensional latent vectors are projected into a
+two-dimensional space using the t-distributed Stochastic Neighbor Embedding (t-SNE) technique [60]. Each
+point in Fig. 3 corresponds to the latent variable of a single flow snapshot. It can be observed that the training
+data associated with different internal boundary configurations are well separated in the latent space, and the
+latent vectors of snapshots from the same configuration form circular patterns. This circular structure reflects
+the inherent periodicity of the velocity fields in cylinder wake flows. Moreover, the latent vectors corresponding
+to the test dataset exhibit the same characteristic structures, indicating that the functional autoencoder has
+effectively captured both the temporal and geometric features of the flow fields.
+Fig. 3t-SNE visualization of latent representations learned by the functional autoencoder for cylinder flow fileds.
+8
+To further assess the model’s reconstruction capability under varying levels of data sparsity, we select a
+representative flow field from the test set and apply 100 randomly generated masks with sampling ratios of
+50%,10%,3%,1%, and 0.5%. The masked inputs are then mapped through the trained functional autoencoder
+to recover the complete field on the 256×96 grid. The distributions of the resulting reconstruction errors,
+quantified by the root mean square error (RMSE), are illustrated in Fig. 4. Quantitative results confirm the
+strong robustness of the functional autoencoder in reconstructing cylinder wake flows under varying levels of
+input sparsity. Even when the available input points are reduced from 50% to 10%, the mean RMSE of the
+reconstructions remains nearly constant (around 0.291), with only a negligible change in variance. Noticeable
+degradation occurs only when the input ratio drops below 3%, where the RMSE increases modestly (to about
+0.31 at 0.5% input). These results demonstrate that the autoencoder is capable of faithfully recovering the
+dominant flow features even with extremely sparse measurements, underscoring its resilience to data sparsity
+and strong generalization ability.
+Fig. 4The reconstructed principal structures and kernel density estimates for RMSE on the reference sample across 100 randomly
+chosen meshes.
+After training the functional autoencoder, we freeze its parameters and employ it to provide structural
+conditions for a conditional diffusion model. In mask-cascade traing of the conditional diffusion model, only 0.5%
+of the grid points are supplied as input to the functional autoencoder, which then reconstructs the principal flow
+structures serving as guidance for the conditional diffusion model. During testing, these reconstructed structures
+are combined with the sparse measurements to enable the conditional diffusion model to recover the complete
+flow fields. Representative results, shown in Fig. 5(a), indicate that the generated fields reproduce the ground
+truth with high accuracy, capturing both the periodic vortex shedding and the influence of varying boundary
+configurations.
+To further probe reconstruction reliability, we select a test snapshot and impose random masks with different
+sampling ratios (0.1%,0.5%,1%,3%, and 5%). For each ratio, 100 independent reconstructions are carried out,
+and the kernel density distributions of RMSE are computed, as presented in Fig. 5(b). The results demonstrate
+a clear trend: at extremely sparse ratios such as 0.1%, the reconstructions remain accurate but exhibit slightly
+higher variance; as the ratio increases to 1%, both the mean error and uncertainty decrease significantly, reflecting
+enhanced stability of the generated fields. Beyond 3%, the performance saturates, with the error approaching
+a lower bound and the variance remaining minimal. Importantly, although the model is trained using only
+0.5% observations, it generalizes effectively to both sparser and denser cases, consistently delivering faithful
+reconstructions. This robustness is attributed to the randomization inherent in the mask-cascade training, which
+exposes the model to diverse observation patterns, and to the incorporation of manifold constraints, which
+enforce consistency between generated flows and sparse inputs.
+9
+(a) The generated full-field reconstructions with 0.5% input point ratio. Each reconstruction is a sample fromp(u|y)≈p(d| ˆm(y),y).
+(b) The mean full-field reconstructions of 100 generations with different input point ratios and corresponding kernel density estimates. The
+mask is fixed at each input point ratio.
+Fig. 5The full-field reconstruction results of cylinder flow fields.
+3.2 Reconstructing sea surface wave height fields with stereo data
+In this subsection, we demonstrate the Cas-Sensing on stereo image data of sea surface wave height fields
+for reconstruction from sparse measurements, highlighting its utility in complex real-world engineering. Stereo
+imaging measurement of the sea surface height is based on single snapshots or time records captured by a pair
+of synchronized and calibrated cameras. The example of stereo-image pair process by Wave Acquisition Stereo
+System (WASS) is presented in Fig. 6. The data set used in this study is Acqua Alta stereo data set including
+8000 image frames, recording a half hour sea evaluation with an imaging system installed on the north-east side
+of the Acqua Alta oceanographic research tower.
+10
+Fig. 6An example of stereo-image pair (from the Acqua Alta tower in the northern Adriatic Sea, Italy) and 3-D wave field on
+top of the right image (the colorscale is proportional to the sea surface height)[61].
+First, we train a functional autoencoder to reconstruct the principal structures of sea surface wave fields
+using 7000 image frames, with the remaining 1000 frames held out as a test set. During masked training, 50%
+of the data points in each image are provided to the encoder as input for feature extraction, while the model
+is trained to reconstruct the complementary 50% of the points. To evaluate the reconstruction performance, we
+investigate the sensitivity of the model to different input point ratios. Specifically, we fix an arbitrary sample
+from the held-out set and generate 100 distinct masks with point ratios of 50%,10%,3%,1%, and 0.5%. Each
+masked input is then encoded and decoded on the full grid, and kernel density estimates of the reconstruction
+root mean square error (RMSE) are computed, as presented in Fig. 3.2.
+From Fig. 3.2, it is evident that when the input ratio is above approximately 3%, the functional autoencoder
+achieves highly accurate and stable reconstructions of the principal structures, with RMSE means remaining
+close to 0.40 and variances below 0.015. As the input ratio decreases further, the reconstruction quality grad-
+ually degrades. At 1% input, for example, the mean RMSE increases to about 0.43 and the variance nearly
+doubles, and at 0.5% input the mean RMSE reaches approximately 0.45 with the largest spread in the error
+distribution. Despite this deterioration, the reconstructions still preserve the correct large-scale patterns of the
+wave field, highlighting the strong robustness of the functional autoencoder to severe data sparsity in capturing
+the dominant structures.
+Fig. 7The reconstructed principal structures and kernel density estimates for RMSE on the reference sample across 100 randomly
+chosen meshes.
+11
+When the functional autoencoder is trained and fixed, it is used to output principal structures according
+to sparse measurements as conditions to train a conditional diffusion model with the proposed mask-cascade
+training strategy. The input point ratio of the fixed functional autoencoder is set as 0.5% to enhance the
+robustness of conditional diffusion model to sparsity. To test the generation results, given 0.5% randomly
+selected observation points from each test sample, the functional autoencoder reconstructs the corresponding
+principal structures. These structures are then used as conditions to input the conditional diffusion model while
+manifold constrained gradients are incorporated into the sampling process to ensure consistency between the
+generated full-field data and the observed 0.5% points. As shown in Fig. 8(a), the generated fields exhibit high
+fidelity to the ground truth. It is important to note that each generated realization corresponds to a single
+sample fromp(u| ˆm(y),y). To quantitatively evaluate the uncertainty of the generative model, we further fix
+a test sample and generate random masks at different observation ratios (0.2%,0.5%,1%,3%, and 5%). After
+fixing these masks, we perform 100 independent generations, and compute the kernel density estimates of the
+resulting RMSE distributions. The results, shown in Fig. 8, where the mean field of generations match the
+ground truth very well. As the percentage of observed points increases from 0.2% to 1%, the mean RMSE
+decreases notably, indicating improved reconstruction quality with denser observations. In particular, the drop
+in both mean error and variance around the 1% input level suggests that even a relatively small increase in
+observations can significantly stabilize the generation. When the ratio is further increased to 3% and 5%, the
+mean RMSE continues to decrease slightly, approaching a lower bound, while the variance remains at a low
+level since the principal structures reconstruction results are more stable under these ratios, reflecting both
+accuracy and robustness. It is worth noting that although the conditional diffusion model is trained with 0.5%
+input points, it generalizes well to different input ratios and consistently delivers satisfactory reconstructions
+even with only 0.2% points. This can be attributed to two factors. First, during mask-cascade training, the
+conditions are generated by random sampling, which enhances the robustness of the conditional diffusion model
+to diverse and sparse conditions. Second, the manifold-constrained gradient further enforces consistency between
+the generated fields and the sparse observations while keeping the sampling trajectory on the data manifold,
+which ensures reliable reconstruction of the physical fields even under varying levels of sparsity.
+12
+(a) The generated full-field reconstructions with 0.5% input point ratio. Each reconstruction is a sample fromp(u|y)≈p(d| ˆm(y),y).
+(b) The mean full-field reconstructions of 100 generations with different input point ratios and corresponding kernel density estimates. The
+mask is fixed at each input point ratio.
+Fig. 8The full-field reconstruction results of sea surface wave fields.
+13
+3.3 Reconstructing global sea surface temperature fields with reanalysis data
+We also employed the daily global Sea Surface Temperature (SST) reanalysis dataset provided by the Copernicus
+Marine Service [62] to evaluate the reconstruction performance of the proposed Cascaded Sensing method with
+sparse observations. We selected data spanning three years, from June 1, 2022, to May 30, 2025. Due to the
+high spatial resolution of the original dataset (4320×2040), the data were first downsampled to 1440×640.
+The downsampled fields were then evenly partitioned into 15 subregions, each with a resolution of 480×128,
+as illustrated in Fig. 9, forming SST dataset. For model training and evaluation, the first 80% of the data were
+used as the training set, and the remaining 20% were reserved for testing.
+Fig. 9The partition of global sea surface temperature field data set.
+We begin by training a functional autoencoder on the dataset to learn a compact representation of the global
+sea surface temperature field. During the masked training, 50% of the data points in each frame are randomly
+selected as inputs to the encoder, while the remaining 50% are used as targets for the decoder. As illustrated
+in Fig. 10(a) (Condition), the trained functional autoencoder is capable of accurately reconstructing the large-
+scale background patterns from only partial observations, capturing the essential spatial variability of the ocean
+surface temperature fields. Once the autoencoder is fully trained, it is frozen and integrated into the Cascaded
+Sensing framework to provide real-time background field reconstructions that serve as conditioning information
+for the conditional diffusion model during mask-cascade training. Specifically, a sparse subset of points (0.5%)
+is randomly sampled at each step during training, from which the functional autoencoder reconstructs a smooth
+background field. The conditional diffusion model then learns to refine this background and recover the full
+field. After 800 epochs of training, the conditional diffusion model is well-trained to reconstruct fine-scale details
+based on conditions and extremely sparse measurements.
+To evaluate the model’s generalization ability under more challenging observation conditions, we randomly
+sample only 0.1% of the data points from the 15 predefined global subregions, a sampling ratio that is five
+times lower than that used during training. A representative reconstruction (RMSE = 0.0144) is shown in Fig.
+10(a). Remarkably, as evident in the zoomed-in views, the Cascaded Sensing framework not only reconstructs
+the global background temperature field with high accuracy but also successfully captures fine-scale turbulent
+structures, which are typically difficult to recover from such sparse observations.
+To systematically assess the robustness of the proposed approach, we further conduct experiments under a
+range of observation ratios (5%,3%,1%,0.5%,0.1%). For each ratio, sparse points are randomly selected and
+fixed, and the model generates 100 samples to characterize the reconstruction variability. The resulting mean
+and standard deviation of RMSE are summarized in Fig. 10(b). As expected, both the mean and standard
+deviation of RMSE increase as the observation ratio decreases. Nevertheless, the errors remain consistently low
+across all tested ratios, underscoring the robustness, stability, and generalization capability of the cascaded
+sensing framework in extremely sparse sensing scenarios.
+14
+(a) The generated full-field reconstructions with 0.1% input point ratio. Each reconstruction is a sample fromp(u|y)≈p(d| ˆm(y),y).
+(b) The mean full-field reconstructions of 100 generations with different input point ratios and corresponding RMSE. The mask is fixed at
+each input point ratio.
+Fig. 10The full-field reconstruction results of global sea temperature fields.
+4 Discussion
+In this study, we conduct a comprehensive evaluation of the proposed Cascaded Sensing (Cas-Sensing) frame-
+work under a broad range of scenarios characterized by different sensor configurations, sampling sparsities, and
+geometric boundaries. Our results clearly show that the hierarchical structure of Cas-Sensing can substantially
+mitigate the ill-posedness of reconstructing multi-scale physical fields from extremely sparse measurements. By
+decomposing the reconstruction process into two stages—large-scale structure recovery via a functional autoen-
+coder and fine-scale detail generation through a conditional diffusion model—the proposed method achieves
+accurate and stable reconstructions with high data fidelity.
+15
+A central strength of this cascaded design lies in its ability to reduce the reconstruction ambiguity caused by
+sparse and irregular inputs. By first establishing reliable coarse-scale conditioning, the diffusion model no longer
+needs to infer the entire field from incomplete observations, but focuses on capturing the missing small-scale
+structures. This hierarchical formulation enhances reconstruction stability and reduces the variability across
+different sampling patterns. Moreover, the mask-cascade training strategy significantly improves the model’s
+robustness and generalization, enabling it to adapt to diverse sensor layouts without the need for retraining.
+These advantages make Cas-Sensing particularly effective for scientific applications. For example, in fluid
+dynamics, accurate flow field reconstruction from sparse sensors is crucial for monitoring and control; in climate
+and ocean science, reconstructing global or regional temperature fields from sparse measurements enables more
+reliable environmental assessment; and in geophysical applications, the ability to generalize across sampling
+configurations supports practical deployment in complex field settings.
+Overall, Cas-Sensing provides a flexible and efficient framework for reconstructing multi-scale fields. By
+leveraging hierarchical representation learning and generative modeling, it delivers both accuracy and robustness
+across a variety of reconstruction scenarios, offering a promising pathway for advancing data-driven scientific
+sensing and prediction.
+5 Conclusion and future work
+In this study, we have presented Cascade Sensing (Cas-Sensing) as an effective framework for reconstructing
+full-field data from highly sparse observations. By leveraging an autoencoder-diffusion cascade framework, Cas-
+Sensing is capable of producing accurate and coherent reconstructions even when the input measurements are
+extremely limited. The mask-cascade training strategy, combined with manifold constrained gradient, enhances
+the robustness of the model to diverse sparse conditions and ensures the consistency of the reconstructed physical
+fields. These results demonstrate the potential of Cas-Sensing as a powerful tool for efficient, data-driven sensing
+and predictive modeling in complex physical systems.
+Nevertheless, several limitations remain in the current implementation. Firstly, the present study focuses
+exclusively on two-dimensional spatial domains, leaving the extension to higher-dimensional settings unexplored.
+Scaling Cas-Sensing to three-dimensional or higher-dimensional problems may introduce additional computa-
+tional and modeling challenges that warrant careful investigation. Secondly, the current framework addresses
+only spatial reconstruction, without explicitly modeling temporal dynamics. Consequently, the method cannot
+fully capture spatiotemporal evolution in dynamic systems, which may limit its applicability in real-time mon-
+itoring or predictive scenarios. Thirdly, the generative component currently relies on a vanilla DDPM, which,
+while effective, may impose constraints on sampling speed and computational efficiency. Alternative generative
+models, such as flow matching, could potentially accelerate sampling and further improve reconstruction fidelity.
+Future research should aim to overcome these limitations. Extending Cas-Sensing to higher-dimensional
+domains would broaden its applicability to more complex physical systems, including 3D flow fields or volumetric
+sensor networks. Integrating temporal modeling within the cascade framework could enable spatiotemporal
+reconstruction, capturing dynamic evolution in addition to spatial correlations, and allowing the framework to
+support real-time prediction tasks. Moreover, the adoption of more advanced generative models could enhance
+sampling efficiency without sacrificing accuracy, making Cas-Sensing more practical for large-scale deployments.
+Collectively, these developments would not only enhance the versatility and scalability of Cas-Sensing but also
+reinforce its potential as a robust and reliable tool for data-driven sensing, reconstruction, and prediction in
+complex physical environments.
+References
+[1] Akiyama, K., Alberdi, A., Alef, W., Asada, K., Azulay, R., Baczko, A.-K., Ball, D., Balokovi´ c, M., Barrett,
+J., Bintley, D.,et al.: First m87 event horizon telescope results. iii. data processing and calibration. The
+Astrophysical Journal Letters875(1), 3 (2019)
+[2] Kondrashov, D., Ghil, M.: Spatio-temporal filling of missing points in geophysical data sets. Nonlinear
+Processes in Geophysics13(2), 151–159 (2006)
+[3] Carrassi, A., Bocquet, M., Bertino, L., Evensen, G.: Data assimilation in the geosciences: An overview of
+methods, issues, and perspectives. Wiley Interdisciplinary Reviews: Climate Change9(5), 535 (2018)
+[4] Manohar, K., Brunton, B.W., Kutz, J.N., Brunton, S.L.: Data-driven sparse sensor placement for recon-
+struction: Demonstrating the benefits of exploiting known patterns. IEEE Control Systems Magazine38(3),
+63–86 (2018)
+[5] Alonso, M.T., L´ opez-Dekker, P., Mallorqu´ ı, J.J.: A novel strategy for radar imaging based on compressive
+sensing. IEEE Transactions on Geoscience and Remote Sensing48(12), 4285–4295 (2010)
+16
+[6] Mishra, K.V., Kruger, A., Krajewski, W.F.: Compressed sensing applied to weather radar. In: 2014 IEEE
+Geoscience and Remote Sensing Symposium, pp. 1832–1835 (2014). IEEE
+[7] Vinuesa, R., Brunton, S.L., McKeon, B.J.: The transformative potential of machine learning for experiments
+in fluid mechanics. Nature Reviews Physics5(9), 536–545 (2023)
+[8] Buzzicotti, M.: Data reconstruction for complex flows using ai: Recent progress, obstacles, and perspectives.
+Europhysics Letters142(2), 23001 (2023)
+[9] Hadamard, J.: Lectures on Cauchy’s Problem in Linear Partial Differential Equations. Courier Corporation,
+San Francisco (2014)
+[10] Breiding, P., Gesmundo, F., Micha lek, M., Vannieuwenhoven, N.: Algebraic compressed sensing. Applied
+and Computational Harmonic Analysis65, 374–406 (2023)
+[11] Cand` es, E.J., Romberg, J., Tao, T.: Robust uncertainty principles: Exact signal reconstruction from highly
+incomplete frequency information. IEEE Transactions on information theory52(2), 489–509 (2006)
+[12] Sun, J., Yan, C., Wen, J.: Intelligent bearing fault diagnosis method combining compressed data acquisition
+and deep learning. IEEE Transactions on Instrumentation and Measurement67(1), 185–195 (2017)
+[13] Shi, W., Jiang, F., Liu, S., Zhao, D.: Image compressed sensing using convolutional neural network. IEEE
+Transactions on Image Processing29, 375–388 (2019)
+[14] Ni, F., Zhang, J., Noori, M.N.: Deep learning for data anomaly detection and data compression of a
+long-span suspension bridge. Computer-Aided Civil and Infrastructure Engineering35(7), 685–700 (2020)
+[15] Xu, G., Zhang, B., Yu, H., Chen, J., Xing, M., Hong, W.: Sparse synthetic aperture radar imaging from
+compressed sensing and machine learning: Theories, applications, and trends. IEEE Geoscience and Remote
+Sensing Magazine10(4), 32–69 (2022)
+[16] Fukami, K., Maulik, R., Ramachandra, N., Fukagata, K., Taira, K.: Global field reconstruction from sparse
+sensors with voronoi tessellation-assisted deep learning. Nature Machine Intelligence3(11), 945–951 (2021)
+[17] Fan, H., Cheng, S., Nazelle, A.J., Arcucci, R.: Vitae-sl: A vision transformer-based autoencoder and spatial
+interpolation learner for field reconstruction. Computer Physics Communications308, 109464 (2025)
+[18] Li, Z., Wen, F., Liu, Z., Luo, Y., Zhao, Z., Wen, D., Wang, S.: A novel dual attention network for sparse
+reconstruction of turbine blade surface fields. Energy, 134644 (2025)
+[19] Ghazijahani, M.S., Cierpka, C.: On the spatial prediction of the turbulent flow behind an array of cylinders
+via echo state networks. Engineering Applications of Artificial Intelligence144, 110079 (2025)
+[20] Bell, J.B.: Solutions of Ill-Posed Problems. JSTOR (1978)
+[21] Candes, E.J., Plan, Y.: Tight oracle inequalities for low-rank matrix recovery from a minimal number of
+noisy random measurements. IEEE Transactions on Information Theory57(4), 2342–2359 (2011)
+[22] Arridge, S., Maass, P., ¨Oktem, O., Sch¨ onlieb, C.-B.: Solving inverse problems using data-driven models.
+Acta Numerica28, 1–174 (2019)
+[23] Goodfellow, I., Pouget-Abadie, J., Mirza, M., Xu, B., Warde-Farley, D., Ozair, S., Courville, A., Bengio,
+Y.: Generative adversarial networks. Communications of the ACM63(11), 139–144 (2020)
+[24] Ho, J., Jain, A., Abbeel, P.: Denoising diffusion probabilistic models. Advances in neural information
+processing systems33, 6840–6851 (2020)
+[25] Song, Y., Sohl-Dickstein, J., Kingma, D.P., Kumar, A., Ermon, S., Poole, B.: Score-based generative
+modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 (2020)
+[26] Wang, Z., Zhang, Z., Zhang, X., Zheng, H., Zhou, M., Zhang, Y., Wang, Y.: Dr2: Diffusion-based robust
+degradation remover for blind face restoration. In: Proceedings of the IEEE/CVF Conference on Computer
+Vision and Pattern Recognition, pp. 1704–1713 (2023)
+[27] Miao, Y., Deng, J., Han, J.: Waveface: Authentic face restoration with efficient frequency recovery. In:
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 6583–6592
+17
+(2024)
+[28] Zhao, Y., Hou, T., Su, Y.-C., Jia, X., Li, Y., Grundmann, M.: Towards authentic face restoration with
+iterative diffusion models and beyond. In: Proceedings of the IEEE/CVF International Conference on
+Computer Vision, pp. 7312–7322 (2023)
+[29] Cao, C., Cui, Z.-X., Wang, Y., Liu, S., Chen, T., Zheng, H., Liang, D., Zhu, Y.: High-frequency space
+diffusion model for accelerated mri. IEEE Transactions on Medical Imaging43(5), 1853–1865 (2024)
+[30] Yu, B., Wang, Y., Wang, L., Shen, D., Zhou, L.: Medical image synthesis via deep learning. Deep Learning
+in Medical Image Analysis: Challenges and Applications, 23–44 (2020)
+[31] Nguyen, E., Poli, M., Durrant, M.G., Kang, B., Katrekar, D., Li, D.B., Bartie, L.J., Thomas, A.W., King,
+S.H., Brixi, G.,et al.: Sequence modeling and design from molecular to genome scale with evo. Science
+386(6723), 9336 (2024)
+[32] Lienen, M., L¨ udke, D., Hansen-Palmus, J., G¨ unnemann, S.: From zero to turbulence: Generative modeling
+for 3d flow simulation, 2024. URL https://arxiv. org/abs/2306.01776
+[33] R¨ uhling Cachay, S., Zhao, B., Joren, H., Yu, R.: Dyffusion: A dynamics-informed diffusion model for
+spatiotemporal forecasting. Advances in neural information processing systems36, 45259–45287 (2023)
+[34] Li, T., Biferale, L., Bonaccorso, F., Scarpolini, M.A., Buzzicotti, M.: Synthetic lagrangian turbulence by
+generative diffusion models. Nature Machine Intelligence6(4), 393–403 (2024)
+[35] Deng, Z., He, C., Liu, Y., Kim, K.C.: Super-resolution reconstruction of turbulent velocity fields using a
+generative adversarial network-based artificial intelligence framework. Physics of Fluids31(12) (2019)
+[36] Shu, D., Li, Z., Farimani, A.B.: A physics-informed diffusion model for high-fidelity flow field reconstruction.
+Journal of Computational Physics478, 111972 (2023)
+[37] Choi, J., Kim, S., Jeong, Y., Gwon, Y., Yoon, S.: Ilvr: Conditioning method for denoising diffusion
+probabilistic models. arXiv preprint arXiv:2108.02938 (2021)
+[38] Chung, H., Sim, B., Ye, J.C.: Come-closer-diffuse-faster: Accelerating conditional diffusion models for
+inverse problems through stochastic contraction. In: Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pp. 12413–12422 (2022)
+[39] Kadkhodaie, Z., Simoncelli, E.: Stochastic solutions for linear inverse problems using the prior implicit in
+a denoiser. Advances in Neural Information Processing Systems34, 13242–13254 (2021)
+[40] Du, P., Parikh, M.H., Fan, X., Liu, X.-Y., Wang, J.-X.: Conditional neural field latent diffusion model for
+generating spatiotemporal turbulence. Nature Communications15(1), 10416 (2024)
+[41] Li, Z., Han, W., Zhang, Y., Fu, Q., Li, J., Qin, L., Dong, R., Sun, H., Deng, Y., Yang, L.: Learning
+spatiotemporal dynamics with a pretrained generative model. Nature Machine Intelligence6(12), 1566–1579
+(2024)
+[42] Chung, H., Sim, B., Ryu, D., Ye, J.C.: Improving diffusion models for inverse problems using manifold
+constraints. Advances in Neural Information Processing Systems35, 25683–25696 (2022)
+[43] Wang, S., Dou, Z., Liu, T.-R., Lu, L.: Fundiff: Diffusion models over function spaces for physics-informed
+generative modeling. arXiv preprint arXiv:2506.07902 (2025)
+[44] Nichol, A.Q., Dhariwal, P.: Improved denoising diffusion probabilistic models. In: International Conference
+on Machine Learning, pp. 8162–8171 (2021). PMLR
+[45] Saharia, C., Ho, J., Chan, W., Salimans, T., Fleet, D.J., Norouzi, M.: Image super-resolution via iterative
+refinement. IEEE transactions on pattern analysis and machine intelligence45(4), 4713–4726 (2022)
+[46] Ho, J., Saharia, C., Chan, W., Fleet, D.J., Norouzi, M., Salimans, T.: Cascaded diffusion models for high
+fidelity image generation. Journal of Machine Learning Research23(47), 1–33 (2022)
+[47] Bunker, J., Girolami, M., Lambley, H., Stuart, A.M., Sullivan, T.: Autoencoders in function space. arXiv
+preprint arXiv:2408.01362 (2024)
+18
+[48] Chai, X., Gu, H., Li, F., Duan, H., Hu, X., Lin, K.: Deep learning for irregularly and regularly missing
+data reconstruction. Scientific reports10(1), 3302 (2020)
+[49] Regazzoni, F., Pagani, S., Salvador, M., Dede’, L., Quarteroni, A.: Learning the intrinsic dynamics of
+spatio-temporal processes through latent dynamics networks. Nature Communications15(1), 1834 (2024)
+[50] Krishnapriyan, A.S., Queiruga, A.F., Erichson, N.B., Mahoney, M.W.: Learning continuous models for
+continuous physics. Communications Physics6(1), 319 (2023)
+[51] Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., Anandkumar, A.: Neural
+operator: Graph kernel network for partial differential equations. arXiv preprint arXiv:2003.03485 (2020)
+[52] Li, Z., Kovachki, N., Azizzadenesheli, K., Liu, B., Bhattacharya, K., Stuart, A., Anandkumar, A.: Fourier
+neural operator for parametric partial differential equations. arXiv preprint arXiv:2010.08895 (2020)
+[53] Tancik, M., Srinivasan, P., Mildenhall, B., Fridovich-Keil, S., Raghavan, N., Singhal, U., Ramamoorthi, R.,
+Barron, J., Ng, R.: Fourier features let networks learn high frequency functions in low dimensional domains.
+Advances in neural information processing systems33, 7537–7547 (2020)
+[54] Lu, L., Jin, P., Pang, G., Zhang, Z., Karniadakis, G.E.: Learning nonlinear operators via deeponet based
+on the universal approximation theorem of operators. Nature machine intelligence3(3), 218–229 (2021)
+[55] He, K., Chen, X., Xie, S., Li, Y., Doll´ ar, P., Girshick, R.: Masked autoencoders are scalable vision learners.
+In: Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 16000–
+16009 (2022)
+[56] Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.: Bert: Pre-training of deep bidirectional transformers
+for language understanding. In: Proceedings of the 2019 Conference of the North American Chapter of
+the Association for Computational Linguistics: Human Language Technologies, Volume 1 (long and Short
+Papers), pp. 4171–4186 (2019)
+[57] Liu, Z., Lin, W., Shi, Y., Zhao, J.: A robustly optimized bert pre-training approach with post-training. In:
+China National Conference on Chinese Computational Linguistics, pp. 471–484 (2021). Springer
+[58] Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., Liu, P.J.: Exploring
+the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research
+21(140), 1–67 (2020)
+[59] Robbins, H.E.: An empirical bayes approach to statistics. In: Breakthroughs in Statistics: Foundations and
+Basic Theory, pp. 388–394. Springer, Berlin (1992)
+[60] Maaten, L.v.d., Hinton, G.: Visualizing data using t-sne. Journal of machine learning research9(Nov),
+2579–2605 (2008)
+[61] Guimar˜ aes, P.V., Ardhuin, F., Bergamasco, F., Leckler, F., Filipot, J.-F., Shim, J.-S., Dulov, V., Benetazzo,
+A.: A data set of sea surface stereo images to resolve space-time wave fields. Scientific data7(1), 145 (2020)
+[62] Copernicus Marine Service: Global Ocean Physics Analysis and Forecast (2025). https://doi.org/10.48670/
+moi-00016
+19

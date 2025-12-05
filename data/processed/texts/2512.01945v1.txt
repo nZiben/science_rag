@@ -1,0 +1,1062 @@
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+AGENTICPOLICYOPTIMIZATION VIAINSTRUCTION-
+POLICYCO-EVOLUTION
+Han Zhou1 Xingchen Wan2∗ Ivan Vuli´c1 Anna Korhonen1
+1Language Technology Lab, University of Cambridge
+2Machine Learning Research Group, University of Oxford
+{hz416,iv250,alk23}@cam.ac.uk
+ABSTRACT
+Reinforcement Learning with Verifiable Rewards (RLVR) has advanced the reason-
+ing capability of large language models (LLMs), enabling autonomous agents that
+can conduct effective multi-turn and tool-integrated reasoning. While instructions
+serve as the primary protocol for defining agents, RLVR typically relies on static
+and manually designed instructions. However, those instructions may be subop-
+timal for the base model, and the optimal instruction may change as the agent’s
+policy improves and explores the interaction with the environment. To bridge the
+gap, we introduce INSPO, a novelInstruction-policy Co-Evolution framework that
+integrates instruction optimization as a dynamic component of the reinforcement
+learning (RL) loop. INSPOmaintains a dynamic population of instruction can-
+didates that are sampled with questions, where reward signals in RL loops are
+automatically attributed to each instruction, and low performers are periodically
+pruned. New instructions are generated and verified through an on-policy reflection
+mechanism, where an LLM-based optimizer analyzes past experience from a replay
+buffer and evolves more effective strategies given the current policy. We conduct
+extensive experiments on multi-turn retrieval and reasoning tasks, demonstrating
+that INSPOsubstantially outperforms strong baselines relying on static instructions.
+INSPOdiscovers innovative instructions that guide the agent toward more strategic
+reasoning paths, achieving substantial performance gains with only a marginal
+increase in computational overhead.
+1 INTRODUCTION
+The advent of large language models (LLMs) (Brown et al., 2020; Chung et al., 2024) has given
+rise to autonomous agents that are capable of reasoning, interpreting user intents, and tackling
+complex tasks via interacting with the environment (Yao et al., 2023). When paired with carefully
+engineered instructions, LLM-based agents have excelled in a wide range of applications, such as
+code generation (Jimenez et al., 2023), retrieval-augmented generation (Trivedi et al., 2023), and
+interactive decision-making (Su et al., 2025). Recently, the reinforcement learning (RL) (Sutton
+et al., 1999) paradigm has further advanced the reasoning capabilities of LLM agents, enabling them
+to learn policies from verifiable rewards (Shao et al., 2024) (RLVR) and achieve multi-turn and
+tool-integrated reasoning (Jin et al., 2025; Xue et al., 2025).
+In the core of these agentic capabilities,instructionsserve as the protocol for programming these
+agents, characterizing their roles, and defining any available tools/interfaces for interaction. The
+performance of LLM-based agents has been shown to be highly dependent on the instruction (Zhou
+et al., 2025), and subtle changes can exert substantial differences in generated trajectories, preventing
+robust and generalizable agent applications. The compounding effect of instructions is further
+amplified when LLMs are post-trained via RL, where changes in instructions can result in different
+initial spaces for policy learning, thereby largely affecting the converged performance after training
+(Liu et al., 2025a). Consequently, instruction design becomes crucial for agent training and typically
+requires costly human efforts for iterative refinements via trial-and-error.
+∗Now at Google. Code is available athttps://github.com/cambridgeltl/inspo.
+1
+arXiv:2512.01945v1  [cs.LG]  1 Dec 2025
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+The traditional paradigm of RLVR treats instruction as astaticandpre-definedinput. However,
+the optimal instruction for the base model is not always knowna prioriand may even change
+as the model’s policy improves and explores the interaction with the environment (Soylu et al.,
+2024). Recent findings also underscore the importance of instruction for RL, where injecting reward
+specification (Zhang et al., 2025) or in-context hints (Liu et al., 2025b) into the instruction better
+aligns the model with the learning objective and generates richer reward signals. While automated
+prompt optimization (APO) (Zhou et al., 2023; Yang et al., 2024) approaches exist for obtaining a
+better instruction before commencing the RL phase, generalizing them to the online setting of RL
+and incorporating adaptive knowledge during policy updates is rather non-trivial.
+To bridge this gap, we propose to automate instruction learning not as a static term, but as an
+integral and dynamic component of the RL learning loop, allowing the instruction and policy to
+co-evolve in an online setup. We introduce INSPO, INStruction-POlicy co-evolution, for agentic policy
+optimization, a novel framework that delivers two major innovations:
+• Policy-Optimization with Dynamic Instructions: In contrast to existing RLVR approaches that
+rely on a static instruction, INSPOmaintains a dynamic population of instruction candidates.
+During policy optimization, instructions are sampled from this population and weighted by
+their importance. The reward signals not only provide the policy gradients, but also attribute
+reward signals to each instruction candidate based on the assignment. We periodically prune low-
+performing candidates via successive halving and evolve new instructions from high-performing
+ones, ensuring a self-improving set of instructions that learns to incorporate new knowledge for
+policy learning.
+• Experience-Driven Instruction Generation: To generate innovative and effective instruction
+candidates, we introduce an on-policy reflection mechanism that mimics the idea of experience
+replay. INSPOutilizes a replay buffer that prioritizes past trajectories where the agent made
+incorrect or low-reward predictions. The history of experience then provides a reflection signal to
+an LLM-based instruction-proposer module, which analyzes the failure cases and evolves new
+instructions via self-reflection. Lastly, the newly proposed instructions are verified via a low-cost
+proxy before merging into the active population, where low-performing candidates are rejected.
+We validate our approach through extensive experiments on multi-turn retrieval and reasoning tasks.
+The experimental results show that INSPOsubstantially outperforms strong baselines that use static
+instructions. We demonstrate that INSPOevolves precise and innovative instructions that guide the
+LLM to discover more strategic reasoning paths and avoid erroneous patterns. Our ablation study
+further confirms that the online co-optimization of instruction and policy outperforms optimizing
+the instruction either before or after the RL phase. By enabling the online automation of instruction
+optimization alongside the policy optimization, INSPOincurs only a marginal computation overhead
+to the RL training process while bringing substantial performance gains.
+2 PRELIMINARIES
+2.1 REINFORCEMENTLEARNING WITHMULTI-TURNTOOL-USING
+We formalize multi-turn tool-using as a Markov Decision Process (MDP) (Hauskrecht et al., 2013),
+where the LLM-based agent, governed by its policy π and parameterized by the weights θ, interacts
+with an external environment by calling a tool engine T . It generates a trajectory τ as its state
+that comprises multiple turns of interactions: τ= (I, q, a0, o0, . . . , ak−1, ok−1, ak), where I is the
+initial instruction and q is the question input. ak is the response from the LLM given the history
+trajectory up to turn k, expressing the action of the agent for each turn, such that a∼π θ(·|I, q;T).
+The observation o is the feedback from the environment by calling the tool engine, ok =T(a k),
+which is concatenated in an interleaved manner with the action that forms the final trajectory.
+The learning objective of RL is to optimize the policy parameters θ by maximizing the expected
+returns over a distribution of questions D, where r(τ) defines the reward function. In RLVR,
+the reward is typically defined via a rule-based verifier, such as an exact match reward function,
+rEM(τ)∈ {1,0}, which returns 1 only if the final action matches the ground truth, and 0 otherwise.
+Therefore, the learning objective of RL is expressed as:
+max
+πθ
+Eq∼D,τ∼π θ(·|I,q;T) [r(τ)].(1)
+2
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+I1 Q1
+Policy Model
+Tool Engine
+I2 Q2
+I3 Q3
+I4 Q4
+I5 Q5
+I6 Q6
+R1
+R2
+R3
+R4
+R5
+R6
+T1 R1
+T3 R3
+T5 R5
+T6 R6
+Verification
+0.35
+0.40
+0.48
+Policy Optimization with Dynamic Instruction1
+Replay Buffer
+Policy Update
+Experience-Driven Instruction Generation2
+Update the Population
+Instruction Weight Update
+Prioritize failure
+trajectoreis
+Q1Q1Q1InsInsIns
+Generate instruction candidates
+Q3Q3Q3
+Q5Q5Q5 Policy
+Tool Evaluate
+I1 T1 R1
+I6 T6 R6
+Optimize via Self-Reflection
+InsInsIns
+Figure 1: Illustration of INSPO: In phase 1, INSPOmaintains a dynamic population of instruction
+candidates. For each sampled question, the instruction is sampled based on a selection probability
+weighted by the importance of each instruction. The reward signals not only update the policy
+model but also update the importance of instructions. In addition, INSPOinvolves a replay buffer
+that prioritizes failure trajectories or trajectories that come with low rewards (marked in red) for
+experience-driven self-reflection. In phase 2, the history of experience then provides a correction
+signal to an LLM-based instruction-proposer module, which analyzes the failure cases and evolves
+new instructions via self-reflection. New instructions are then passed for verification, where the
+top-performing candidates are merged into the active population of instructions.
+2.2 GROUPRELATIVEPOLICYOPTIMIZATION(GRPO)
+Group Relative Policy Optimization (GRPO) (Shao et al., 2024) is a state-of-the-art policy optimiza-
+tion method for language model that derives from Proximal Policy Optimization (PPO) (Schulman
+et al., 2017) and obviates the need for a separate model for value function approximation, but instead
+uses the group-wise sampling to estimate an advantage function A based on relative performance
+within a group G. For each pair of instruction I and question q∼ D, GRPO samples a group of
+trajectories {τi}G
+i=1 with tool interaction from the old policy πθold (· |I, q;T) and optimizes the
+following objective with a KL divergenceDKL penalty for regularization:
+JGRPO(θ) =E q∼D,{τ i}G
+i=1∼πθold (·|I,q;T)
+
+ 1
+G
+GX
+i=1
+1P
+t Ii,t
+|τi|X
+t=1
+Ii,t ·min
+
+ρi,t(θ) ˆAi,t,clip(ρ i,t(θ),1−ϵ,1 +ϵ) ˆAi,t
+
+−βD KL (πθ ||π ref)
+
+
+(2)
+where ρi,t(θ) is the token-level importance ratio, and ˆAi is the advantage that computes the relative
+rewards normalized in a group of outputs{r j}G
+j=1:
+ρi,t(θ) = πθ(τi,t|τi,<t)
+πθold (τi,t|τi,<t), ˆAi = ri −mean({r j}G
+j=1)
+std({rj}G
+j=1) .(3)
+Different to training a single-turn agent, applying policy gradients to the complete trajectory with
+environmental observations o that are off-policy may make the training process unstable and result
+in unintended reward collapse (Jin et al., 2025; Xue et al., 2025). Hence, GRPO for multi-turn
+RL involves an indicator function, Ii,t, that masks out any token-level responses that are from the
+observationo, and the loss is computed only over tokens inathat are from the agent’s own actions.
+3 INSTRUCTION-POLICYCO-EVOLUTION(INSPO)
+The conventional RLVR approach relies on a static and pre-defined instruction, which may be
+suboptimal and fails to adapt to observations from the environment as the agent’s policy updates,
+3
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+potentially constraining the exploration of the agent and resulting in a local optimum for policy
+learning. Instead, INSPOre-frames the instruction design in RLVR not as a one-off human engineering,
+but as a dynamic and integral component of the RL loop that can be automatically optimized.
+We introduce INSPO,Instruction-policy co-evolution, a novel co-evolving framework where the
+instruction is optimized alongside the agent’s policy learning, enabling the discovery of more
+effective strategies and reasoning pathways in an online setting. The core of INSPOis composed
+of two synergistic components: policy optimization with a dynamic set of instructions and an
+experience-driven self-reflection mechanism for generating new instructions based on the current
+policy.
+3.1 POLICYOPTIMIZATION WITHDYNAMICINSTRUCTIONS
+To encourage the exploration of agents with different reasoning strategies, INSPOfirst maintains
+a dynamic population at a maximum of N instruction candidates, denoted as P={I j}N
+j=1. Each
+instruction Ij is associated with a learnable importance weight wj, forming a set of weights W=
+{wj}N
+j=1 that correspondingly assigns the importance to each candidate.
+During the training steps, for each question q, an instruction Ij is sampled from the population P
+based on a selection probability distribution, I∼p(·|W;P) , conditioned on the importance weights
+W. The selection probability for each instruction is calculated using a softmax function with a
+temperature parameter τs that controls the exploration of new instructions against the exploitation
+of known effective ones. It allocates higher probabilities for more effective instructions while
+down-weighting the proportion of less-performing instructions in sampling:
+p(Ij|W;P) = exp(wj/τs)PN
+j=1 exp(wj/τs)
+.(4)
+This instruction sampling mechanism in INSPOenables us to integrate instruction optimization
+directly into the RL objective. The policy is similarly optimized by maximizing the expected reward,
+where the expectation is now taken over not only the distribution of questions q∼ Dbut also the
+distribution of instructionsI∼p(·|W;P). The learning objective of INSPOis thus extended as:
+JINSPO (θ,W) =E q∼D,I∼p(·|W;P),{τ i}G
+i=1∼πθold (·|I,q;T)
+
+ 1
+G
+GX
+i=1
+1P
+t Ii,t
+|τi|X
+t=1
+Ii,t ·min
+
+ρi,t(θ) ˆAi,t,clip(ρ i,t(θ),1−ϵ,1 +ϵ) ˆAi,t
+
+−βD KL (πθ ||π ref)
+
+
+(5)
+The reward signals obtained from the samples now act for two objectives simultaneously: 1) updating
+the policy parametersθ via the INSPOpolicy gradient objective; 2) updating the importance weightsW
+of the population of instructions. After a trajectoryτ∼π θt−1 (·|Ij, q;T) generated with instruction Ij
+receives a reward r(τ) , the reward can be automatically attributed back to Ij based on the assignment.
+We then update its corresponding importance weight wj using a running average of the mean reward
+¯rat a window size of n steps for a stable estimation of the importance over the group of trajectories
+generated byI j:
+wj ← n
+n+ 1 wj + 1
+n+ 1 ¯r,where¯r= 1
+G
+X
+ri.(6)
+To ensure a self-improving population of instructions, the population P is periodically pruned and
+evolved. At regular intervals, we apply a pruning phase for population control akin to the Successive
+Halving algorithm (Jamieson & Talwalkar, 2016), where the bottom half of instruction candidates,
+ranked by their importance weights wj, are pruned from the population, thereby focusing the policy
+optimization on more promising instructions. The top-performing candidates are then treated as
+parents to evolve new and potentially superior instructions.
+3.2 EXPERIENCE-DRIVENINSTRUCTIONGENERATION
+To generate novel and effective instructions, INSPOemploys an on-policy reflection mechanism to
+generate new instructions. Inspired by the experience replay in RL (Lin, 1992; Mnih et al., 2015), we
+introduce a replay buffer B in INSPOfor proposing new instructions via reflecting on past trajectories
+4
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Algorithm 1INSPO: Instruction-Policy Co-Evolution
+1: Input: Initial policy πθ0 , LLM-based optimizer O, training steps T, population size NP, number of
+instructions as parentsN parent, pruning and evolving frequencyK p,K e, evolving stepsT e.
+2:Initialize: Initial populationP 0, importance weightsW 0 ← {0}NP , replay bufferB ← ∅.
+3:fort= 1, . . . , Tdo
+4: [Policy Optimization with Dynamic Instructions]
+5: Sample a questionq∼ Dand an instructionI j ∼p(·|W t−1;Pt−1).
+6: Generate a group of trajectories{τ i}G
+i=1 ∼π θt−1 (·|Ij, q;T).
+7: Compute rewards{r i}G
+i=1 for each trajectoryτ i.
+8: Update policy parametersθ t ←INSPO.Update(θ t−1,{τ i},{r i}).
+9: Update importance weightw j using average reward¯r= 1
+G
+Pri.
+10:ift(modK p) = 0and|P t−1|> Nparent then
+11: Rank instructions inP t−1 by weightsW t−1.
+12: Prune bottomN/2instructions to create a new poolP t, s.t.|P t| ≥Nparent.
+13:end if
+14: [Experience-Driven Instruction Generation]
+15: Add(I j, q, τi, ri)to the replay bufferB.
+16:ift(modK e) = 0andt < Te then
+17:P parent ←top Nparent (Pt−1);P t ← ∅;Wt ← {0}NP .
+18:while|P t|< NP do
+19: SampleI parent fromP parent and failure trajectories{τ fail}fromB.
+20: Generate{I new} ∼ O(·|Iparent,{τ fail}).
+21: Verify{I new}on a validation setD B and add top candidates toP new.
+22:end while
+23: Set new populationP t ← Pparent ∪ Pnew, s.t.|P t|=N P.
+24:end if
+25:end for
+26:Returnoptimized policyπ θT and best instructionI ∗ =argmax Ij∈PT wj.
+in memory, which contain interaction history with the environment. At each training step, we store a
+tuple of (I, q, τ, r(τ))into the buffer B. We prioritize storing trajectories that resulted in incorrect
+or low-reward predictions from the latest step, creating a source of correction signals based on past
+failures. Periodically, we evolve new instruction candidates by this on-policy reflection mechanism
+that involves three key steps:
+1. Select: When the early phase has pruned the population to a target size, we select the top Nparent
+instructions as the best-performing candidates to serve as parents for evolution. We randomly
+sample one instructionI t at a time to form the parent for the generation process.
+2. Generate: Together with the parent instruction, we sample a batch of failure trajectories from the
+replay buffer B that were generated in the latest step. These trajectories contain rich information
+that reveals the failure modes of the newest policy and its history of interaction with the environ-
+ment. We then leverage an LLM-based optimizer O to reflect on failure patterns and propose new
+instruction candidates. Precisely, the optimizer is prompted with the parent instruction and the
+failure trajectories, and is tasked with performing self-reflection: it analyzes the causes of failures,
+critiques the existing strategy in instruction, and proposes refined instructions {Inew} designed to
+guide the agent to overcome these erroneous actions. This stands as a critical step for INSPOthat
+constantly involves online feedback into the policy learning process.
+3. Verify:Newly generated instructions are finally verified before merging into the active population
+to maintain the stability of the training. Each proposed candidate Inew is evaluated via a low-cost
+proxy, where we sample a subset of samples DB from the replay buffer for validation, and only
+the top-performing candidates are added to the new populationP t.
+This generate-and-verify loop continues until the population is refilled to the target population size
+NP, ensuring a self-improving population of instructions. In the inference time, we only return the
+best instruction with the highest importance weight I∗ =argmax Ij∈PT wj, which is portable and
+transferable for LLM inference. The complete procedure for INSPOis provided in Algorithm 1.
+Overall, the dynamic instruction sampling integrates natively with the policy optimization loop for
+exploring diverse reasoning strategies, and the experience-driven self-reflection mechanism enables
+the agent to incorporate new environmental feedback into the policy learning process.
+5
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+4 EXPERIMENTS
+Models and evaluation data.We evaluate our approach on a diverse set of tool-integrated question-
+answering benchmarks with the search tool. For multi-hop question answering, which requires
+complex reasoning and multi-turn information retrieval, we include HotpotQA (Yang et al., 2018),
+2WikiMQA (Ho et al., 2020), MuSiQue (Trivedi et al., 2022), and Bamboogle (Press et al., 2023). For
+general question answering, we include Natural Questions (NQ) (Kwiatkowski et al., 2019), TriviaQA
+(Joshi et al., 2017), and PopQA (Mallen et al., 2023). We conduct INSPOexperiments on Qwen
+2.5 series (Qwen et al., 2025), specifically the 3B and 7B versions. We leverage the state-of-the-art
+reasoning model, Gemini 2.5 Pro (Comanici et al., 2025), as the LLM-based optimizer.
+Baselines.We compare INSPOagainst the following baselines that all come with a static instruction:
+• Model Inference: We include baselines without tool-using. We compare against the direct
+inference approach (Direct), Supervised Fine-Tuning (SFT) (Chung et al., 2024), and GRPO
+(Shao et al., 2024) on the same question-answering training data mixture without tool integration.
+• Tool-Integrated Methods: For tool-integrated reasoning, we include Retrieval-Augmented
+Generation (RAG) (Lewis et al., 2020), IRCoT (Trivedi et al., 2023), Search-o1 (Li et al., 2025a),
+SFT (reject sampling) (Jin et al., 2025), and the state-of-the-art Search-R1 (Jin et al., 2025)
+approach that extends GRPO to multi-turn interleaved reasoning with a search engine.
+Setups.For all tool-integrated experiments, we follow the experimental setup as Search-R1, and use
+the E5 (Wang et al., 2022) as the retriever with a knowledge source on the 2018 Wikipedia dump
+(Karpukhin et al., 2020). The training data consists of a mixture of the NQ and HotpotQA training
+sets. We use the Exact Match (EM) as the reward function. For all inference-only baselines, we
+report the performance from instruct models, and the rest using the base models for training.
+In the INSPOframework, we maintain a population size NP of 7, Nparent of 2 for exploration, and
+a temperature τs of 0.2 in computing the selection probability for balancing the exploration and
+exploitation on candidates. We set a pruning period Kp at 5 and the evolution period Ke at 15. We
+evolve Te = 150 steps out of a total of 300 steps, thereby allowing the policy to be sufficiently
+optimized with the INSPO-evolved instruction. We refer readers to App. §B for more details.
+5 RESULTS
+Main results.We present the main results of INSPOcompared to baselines in Table 1. INSPOyields
+substantial performance improvements over model inference and tool-integrated baselines that all
+come with a static instruction. INSPOachieves an average EM score of 38.2% on all benchmarks
+with Qwen-2.5-3B, surpassing the state-of-the-art RL baseline with the search tool, Search-R1, by
+a large margin of 6%. This performance advantage is consistent when scaling to the 7B model. In
+particular, we observe that INSPOexcelled in complex multi-hop reasoning tasks, such as HotpotQA
+and 2WikiMQA, where INSPOoutperforms the Search-R1 baseline over 7% in the 3B model. This
+is further reflected in Fig. 2 (b), where the co-evolution of instruction and policy enables the agent
+to execute a greater number of valid tool calls, thereby leveraging more turns of interactions with
+the environment to resolve challenging questions. In contrast, the baseline, constrained by a static
+instruction, converges to a policy with a mean of tool calls that is marginally above 1, limiting its
+ability to decompose and solve multi-hop questions. In addition, we observe that INSPOperiodically
+evolves to longer prompt length as shown in Fig. 2 (c). It validates the functionality of the self-
+reflection mechanism in instruction generation, where INSPOconstantly involves environmental
+feedback to refine the instruction with new details. These results collectively show that by treating
+the instruction as a dynamic and optimizable component of the learning loop, INSPOunlocks more
+effective and strategic tool-integrated reasoning paths.
+Case analysis.We further inspect the agent trajectory from both baseline and INSPOto better
+understand the source of the performance disparity. In App. §D, we observe that the baseline model,
+trained with a static instruction, attempts to solve the question with a single and broad search query
+that mirrors the input question. It fails to retrieve the necessary evidence, leading the agent to
+hallucinate an incorrect final answer. In Fig. 3 and App. §D, we show an example of the instruction
+evolution loop that provides insight into how INSPOevolves better instructions. By analyzing
+6
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Table 1: Main results on multi-hop and general question-answering benchmarks. All results are
+reported using exact match (EM) scores. We report baseline results from Jin et al. (2025).
+Qwen-2.5-3B
+Method HotpotQA 2WikiMQA MuSiQue Bamboogle NQ TriviaQA PopQA Avg.
+Model Inference
+Direct 0.149 0.244 0.020 0.024 0.106 0.288 0.108 0.134
+SFT 0.186 0.248 0.044 0.112 0.249 0.292 0.104 0.176
+GRPO 0.201 0.268 0.055 0.224 0.226 0.455 0.173 0.229
+Tool-integrated Methods
+IRCoT 0.164 0.171 0.067 0.240 0.111 0.312 0.200 0.181
+RAG 0.255 0.226 0.047 0.080 0.348 0.544 0.387 0.270
+SFT 0.240 0.233 0.059 0.210 0.294 0.488 0.332 0.265
+Search-o1 0.221 0.218 0.054 0.320 0.238 0.472 0.262 0.255
+Search-R1 0.309 0.281 0.074 0.1260.438 0.5990.425 0.322
+INSPO0.377 0.359 0.151 0.3310.437 0.5870.431 0.382
+Qwen-2.5-7B
+Method HotpotQA 2WikiMQA MuSiQue Bamboogle NQ TriviaQA PopQA Avg.
+Model Inference
+Direct 0.183 0.250 0.031 0.120 0.134 0.408 0.140 0.181
+SFT 0.217 0.259 0.066 0.112 0.318 0.354 0.121 0.207
+GRPO 0.242 0.273 0.083 0.296 0.297 0.539 0.202 0.276
+Tool-integrated Methods
+IRCoT 0.133 0.149 0.072 0.224 0.224 0.478 0.301 0.239
+RAG 0.299 0.235 0.058 0.208 0.349 0.585 0.392 0.304
+SFT 0.331 0.296 0.1230.3550.360 0.592 0.380 0.348
+Search-o1 0.187 0.176 0.058 0.296 0.151 0.443 0.131 0.206
+Search-R1 0.356 0.3080.128 0.3550.423 0.575 0.411 0.365
+INSPO0.368 0.3490.115 0.3390.476 0.646 0.455 0.393
+0 100 200 300
+Step
+(a) INSPO vs. Search-R1
+0.1
+0.2
+0.3
+0.4
+0.5Reward
+Search-R1
+INSPO
+0 100 200 300
+Step
+(b) Number of T ool Calls
+1.0
+1.2
+1.4
+1.6# Valid T ool Calls
+0 100 200 300
+Step
+(c) Prompt Length
+150
+200
+250
+300
+350Prompt Length
+0 100 200 300
+Step
+(d) Response Length
+600
+800
+1000
+1200
+1400Response Length
+Figure 2: (a) INSPOvs. Search-R1: INSPOshows a better reward at convergence compared to
+the Search-R1 baseline. (b) Number of tool calls: INSPOdiscovers instructions that lead agents to
+leverage a larger number of tool usages for solving the problem, whereas the baseline converges to
+a single-turn tool-use. (c) Prompt length: Periodically, INSPOevolves longer and more effective
+instructions along the RL training process, whereas the baseline sticks to a static instruction. (d)
+Response length: With a larger number of tool calls by INSPO, the converged response comes with
+more tokens, which contains richer information from the search engine.
+trajectories given the initial instruction, the LLM-based optimizer in INSPOidentifies common failure
+modes, such as “poor adherence to structure” and “overconfidence in internal knowledge”. It then
+generates new instruction candidates that explicitly mitigate these specific flaws by, for instance,
+7
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Table 2: Ablation studies on the components of INSPOon Qwen-2.5-3B. The results show that
+(1) online co-evolution is superior to offline optimization, (2) reflection-based proposers are more
+effective than simpler alternatives (prompts given in App. §C), and (3) all components of the co-
+evolution loop (prune & verify) contribute to the final performance.
+Method HotpotQA 2WikiMQA MuSiQue Bamboogle NQ TriviaQA PopQA Avg.
+Instruction Evolution Stage
+Pre-Policy 0.313 0.312 0.091 0.274 0.410 0.573 0.421 0.342
+Post-Policy 0.313 0.280 0.074 0.137 0.443 0.599 0.425 0.325
+Instruction Proposer
+Paraphrasing 0.307 0.278 0.071 0.105 0.442 0.589 0.419 0.316
+History 0.319 0.294 0.078 0.129 0.451 0.614 0.427 0.330
+Instruction Population
+INSPO(Reflect) 0.313 0.296 0.077 0.137 0.447 0.606 0.435 0.330
++ Pruning 0.352 0.345 0.122 0.258 0.434 0.592 0.436 0.363
++ Verify 0.377 0.359 0.151 0.331 0.437 0.587 0.431 0.382
+mandating a step-by-step plan for tool-using and enforcing a strict XML format for actions. The new
+instruction reflects on prior failures, enriches the characteristics, and forces the agent to follow a
+step-by-step plan. This structured reasoning directly leads to the correct answer.
+Instruction Evolution Stage.We compare our online co-evolution with two offline APO alternatives:
+pre-policy optimization, where the instruction is optimizedbeforeRL training begins, and post-policy
+optimization, where the instruction is tunedafterthe training is complete. We observe that only
+the pre-policy brings subtle gains to the converged performance, whereas the post-policy model has
+become overfitted to the initial instruction and fails to adapt. It validates that the optimal instruction
+changes as the policy learns, and co-evolution is crucial for achieving the best performance.
+Instruction Proposer.We replace our reflection-based optimizer with two simpler APO alternatives
+to ablate the effectiveness of the reflection mechanism. In Table 2, we include a paraphrasing-based
+optimizer (Zhou et al., 2023) that generates I∼ O(·|Iold) and a history-based (Yang et al., 2024)
+optimizer with I∼ O(·|{Ii, ri}n
+i=1) that conditions on instruction-reward pairs. It shows that both
+optimizers are inadequate to yield gains along the policy optimization. It underscores the importance
+of the self-reflection mechanism that incorporates online feedback to generate instructions.
+Instruction Population.Finally, we ablate the core modules in INSPO. We start from the INSPOwith
+a constant population size without pruning, which shows an average score of 33.0%. Applying
+the periodic pruning of low-performing candidates (+ Pruning) further improves performance to
+36.3%, and the full INSPOapproach that includes the generate-verify loop (+ Verify) achieves the best
+performance. This highlights the importance of maintaining a high-quality population of instructions,
+which can drive the policy models towards better policy and generate richer reward signals.
+6 RELATEDWORK
+Reinforcement Learning for LLMs.Reinforcement learning (RL) (Sutton et al., 1999) has been
+a powerful paradigm for post-training LLMs, notably in aligning LLMs with human preference
+(Ouyang et al., 2022; Rafailov et al., 2023). It typically trains a reward model and optimizes the
+policy via Proximal Policy Optimization (PPO) (Schulman et al., 2017). Recently, DeepSeek-R1
+(Guo et al., 2025) has demonstrated the effectiveness of using rule-based verifiable rewards (RLVR)
+in advancing the reasoning capabilities of LLMs, where GRPO (Shao et al., 2024) obviates the need
+for a critic model by group-wise sampling. DAPO (Yu et al., 2025) further introduces techniques that
+improve the training stabilities of RLVR, such as clipping-higher and dynamic sampling. In addition,
+Dr. GRPO (Liu et al., 2025a) rectifies the length bias in GRPO. Orthogonal to these approaches,
+INSPOserves as a modular component to the typical RLVR learning loop.
+8
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+You must conduct reasoning inside <think>
+and </think>. 
+After reasoning, you can call a search
+engine by <search> query </search> and it
+will return the searched results between
+<information> and </information>. 
+Provide the answer inside <answer> and
+</answer>...
+1.  Poor Adherence to Structure
+2.  Overconfidence in Internal Knowledge
+3.  Inability to Handle Irrelevant
+Information 
+4.  Output Formatting Errors
+5.  Task Derailment and Hallucination
+You are required to answer the following question. To do so, you must
+externalize your entire thought process using the specified XML tags. 
+Your task is to follow the "Evidence-Based Reasoning" protocol. The most
+important step is identifying and resolving ambiguity.
+1.  Plan: In a `<think>...</think>` block, create a numbered plan of
+inquiry. Start with broad questions and be prepared to add more specific
+ones. 
+2.  Execute & Analyze: For each planned step: 
+Execute a `<search>...</search>`. Analyze the results in a
+`<think>...</think>` block using this mandatory format: 
+Evidence: Quote the exact text from the source document...
+Reasoning: Explain what the quote means...
+Ambiguity Check: Ask yourself: Does it contradict other information?
+If there is any ambiguity, state "Insufficient" and add a new step to
+your plan to resolve it (e.g., "Search for X to clarify Y")... 
+3.  Synthesize & Answer: Once you have sufficient, unambiguous evidence for
+all parts of the question, use a final `<think>...</think>` block.
+Synthesize the "Reasoning" portions from your analysis into a complete
+answer. Ensure no ambiguities remain. Then, provide the final answer in a
+self-contained `<answer>...</answer>` block.
+INSPO-Optimized Instruction
++ Critics
+Instruction in the Loop
++ Observation
+Policy Model
+Figure 3: A demonstration of the instruction co-evolution process with the policy model for using
+the search tool. The policy model is first prompted with the instruction-question pair, generating
+trajectories with environmental feedback and rewards, which are passed to an LLM-based optimizer
+for the experience-driven reflection process. The optimizer generates critiques on the failures and
+proposes new instruction candidates, forming an online optimization loop for the instruction.
+Tool-Integrated Agents.LLMs can be instructed to follow the pattern of reasoning and acting, which
+enables agentic applications with tool integration (Yao et al., 2023). For instance, IRCoT (Trivedi
+et al., 2023) interleaved chain-of-thought reasoning (Wei et al., 2022) with information retrieval.
+Toolformer (Schick et al., 2023) trains LLMs with diverse tool usages via SFT. More recently, the
+RL paradigm has led to agents with multi-turn tool interactions (Feng et al., 2025; Li et al., 2025b),
+where the search tool has excelled in resolving question-answering tasks (Jin et al., 2025; Song et al.,
+2025). Though there is a growth of end-to-end RL frameworks for multi-turn tool-use (Xue et al.,
+2025; Jiang et al., 2025), the importance of instruction design for agentic policy optimization has
+been largely overlooked, and they all rely on a costly manual design for the instruction that initializes
+the interaction with tools while treating it as a static component along the learning process.
+Instruction Optimization.The instruction serves as the protocol for defining the agents’ behaviors,
+where language agents have been exposed to sensitivity with respect to prompt designs (Zhou
+et al., 2025). Traditional instruction optimization (IO) approaches rely on simply paraphrasing
+the instruction (Zhou et al., 2023; 2024). Wan et al. (2024; 2025) emphasizes the importance of
+demonstration/exemplars together with the general instruction design. Recent approaches integrate
+LLM-based optimizers (Yang et al., 2024) and leverage textual gradients (Pryzant et al., 2023;
+Y¨uksekg¨on¨ul et al., 2025) to optimize the instruction, where Agrawal et al. (2025) show that reflective
+prompt design can even outperform the RL paradigm. Previously, Soylu et al. (2024) propose
+interleaving IO with SFT. In the pioneering context of RL, different from traditional IO approaches
+that optimize the instruction before commencing the RL training (Zhang et al., 2025), INSPOis
+the first framework to integrate IO directly into the online RL loop, co-evolving instructions with
+on-policy experience and environmental feedback.
+7 CONCLUSION
+In this work, we introduced INSPO, a novel framework that enables the co-evolution of instructions
+and policy learning for agentic policy optimization. Different to existing RLVR approaches that
+rely on static, manually-designed instructions, INSPOmaintains a dynamic population of instruction
+candidates and employs an experience-driven instruction generation mechanism, automating the
+discovery of more effective reasoning strategies via reflecting on online feedback along the policy
+learning process. Our experiments demonstrate that INSPOsubstantially outperforms strong baselines
+with static instructions on a wide range of tool-integrated question-answering benchmarks. The
+case studies and ablation analyses further confirmed that the online, reflection-based co-evolution of
+instructions is key to guiding the agent toward more robust and accurate tool-integrated reasoning.
+INSPOrepresents a significant step toward creating a more autonomous and adaptive RL framework,
+reducing the burden of manual prompt engineering and unlocking new capabilities in LLM agents.
+9
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+ACKNOWLEDGEMENTS
+The work has been supported by the UK Research and Innovation (UKRI) Frontier Research Grant
+EP/Y031350/1 (the UK government’s funding guarantee for ERC Advanced Grants) awarded to
+Anna Korhonen at the University of Cambridge. The work has also been supported in part by a Royal
+Society University Research Fellowship (no 221137; 2022-) awarded to Ivan Vuli´c, and by the UK
+EPSRC grant EP/T02450X/1.
+REFERENCES
+Lakshya A. Agrawal, Shangyin Tan, Dilara Soylu, Noah Ziems, Rishi Khare, Krista Opsahl-Ong,
+Arnav Singhvi, Herumb Shandilya, Michael J. Ryan, Meng Jiang, Christopher Potts, Koushik
+Sen, Alexandros G. Dimakis, Ion Stoica, Daniel Klein, Matei Zaharia, and Omar Khattab. GEPA:
+reflective prompt evolution can outperform reinforcement learning.CoRR, abs/2507.19457, 2025.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal,
+Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are
+few-shot learners.Advances in neural information processing systems, 33:1877–1901, 2020.
+Hyung Won Chung, Le Hou, Shayne Longpre, Barret Zoph, Yi Tay, William Fedus, Yunxuan Li,
+Xuezhi Wang, Mostafa Dehghani, Siddhartha Brahma, et al. Scaling instruction-finetuned language
+models.Journal of Machine Learning Research, 25(70):1–53, 2024.
+Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit
+Dhillon, Marcel Blistein, Ori Ram, Dan Zhang, Evan Rosen, et al. Gemini 2.5: Pushing the frontier
+with advanced reasoning, multimodality, long context, and next generation agentic capabilities.
+arXiv preprint arXiv:2507.06261, 2025.
+Jiazhan Feng, Shijue Huang, Xingwei Qu, Ge Zhang, Yujia Qin, Baoquan Zhong, Chengquan Jiang,
+Jinxin Chi, and Wanjun Zhong. Retool: Reinforcement learning for strategic tool use in llms.
+arXiv preprint arXiv:2504.11536, 2025.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu,
+Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms
+via reinforcement learning.arXiv preprint arXiv:2501.12948, 2025.
+Milos Hauskrecht, Nicolas Meuleau, Leslie Pack Kaelbling, Thomas L Dean, and Craig Boutilier.
+Hierarchical solution of markov decision processes using macro-actions.arXiv preprint
+arXiv:1301.7381, 2013.
+Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara, and Akiko Aizawa. Constructing a multi-
+hop QA dataset for comprehensive evaluation of reasoning steps. In Donia Scott, Nuria Bel,
+and Chengqing Zong (eds.),Proceedings of the 28th International Conference on Computa-
+tional Linguistics, pp. 6609–6625, Barcelona, Spain (Online), December 2020. International
+Committee on Computational Linguistics. doi: 10.18653/v1/2020.coling-main.580. URL
+https://aclanthology.org/2020.coling-main.580/.
+Kevin Jamieson and Ameet Talwalkar. Non-stochastic best arm identification and hyperparameter
+optimization. InArtificial intelligence and statistics, pp. 240–248. PMLR, 2016.
+Dongfu Jiang, Yi Lu, Zhuofeng Li, Zhiheng Lyu, Ping Nie, Haozhe Wang, Alex Su, Hui Chen, Kai
+Zou, Chao Du, et al. Verltool: Towards holistic agentic reinforcement learning with tool use.arXiv
+preprint arXiv:2509.01055, 2025.
+Carlos E Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik
+Narasimhan. Swe-bench: Can language models resolve real-world github issues?arXiv preprint
+arXiv:2310.06770, 2023.
+Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan Arik, Dong Wang, Hamed Zamani, and
+Jiawei Han. Search-r1: Training llms to reason and leverage search engines with reinforcement
+learning.arXiv preprint arXiv:2503.09516, 2025.
+10
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Mandar Joshi, Eunsol Choi, Daniel Weld, and Luke Zettlemoyer. TriviaQA: A large scale
+distantly supervised challenge dataset for reading comprehension. In Regina Barzilay and
+Min-Yen Kan (eds.),Proceedings of the 55th Annual Meeting of the Association for Com-
+putational Linguistics (Volume 1: Long Papers), pp. 1601–1611, Vancouver, Canada, July
+2017. Association for Computational Linguistics. doi: 10.18653/v1/P17-1147. URL https:
+//aclanthology.org/P17-1147/.
+Vladimir Karpukhin, Barlas Oguz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi
+Chen, and Wen-tau Yih. Dense passage retrieval for open-domain question answering. In Bonnie
+Webber, Trevor Cohn, Yulan He, and Yang Liu (eds.),Proceedings of the 2020 Conference on
+Empirical Methods in Natural Language Processing (EMNLP), pp. 6769–6781, Online, November
+2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.emnlp-main.550. URL
+https://aclanthology.org/2020.emnlp-main.550/.
+Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris
+Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, Kristina Toutanova, Llion
+Jones, Matthew Kelcey, Ming-Wei Chang, Andrew M. Dai, Jakob Uszkoreit, Quoc Le, and Slav
+Petrov. Natural questions: A benchmark for question answering research.Transactions of the
+Association for Computational Linguistics, 7:452–466, 2019. doi: 10.1162/tacl a 00276. URL
+https://aclanthology.org/Q19-1026/.
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal,
+Heinrich K¨uttler, Mike Lewis, Wen-tau Yih, Tim Rockt¨aschel, Sebastian Riedel, and Douwe Kiela.
+Retrieval-augmented generation for knowledge-intensive nlp tasks. In H. Larochelle, M. Ranzato,
+R. Hadsell, M.F. Balcan, and H. Lin (eds.),Advances in Neural Information Processing Systems,
+volume 33, pp. 9459–9474. Curran Associates, Inc., 2020.
+Xiaoxi Li, Guanting Dong, Jiajie Jin, Yuyao Zhang, Yujia Zhou, Yutao Zhu, Peitian Zhang, and
+Zhicheng Dou. Search-o1: Agentic search-enhanced large reasoning models.arXiv preprint
+arXiv:2501.05366, 2025a.
+Xuefeng Li, Haoyang Zou, and Pengfei Liu. Torl: Scaling tool-integrated rl.arXiv preprint
+arXiv:2503.23383, 2025b.
+Long-Ji Lin. Self-improving reactive agents based on reinforcement learning, planning and teaching.
+Machine learning, 8(3):293–321, 1992.
+Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min
+Lin. Understanding r1-zero-like training: A critical perspective.arXiv preprint arXiv:2503.20783,
+2025a.
+Ziru Liu, Cheng Gong, Xinyu Fu, Yaofang Liu, Ran Chen, Shoubo Hu, Suiyun Zhang, Rui Liu,
+Qingfu Zhang, and Dandan Tu. Ghpo: Adaptive guidance for stable and efficient llm reinforcement
+learning.arXiv preprint arXiv:2507.10628, 2025b.
+Alex Mallen, Akari Asai, Victor Zhong, Rajarshi Das, Daniel Khashabi, and Hannaneh Hajishirzi.
+When not to trust language models: Investigating effectiveness of parametric and non-parametric
+memories. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.),Proceedings of the
+61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers),
+pp. 9802–9822, Toronto, Canada, July 2023. Association for Computational Linguistics. doi:
+10.18653/v1/2023.acl-long.546. URL https://aclanthology.org/2023.acl-long.
+546/.
+V olodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G Bellemare,
+Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al. Human-level control
+through deep reinforcement learning.nature, 518(7540):529–533, 2015.
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong
+Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow
+instructions with human feedback.Advances in neural information processing systems, 35:27730–
+27744, 2022.
+11
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Ofir Press, Muru Zhang, Sewon Min, Ludwig Schmidt, Noah Smith, and Mike Lewis. Measuring
+and narrowing the compositionality gap in language models. In Houda Bouamor, Juan Pino,
+and Kalika Bali (eds.),Findings of the Association for Computational Linguistics: EMNLP
+2023, pp. 5687–5711, Singapore, December 2023. Association for Computational Linguistics.
+doi: 10.18653/v1/2023.findings-emnlp.378. URL https://aclanthology.org/2023.
+findings-emnlp.378/.
+Reid Pryzant, Dan Iter, Jerry Li, Yin Lee, Chenguang Zhu, and Michael Zeng. Automatic prompt
+optimization with “gradient descent” and beam search. In Houda Bouamor, Juan Pino, and Kalika
+Bali (eds.),Proceedings of the 2023 Conference on Empirical Methods in Natural Language
+Processing, pp. 7957–7968, Singapore, December 2023. Association for Computational Linguis-
+tics. doi: 10.18653/v1/2023.emnlp-main.494. URL https://aclanthology.org/2023.
+emnlp-main.494/.
+Qwen, An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang,
+Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin
+Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tianyi
+Tang, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan,
+Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. Qwen2.5 technical report, 2025. URL
+https://arxiv.org/abs/2412.15115.
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea
+Finn. Direct preference optimization: Your language model is secretly a reward model.Advances
+in neural information processing systems, 36:53728–53741, 2023.
+Timo Schick, Jane Dwivedi-Yu, Roberto Dess`ı, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke
+Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach
+themselves to use tools.Advances in Neural Information Processing Systems, 36:68539–68551,
+2023.
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy
+optimization algorithms.arXiv preprint arXiv:1707.06347, 2017.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang,
+Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathemat-
+ical reasoning in open language models.arXiv preprint arXiv:2402.03300, 2024.
+Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng,
+Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. InProceedings
+of the Twentieth European Conference on Computer Systems, pp. 1279–1297, 2025.
+Huatong Song, Jinhao Jiang, Yingqian Min, Jie Chen, Zhipeng Chen, Wayne Xin Zhao, Lei Fang, and
+Ji-Rong Wen. R1-searcher: Incentivizing the search capability in llms via reinforcement learning.
+arXiv preprint arXiv:2503.05592, 2025.
+Dilara Soylu, Christopher Potts, and Omar Khattab. Fine-tuning and prompt optimization: Two great
+steps that work better together. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.),
+Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp.
+10696–10710, Miami, Florida, USA, November 2024. Association for Computational Linguis-
+tics. doi: 10.18653/v1/2024.emnlp-main.597. URL https://aclanthology.org/2024.
+emnlp-main.597/.
+Hongjin Su, Ruoxi Sun, Jinsung Yoon, Pengcheng Yin, Tao Yu, and Sercan O Arik. Learn-by-interact:
+A data-centric framework for self-adaptive agents in realistic environments. InThe Thirteenth
+International Conference on Learning Representations, 2025. URL https://openreview.
+net/forum?id=3UKOzGWCVY.
+Richard S Sutton, Andrew G Barto, et al. Reinforcement learning.Journal of Cognitive Neuroscience,
+11(1):126–134, 1999.
+12
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal. MuSiQue: Multihop
+questions via single-hop question composition.Transactions of the Association for Computational
+Linguistics, 10:539–554, 2022. doi: 10.1162/tacl a 00475. URL https://aclanthology.
+org/2022.tacl-1.31/.
+Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal. Interleaving retrieval
+with chain-of-thought reasoning for knowledge-intensive multi-step questions. In Anna Rogers,
+Jordan Boyd-Graber, and Naoaki Okazaki (eds.),Proceedings of the 61st Annual Meeting of the
+Association for Computational Linguistics (Volume 1: Long Papers), pp. 10014–10037, Toronto,
+Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.
+557. URLhttps://aclanthology.org/2023.acl-long.557/.
+Xingchen Wan, Ruoxi Sun, Hootan Nakhost, and Sercan ¨O. Arı k. Teach better or show
+smarter? on instructions and exemplars in automatic prompt optimization. In A. Glober-
+son, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (eds.),Ad-
+vances in Neural Information Processing Systems, volume 37, pp. 58174–58244. Curran Asso-
+ciates, Inc., 2024. URL https://proceedings.neurips.cc/paper_files/paper/
+2024/file/6b031defd145b02bed031093d8797bb3-Paper-Conference.pdf.
+Xingchen Wan, Han Zhou, Ruoxi Sun, and Sercan O Arik. From few to many: Self-improving
+many-shot reasoners through iterative optimization and generation. InThe Thirteenth International
+Conference on Learning Representations, 2025. URL https://openreview.net/forum?
+id=JBXO05r4AV.
+Liang Wang, Nan Yang, Xiaolong Huang, Binxing Jiao, Linjun Yang, Daxin Jiang, Rangan Majumder,
+and Furu Wei. Text embeddings by weakly-supervised contrastive pre-training.arXiv preprint
+arXiv:2212.03533, 2022.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny
+Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models.Advances in
+neural information processing systems, 35:24824–24837, 2022.
+Zhenghai Xue, Longtao Zheng, Qian Liu, Yingru Li, Xiaosen Zheng, Zejun Ma, and Bo An. Sim-
+pletir: End-to-end reinforcement learning for multi-turn tool-integrated reasoning.arXiv preprint
+arXiv:2509.02479, 2025.
+Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V Le, Denny Zhou, and Xinyun
+Chen. Large language models as optimizers. InThe Twelfth International Conference on Learning
+Representations, 2024. URLhttps://openreview.net/forum?id=Bb4VGOWELI.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and
+Christopher D. Manning. HotpotQA: A dataset for diverse, explainable multi-hop question answer-
+ing. In Ellen Riloff, David Chiang, Julia Hockenmaier, and Jun’ichi Tsujii (eds.),Proceedings
+of the 2018 Conference on Empirical Methods in Natural Language Processing, pp. 2369–2380,
+Brussels, Belgium, October-November 2018. Association for Computational Linguistics. doi:
+10.18653/v1/D18-1259. URLhttps://aclanthology.org/D18-1259/.
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan
+Cao. React: Synergizing reasoning and acting in language models. InThe Eleventh International
+Conference on Learning Representations, 2023. URL https://openreview.net/forum?
+id=WE_vluYUL-X.
+Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian
+Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at
+scale.arXiv preprint arXiv:2503.14476, 2025.
+Mert Y¨uksekg¨on¨ul, Federico Bianchi, Joseph Boen, Sheng Liu, Pan Lu, Zhi Huang, Carlos Guestrin,
+and James Zou. Optimizing generative AI by backpropagating language model feedback.Nat.,
+639(8055):609–616, 2025.
+Junjie Zhang, Guozheng Ma, Shunyu Liu, Haoyu Wang, Jiaxing Huang, Ting-En Lin, Fei Huang,
+Yongbin Li, and Dacheng Tao. Merf: Motivation-enhanced reinforcement finetuning for large
+reasoning models.arXiv preprint arXiv:2506.18485, 2025.
+13
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+Han Zhou, Xingchen Wan, Yinhong Liu, Nigel Collier, Ivan Vuli ´c, and Anna Korhonen. Fairer
+preferences elicit improved human-aligned large language model judgments. In Yaser Al-Onaizan,
+Mohit Bansal, and Yun-Nung Chen (eds.),Proceedings of the 2024 Conference on Empirical
+Methods in Natural Language Processing, pp. 1241–1252, Miami, Florida, USA, November
+2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.emnlp-main.72. URL
+https://aclanthology.org/2024.emnlp-main.72/.
+Han Zhou, Xingchen Wan, Ruoxi Sun, Hamid Palangi, Shariq Iqbal, Ivan Vuli´c, Anna Korhonen, and
+Sercan ¨O Arık. Multi-agent design: Optimizing agents with better prompts and topologies.arXiv
+preprint arXiv:2502.02533, 2025.
+Yongchao Zhou, Andrei Ioan Muresanu, Ziwen Han, Keiran Paster, Silviu Pitis, Harris Chan, and
+Jimmy Ba. Large language models are human-level prompt engineers. InThe Eleventh International
+Conference on Learning Representations, 2023. URL https://openreview.net/forum?
+id=92gvk82DE-.
+14
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+A FUTUREWORK ANDLIMITATIONS
+While INSPOdemonstrates substantial performance improvement, the effectiveness of our experience-
+driven instruction generation relies on a capable LLM-based optimizer for self-reflection and generat-
+ing sophisticated instructions. We have primarily studied using Gemini 2.5 Pro as the optimizer, and
+we will endeavor to explore other thinking-style models as part of our future work. We would like
+to note that INSPOstill introduces a marginal but non-zero computation overhead that includes the
+API costs for the LLM-based optimizer and the inference cost for the phase of verification, which we
+have shown is marginal compared to the cost of the total training. Lastly, our current experiments
+have primarily focused on search-based question answering tasks. We believe the core principles of
+INSPOare broadly applicable to other agentic domains, and we will explore extending the framework
+with other available tools in future work.
+B IMPLEMENTATIONDETAILS
+We build our codebase on the VeRL framework (Sheng et al., 2025). Our experimental setup,
+including the training and evaluation data mixture, follows that of Search-R1 (Jin et al., 2025). We
+conduct our training on a node of 8×H100 GPUs. For all retrieval-based methods, we keep the top-3
+retrieved passages from the retriever. We used a learning rate of 5e-7 for theQwen2.5-3B-base
+model and 3e-7 for Qwen2.5-7B-base model. All methods were trained for a total of 300 steps
+with a cosine learning rate schedule with a warm-up ratio of 0.1, which are then evaluated every 100
+steps, and we report the final checkpoint before any reward collapse.
+For both GRPO and INSPOtraining. We set the group size G to 5. We used a batch size of 512, a
+mini-batch size of 256, and a micro-batch size of 64. We set the maximum prompt length to 4096
+and truncate response and observation lengths to 500 for each turn. The maximum number of turns
+was capped at 4 for theQwen2.5-3B-base modeland 6 forQwen2.5-7B-baseas stronger
+models tend to leverage more turns of tool-use. For LLM inference, we used a temperature of 1.0 and
+top-p of 1.0. We set the KL divergence coefficientβof 0.001 and the clip ratioϵof 0.2.
+In INSPO-specific setting, our experiments initialize the population with the original instruction
+from Search-R1 (see App. §D). The importance weight for each instruction candidate was updated
+using a running average over a window size of 5 steps. In the phase of experience-driven instruction
+generation, we randomly sampled 4 failure trajectories{τfail} from the replay buffer for self-reflection.
+For verification, we set|DB| of 200 samples as a low-cost proxy for validating the quality of instruction
+candidates, where we iteratively merge the best-performing candidates into the active population with
+the parent instructions.
+In terms of the computation overhead on top of the original RL training process, given 150/15 = 10
+times of evolution plus the initialization of the population, the self-reflection mechanism incurs
+roughly 11 API calls to the LLM-based optimizer. The phase of verification incurs roughly6×200×
+10 (N× |DB| ×T/K) = 12000additional inference from the policy model, given 6 new candidates
+per evolution and one round of verification, which is only about 1.4% compared to the total inference
+calls,169615×5 = 848075(|D| ×G), for one epoch training.
+C PROMPTTEMPLATES
+Paraphrasing-Based Instruction Optimizer
+<ins 0>{Instruction}</ins 0>
+Improve the above prompt.
+Give 6 different candidates.
+Make sure you include the same XML tags <>...</> as the original prompt in your improved prompts.
+For each XML tag, include both the beginning and ending tags, such as<answer>...</answer>.
+List the instruction candidates in<ins 1>...</ins 1>to<ins N>...</ins N>tags.
+15
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+History-Based Instruction Optimizer
+<history>
+<ins i>{Instruction i}</ins i>
+<score i>{Score i}</score i>
+...
+</history>
+Based on the above “instruction: score” history for instructions with their scores, where the score ranges
+from 0 to 100, analyze what components can lead to better performance.
+Give N different but better candidates. Make it concise and effective. Be creative and diverse in your
+suggestions.
+Make sure you include the same XML tags <>...</> as the original prompt in your improved prompts.
+For each XML tag, include both the beginning and ending tags, such as<answer>...</answer>.
+List the instruction candidates in<ins 1>...</ins 1>to<ins N>...</ins N>tags.
+Reflection-Based Instruction Optimizer (INSPO)
+The initial prompt is:
+<ins 0>
+{Instruction}
+</ins 0>
+However, it still gets the following examples wrong:
+<example>
+Response:{Rollouts from Replay Buffer}
+Correct answer:{Ground Truth}
+...
+</example>
+Analyze the reasons behind these mistakes and why the prompt could have gotten these examples
+wrong.
+Now take the reasons into account. Revise and improve the initial prompt by giving N different but
+better candidates.
+Make sure you include the same XML tags <>...</> as the original prompt in your improved prompts.
+For each XML tag, include both the beginning and ending tags, such as<answer>...</answer>.
+List the instruction candidates in<ins 1>...</ins 1>to<ins N>...</ins N>tags.
+D DEMONSTRATION
+Response from the baseline. Incorrect Answer (Search-R1):
+Answer the given question. You must conduct reasoning inside <think> and </think> first every
+time you get new information. After reasoning, if you find you lack some knowledge, you
+can call a search engine by <search> query </search> and it will return the top searched
+results between <information> and </information>. You can search as many times as your
+want. If you find no further external knowledge needed, you can directly provide the
+answer inside <answer> and </answer>, without detailed illustrations. For example, <
+answer> Beijing </answer>.
+Question: Who was president of the United States in the year that Citibank was founded?
+<|im_end|>
+<|im_start|>assistant
+To pursue the concern correctly,
+<search> Who was president of the United States in the year that Citibank was founded </search
+>
+<information>Doc 1(Title: Citibank) resulting in a net profit for the U.S. federal government.
+The City Bank of New York was founded on June 16, 1812. The first president of the City
+Bank was the statesman and retired Colonel, Samuel Osgood. In August 1813, with Osgood’s
+death, William Few became President of the Bank, staying until 1817, followed by Peter
+Stagg (1817-1825), Thomas Smith (1825-1827), Isaac Wright (1827-1832), and Thomas
+Bloodgood (1832-1843). Ownership and management of the bank was taken over by Moses
+Taylor in 1837...
+Doc 2(Title: Citibank) century. During Taylor’s ascendancy, the bank functioned largely as a
+treasury and finance center for Taylor’s own extensive business empire. Later presidents
+of the bank included Gorham Worth (1843-1856), Moses Taylor himself (1856-1882), Taylor’s
+son-in-law Patrick Pyne, and James Stillman (1891-1909). In 1831 City Bank was the site
+of one of America’s first bank heists when two thieves made off with tens of thousands of
+16
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+dollars’ worth of bank notes, and 398 gold doubloons. The bank also has the
+distinguishable history of financing war bonds for the war of 1812, serving as a founding
+member of the financial clearing house...
+Doc 3(Title: Citigroup) Brothers in 1910. City Bank of New York was chartered by New York
+State on June 16, 1812, with $2 million of capital. Serving a group of New York merchants
+, the bank opened for business on September 14 of that year, and Samuel Osgood was
+elected as the first President of the company. The company’s name was changed to The
+National City Bank of New York in 1865 after it joined the new U.S. national banking
+system, and it became the largest American bank by 1883 </information>
+<answer> James Buchanan </answer>
+INSPO-optimized response. Correct Answer (INSPO):
+Answer the given question. You must act as a meticulous researcher.
+First, conduct your reasoning inside ‘<think>‘ and ‘</think>‘. Create a step-by-step plan to
+identify all the key entities (people, places, events, objects) in the question.
+You must use ‘<search>query</search>‘ to find information about each entity individually.
+Never search for the entire question. Search results will appear between ‘<information>‘
+and ‘</information>‘.
+After each search, you must pause and analyze the results in a new ‘<think>‘ block. In your
+analysis, focus on the **context** of the information. Ask yourself:
+* Is this information current or historical?
+* Does this refer to a real-world fact or a detail from a fictional work?
+* Is this name/place/date definitive, or are there other possibilities?
+State the key fact and its context clearly. Then, decide if another search is needed.
+Once you have gathered sufficient verified and contextualized facts, you must perform a final
+synthesis in a concluding ‘<think>‘ block. This synthesis must:
+1. List the key facts and their important context (e.g., "Munich - filming location, not
+fictional setting").
+2. Logically connect these facts, respecting their context, to formulate an answer.
+3. Explicitly state the answer you have formulated based on this logic.
+Finally, provide that direct answer inside ‘<answer>‘ and ‘</answer>‘. Do not include
+illustrations or justifications in the answer. For example: ‘<answer>Beijing</answer>‘.
+Question: Who was president of the United States in the year that Citibank was founded?
+To answer the question "Who was president of the United States in the year that Citibank was
+founded?", I’ll follow these steps:
+<think>
+First, I’ll identify the key entities in the question:
+1. Citibank
+2. Year of foundation
+3. President of the United States at that time
+</think>
+<search>Who founded Citibank and what year was it established</search>
+<information>Doc 1(Title: Citibank) resulting in a net profit for the U.S. federal government.
+The City Bank of New York was founded on June 16, 1812. The first president of the City
+Bank was the statesman and retired Colonel, Samuel Osgood. In August 1813, with Osgood’s
+death, William Few became President of the Bank, staying until 1817, followed by Peter
+Stagg (1817-1825), Thomas Smith (1825-1827), Isaac Wright (1827-1832), and Thomas
+Bloodgood (1832-1843). Ownership and management of the bank was taken over by Moses
+Taylor in 1837...
+Doc 2(Title: Citigroup) was formed on October 8, 1998, following the $140 billion merger of
+Citicorp and Travelers Group to create the world’s largest financial services
+organization. The history of the company is, thus, divided into the workings of several
+firms that over time amalgamated into Citicorp, a multinational banking corporation
+operating in more than 100 countries; or Travelers Group, whose businesses covered credit
+services, consumer finance, brokerage, and insurance. As such, the company history dates
+back to the founding of: the City Bank of New York (later Citibank) in 1812; Bank
+Handlowy in 1870; Smith Barney in 1873, Banamex in 1884; Salomon...
+Doc 3(Title: Citigroup) Brothers in 1910. City Bank of New York was chartered by New York
+State on June 16, 1812, with $2 million of capital. Serving a group of New York merchants
+, the bank opened for business on September 14 of that year, and Samuel Osgood was
+elected as the first President of the company. The company’s name was changed to The
+National City Bank of New York in 1865 after it joined the new U.S. national banking
+system, and it became the largest American bank by 1880. By 1912, it started to branch...
+</information>
+<think>
+From the search results, I can see that Citibank was founded in 1812.
+</think>
+<search>What was the president of the United States in 1812</search>
+17
+Agentic Policy Optimization via Instruction-Policy Co-Evolution
+<information>Doc 1(Title: "1812 United States presidential election") 1812 United States
+presidential election The United States presidential election of 1812, the seventh
+quadrennial American presidential election, was held from Friday, October 30, 1812 to
+Wednesday, December 2, 1812. Taking place in the shadow of the War of 1812, incumbent
+Democratic-Republican President James Madison defeated DeWitt Clinton, who drew support
+from dissident Democratic-Republicans in the North as well as Federalists. It was the
+first presidential election to be held during a major war involving the United States.
+Northern Democratic-Republicans had long been dissatisfied by the Southern dominance of
+their party, and DeWitt Clinton’s uncle, Vice President George Clinton, had...
+Doc 2(Title: "War of 1812") sailors into the Royal Navy. Incidents such as the ""Chesapeake-
+Leopard"" affair, which happened five years before the war, inflamed anti-British
+sentiment in the US. In 1811, the British were in turn outraged by the ""Little Belt""
+affair, in which 11 British sailors died. Britain supplied Native Americans who raided
+American settlers on the frontier, hindering American expansion and provoking resentment.
+Historians debate whether the desire to annex some or all of British North America (
+Canada) contributed to the American decision to go to war. On June 18, 1812, US President
+James Madison, after heavy pressure from the War Hawks in...
+Doc 3(Title: "1812 United States elections") 1812 United States elections The 1812 United
+States elections elected the members of the 13th United States Congress. The election
+took place during the First Party System, and shortly after the start of the War of 1812.
+The Federalist Party made a relatively strong showing, winning seats in both chambers
+while supporting a competitive challenge to the incumbent Democratic-Republican President
+. However, the Democratic-Republican Party continued its control of the Presidency and
+both houses of Congress. In the Presidential election, incumbent Democratic-Republican
+President James Madison defeated New York Lieutenant Governor and New York City Mayor
+DeWitt Clinton. Clinton was a member</information>
+<think>
+From the search results, I can see that the president of the United States in 1812 was James
+Madison.
+</think>
+<answer>James Madison</answer>
+Proposer with reflection:
+An analysis of the provided examples reveals several key reasons for the model\’s failures:
+1. **Poor Adherence to Structure:** The model frequently fails to use the ‘<think>‘ tag for
+its reasoning, instead writing conversational text or placing reasoning outside the
+designated tags. This suggests the instruction "you must conduct reasoning inside ‘<think
+>‘" is not strong enough.
+2. **Overconfidence in Internal Knowledge:** In the "phone code" example, the model provided
+a wrong answer from its internal knowledge without attempting to verify it with a search.
+The prompt does not sufficiently discourage this behavior.
+3. **Inability to Handle Irrelevant Information:** In the "Dukes of Hazzard" example, the
+search results were not about the specific episode. The model failed to recognize this,
+could not formulate a new search query, and instead provided a nonsensical answer based
+on misinterpreting the result format ("Doc 1"). The prompt lacks instructions for self-
+correction.
+4. **Output Formatting Errors:** The model often includes conversational text like "Answer:"
+before the final answer or provides a full sentence instead of the concise answer
+requested by the example ‘<answer> Beijing </answer>‘.
+5. **Task Derailment and Hallucination:** In the "Green Revolution" example, the model
+completely loses focus, starts discussing an unrelated topic, and provides a final answer
+(‘A-Train‘) that has no connection to the original question or the relevant search
+results.
+The initial prompt is too permissive and lacks a clear, enforced workflow. To improve
+performance, the prompt needs to be more prescriptive, explicitly define a step-by-step
+process, mandate searching over internal knowledge, and include instructions for handling
+failed searches.
+Here are six improved prompt candidates designed to address these issues.
+<ins_1>
+You must follow these steps in order to answer the question:
+Step 1: First, and for every new piece of information, you must reason about the user\’s
+question inside <think> and </think> tags. In your reasoning, break down the question and
+create a plan.
+Step 2: If your plan requires information you do not have, execute a search using the <search>
+query </search> tag.
+Step 3: The search results will be provided in <information> and </information> tags. You must
+then reason about the results in a new <think> and </think> block to determine if you
+have the answer or need more information.
+Step 4: Repeat steps 2 and 3 as many times as necessary.
+Step 5: Once you are confident you have the final answer, provide it directly inside <answer>
+and </answer> tags. Do not add any other text or explanation outside the tags.
+</ins_1>
+...
+18
