@@ -1,4 +1,4 @@
-# 🔬 **Science RAG**
+# **Science RAG**
 
 Retrieval-Augmented Generation система для научных вопросов на основе корпуса arXiv и Web-поиска.
 
@@ -12,7 +12,7 @@ Retrieval-Augmented Generation система для научных вопрос
 
 ---
 
-# 1. 📁 **Структура репозитория**
+# 1. **Структура репозитория**
 
 ```
 science-rag/
@@ -59,9 +59,9 @@ science-rag/
 
 ---
 
-# 2. 🏗️ **Архитектура системы**
+# 2. **Архитектура системы**
 
-### 📚 **Пайплайн данных**
+### **Пайплайн данных**
 
 ```
 arXiv API 
@@ -72,7 +72,7 @@ arXiv API
                                  Tokens → BM25 (sparse)
 ```
 
-### 💬 **Пайплайн ответа**
+### **Пайплайн ответа**
 
 ```
 User Query
@@ -84,7 +84,7 @@ Retriever → Top-k Documents
 Mistral Chat → Final Answer + Sources
 ```
 
-### 🌐 Web-RAG:
+### Web-RAG:
 
 ```
 Query → Tavily Search → Content Cleaning → Chunking → Embeddings → FAISS → RAG
@@ -92,7 +92,7 @@ Query → Tavily Search → Content Cleaning → Chunking → Embeddings → FAI
 
 ---
 
-# 3. 📥 **Сбор данных**
+# 3. **Сбор данных**
 
 Скрипты находятся в `src/data_ingestion/`.
 
@@ -115,7 +115,7 @@ python -m src.data_ingestion.pdf_to_text \
 
 ---
 
-# 4. 🧩 **Подготовка данных для RAG**
+# 4. **Подготовка данных для RAG**
 
 ### ✔ Чанкование
 
@@ -148,7 +148,7 @@ python -m src.local_rag.bm25_index
 
 ---
 
-# 5. 🔍 **Retrievers**
+# 5. **Retrievers**
 
 Проект поддерживает три режима:
 
@@ -171,7 +171,7 @@ Dynamic Alpha Tuning вычисляет вес α(q):
 
 ---
 
-# 6. 🌐 **Web-RAG**
+# 6. **Web-RAG**
 
 Используется Tavily API:
 
@@ -183,7 +183,7 @@ query → Tavily → content → chunk → embed → FAISS → retrieve → answ
 
 ---
 
-# 7. 🧪 **Валидация retrieval**
+# 7. **Валидация retrieval**
 
 Файл:
 `data/validation/qa_pairs.jsonl`
@@ -203,7 +203,7 @@ query → Tavily → content → chunk → embed → FAISS → retrieve → answ
 
 ---
 
-# 8. ▶️ **Запуск Streamlit-приложения**
+# 8. **Запуск Streamlit-приложения**
 
 ```
 export MISTRAL_API_KEY="..."
@@ -223,7 +223,7 @@ streamlit run app/streamlit_app.py
 # 9. 📎 **Примеры данных**
 
 Сэмпл корпуса чанков:
-👉 `data/chunks/local/chunks.jsonl`
+`data/chunks/local/chunks.jsonl`
 
 Пример строки:
 
@@ -238,7 +238,7 @@ streamlit run app/streamlit_app.py
 
 ---
 
-# 11. 🛠️ **Установка**
+# 11. **Установка**
 
 ```
 git clone https://github.com/.../science-rag.git
