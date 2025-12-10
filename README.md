@@ -96,7 +96,7 @@ Query → Tavily Search → Content Cleaning → Chunking → Embeddings → FAI
 
 Скрипты находятся в `src/data_ingestion/`.
 
-### ✔ 1) Скачать PDF с arXiv
+### 1) Скачать PDF с arXiv
 
 ```
 python -m src.data_ingestion.arxiv_downloader \
@@ -105,7 +105,7 @@ python -m src.data_ingestion.arxiv_downloader \
   --output_dir data/raw/arxiv_pdfs
 ```
 
-### ✔ 2) Конвертация PDF → текст
+### 2) Конвертация PDF → текст
 
 ```
 python -m src.data_ingestion.pdf_to_text \
@@ -117,7 +117,7 @@ python -m src.data_ingestion.pdf_to_text \
 
 # 4. **Подготовка данных для RAG**
 
-### ✔ Чанкование
+### Чанкование
 
 ```
 python -m src.local_rag.chunker \
@@ -127,14 +127,14 @@ python -m src.local_rag.chunker \
   --overlap 200
 ```
 
-### ✔ Embeddings + FAISS
+### Embeddings + FAISS
 
 ```
 python -m src.embeddings.build_embeddings
 python -m src.local_rag.faiss_builder
 ```
 
-### ✔ BM25-индекс
+### BM25-индекс
 
 ```
 python -m src.local_rag.bm25_index
@@ -152,15 +152,15 @@ python -m src.local_rag.bm25_index
 
 Проект поддерживает три режима:
 
-### 1️⃣ **Dense RAG (FAISS)**
+### 1) **Dense RAG (FAISS)**
 
 Использует Sentence-Transformers / Mistral Embeddings.
 
-### 2️⃣ **Sparse RAG (BM25)**
+### 2) **Sparse RAG (BM25)**
 
 Лучше работает на терминологических запросах.
 
-### 3️⃣ **Hybrid RAG с DAT**
+### 3) **Hybrid RAG с DAT**
 
 Dynamic Alpha Tuning вычисляет вес α(q):
 
@@ -220,7 +220,7 @@ streamlit run app/streamlit_app.py
 
 ---
 
-# 9. 📎 **Примеры данных**
+# 9. **Примеры данных**
 
 Сэмпл корпуса чанков:
 `data/chunks/local/chunks.jsonl`
