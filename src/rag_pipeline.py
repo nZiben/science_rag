@@ -37,12 +37,29 @@ class RetrievedContext:
 
 
 @dataclass
+class RefinementInfo:
+    """Information about query refinement iteration."""
+
+    iteration: int
+    query: str
+    top_k: int
+    mean_score: float
+    was_refined: bool
+
+
+@dataclass
 class RAGAnswer:
     """Final RAG answer with supporting contexts."""
 
     answer: str
     contexts: List[RetrievedContext]
     mode: Literal["local", "web", "hybrid"]
+    query_history: List[str] | None = None  # History of query reformulations
+    refinement_history: List[RefinementInfo] | None = None  # History of refinements with scores
+
+
+# Import QueryPlanner after RetrievedContext is defined to avoid circular import
+from src.pipeline.planner import QueryPlanner
 
 
 class ScienceRAGPipeline:
@@ -117,7 +134,8 @@ class ScienceRAGPipeline:
             "Answer the question strictly based on the provided context. "
             "Cite sources with [source_id] in the answer where appropriate. "
             "If the answer is not in the context, say that the information "
-            "is not available."
+            "is not available. "
+            "Answer in the same language as the question."
         )
 
         context_blocks = []
@@ -163,58 +181,326 @@ class ScienceRAGPipeline:
             )
         return contexts
 
-    def answer_local(self, query: str, top_k: int = 5) -> RAGAnswer:
-        """Local RAG over arXiv corpus (dense only)."""
-        query_emb = self.embedder.embed_query(query)
-        results = self.local_dense.search(query_emb, top_k=top_k)
-        contexts = self._make_local_contexts(results, mode="local")
-        answer = self._generate_answer(query, contexts)
-        return RAGAnswer(answer=answer, contexts=contexts, mode="local")
+    def answer_local(
+        self,
+        query: str,
+        top_k: int = 5,
+        enable_planner: bool = False,
+        planner_threshold: float = 0.5,
+        max_planner_iterations: int = 1,
+    ) -> RAGAnswer:
+        """Local RAG over arXiv corpus (dense only).
 
-    def answer_local_hybrid(self, query: str, top_k: int = 5) -> RAGAnswer:
-        """Hybrid local RAG with DAT (BM25 + dense)."""
-        hybrid_results = self.hybrid_retriever.retrieve(
-            query=query,
-            top_k_bm25=top_k,
-            top_k_dense=top_k,
-            final_top_k=top_k,
-        )
-        results = [(r.doc_id, r.score) for r in hybrid_results]
-        contexts = self._make_local_contexts(results, mode="hybrid")
-        answer = self._generate_answer(query, contexts)
-        return RAGAnswer(answer=answer, contexts=contexts, mode="hybrid")
+        Args:
+            query: User query.
+            top_k: Number of top documents to retrieve.
+            enable_planner: Whether to use query replanning.
+            planner_threshold: Quality threshold for planner (mean score).
+            max_planner_iterations: Maximum number of reformulation attempts.
 
-    def answer_web(self, query: str, max_web_results: int = 5) -> RAGAnswer:
-        """Web-RAG over Tavily search results."""
-        web_docs: List[WebDocument] = tavily_search(
-            query=query,
-            max_results=max_web_results,
-            search_depth="advanced",
-        )
-        if not web_docs:
-            return RAGAnswer(
-                answer="Не удалось найти релевантные источники в интернете.",
-                contexts=[],
-                mode="web",
+        Returns:
+            RAGAnswer with answer, contexts, and query history.
+        """
+        query_history = [query]
+        current_query = query
+        current_top_k = top_k
+        refinement_history: List[RefinementInfo] = []
+
+        for iteration in range(max_planner_iterations + 1):
+            query_emb = self.embedder.embed_query(current_query)
+            results = self.local_dense.search(query_emb, top_k=current_top_k)
+            contexts = self._make_local_contexts(results, mode="local")
+            answer = self._generate_answer(current_query, contexts)
+
+            # Calculate mean score for this iteration
+            mean_score = (
+                sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
             )
 
-        faiss_index, mapping = build_temp_web_index(web_docs, self.embedder)
-        query_emb = self.embedder.embed_query(query)
-        dense_results = faiss_index.search(query_emb, top_k=min(5, len(web_docs)))
-
-        contexts: List[RetrievedContext] = []
-        for doc_id, score in dense_results:
-            doc = mapping[doc_id]
-            contexts.append(
-                RetrievedContext(
-                    doc_id=doc_id,
-                    text=doc.content,
-                    source="web",
-                    score=score,
-                    url=doc.url,
-                    title=doc.title,
+            # Evaluate quality if planner is enabled
+            if enable_planner and iteration < max_planner_iterations:
+                planner = QueryPlanner(mistral_model=self.mistral_model)
+                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+                
+                # Record refinement info
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_top_k,
+                        mean_score=mean_score,
+                        was_refined=not quality_sufficient,
+                    )
                 )
+
+                if not quality_sufficient:
+                    # If quality is poor, perform refinement for next iteration:
+                    # 1. Reformulate the query
+                    # 2. Increase top_k by 3
+                    # Both changes will be applied together in the next iteration
+                    current_query = planner.reformulate_query(
+                        original_query=query,
+                        previous_answer=answer,
+                        contexts=contexts,
+                    )
+                    current_top_k += 3
+                    query_history.append(current_query)
+                    continue
+
+            # Quality is sufficient or planner disabled or max iterations reached
+            # Record final iteration info
+            if enable_planner:
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_top_k,
+                        mean_score=mean_score,
+                        was_refined=False,
+                    )
+                )
+
+            return RAGAnswer(
+                answer=answer,
+                contexts=contexts,
+                mode="local",
+                query_history=query_history if enable_planner else None,
+                refinement_history=refinement_history if enable_planner else None,
             )
 
-        answer = self._generate_answer(query, contexts)
-        return RAGAnswer(answer=answer, contexts=contexts, mode="web")
+        # Fallback (should not reach here, but for safety)
+        return RAGAnswer(
+            answer=answer,
+            contexts=contexts,
+            mode="local",
+            query_history=query_history if enable_planner else None,
+            refinement_history=refinement_history if enable_planner else None,
+        )
+
+    def answer_local_hybrid(
+        self,
+        query: str,
+        top_k: int = 5,
+        enable_planner: bool = False,
+        planner_threshold: float = 0.5,
+        max_planner_iterations: int = 1,
+    ) -> RAGAnswer:
+        """Hybrid local RAG with DAT (BM25 + dense).
+
+        Args:
+            query: User query.
+            top_k: Number of top documents to retrieve.
+            enable_planner: Whether to use query replanning.
+            planner_threshold: Quality threshold for planner (mean score).
+            max_planner_iterations: Maximum number of reformulation attempts.
+
+        Returns:
+            RAGAnswer with answer, contexts, and query history.
+        """
+        query_history = [query]
+        current_query = query
+        current_top_k = top_k
+        refinement_history: List[RefinementInfo] = []
+
+        for iteration in range(max_planner_iterations + 1):
+            hybrid_results = self.hybrid_retriever.retrieve(
+                query=current_query,
+                top_k_bm25=current_top_k,
+                top_k_dense=current_top_k,
+                final_top_k=current_top_k,
+            )
+            results = [(r.doc_id, r.score) for r in hybrid_results]
+            contexts = self._make_local_contexts(results, mode="hybrid")
+            answer = self._generate_answer(current_query, contexts)
+
+            # Calculate mean score for this iteration
+            mean_score = (
+                sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
+            )
+
+            # Evaluate quality if planner is enabled
+            if enable_planner and iteration < max_planner_iterations:
+                planner = QueryPlanner(mistral_model=self.mistral_model)
+                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+                
+                # Record refinement info
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_top_k,
+                        mean_score=mean_score,
+                        was_refined=not quality_sufficient,
+                    )
+                )
+
+                if not quality_sufficient:
+                    # If quality is poor, perform refinement for next iteration:
+                    # 1. Reformulate the query
+                    # 2. Increase top_k by 3
+                    # Both changes will be applied together in the next iteration
+                    current_query = planner.reformulate_query(
+                        original_query=query,
+                        previous_answer=answer,
+                        contexts=contexts,
+                    )
+                    current_top_k += 3
+                    query_history.append(current_query)
+                    continue
+
+            # Quality is sufficient or planner disabled or max iterations reached
+            # Record final iteration info
+            if enable_planner:
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_top_k,
+                        mean_score=mean_score,
+                        was_refined=False,
+                    )
+                )
+
+            return RAGAnswer(
+                answer=answer,
+                contexts=contexts,
+                mode="hybrid",
+                query_history=query_history if enable_planner else None,
+                refinement_history=refinement_history if enable_planner else None,
+            )
+
+        # Fallback (should not reach here, but for safety)
+        return RAGAnswer(
+            answer=answer,
+            contexts=contexts,
+            mode="hybrid",
+            query_history=query_history if enable_planner else None,
+            refinement_history=refinement_history if enable_planner else None,
+        )
+
+    def answer_web(
+        self,
+        query: str,
+        max_web_results: int = 5,
+        enable_planner: bool = False,
+        planner_threshold: float = 0.5,
+        max_planner_iterations: int = 1,
+    ) -> RAGAnswer:
+        """Web-RAG over Tavily search results.
+
+        Args:
+            query: User query.
+            max_web_results: Maximum number of web documents to retrieve.
+            enable_planner: Whether to use query replanning.
+            planner_threshold: Quality threshold for planner (mean score).
+            max_planner_iterations: Maximum number of reformulation attempts.
+
+        Returns:
+            RAGAnswer with answer, contexts, and query history.
+        """
+        query_history = [query]
+        current_query = query
+        current_max_web_results = max_web_results
+        refinement_history: List[RefinementInfo] = []
+
+        for iteration in range(max_planner_iterations + 1):
+            web_docs: List[WebDocument] = tavily_search(
+                query=current_query,
+                max_results=current_max_web_results,
+                search_depth="advanced",
+            )
+            if not web_docs:
+                return RAGAnswer(
+                    answer="Не удалось найти релевантные источники в интернете.",
+                    contexts=[],
+                    mode="web",
+                    query_history=query_history if enable_planner else None,
+                    refinement_history=refinement_history if enable_planner else None,
+                )
+
+            faiss_index, mapping = build_temp_web_index(web_docs, self.embedder)
+            query_emb = self.embedder.embed_query(current_query)
+            dense_results = faiss_index.search(
+                query_emb, top_k=min(current_max_web_results, len(web_docs))
+            )
+
+            contexts: List[RetrievedContext] = []
+            for doc_id, score in dense_results:
+                doc = mapping[doc_id]
+                contexts.append(
+                    RetrievedContext(
+                        doc_id=doc_id,
+                        text=doc.content,
+                        source="web",
+                        score=score,
+                        url=doc.url,
+                        title=doc.title,
+                    )
+                )
+
+            answer = self._generate_answer(current_query, contexts)
+
+            # Calculate mean score for this iteration
+            mean_score = (
+                sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
+            )
+
+            # Evaluate quality if planner is enabled
+            if enable_planner and iteration < max_planner_iterations:
+                planner = QueryPlanner(mistral_model=self.mistral_model)
+                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+                
+                # Record refinement info
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_max_web_results,
+                        mean_score=mean_score,
+                        was_refined=not quality_sufficient,
+                    )
+                )
+
+                if not quality_sufficient:
+                    # If quality is poor, perform refinement for next iteration:
+                    # 1. Reformulate the query
+                    # 2. Increase max_web_results by 3
+                    # Both changes will be applied together in the next iteration
+                    current_query = planner.reformulate_query(
+                        original_query=query,
+                        previous_answer=answer,
+                        contexts=contexts,
+                    )
+                    current_max_web_results += 3
+                    query_history.append(current_query)
+                    continue
+
+            # Quality is sufficient or planner disabled or max iterations reached
+            # Record final iteration info
+            if enable_planner:
+                refinement_history.append(
+                    RefinementInfo(
+                        iteration=iteration + 1,
+                        query=current_query,
+                        top_k=current_max_web_results,
+                        mean_score=mean_score,
+                        was_refined=False,
+                    )
+                )
+
+            return RAGAnswer(
+                answer=answer,
+                contexts=contexts,
+                mode="web",
+                query_history=query_history if enable_planner else None,
+                refinement_history=refinement_history if enable_planner else None,
+            )
+
+        # Fallback (should not reach here, but for safety)
+        return RAGAnswer(
+            answer=answer,
+            contexts=contexts,
+            mode="web",
+            query_history=query_history if enable_planner else None,
+            refinement_history=refinement_history if enable_planner else None,
+        )

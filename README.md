@@ -49,6 +49,8 @@ science-rag/
 │   │   └── web_retriever.py
 │   ├── hybrid_retrieval/
 │   │   └── hybrid_retriever_with_DAT.py
+│   ├── pipeline/
+│   │   └── planner.py
 │   ├── evaluation/
 │   │   └── metrics.py
 │   └── rag_pipeline.py
@@ -80,6 +82,14 @@ User Query
 RAG Pipeline (local / web / hybrid DAT)
      ▼
 Retriever → Top-k Documents
+     ▼
+Quality Evaluation (if planner enabled)
+     ▼
+[If quality insufficient]
+     ├─ Query Reformulation
+     └─ Increase top_k by 3
+     ▼
+Retriever → Top-k Documents (refined)
      ▼
 Mistral Chat → Final Answer + Sources
 ```
@@ -171,7 +181,36 @@ Dynamic Alpha Tuning вычисляет вес α(q):
 
 ---
 
-# 6. **Web-RAG**
+# 6. **Планировщик запросов (Query Planner)**
+
+Система поддерживает автоматическое уточнение запросов при недостаточном качестве ответа.
+
+## Функциональность
+
+При включенном планировщике система автоматически:
+
+1. **Оценивает качество** найденных документов по среднему score релевантности
+2. **При низком качестве** (score < threshold):
+   - Переформулирует запрос с помощью LLM
+   - Увеличивает `top_k` на 3 для расширения поиска
+   - Повторяет поиск с улучшенными параметрами
+
+## Особенности
+
+* **Сохранение языка**: Переформулированный запрос и ответ сохраняют язык оригинального запроса
+* **Адаптивное увеличение**: `top_k` увеличивается на 3 при каждой итерации уточнения
+* **Максимум итераций**: По умолчанию выполняется до 1 переформулировки (всего 2 попытки)
+
+## Использование
+
+В Streamlit UI:
+- Включите чекбокс "Включить планировщик запросов"
+- Настройте порог качества (threshold) - средний score документов должен быть >= этого значения
+- При низком качестве система автоматически выполнит уточнение
+
+---
+
+# 7. **Web-RAG**
 
 Используется Tavily API:
 
@@ -183,7 +222,7 @@ query → Tavily → content → chunk → embed → FAISS → retrieve → answ
 
 ---
 
-# 7. **Валидация retrieval**
+# 8. **Валидация retrieval**
 
 Файл:
 `data/validation/qa_pairs.jsonl`
@@ -203,7 +242,7 @@ query → Tavily → content → chunk → embed → FAISS → retrieve → answ
 
 ---
 
-# 8. **Запуск Streamlit-приложения**
+# 9. **Запуск Streamlit-приложения**
 
 ```
 export MISTRAL_API_KEY="..."
@@ -214,13 +253,14 @@ streamlit run app/streamlit_app.py
 
 В приложении доступны режимы:
 
-* Local RAG
-* Hybrid RAG (DAT)
-* Web-RAG
+* **Local RAG** — поиск по локальному корпусу arXiv
+* **Hybrid RAG (DAT)** — гибридный поиск с динамической настройкой весов
+* **Web-RAG** — поиск по интернету через Tavily API
+
 
 ---
 
-# 9. **Примеры данных**
+# 10. **Примеры данных**
 
 Сэмпл корпуса чанков:
 `data/chunks/local/chunks.jsonl`
