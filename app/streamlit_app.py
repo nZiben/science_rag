@@ -54,23 +54,6 @@ def main() -> None:
     top_k = st.sidebar.slider("Top-k документов", min_value=3, max_value=10, value=5)
 
     st.sidebar.markdown("---")
-    st.sidebar.header("Планировщик запросов")
-    enable_planner = st.sidebar.checkbox(
-        "Включить планировщик запросов",
-        value=False,
-        help="Автоматически переформулирует вопрос при низком качестве ответа и увеличивает top_k на 3",
-    )
-    planner_threshold = st.sidebar.slider(
-        "Порог качества (threshold)",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-        help="Средний score документов должен быть >= этого значения",
-        disabled=not enable_planner,
-    )
-
-    st.sidebar.markdown("---")
     st.sidebar.markdown("**Переменные окружения:**")
     st.sidebar.code("MISTRAL_API_KEY=\nTAVILY_API_KEY=", language="bash")
 
@@ -88,51 +71,76 @@ def main() -> None:
                 rag_answer = pipeline.answer_local(
                     query,
                     top_k=top_k,
-                    enable_planner=enable_planner,
-                    planner_threshold=planner_threshold,
-                    max_planner_iterations=1,
+                    max_planner_iterations=2,
                 )
             elif mode == "Web-RAG":
                 rag_answer = pipeline.answer_web(
                     query,
                     max_web_results=top_k,
-                    enable_planner=enable_planner,
-                    planner_threshold=planner_threshold,
-                    max_planner_iterations=1,
+                    max_planner_iterations=2,
                 )
             else:
                 rag_answer = pipeline.answer_local_hybrid(
                     query,
                     top_k=top_k,
-                    enable_planner=enable_planner,
-                    planner_threshold=planner_threshold,
-                    max_planner_iterations=1,
+                    max_planner_iterations=2,
                 )
 
-        # Show refinement information if planner was used
+        # Show refinement information only if there were actual refinements
         if rag_answer.refinement_history and len(rag_answer.refinement_history) > 0:
-            st.subheader("Процесс уточнения запроса")
+            # Check if there were any actual refinements
+            has_refinements = any(r.was_refined for r in rag_answer.refinement_history)
             
-            for i, refinement in enumerate(rag_answer.refinement_history):
-                if refinement.was_refined and i < len(rag_answer.refinement_history) - 1:
-                    # Show refinement message for iterations that were refined
-                    next_refinement = rag_answer.refinement_history[i + 1]
-                    
-                    st.warning(
-                        f"⚠️ **Итерация {refinement.iteration}:** "
-                        f"Недостаточный score ({refinement.mean_score:.3f} < {planner_threshold:.3f})"
-                    )
-                    
-                    st.info(
-                        f"🔄 **Выполнено уточнение:**\n\n"
-                        f"**Новый запрос:** {next_refinement.query}\n\n"
-                        f"**Top-k увеличен:** {refinement.top_k} → {next_refinement.top_k}"
-                    )
-                    
-                    if i < len(rag_answer.refinement_history) - 2:
-                        st.markdown("---")
+            if has_refinements:
+                st.subheader("Процесс уточнения запроса")
+                
+                for i, refinement in enumerate(rag_answer.refinement_history):
+                    if refinement.was_refined and i < len(rag_answer.refinement_history) - 1:
+                        # Show refinement message for iterations that were refined
+                        next_refinement = rag_answer.refinement_history[i + 1]
+                        
+                        st.warning(
+                            f"⚠️ **Итерация {refinement.iteration}:** "
+                            f"Модель оценила качество как недостаточное (средний score: {refinement.mean_score:.3f})"
+                        )
+                        
+                        # Show strategy-specific information
+                        strategy_text = ""
+                        if refinement.strategy == "reformulate":
+                            strategy_text = (
+                                f"🔄 **Стратегия: Переформулировка запроса**\n\n"
+                                f"**Новый запрос:** {next_refinement.query}\n\n"
+                                f"Запрос был переформулирован для улучшения поиска релевантных документов."
+                            )
+                        elif refinement.strategy == "increase_top_k":
+                            strategy_text = (
+                                f"📈 **Стратегия: Увеличение количества контекста**\n\n"
+                                f"**Top-k увеличен:** {refinement.top_k} → {next_refinement.top_k}\n\n"
+                                f"Модель решила, что нужно больше контекста для полного ответа. "
+                                f"Количество извлекаемых документов увеличено."
+                            )
+                        elif refinement.strategy == "both":
+                            strategy_text = (
+                                f"🔄📈 **Стратегия: Переформулировка запроса и увеличение контекста**\n\n"
+                                f"**Новый запрос:** {next_refinement.query}\n\n"
+                                f"**Top-k увеличен:** {refinement.top_k} → {next_refinement.top_k}\n\n"
+                                f"Модель решила применить обе стратегии одновременно: "
+                                f"переформулировать запрос для лучшего поиска и увеличить количество контекста."
+                            )
+                        else:
+                            # Fallback for unknown strategy
+                            strategy_text = (
+                                f"🔄 **Выполнено автоматическое уточнение:**\n\n"
+                                f"**Новый запрос:** {next_refinement.query}\n\n"
+                                f"**Top-k увеличен:** {refinement.top_k} → {next_refinement.top_k}"
+                            )
+                        
+                        st.info(strategy_text)
+                        
+                        if i < len(rag_answer.refinement_history) - 2:
+                            st.markdown("---")
 
-        # Show query history if planner was used (simplified version)
+        # Show query history if there were reformulations
         if rag_answer.query_history and len(rag_answer.query_history) > 1:
             with st.expander("📝 История всех запросов"):
                 for i, q in enumerate(rag_answer.query_history, 1):

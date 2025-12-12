@@ -45,6 +45,7 @@ class RefinementInfo:
     top_k: int
     mean_score: float
     was_refined: bool
+    strategy: str | None = None  # Strategy used: "reformulate", "increase_top_k", or None
 
 
 @dataclass
@@ -59,7 +60,7 @@ class RAGAnswer:
 
 
 # Import QueryPlanner after RetrievedContext is defined to avoid circular import
-from src.pipeline.planner import QueryPlanner
+from src.pipeline.planner import QueryPlanner, QualityAssessment
 
 
 class ScienceRAGPipeline:
@@ -185,17 +186,13 @@ class ScienceRAGPipeline:
         self,
         query: str,
         top_k: int = 5,
-        enable_planner: bool = False,
-        planner_threshold: float = 0.5,
-        max_planner_iterations: int = 1,
+        max_planner_iterations: int = 2,
     ) -> RAGAnswer:
         """Local RAG over arXiv corpus (dense only).
 
         Args:
             query: User query.
             top_k: Number of top documents to retrieve.
-            enable_planner: Whether to use query replanning.
-            planner_threshold: Quality threshold for planner (mean score).
             max_planner_iterations: Maximum number of reformulation attempts.
 
         Returns:
@@ -205,6 +202,7 @@ class ScienceRAGPipeline:
         current_query = query
         current_top_k = top_k
         refinement_history: List[RefinementInfo] = []
+        planner = QueryPlanner(mistral_model=self.mistral_model)
 
         for iteration in range(max_planner_iterations + 1):
             query_emb = self.embedder.embed_query(current_query)
@@ -217,10 +215,13 @@ class ScienceRAGPipeline:
                 sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
             )
 
-            # Evaluate quality if planner is enabled
-            if enable_planner and iteration < max_planner_iterations:
-                planner = QueryPlanner(mistral_model=self.mistral_model)
-                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+            # Evaluate quality using LLM
+            if iteration < max_planner_iterations:
+                assessment = planner.evaluate_quality(
+                    query=query,
+                    answer=answer,
+                    contexts=contexts,
+                )
                 
                 # Record refinement info
                 refinement_history.append(
@@ -229,43 +230,55 @@ class ScienceRAGPipeline:
                         query=current_query,
                         top_k=current_top_k,
                         mean_score=mean_score,
-                        was_refined=not quality_sufficient,
+                        was_refined=not assessment.is_sufficient,
+                        strategy=assessment.strategy if not assessment.is_sufficient else None,
                     )
                 )
 
-                if not quality_sufficient:
-                    # If quality is poor, perform refinement for next iteration:
-                    # 1. Reformulate the query
-                    # 2. Increase top_k by 3
-                    # Both changes will be applied together in the next iteration
-                    current_query = planner.reformulate_query(
-                        original_query=query,
-                        previous_answer=answer,
-                        contexts=contexts,
-                    )
-                    current_top_k += 3
-                    query_history.append(current_query)
+                if not assessment.is_sufficient:
+                    # Apply strategy recommended by the model
+                    if assessment.strategy == "reformulate":
+                        # Reformulate the query (answer is bad, wrong documents retrieved)
+                        current_query = planner.reformulate_query(
+                            original_query=query,
+                            previous_answer=answer,
+                            contexts=contexts,
+                        )
+                        query_history.append(current_query)
+                    elif assessment.strategy == "increase_top_k":
+                        # Increase top_k (need more context)
+                        current_top_k += 3
+                    elif assessment.strategy == "both":
+                        # Apply both strategies: reformulate query AND increase top_k
+                        current_query = planner.reformulate_query(
+                            original_query=query,
+                            previous_answer=answer,
+                            contexts=contexts,
+                        )
+                        query_history.append(current_query)
+                        current_top_k += 3
+                    # If strategy is "sufficient", we shouldn't reach here, but continue anyway
                     continue
 
-            # Quality is sufficient or planner disabled or max iterations reached
+            # Quality is sufficient or max iterations reached
             # Record final iteration info
-            if enable_planner:
-                refinement_history.append(
-                    RefinementInfo(
-                        iteration=iteration + 1,
-                        query=current_query,
-                        top_k=current_top_k,
-                        mean_score=mean_score,
-                        was_refined=False,
-                    )
+            refinement_history.append(
+                RefinementInfo(
+                    iteration=iteration + 1,
+                    query=current_query,
+                    top_k=current_top_k,
+                    mean_score=mean_score,
+                    was_refined=False,
+                    strategy=None,
                 )
+            )
 
             return RAGAnswer(
                 answer=answer,
                 contexts=contexts,
                 mode="local",
-                query_history=query_history if enable_planner else None,
-                refinement_history=refinement_history if enable_planner else None,
+                query_history=query_history,
+                refinement_history=refinement_history,
             )
 
         # Fallback (should not reach here, but for safety)
@@ -273,25 +286,21 @@ class ScienceRAGPipeline:
             answer=answer,
             contexts=contexts,
             mode="local",
-            query_history=query_history if enable_planner else None,
-            refinement_history=refinement_history if enable_planner else None,
+            query_history=query_history,
+            refinement_history=refinement_history,
         )
 
     def answer_local_hybrid(
         self,
         query: str,
         top_k: int = 5,
-        enable_planner: bool = False,
-        planner_threshold: float = 0.5,
-        max_planner_iterations: int = 1,
+        max_planner_iterations: int = 2,
     ) -> RAGAnswer:
         """Hybrid local RAG with DAT (BM25 + dense).
 
         Args:
             query: User query.
             top_k: Number of top documents to retrieve.
-            enable_planner: Whether to use query replanning.
-            planner_threshold: Quality threshold for planner (mean score).
             max_planner_iterations: Maximum number of reformulation attempts.
 
         Returns:
@@ -301,6 +310,7 @@ class ScienceRAGPipeline:
         current_query = query
         current_top_k = top_k
         refinement_history: List[RefinementInfo] = []
+        planner = QueryPlanner(mistral_model=self.mistral_model)
 
         for iteration in range(max_planner_iterations + 1):
             hybrid_results = self.hybrid_retriever.retrieve(
@@ -318,10 +328,13 @@ class ScienceRAGPipeline:
                 sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
             )
 
-            # Evaluate quality if planner is enabled
-            if enable_planner and iteration < max_planner_iterations:
-                planner = QueryPlanner(mistral_model=self.mistral_model)
-                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+            # Evaluate quality using LLM
+            if iteration < max_planner_iterations:
+                assessment = planner.evaluate_quality(
+                    query=query,
+                    answer=answer,
+                    contexts=contexts,
+                )
                 
                 # Record refinement info
                 refinement_history.append(
@@ -330,43 +343,55 @@ class ScienceRAGPipeline:
                         query=current_query,
                         top_k=current_top_k,
                         mean_score=mean_score,
-                        was_refined=not quality_sufficient,
+                        was_refined=not assessment.is_sufficient,
+                        strategy=assessment.strategy if not assessment.is_sufficient else None,
                     )
                 )
 
-                if not quality_sufficient:
-                    # If quality is poor, perform refinement for next iteration:
-                    # 1. Reformulate the query
-                    # 2. Increase top_k by 3
-                    # Both changes will be applied together in the next iteration
-                    current_query = planner.reformulate_query(
-                        original_query=query,
-                        previous_answer=answer,
-                        contexts=contexts,
-                    )
-                    current_top_k += 3
-                    query_history.append(current_query)
+                if not assessment.is_sufficient:
+                    # Apply strategy recommended by the model
+                    if assessment.strategy == "reformulate":
+                        # Reformulate the query (answer is bad, wrong documents retrieved)
+                        current_query = planner.reformulate_query(
+                            original_query=query,
+                            previous_answer=answer,
+                            contexts=contexts,
+                        )
+                        query_history.append(current_query)
+                    elif assessment.strategy == "increase_top_k":
+                        # Increase top_k (need more context)
+                        current_top_k += 3
+                    elif assessment.strategy == "both":
+                        # Apply both strategies: reformulate query AND increase top_k
+                        current_query = planner.reformulate_query(
+                            original_query=query,
+                            previous_answer=answer,
+                            contexts=contexts,
+                        )
+                        query_history.append(current_query)
+                        current_top_k += 3
+                    # If strategy is "sufficient", we shouldn't reach here, but continue anyway
                     continue
 
-            # Quality is sufficient or planner disabled or max iterations reached
+            # Quality is sufficient or max iterations reached
             # Record final iteration info
-            if enable_planner:
-                refinement_history.append(
-                    RefinementInfo(
-                        iteration=iteration + 1,
-                        query=current_query,
-                        top_k=current_top_k,
-                        mean_score=mean_score,
-                        was_refined=False,
-                    )
+            refinement_history.append(
+                RefinementInfo(
+                    iteration=iteration + 1,
+                    query=current_query,
+                    top_k=current_top_k,
+                    mean_score=mean_score,
+                    was_refined=False,
+                    strategy=None,
                 )
+            )
 
             return RAGAnswer(
                 answer=answer,
                 contexts=contexts,
                 mode="hybrid",
-                query_history=query_history if enable_planner else None,
-                refinement_history=refinement_history if enable_planner else None,
+                query_history=query_history,
+                refinement_history=refinement_history,
             )
 
         # Fallback (should not reach here, but for safety)
@@ -374,25 +399,21 @@ class ScienceRAGPipeline:
             answer=answer,
             contexts=contexts,
             mode="hybrid",
-            query_history=query_history if enable_planner else None,
-            refinement_history=refinement_history if enable_planner else None,
+            query_history=query_history,
+            refinement_history=refinement_history,
         )
 
     def answer_web(
         self,
         query: str,
         max_web_results: int = 5,
-        enable_planner: bool = False,
-        planner_threshold: float = 0.5,
-        max_planner_iterations: int = 1,
+        max_planner_iterations: int = 2,
     ) -> RAGAnswer:
         """Web-RAG over Tavily search results.
 
         Args:
             query: User query.
             max_web_results: Maximum number of web documents to retrieve.
-            enable_planner: Whether to use query replanning.
-            planner_threshold: Quality threshold for planner (mean score).
             max_planner_iterations: Maximum number of reformulation attempts.
 
         Returns:
@@ -402,6 +423,7 @@ class ScienceRAGPipeline:
         current_query = query
         current_max_web_results = max_web_results
         refinement_history: List[RefinementInfo] = []
+        planner = QueryPlanner(mistral_model=self.mistral_model)
 
         for iteration in range(max_planner_iterations + 1):
             web_docs: List[WebDocument] = tavily_search(
@@ -414,8 +436,8 @@ class ScienceRAGPipeline:
                     answer="Не удалось найти релевантные источники в интернете.",
                     contexts=[],
                     mode="web",
-                    query_history=query_history if enable_planner else None,
-                    refinement_history=refinement_history if enable_planner else None,
+                    query_history=query_history,
+                    refinement_history=refinement_history,
                 )
 
             faiss_index, mapping = build_temp_web_index(web_docs, self.embedder)
@@ -445,10 +467,13 @@ class ScienceRAGPipeline:
                 sum(ctx.score for ctx in contexts) / len(contexts) if contexts else 0.0
             )
 
-            # Evaluate quality if planner is enabled
-            if enable_planner and iteration < max_planner_iterations:
-                planner = QueryPlanner(mistral_model=self.mistral_model)
-                quality_sufficient = planner.evaluate_quality(contexts, planner_threshold)
+            # Evaluate quality using LLM
+            if iteration < max_planner_iterations:
+                assessment = planner.evaluate_quality(
+                    query=query,
+                    answer=answer,
+                    contexts=contexts,
+                )
                 
                 # Record refinement info
                 refinement_history.append(
@@ -457,43 +482,46 @@ class ScienceRAGPipeline:
                         query=current_query,
                         top_k=current_max_web_results,
                         mean_score=mean_score,
-                        was_refined=not quality_sufficient,
+                        was_refined=not assessment.is_sufficient,
+                        strategy=assessment.strategy if not assessment.is_sufficient else None,
                     )
                 )
 
-                if not quality_sufficient:
-                    # If quality is poor, perform refinement for next iteration:
-                    # 1. Reformulate the query
-                    # 2. Increase max_web_results by 3
-                    # Both changes will be applied together in the next iteration
-                    current_query = planner.reformulate_query(
-                        original_query=query,
-                        previous_answer=answer,
-                        contexts=contexts,
-                    )
-                    current_max_web_results += 3
-                    query_history.append(current_query)
+                if not assessment.is_sufficient:
+                    # Apply strategy recommended by the model
+                    if assessment.strategy == "reformulate":
+                        # Reformulate the query (answer is bad, wrong documents retrieved)
+                        current_query = planner.reformulate_query(
+                            original_query=query,
+                            previous_answer=answer,
+                            contexts=contexts,
+                        )
+                        query_history.append(current_query)
+                    elif assessment.strategy == "increase_top_k":
+                        # Increase max_web_results (need more context)
+                        current_max_web_results += 3
+                    # If strategy is "sufficient", we shouldn't reach here, but continue anyway
                     continue
 
-            # Quality is sufficient or planner disabled or max iterations reached
+            # Quality is sufficient or max iterations reached
             # Record final iteration info
-            if enable_planner:
-                refinement_history.append(
-                    RefinementInfo(
-                        iteration=iteration + 1,
-                        query=current_query,
-                        top_k=current_max_web_results,
-                        mean_score=mean_score,
-                        was_refined=False,
-                    )
+            refinement_history.append(
+                RefinementInfo(
+                    iteration=iteration + 1,
+                    query=current_query,
+                    top_k=current_max_web_results,
+                    mean_score=mean_score,
+                    was_refined=False,
+                    strategy=None,
                 )
+            )
 
             return RAGAnswer(
                 answer=answer,
                 contexts=contexts,
                 mode="web",
-                query_history=query_history if enable_planner else None,
-                refinement_history=refinement_history if enable_planner else None,
+                query_history=query_history,
+                refinement_history=refinement_history,
             )
 
         # Fallback (should not reach here, but for safety)
@@ -501,6 +529,6 @@ class ScienceRAGPipeline:
             answer=answer,
             contexts=contexts,
             mode="web",
-            query_history=query_history if enable_planner else None,
-            refinement_history=refinement_history if enable_planner else None,
+            query_history=query_history,
+            refinement_history=refinement_history,
         )
