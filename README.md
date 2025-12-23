@@ -218,7 +218,7 @@ Dynamic Alpha Tuning вычисляет вес α(q):
 query → Tavily → content → chunk → embed → FAISS → retrieve → answer
 ```
 
-Подходит для вопросов, не покрытых локальным arXiv-корпусом.
+Подходит для вопросов, не покрытых локальным arXiv-корпусом
 
 ---
 
