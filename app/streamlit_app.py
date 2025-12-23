@@ -10,6 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv(ROOT / ".env")
+
 import streamlit as st
 
 from src.embeddings.embedder import EmbeddingBackend
@@ -52,10 +56,6 @@ def main() -> None:
         options=["Локальный RAG", "Web-RAG", "Гибридный локальный (DAT)"],
     )
     top_k = st.sidebar.slider("Top-k документов", min_value=3, max_value=10, value=5)
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Переменные окружения:**")
-    st.sidebar.code("MISTRAL_API_KEY=\nTAVILY_API_KEY=", language="bash")
 
     query = st.text_area(
         "Введите научный вопрос:",
